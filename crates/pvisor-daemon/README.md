@@ -102,8 +102,11 @@ with this mode is rejected. The mode is fixed at scheduler startup:
   identity/readiness binding releases it; a low sample during boot is not enough.
 - Active/Ready/Waiting/Queued/Offloading/Offloaded/RestoreQueued count through
   the measured parent charge, without a separate full resident reservation.
-  Resident Acquire still uses FIFO and the measured budget but needs no second
-  full VM allowance and sends no native Resume.
+  Resident Acquire needs no second full VM allowance and sends no native Resume.
+  It may pass a still-Offloading FIFO head when the measured budget, all existing
+  commitments and that head's full recovery top-up fit. Resident requests keep
+  their relative order; native restores remain FIFO. Restoring and uncertain
+  controls still fence subsequent queued requests.
 - Restoring reserves its full allowance until native acknowledgement; Failed
   controls retain that allowance and stop grants until proven owner cleanup.
 - New creation waits behind pending requests and writebacks, respects the
@@ -117,6 +120,12 @@ actual parent measurement only; no extra credit is subtracted from that value.
 High measured usage or an actual admission/restore shortage triggers bounded
 offload of safe waiters, never Active/Ready guests. An offload estimate is not
 proof of reclaimed capacity: admission still requires a fresh measurement.
+When pressure is not latched and successful completion of in-flight startup
+bindings alone would remove a commitment deficit, wait for those bindings
+instead of offloading bound peers. Startup reservations still count for every
+grant; only successful Bind releases them. Real pressure or a deficit that
+remains after startup still permits reclaim. A stuck startup must be handled by
+the owner's existing timeout and audited teardown, not by dropping its reservation.
 
 This is explicit memory overcommit. It does **not** guarantee simultaneous
 full-guest allocation or prevent every OOM: current tools and background growth
@@ -195,6 +204,10 @@ Measured-mode regressions additionally cover release at successful Bind rather
 than Wait, sixteen resident grants under a 40 GiB budget, concurrent startup
 reservations, actual-pressure reclamation, recovery acknowledgement/FIFO,
 parent-cache accounting, wake headroom and missing-sample/control failures.
+They also cover startup-only reclaim deferral, resident bypass of an Offloading
+head with retained recovery space, unchanged native restore order and strict
+Reserved-mode FIFO. This does not promise freedom from allocation-growth
+pressure or starvation under arbitrary workloads.
 These are policy and transport fixtures, not KVM density/performance evidence.
 An ordinary-OCI real-VM acceptance test is required before replaying a batch.
 

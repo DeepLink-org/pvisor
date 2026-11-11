@@ -872,3 +872,201 @@ fn measured_blocked_startup_can_reclaim_below_high_but_needs_real_relief() {
     p.plan(4, &charges(0, 3)).unwrap();
     assert_eq!(p.snapshot.entries[&id(3)].state, State::Admitted);
 }
+
+fn measured_startup_burst() -> Policy {
+    let mut p = Policy::new(measured_config()).unwrap();
+    p.reserve(id(1), 8).unwrap();
+    p.plan(0, &BTreeMap::new()).unwrap();
+    p.bound(&id(1)).unwrap();
+    p.wait(&id(1), None).unwrap();
+    for n in 2..=4 {
+        p.reserve(id(n), 8).unwrap();
+    }
+    p
+}
+
+#[test]
+fn measured_startup_burst_waits_for_bind_instead_of_offloading_peer() {
+    let mut p = measured_startup_burst();
+    // Two new startups fit, the third must wait. Do not unload the one bound
+    // peer merely to fund that third startup on this very same plan.
+    assert!(p.plan(2, &[(id(1), 1)].into()).unwrap().is_empty());
+    assert_eq!(p.snapshot.entries[&id(1)].state, State::Waiting);
+    assert_eq!(p.snapshot.entries[&id(2)].state, State::Admitted);
+    assert_eq!(p.snapshot.entries[&id(3)].state, State::Admitted);
+    assert_eq!(p.snapshot.entries[&id(4)].state, State::AdmissionQueued);
+    p.snapshot.entries.get_mut(&id(2)).unwrap().state = State::Binding;
+    for _ in 0..3 {
+        assert!(p.plan(4, &charges(1, 1)).unwrap().is_empty());
+        assert_eq!(p.snapshot.entries[&id(4)].state, State::AdmissionQueued);
+        assert_eq!(p.snapshot.writebacks, 0);
+    }
+    // Successful Bind releases only its own startup top-up; no invented credit.
+    p.snapshot.entries.get_mut(&id(2)).unwrap().state = State::Active;
+    p.bound(&id(3)).unwrap();
+    assert!(
+        p.plan(4, &[(id(1), 1), (id(2), 1), (id(3), 1)].into())
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(p.snapshot.entries[&id(4)].state, State::Admitted);
+}
+
+#[test]
+fn measured_startup_wait_does_not_mask_real_memory_deficit_or_high_watermark() {
+    for parent in [15, 18] {
+        let mut p = measured_startup_burst();
+        p.plan(2, &[(id(1), 1)].into()).unwrap();
+        // Even if all startup top-ups disappear, parent + next 8 does not fit.
+        // High-watermark reclamation must also work while startup is pending.
+        assert_eq!(
+            p.plan(parent, &[(id(1), 5)].into()).unwrap(),
+            [Action::Offload(id(1))]
+        );
+        assert_eq!(p.snapshot.entries[&id(4)].state, State::AdmissionQueued);
+    }
+}
+
+#[test]
+fn measured_failed_binding_never_releases_capacity_or_grants_followers() {
+    let mut p = measured_startup_burst();
+    p.plan(2, &[(id(1), 1)].into()).unwrap();
+    p.snapshot.entries.get_mut(&id(2)).unwrap().state = State::Failed;
+    assert!(p.plan(2, &charges(1, 1)).unwrap().is_empty());
+    assert_eq!(p.snapshot.entries[&id(4)].state, State::AdmissionQueued);
+    assert_eq!(p.snapshot.entries[&id(1)].state, State::Waiting);
+}
+
+fn measured_offloading_head() -> Policy {
+    let mut p = Policy::new(measured_config()).unwrap();
+    for n in 1..=2 {
+        p.reserve(id(n), 8).unwrap();
+    }
+    p.plan(0, &BTreeMap::new()).unwrap();
+    for n in 1..=2 {
+        p.bound(&id(n)).unwrap();
+        p.wait(&id(n), None).unwrap();
+    }
+    assert_eq!(
+        p.plan(18, &charges(9, 9)).unwrap(),
+        [Action::Offload(id(1))]
+    );
+    p.acquire(&id(1), id(101)).unwrap();
+    p.acquire(&id(2), id(102)).unwrap();
+    p
+}
+
+#[test]
+fn measured_resident_passes_offloading_head_without_resume_or_new_admission() {
+    let mut p = measured_offloading_head();
+    p.reserve(id(3), 8).unwrap();
+    assert!(p.plan(2, &charges(1, 1)).unwrap().is_empty());
+    assert_eq!(p.snapshot.entries[&id(1)].state, State::Offloading);
+    assert_eq!(p.snapshot.entries[&id(2)].state, State::Ready);
+    assert_eq!(p.snapshot.entries[&id(2)].token, Some(id(102)));
+    assert_eq!(p.snapshot.entries[&id(3)].state, State::AdmissionQueued);
+    assert_eq!(p.snapshot.writebacks, 1);
+    p.finish(Action::Offload(id(1)), Ok(()));
+    assert_eq!(p.plan(2, &charges(1, 1)).unwrap(), [Action::Resume(id(1))]);
+    p.finish(Action::Resume(id(1)), Ok(()));
+    assert_eq!(p.snapshot.entries[&id(1)].state, State::Ready);
+    assert!(p.wait(&id(2), Some(id(999))).is_err());
+    p.wait(&id(2), Some(id(102))).unwrap();
+}
+
+#[test]
+fn measured_resident_bypass_requires_recovery_headroom_and_complete_samples() {
+    let mut p = measured_offloading_head();
+    assert!(p.plan(2, &[(id(2), 1)].into()).is_err());
+    assert_eq!(p.snapshot.entries[&id(2)].state, State::Queued);
+    // Resident itself needs no top-up, but 15 + 7 head recovery exceeds20.
+    p.plan(15, &charges(1, 1)).unwrap();
+    assert_eq!(p.snapshot.entries[&id(2)].state, State::Queued);
+    assert!(p.plan(13, &charges(1, 1)).unwrap().is_empty());
+    assert_eq!(p.snapshot.entries[&id(2)].state, State::Ready);
+}
+
+#[test]
+fn measured_resident_bypass_counts_outstanding_startup_reservations() {
+    let mut p = Policy::new(measured_config()).unwrap();
+    for n in 1..=2 {
+        p.reserve(id(n), 8).unwrap();
+    }
+    p.plan(0, &BTreeMap::new()).unwrap();
+    for n in 1..=2 {
+        p.bound(&id(n)).unwrap();
+        p.wait(&id(n), None).unwrap();
+    }
+    // Grant a startup before pressure rises; leave its Bind outstanding.
+    p.reserve(id(3), 8).unwrap();
+    assert!(p.plan(2, &charges(1, 1)).unwrap().is_empty());
+    assert_eq!(p.snapshot.entries[&id(3)].state, State::Admitted);
+    assert_eq!(
+        p.plan(18, &charges(9, 9)).unwrap(),
+        [Action::Offload(id(1))]
+    );
+    p.acquire(&id(1), id(101)).unwrap();
+    p.acquire(&id(2), id(102)).unwrap();
+    p.plan(6, &charges(1, 1)).unwrap(); // 6 + 8 startup + 7 recovery >20
+    assert_eq!(p.snapshot.entries[&id(2)].state, State::Queued);
+}
+
+#[test]
+fn measured_offload_failure_still_stops_resident_bypass() {
+    let mut p = measured_offloading_head();
+    p.finish(
+        Action::Offload(id(1)),
+        Err(anyhow::anyhow!("uncertain offload")),
+    );
+    assert!(p.plan(2, &charges(1, 1)).unwrap().is_empty());
+    assert_eq!(p.snapshot.entries[&id(2)].state, State::Queued);
+    assert_eq!(p.snapshot.writebacks, 1);
+}
+
+#[test]
+fn measured_bypass_preserves_native_restore_fifo_and_acknowledgements() {
+    let mut p = Policy::new(measured_config()).unwrap();
+    let mut samples = BTreeMap::new();
+    for n in 1..=4 {
+        p.reserve(id(n), 8).unwrap();
+        p.plan(n as u64 - 1, &samples).unwrap();
+        p.bound(&id(n)).unwrap();
+        p.wait(&id(n), None).unwrap();
+        samples.insert(id(n), 1);
+    }
+    let high = (1..=4).map(|n| (id(n), 5)).collect();
+    assert_eq!(
+        p.plan(20, &high).unwrap(),
+        [Action::Offload(id(1)), Action::Offload(id(2))]
+    );
+    p.finish(Action::Offload(id(2)), Ok(()));
+    for n in 1..=4 {
+        p.acquire(&id(n), id(100 + n)).unwrap();
+    }
+    assert!(p.plan(4, &samples).unwrap().is_empty());
+    assert_eq!(p.snapshot.entries[&id(2)].state, State::RestoreQueued);
+    for n in 3..=4 {
+        assert_eq!(p.snapshot.entries[&id(n)].state, State::Ready);
+    }
+    p.finish(Action::Offload(id(1)), Ok(()));
+    assert_eq!(p.plan(4, &samples).unwrap(), [Action::Resume(id(1))]);
+    assert!(p.plan(4, &samples).unwrap().is_empty());
+    assert_eq!(p.snapshot.entries[&id(2)].state, State::RestoreQueued);
+    p.finish(Action::Resume(id(1)), Ok(()));
+    assert_eq!(p.plan(4, &samples).unwrap(), [Action::Resume(id(2))]);
+    p.finish(Action::Resume(id(2)), Ok(()));
+    assert!(p.snapshot.entries.values().all(|e| e.state == State::Ready));
+}
+
+#[test]
+fn reserved_mode_keeps_strict_fifo_behind_offloading_head() {
+    let mut p = pair();
+    assert_eq!(
+        p.plan(18, &charges(9, 9)).unwrap(),
+        [Action::Offload(id(1))]
+    );
+    p.acquire(&id(1), id(101)).unwrap();
+    p.acquire(&id(2), id(102)).unwrap();
+    assert!(p.plan(2, &charges(1, 1)).unwrap().is_empty());
+    assert_eq!(p.snapshot.entries[&id(2)].state, State::Queued);
+}

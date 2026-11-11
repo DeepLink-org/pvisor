@@ -196,6 +196,7 @@ impl Policy {
     /// never become an accounting credit. Missing samples stop every grant.
     pub fn plan(&mut self, parent: u64, charges: &BTreeMap<String, u64>) -> Result<Vec<Action>> {
         let mut committed = parent;
+        let mut startup_top_up = 0u64;
         for (id, e) in &self.snapshot.entries {
             if matches!(e.state, State::AdmissionQueued | State::Released) {
                 continue;
@@ -207,9 +208,13 @@ impl Policy {
                     .get(id)
                     .ok_or_else(|| anyhow::anyhow!("missing charge for {id}"))?
             };
+            let top_up = self.top_up(e, charge);
             committed = committed
-                .checked_add(self.top_up(e, charge))
+                .checked_add(top_up)
                 .ok_or_else(|| anyhow::anyhow!("memory accounting overflow"))?;
+            if matches!(e.state, State::Admitted | State::Binding) {
+                startup_top_up += top_up; // Bounded by checked committed above.
+            }
         }
         self.snapshot.measured_bytes = Some(parent);
         self.snapshot.error = None;
@@ -228,8 +233,9 @@ impl Policy {
             self.pressure = false;
         }
         let mut actions = Vec::new();
-        // Do not advance FIFO past a native control. Ready entries leave the
-        // queue immediately; only Reserved mode retains their full allowance.
+        // Native controls remain FIFO. Ready entries leave the queue immediately;
+        // the measured resident-only bypass below does not dispatch a control.
+        // Only Reserved mode retains Ready entries' full allowance.
         while let Some(id) = self.requests.front().cloned() {
             let e = &self.snapshot.entries[&id];
             match e.state {
@@ -264,6 +270,31 @@ impl Policy {
                 _ => anyhow::bail!("invalid request queue state"),
             }
         }
+        // A resident measured-mode request needs no native control or full
+        // execution top-up. Let it pass a still-offloading head only when that
+        // head's recovery allowance also fits. Recovery order and the head's
+        // token are unchanged; native Restoring still fences followers.
+        if self.config.resident_memory_accounting == ResidentMemoryAccounting::Measured
+            && let Some(head) = self.requests.front()
+            && self.snapshot.entries[head].state == State::Offloading
+            && fits(
+                committed,
+                self.snapshot.entries[head]
+                    .memory_bytes
+                    .saturating_sub(charges[head]),
+                self.config.memory_bytes,
+            )
+        {
+            self.requests.retain(|id| {
+                let e = self.snapshot.entries.get_mut(id).unwrap();
+                if e.state == State::Queued {
+                    e.state = State::Ready;
+                    false
+                } else {
+                    true
+                }
+            });
+        }
         // Keep capacity for at least one full restore before admitting another
         // VM. Restores take priority; this headroom is not counted twice on resume.
         if self.requests.is_empty()
@@ -281,6 +312,7 @@ impl Policy {
                     break;
                 }
                 committed += bytes;
+                startup_top_up += bytes;
                 self.snapshot.entries.get_mut(&id).unwrap().state = State::Admitted;
                 self.admission.pop_front();
             }
@@ -340,10 +372,27 @@ impl Policy {
             } else {
                 0
             };
-            let commitment_need = committed
-                .saturating_add(restore_extra)
-                .saturating_add(create_extra)
-                .saturating_sub(self.config.memory_bytes);
+            // A burst of startup reservations is temporary. If successful Bind
+            // alone would remove the deficit, wait for it instead of offloading
+            // bound peers to fund another startup. This is only victim selection:
+            // grants still count every startup byte until Bind succeeds. Actual
+            // pressure, retained failures and deficits beyond startup remain fenced.
+            let awaiting_startup = self.config.resident_memory_accounting
+                == ResidentMemoryAccounting::Measured
+                && !self.pressure
+                && startup_top_up > 0
+                && (committed - startup_top_up)
+                    .checked_add(restore_extra)
+                    .and_then(|bytes| bytes.checked_add(create_extra))
+                    .is_some_and(|bytes| bytes <= self.config.memory_bytes);
+            let commitment_need = if awaiting_startup {
+                0
+            } else {
+                committed
+                    .saturating_add(restore_extra)
+                    .saturating_add(create_extra)
+                    .saturating_sub(self.config.memory_bytes)
+            };
             // Reserve slots before yielding to I/O. Never reclaim Active/Ready,
             // even when measurements show pressure. Queued resident followers
             // are eligible, avoiding the FIFO head-of-line deadlock.

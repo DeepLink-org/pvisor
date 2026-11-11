@@ -89,6 +89,9 @@ pub enum Request {
     /// Wait still fences guest work and makes the VM eligible for offload.
     Wait { id: String, token: Option<String> },
     /// Queue an actual tool request; recovery has priority over new VM creation.
+    /// Measured-mode resident requests may pass an Offloading head if all
+    /// commitments plus its recovery allowance fit. Native restores remain FIFO;
+    /// Restoring/failed controls and missing measurements still fence grants.
     Acquire { id: String, token: String },
     /// Release only after externally owned teardown is independently proven.
     /// The service checks the bound cgroup is empty, never kills or deletes it.
