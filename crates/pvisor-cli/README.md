@@ -48,7 +48,10 @@ state is read through immutable accessors, and native checkpoint deletion delega
 to the runtime service with the same request-local admission hooks. VM launch options are assembled through
 `VmExecutionInputs`; RunSpec's existing wire encoding remains compatible, while
 runtime admission validates the typed inputs before starting any drivers. Each running Session owns its recorded private control socket; stopped Session operations
-run directly in the caller. Embedded execution publishes the same discovery record.
+run directly in the caller. Stopped `status` and `review` retain exclusive Session
+locking and owner validation without rewriting the diagnostic lock owner or syncing
+it on acquisition/release. Required completion reconciliation remains durable.
+Embedded execution publishes the same discovery record.
 Execution-state fork may branch a running source from an immutable checkpoint.
 The runtime's execution-operation lease fences source identity, checkpoint
 references and request replay; the source retains its live Execution lease.
@@ -399,6 +402,23 @@ native host-root workflow. It writes only isolated temporary fixtures and never
 applies to the real host root.
 
 ## Docker command profile (experimental)
+
+On Linux x86-64, `pvisor run --managed-memory IMAGE ...` opts the ordinary
+container VM into host-only native offload/resume controls with private raw RAM
+backing. This does not start a pressure scheduler, import templates, change OCI
+cache lookup, or trigger offload merely because a VM is idle. A cooperative
+replay owner reserves/binds it through `pvisor-daemon pressure-serve`, reports
+safe waits and obtains a request permit before using the existing guest exec
+channel. Do not mix direct interactive/exec/background access with those waits.
+The flag conflicts with `--memory-pool`, `-M` and `--shared-kernel-base`; omission
+preserves ordinary main startup. The default backing remains uncompressed. Add
+`--managed-memory-compression` with `--managed-memory` to opt into private
+compressed backing (Linux/FUSE). The container configuration retains this choice;
+unsupported FUSE setup fails without fallback. Offload acknowledgement includes
+compressed publication and Resume is serialized after it. This is live backing,
+not a checkpoint, and does not enable shared RAM or automatic idle offload.
+See the runtime's independent-container contract and validation limits.
+
 
 `pvisor run` creates a container, optionally with Linux staged binds as described
 below; `spawn` retains its existing Session stage/review/apply semantics.
@@ -1108,3 +1128,22 @@ is a test probe; embedded `pvisor-guest` runs inside Linux guests.
 See the [platform matrix](../../docs/src/en/reference/platforms.md),
 [binary inventory and implementation comparison](../../docs/src/en/reference/platforms.md#binaries)
 and [shared real-VM test driver](../../tests/vm_cli_contract.py).
+
+### Experimental managed physical sharing
+
+On Linux x86-64, ordinary OCI `--managed-memory --memory-pool SOCKET`
+combines physical sharing with daemon-controlled offload. Managed RAM uses an
+owned file backing; compression remains independently optional through
+`--managed-memory-compression`. The physical pool is negotiated before VM
+construction. Nonphysical pools fail startup without fallback or reconnection.
+Before reclaim, replaced pages (including private COW writes and zero pages)
+are reattached under the CPU/device barrier. Only successful native reclaim
+permits compressed publication and an offloaded acknowledgement. A reattachment
+failure fences further controls; it is not reported as a successful offload.
+Scans skip paused/offloaded VMs, and stale in-flight publications cannot replace
+reattached pages. Ordinary non-managed sharing keeps its anonymous RAM path.
+
+This integration does not change daemon watermarks, writeback limits, admission,
+or restore reservations. It does not implement automatic switching between
+sharing and offload, and does not establish a performance benefit. Linux mmap,
+reclaim and real-VM recovery validation is required before deployment.

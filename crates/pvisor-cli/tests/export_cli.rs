@@ -122,7 +122,8 @@ fn run_and_spawn_help_match_their_pinned_baselines() {
     for (command, digest) in [
         (
             "run",
-            "9f1c0305bee76b16ffd646a075cc72f592df24a8baf6884e534ce8f4c7766956",
+            // Explicit managed RAM compression adds an opt-in run flag.
+            "f51fb2e98b7003899eeb1e22f355cf54b613f0e8c8b97bcfa8f76bfc4c997b2a",
         ),
         (
             "spawn",

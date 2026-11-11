@@ -236,6 +236,7 @@ impl Builder {
             vmm: Arc::downgrade(&vm),
             transition: Arc::new(Mutex::new(())),
             cold_pager_started: Arc::new(AtomicBool::new(false)),
+            shared_backing_reclaim: Default::default(),
         })?;
         vm.lock()
             .map_err(|_| io::Error::other("poisoned VMM"))?

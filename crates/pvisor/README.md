@@ -469,7 +469,11 @@ Checkpoint restoration/fork starts a new owner directly. Durable operations take
 exclusive `flock` on the Session root's `session.lock`: same UID, `0600`, one hard link,
 no symlink. Its diagnostic record names the lock protocol, PID and operation;
 unknown disk schemas refuse mutation. Different compatible binaries share this
-lock. Residual lock metadata is cleared only after its process has died and no
+lock. Stopped status/review use `SessionDirectoryLock::acquire_read`: the same
+exclusive lock and owner validation, but no diagnostic owner write, truncate or
+fsync. A missing legacy lock inode may be initialized. Existing residual owner
+bytes are preserved, and required completion reconciliation remains durable.
+Residual lock metadata is cleared only after its process has died and no
 valid live owner remains. Apply/drop refuse a valid owner that still holds stage;
 the Execution lease remains an additional fence. Read-only inspect uses the stage's
 ordered lower-mutability declaration; absent or rebound declarations use Mutable.
@@ -1089,6 +1093,52 @@ OpenSandbox/E2B core flows; see its README for exact coverage. Full SDK conforma
 and production density remain unvalidated.
 
 ## Independent container VM lifecycle
+
+`docker::Create.managed_memory` is an explicit Linux x86-64 opt-in for a
+cooperative pressure scheduler. It preserves ordinary OCI image resolution,
+V2 caches, overlays, guest exec and the existing per-container owner. It adds a
+private raw (uncompressed) RAM file and a same-UID host-only control socket for
+that exact container ID/launch generation. `docker::managed` exposes Status,
+Offload-with-existing-backing and Resume using the existing `VmControl`; it
+neither invents a Session nor converts the image to a template. Omission leaves
+the ordinary anonymous-RAM launch unchanged. Shared kernel RAM conflicts; physical pools require the explicit managed-sharing profile below.
+The private backing is an unlinked SSD file retained by live VM descriptors;
+process exit releases it even without Rust destructors. Its `/proc/PID/fd/N`
+report is a live diagnostic locator, never a reusable checkpoint. The owner
+retires the generation control socket only after reaping its VMM.
+
+`Create.managed_memory_compression` additionally selects the existing compressed
+RAM store and a private FUSE mapping; it requires `managed_memory` and host FUSE
+support. This is default-off, persists in container configuration, and does not
+change OCI image preparation or scheduler policy. Setup failure is explicit:
+there is no raw-backing fallback. After native CPU/device writeback and reclaim,
+the same serialized control worker drains the logical backing and commits the
+compressed generation before acknowledging Offloaded. Resume cannot overtake
+publication; a drain/commit error fences subsequent controls until teardown.
+The native RAM report precedes compression and is not a measurement of net host
+memory saved. Compression CPU, staging I/O and page-cache charges remain real costs.
+
+Compressed staging, immutable layers and the FUSE mount are private to this launch
+under the instance directory. The existing container owner retains the FUSE mount outside the VMM process,
+which uses `_exit`. A private inherited socketpair fences generation/inode handoff
+and compressed publication; no new image or launch path is introduced. The owner
+reaps the VMM before joining publication and releasing the mount. A child-channel
+disconnect does not release backing ownership. This does not turn stalled native
+I/O into successful teardown.
+Normal destruction unmounts before removing storage; forced process death can leave
+mounts/files which the external owner must independently audit. No durable checkpoint
+or crash recovery is provided. Unit storage/protocol tests are not Linux KVM/FUSE
+acceptance or evidence of improved density; qualify this opt-in before deployment.
+
+This is cooperative: an external owner must reserve memory before launch, bind
+the exact generation and cgroup, declare only process-clean safe waits, and keep
+all tool/attachment/background traffic behind scheduler permits. No timer or
+automatic enrollment is enabled by the flag alone. Native Resume acknowledgement
+is not guest-service readiness: check the existing guest control channel before
+dispatch. Control loss or native failure is uncertain, with no automatic retry;
+retain capacity until independent VM/cgroup/mount teardown. Ordinary direct
+`exec` must not bypass the cooperative owner during a managed wait.
+
 
 On Apple Silicon, a daemon started with `--memory-pool-mode physical-pages`
 provides native 16 KiB physical slots through the same pool socket. The runner
@@ -2241,6 +2291,16 @@ blocks retain the original path. Generic capture and compaction still read all
 required content, including clean ancestors. The complete index, on-disk format,
 mmap writeback drain, durability and resume barriers remain unchanged.
 
+Compressed staging also supports explicit aligned zero ranges for managed
+shared-backing reattachment. A page mask overrides both old staged data and
+immutable ancestors without writing zero payloads to staging. Later partial
+writes preserve the surrounding zeros; publication and compaction encode them
+using the existing generation format. Failure still fences the store, retains
+pending overrides and leaves the previous durable head readable. Linux FUSE
+hole punching performs cache drain/invalidation; calling the store alone does
+not invalidate a mapped logical inode. This removes unnecessary zero staging,
+not compression work on nonzero COW pages or a measured end-to-end latency claim.
+
 ### Protected clean workspace seeds
 
 Linux native Raw version-1 restore can retain one immutable workspace lower
@@ -2346,3 +2406,36 @@ Local indexed Raw with a short block tail, no zero blocks, or more than 8192 run
 node-owned views, compressed snapshots and other platforms retain their previous
 path. This optimization does not enable offload on restored COW memory and does
 not promise a measured total-memory saving before workload validation.
+
+### Experimental managed physical sharing
+
+On Linux x86-64, ordinary OCI `--managed-memory --memory-pool SOCKET`
+combines physical sharing with daemon-controlled offload. Managed RAM uses an
+owned file backing; compression remains independently optional through
+`--managed-memory-compression`. The physical pool is negotiated before VM
+construction. Nonphysical pools fail startup without fallback or reconnection.
+Before reclaim, replaced pages (including private COW writes and zero pages)
+are reattached under the CPU/device barrier. Only successful native reclaim
+permits compressed publication and an offloaded acknowledgement. A reattachment
+failure fences further controls; it is not reported as a successful offload.
+Scans skip paused/offloaded VMs, and stale in-flight publications cannot replace
+reattached pages. Ordinary non-managed sharing keeps its anonymous RAM path.
+
+This integration does not change daemon watermarks, writeback limits, admission,
+or restore reservations. It does not implement automatic switching between
+sharing and offload, and does not establish a performance benefit. Linux mmap,
+reclaim and real-VM recovery validation is required before deployment.
+
+For local, host-only compatibility checks on macOS hosts without `mise` and
+`cargo-nextest`, the special fallback runner is serial libtest:
+`cargo test -p pvisor --lib executor::vm::pager::tests -- --test-threads=1`
+and `cargo test -p pvisor --lib docker::managed::tests -- --test-threads=1`.
+CLI parser tests (`-p pvisor-cli --lib cli::docker::tests`) and VM public
+contract tests (`-p pvisor-vm --test api_contract`) use the same serial runner.
+Internal handle tests (`-p pvisor-vm --lib handle::shared_backing_tests`) and
+API boundary guards (`-p pvisor-vm --test api_boundary`) use that runner too.
+The configuration matrix (`-p pvisor --lib
+docker::tests::managed_shared_pool_acceptance_is_independent_of_compression`)
+also uses this runner. These checks start no VM; they do not exercise Linux reattachment or FUSE.
+Use the standard runner when it is installed, and validate Linux-specific
+`shared_backing_` tests separately before any real workload experiment.

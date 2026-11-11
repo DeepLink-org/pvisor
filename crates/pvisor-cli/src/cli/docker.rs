@@ -168,6 +168,12 @@ pub(super) struct Run {
     /// Experimental shared pool: auto finds/starts the same-user daemon; a socket requires an existing pool.
     #[arg(long, value_name = "auto|SOCKET")]
     memory_pool: Option<PathBuf>,
+    /// Enable cooperative daemon memory controls (Linux); does not enable automatic offload.
+    #[arg(long, conflicts_with = "shared_kernel_base")]
+    managed_memory: bool,
+    /// Compress managed RAM backing on offload (Linux/FUSE; opt-in).
+    #[arg(long, requires = "managed_memory")]
+    managed_memory_compression: bool,
     /// Use the same-user shared memory pool, starting its daemon if needed (--memory-pool auto).
     #[arg(short = 'M', conflicts_with = "memory_pool")]
     shared_memory_pool: bool,
@@ -556,6 +562,8 @@ pub(super) fn run(command: DockerCommand) -> anyhow::Result<i32> {
                     .or_else(|| args.shared_memory_pool.then(|| PathBuf::from("auto")))
                     .map(super::daemon::resolve_pool)
                     .transpose()?,
+                managed_memory: args.managed_memory,
+                managed_memory_compression: args.managed_memory_compression,
                 shared_kernel_base: args.shared_kernel_base,
                 auto_remove: args.rm,
                 interactive: args.interactive,
@@ -847,6 +855,105 @@ mod tests {
     struct Cli {
         #[command(subcommand)]
         command: DockerCommand,
+    }
+
+    #[test]
+    fn managed_compression_requires_explicit_managed_owner() {
+        for args in [
+            vec!["pvisor", "run", "--managed-memory-compression", "alpine"],
+            vec![
+                "pvisor",
+                "run",
+                "--managed-memory-compression",
+                "-M",
+                "alpine",
+            ],
+        ] {
+            assert!(crate::cli::Cli::try_parse_from(args).is_err());
+        }
+        assert!(
+            crate::cli::Cli::try_parse_from([
+                "pvisor",
+                "run",
+                "--managed-memory",
+                "--managed-memory-compression",
+                "alpine",
+            ])
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn managed_sharing_does_not_require_compression() {
+        use clap::Parser;
+        assert!(
+            crate::cli::Cli::try_parse_from([
+                "pvisor",
+                "run",
+                "--managed-memory",
+                "--memory-pool",
+                "/private/pool.sock",
+                "alpine"
+            ])
+            .is_ok()
+        );
+        assert!(
+            crate::cli::Cli::try_parse_from([
+                "pvisor",
+                "run",
+                "--managed-memory-compression",
+                "--memory-pool",
+                "/private/pool.sock",
+                "alpine"
+            ])
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn managed_compressed_sharing_is_explicit() {
+        use clap::Parser;
+        assert!(
+            crate::cli::Cli::try_parse_from([
+                "pvisor",
+                "run",
+                "--managed-memory",
+                "--managed-memory-compression",
+                "--memory-pool",
+                "/private/pool.sock",
+                "alpine",
+            ])
+            .is_ok()
+        );
+        assert!(
+            crate::cli::Cli::try_parse_from([
+                "pvisor",
+                "run",
+                "--managed-memory",
+                "--shared-kernel-base",
+                "/private/kernel",
+                "alpine",
+            ])
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn managed_memory_allows_explicit_pool_but_rejects_shared_kernel() {
+        use clap::Parser;
+        let parsed = crate::cli::Cli::try_parse_from([
+            "pvisor",
+            "run",
+            "--managed-memory",
+            "alpine",
+            "sleep",
+            "1",
+        ]);
+        assert!(parsed.is_ok());
+        assert!(
+            crate::cli::Cli::try_parse_from(["pvisor", "run", "--managed-memory", "-M", "alpine"])
+                .is_ok()
+        );
     }
 
     #[test]

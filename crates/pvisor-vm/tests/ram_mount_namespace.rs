@@ -25,6 +25,9 @@ impl RamFileStore for Store {
     fn flush_writes(&self) -> io::Result<()> {
         self.0.sync_all()
     }
+    fn zero_range(&mut self, _: u64, _: u64) -> io::Result<()> {
+        Err(io::ErrorKind::Unsupported.into())
+    }
 }
 /// Real FUSE and namespace test: the child retains only a copied mount, not a RAM fd.
 #[test]

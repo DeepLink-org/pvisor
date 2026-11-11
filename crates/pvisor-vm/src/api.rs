@@ -175,7 +175,7 @@ pub trait VmConfiguration: Sized {
     /// Copy and validate a trusted kernel payload and guest load/entry addresses.
     /// Successful replacement retains its own bytes; invalid geometry preserves the prior kernel.
     fn embedded_kernel(&mut self, bytes: &[u8], guest_addr: u64, entry_addr: u64)
-        -> io::Result<()>;
+    -> io::Result<()>;
     /// Opt in to the versioned guest idle handoff. Requires a fresh Linux/KVM
     /// x86-64 VM with one or two vCPUs and matching patched firmware. Other targets,
     /// snapshots and unguarded devices are rejected. Optional RAM offload uses
@@ -734,6 +734,8 @@ pub struct Capabilities {
 pub struct VmBuilder {
     pub(crate) inner: crate::builder::Builder,
 }
+pub(crate) type SharedBackingReclaim = Box<dyn Fn() -> Result<(), String> + Send + Sync>;
+
 /// Weak live control reference; transitions are serialized internally.
 #[derive(Clone)]
 pub struct VmmHandle {
@@ -741,6 +743,7 @@ pub struct VmmHandle {
     pub(crate) vmm: std::sync::Weak<std::sync::Mutex<crate::vmm::Vmm>>,
     pub(crate) transition: Arc<std::sync::Mutex<()>>,
     pub(crate) cold_pager_started: Arc<std::sync::atomic::AtomicBool>,
+    pub(crate) shared_backing_reclaim: Arc<std::sync::Mutex<Option<SharedBackingReclaim>>>,
 }
 /// EXP-001 M0: diagnostic execution phase, not a Linux runqueue assertion.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1093,9 +1096,16 @@ pub struct ColdRamOptions {
     pub page_granular: bool,
     /// Linux/HVF pool pages remain shared on reads and use kernel COW on writes.
     /// Requires page_granular and a store providing pinned shared_mapping slots.
-    /// No UFFD permission is needed for this mode. Snapshots/offload remain
-    /// incompatible; remapping takes the CPU/device barrier and rechecks bytes.
+    /// No UFFD permission is needed for this mode. Snapshots remain unsupported;
+    /// offload requires shared_backing. Remapping takes the CPU/device barrier and rechecks bytes.
     pub share_resident: bool,
+    /// Linux x86_64 physical sharing over VM-owned live MAP_SHARED backing.
+    /// Requires page_granular and share_resident; rejects anonymous/restore RAM.
+    /// Offload reattaches every replaced page before ordinary backing reclaim.
+    /// Mapping/writeback failures require terminating the VM; default is false.
+    /// Intended for externally managed reclaim. Guest-idle handoff remains
+    /// incompatible with cold pagers; this option does not enable it.
+    pub shared_backing: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -1136,6 +1146,13 @@ pub trait RamFileStore: Send {
     /// Write all input bytes at offset into staging, or report an I/O error.
     /// A failed write may have partial effects; this is not a generation commit.
     fn write_at(&mut self, offset: u64, input: &[u8]) -> io::Result<()>;
+    /// Replace a nonempty, 4 KiB-aligned range within logical RAM with zeros,
+    /// without resizing or committing a generation. Zeros must override both
+    /// staged bytes and older generations. The caller must quiesce writers and
+    /// invalidate mapped/file caches through the host filesystem operation.
+    /// Unsupported stores return `Unsupported` without effects; other failures
+    /// may have partial effects and require fail-stop. No VM-control reentry.
+    fn zero_range(&mut self, offset: u64, length: u64) -> io::Result<()>;
     /// Drain staged writes according to the store contract. Does not publish
     /// a checkpoint/generation or authorize removing the backing owner.
     fn flush_writes(&self) -> io::Result<()>;

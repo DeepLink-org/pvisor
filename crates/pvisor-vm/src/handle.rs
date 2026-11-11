@@ -256,9 +256,14 @@ impl VmmHandle {
             .transition
             .lock()
             .map_err(|_| "VM transition lock poisoned")?;
+        let reattach = self
+            .shared_backing_reclaim
+            .lock()
+            .map_err(|_| "shared backing hook poisoned")?;
         if self
             .cold_pager_started
             .load(std::sync::atomic::Ordering::Acquire)
+            && reattach.is_none()
         {
             return Err("whole-VM offload is incompatible with the experimental cold pager".into());
         }
@@ -288,8 +293,7 @@ impl VmmHandle {
             // A device lease retained across a slow host request is a reason to
             // resume, not to spend the entire guest timer window draining it.
             if !gate.try_close()? {
-                self.idle
-                    .trace_offload(epoch, "device_gate_busy", None);
+                self.idle.trace_offload(epoch, "device_gate_busy", None);
                 return Ok(None);
             }
         } else if let Err(error) = gate.close(std::time::Duration::from_secs(5)) {
@@ -306,6 +310,10 @@ impl VmmHandle {
         // A wake after admission is latched; never interrupt writeback or reopen
         // RAM writers until native reclaim and host publication have completed.
         let reclaim_started = std::time::Instant::now();
+        if let Some(Err(error)) = reattach.as_ref().map(|reattach| reattach()) {
+            locked.fail_control();
+            return Err(error);
+        }
         let result = locked.offload_ram();
         if let Some(epoch) = idle_epoch {
             self.idle.trace_offload(
@@ -362,5 +370,40 @@ impl VmControl for VmmHandle {
 
     fn resume(&self) -> Result<(), String> {
         self.control(false)
+    }
+}
+
+#[cfg(test)]
+mod shared_backing_tests {
+    use super::*;
+    use std::sync::{Arc, Mutex, Weak, atomic::{AtomicBool, AtomicUsize, Ordering}};
+
+    fn stopped_handle() -> VmmHandle {
+        VmmHandle {
+            idle: Arc::new(crate::guest_idle::IdleGate::default()),
+            vmm: Weak::new(),
+            transition: Arc::new(Mutex::new(())),
+            cold_pager_started: Arc::new(AtomicBool::new(true)),
+            shared_backing_reclaim: Default::default(),
+        }
+    }
+
+    #[test]
+    fn other_cold_pagers_remain_incompatible_with_whole_vm_offload() {
+        let handle = stopped_handle();
+        assert!(handle.offload_ram().unwrap_err().contains("incompatible"));
+    }
+
+    #[test]
+    fn shared_reclaim_never_runs_after_vm_exit() {
+        let handle = stopped_handle();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let observed = calls.clone();
+        *handle.shared_backing_reclaim.lock().unwrap() = Some(Box::new(move || {
+            observed.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }));
+        assert_eq!(handle.offload_ram().unwrap_err(), "VMM has stopped");
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
     }
 }

@@ -92,8 +92,8 @@ fn capabilities() -> Capabilities {
 mod cold_ram_tests {
     use super::*;
     use std::sync::{
-        atomic::{AtomicBool, AtomicUsize, Ordering},
         Mutex, Weak,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     };
 
     struct UnusedStore {
@@ -140,6 +140,7 @@ mod cold_ram_tests {
             vmm: Weak::new(),
             transition: Arc::new(Mutex::new(())),
             cold_pager_started: Arc::new(AtomicBool::new(false)),
+            shared_backing_reclaim: Default::default(),
         }
     }
 
@@ -156,6 +157,7 @@ mod cold_ram_tests {
                         drops: drops.clone(),
                     },
                     ColdRamOptions {
+                        shared_backing: false,
                         metrics,
                         ..Default::default()
                     },

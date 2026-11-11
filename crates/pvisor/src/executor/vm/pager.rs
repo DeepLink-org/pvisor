@@ -37,7 +37,32 @@ enum PagerStore {
 
 impl PreparedPager {
     pub(crate) fn start(self, handle: pvisor_vm::api::VmmHandle) -> io::Result<()> {
+        self.start_profile(handle, false)
+    }
+
+    /// Explicit physical-sharing profile for managed OCI RAM. Reattachment is
+    /// required independently of whether the managed backing uses compression.
+    pub(crate) fn start_managed_sharing(self, handle: pvisor_vm::api::VmmHandle) -> io::Result<()> {
+        self.require_physical()?;
+        self.start_profile(handle, true)
+    }
+
+    fn require_physical(&self) -> io::Result<()> {
+        if !matches!(&self.store, PagerStore::Physical(_)) {
+            return Err(io::Error::other(
+                "managed shared backing requires a physical pool",
+            ));
+        }
+        Ok(())
+    }
+
+    fn start_profile(
+        self,
+        handle: pvisor_vm::api::VmmHandle,
+        shared_backing: bool,
+    ) -> io::Result<()> {
         let options = |physical| pvisor_vm::api::ColdRamOptions {
+            shared_backing,
             metrics: self.metrics,
             page_granular: physical,
             share_resident: physical,
@@ -206,6 +231,20 @@ pub(crate) fn start_diagnostics(handle: &pvisor_vm::api::VmmHandle) -> io::Resul
 /// Failure leaves the socket and pool ownership untouched; dropping the prepared
 /// pager closes the session. No RAM is published until `start` is called.
 pub(crate) fn prepare_pool(path: &Path, metrics: bool) -> io::Result<PreparedPager> {
+    prepare_pool_profile(path, metrics, false)
+}
+
+/// Managed reclaim requires physical mappings; reject other pool modes before
+/// constructing a VM, without falling back or reconnecting to another session.
+pub(crate) fn prepare_managed_pool(path: &Path, metrics: bool) -> io::Result<PreparedPager> {
+    prepare_pool_profile(path, metrics, true)
+}
+
+fn prepare_pool_profile(
+    path: &Path,
+    metrics: bool,
+    physical_required: bool,
+) -> io::Result<PreparedPager> {
     let parent = path
         .parent()
         .ok_or_else(|| io::Error::other("pool parent missing"))?;
@@ -221,6 +260,13 @@ pub(crate) fn prepare_pool(path: &Path, metrics: bool) -> io::Result<PreparedPag
     let stream = UnixStream::connect(path)?;
     crate::host_transport::authorize_host_peer_sync(&stream).map_err(io::Error::other)?;
     let mut pool = PoolClient::new(stream, Duration::from_secs(5))?;
+    if physical_required {
+        pool.enable_shared_mapping()?;
+        return Ok(PreparedPager {
+            store: PagerStore::Physical(pool),
+            metrics,
+        });
+    }
     #[cfg(target_os = "macos")]
     let store = match pool.enable_shared_mapping() {
         Ok(()) => PagerStore::Physical(pool),
@@ -275,6 +321,27 @@ mod tests {
     use std::os::unix::net::UnixListener;
     use std::sync::{Arc, Mutex};
 
+    #[test]
+    fn shared_backing_rejects_disabled_or_local_store() {
+        assert!(
+            PreparedPager {
+                store: PagerStore::Disabled,
+                metrics: false
+            }
+            .require_physical()
+            .is_err()
+        );
+        let local = crate::ram_backing::resident::LocalColdRamStore::new(65536, 1);
+        assert!(
+            PreparedPager {
+                store: PagerStore::Local(local),
+                metrics: false
+            }
+            .require_physical()
+            .is_err()
+        );
+    }
+
     fn private_directory() -> tempfile::TempDir {
         let directory = tempfile::tempdir().unwrap();
         std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
@@ -295,6 +362,47 @@ mod tests {
             let after = std::fs::symlink_metadata(&socket).unwrap();
             assert_eq!((before.dev(), before.ino()), (after.dev(), after.ino()));
         }
+    }
+
+    #[test]
+    fn managed_pool_rejects_nonphysical_mode_without_fallback_or_reconnect() {
+        use std::io::{Read, Write};
+        let directory = private_directory();
+        let socket = directory.path().join("pool.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let before = std::fs::symlink_metadata(&socket).unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            stream.write_all(b"PVMEMP2\0").unwrap();
+            stream.write_all(&[1; 16]).unwrap();
+            let mut operation = [0];
+            stream.read_exact(&mut operation).unwrap();
+            assert_eq!(operation, [6]);
+            let message = b"physical mapping unsupported";
+            stream.write_all(&[1]).unwrap();
+            stream
+                .write_all(&(message.len() as u32).to_le_bytes())
+                .unwrap();
+            stream.write_all(message).unwrap();
+            assert_eq!(
+                stream.read(&mut operation).unwrap(),
+                0,
+                "must not negotiate a fallback"
+            );
+            listener.set_nonblocking(true).unwrap();
+            assert_eq!(
+                listener.accept().unwrap_err().kind(),
+                io::ErrorKind::WouldBlock
+            );
+        });
+        let error = prepare_managed_pool(&socket, false).err().unwrap();
+        assert!(error.to_string().contains("physical mapping unsupported"));
+        server.join().unwrap();
+        let after = std::fs::symlink_metadata(&socket).unwrap();
+        assert_eq!((before.dev(), before.ino()), (after.dev(), after.ino()));
     }
 
     #[test]
@@ -408,7 +516,7 @@ mod tests {
                 io::ErrorKind::WouldBlock
             );
         });
-        let prepared = prepare_pool(&socket, true).unwrap();
+        let prepared = prepare_managed_pool(&socket, true).unwrap();
         assert!(matches!(&prepared.store, PagerStore::Physical(_)));
         assert!(prepared.metrics);
         assert_eq!(pool.lock().unwrap().object_count(), 0);

@@ -453,3 +453,16 @@ fn compact_ram_zero_extents_preserve_topology_and_private_writes() {
         assert!(restore.map_ram(&ranges).is_err());
     }
 }
+
+#[test]
+fn shared_backing_is_an_explicit_cold_ram_profile() {
+    let defaults = api::ColdRamOptions::default();
+    assert!(!defaults.shared_backing);
+    let managed = api::ColdRamOptions {
+        shared_backing: true,
+        page_granular: true,
+        share_resident: true,
+        ..defaults
+    };
+    assert!(managed.shared_backing && managed.page_granular && managed.share_resident);
+}
