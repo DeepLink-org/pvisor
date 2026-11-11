@@ -13,6 +13,7 @@ fn config() -> Config {
         high_bytes: 18,
         low_bytes: 14,
         max_writebacks: 16,
+        resident_memory_accounting: ResidentMemoryAccounting::Reserved,
         waiting_memory_margin_bytes: None,
         cgroup_root: "/sys/fs/cgroup/test".into(),
     }
@@ -604,4 +605,270 @@ fn zero_private_charge_can_relinquish_margin_but_never_physical_bytes() {
     // Only node/pool memory is high, and no admission/wake is waiting.
     // Empty private VM charges cannot satisfy this physical deficit.
     assert!(p.plan(18, &charges(0, 0)).unwrap().is_empty());
+}
+
+fn measured_config() -> Config {
+    Config {
+        resident_memory_accounting: ResidentMemoryAccounting::Measured,
+        ..config()
+    }
+}
+
+#[test]
+fn measured_config_is_explicit_and_rejects_ambiguous_wait_margin() {
+    let mut json = serde_json::to_value(config()).unwrap();
+    json.as_object_mut()
+        .unwrap()
+        .remove("resident_memory_accounting");
+    let legacy: Config = serde_json::from_value(json.clone()).unwrap();
+    assert_eq!(
+        legacy.resident_memory_accounting,
+        ResidentMemoryAccounting::Reserved
+    );
+    json["resident_memory_accounting"] = "measured".into();
+    let measured: Config = serde_json::from_value(json.clone()).unwrap();
+    Policy::new(measured).unwrap();
+    json["waiting_memory_margin_bytes"] = 1.into();
+    assert!(Policy::new(serde_json::from_value(json.clone()).unwrap()).is_err());
+    json["resident_memory_accounting"] = "typo".into();
+    assert!(serde_json::from_value::<Config>(json).is_err());
+}
+
+#[test]
+fn measured_binding_keeps_startup_capacity_until_successful_identity_probe() {
+    let mut p = Policy::new(measured_config()).unwrap();
+    for n in 1..=3 {
+        p.reserve(id(n), 8).unwrap();
+    }
+    p.plan(0, &BTreeMap::new()).unwrap();
+    assert_eq!(p.snapshot.entries[&id(3)].state, State::AdmissionQueued);
+    for n in 1..=2 {
+        p.snapshot.entries.get_mut(&id(n)).unwrap().state = State::Binding;
+    }
+    p.plan(2, &charges(1, 1)).unwrap();
+    assert_eq!(p.snapshot.entries[&id(3)].state, State::AdmissionQueued);
+    for n in 1..=2 {
+        p.snapshot.entries.get_mut(&id(n)).unwrap().state = State::Active;
+    }
+    p.plan(2, &charges(1, 1)).unwrap();
+    assert_eq!(p.snapshot.entries[&id(3)].state, State::Admitted);
+    // No Wait transition was necessary to release the startup allowance.
+}
+
+#[test]
+fn measured_sixteen_resident_vms_execute_in_forty_gib_without_offload() {
+    let gib = 1u64 << 30;
+    let mut p = Policy::new(Config {
+        memory_bytes: 40 * gib,
+        high_bytes: 36 * gib,
+        low_bytes: 30 * gib,
+        ..measured_config()
+    })
+    .unwrap();
+    let mut samples = BTreeMap::new();
+    for n in 1..=16 {
+        p.reserve(id(n), 5 * gib + gib / 4).unwrap();
+        assert!(p.plan(samples.values().sum(), &samples).unwrap().is_empty());
+        assert_eq!(p.snapshot.entries[&id(n)].state, State::Admitted);
+        p.bound(&id(n)).unwrap();
+        samples.insert(id(n), 320 * (1 << 20));
+    }
+    for n in 1..=16 {
+        p.wait(&id(n), None).unwrap();
+        p.acquire(&id(n), id(100 + n)).unwrap();
+    }
+    assert!(p.plan(5 * gib, &samples).unwrap().is_empty());
+    assert!(p.snapshot.entries.values().all(|e| e.state == State::Ready));
+    assert_eq!(p.snapshot.writebacks, 0);
+    for n in 1..=16 {
+        assert_eq!(p.snapshot.entries[&id(n)].memory_bytes, 5 * gib + gib / 4);
+    }
+    // Full guest capacity is unchanged; this is measured overcommit, not a
+    // claim that all sixteen guests can allocate five GiB simultaneously.
+}
+
+#[test]
+fn measured_same_sample_startup_grants_cannot_double_spend() {
+    let mut p = Policy::new(measured_config()).unwrap();
+    for n in 1..=5 {
+        p.reserve(id(n), 8).unwrap();
+    }
+    for _ in 0..3 {
+        assert!(p.plan(0, &BTreeMap::new()).unwrap().is_empty());
+        assert_eq!(
+            p.snapshot
+                .entries
+                .values()
+                .filter(|e| e.state == State::Admitted)
+                .count(),
+            2
+        );
+    }
+}
+
+#[test]
+fn measured_growth_offloads_only_safe_waiters_and_honors_limit() {
+    let mut c = measured_config();
+    c.max_writebacks = 1;
+    let mut p = Policy::new(c).unwrap();
+    for n in 1..=3 {
+        p.reserve(id(n), 8).unwrap();
+        let samples = (1..n).map(|i| (id(i), 1)).collect();
+        p.plan(n as u64 - 1, &samples).unwrap();
+        p.bound(&id(n)).unwrap();
+    }
+    p.wait(&id(2), None).unwrap();
+    p.wait(&id(3), None).unwrap();
+    let samples = [(id(1), 8), (id(2), 6), (id(3), 6)].into();
+    assert_eq!(p.plan(20, &samples).unwrap(), [Action::Offload(id(2))]);
+    assert!(p.plan(20, &samples).unwrap().is_empty());
+    assert_eq!(p.snapshot.entries[&id(1)].state, State::Active);
+    assert_eq!(p.snapshot.entries[&id(3)].state, State::Waiting);
+    assert_eq!(p.snapshot.writebacks, 1);
+}
+
+#[test]
+fn measured_restore_keeps_capacity_and_fifo_until_ack_then_releases_top_up() {
+    let mut p = Policy::new(measured_config()).unwrap();
+    for n in 1..=2 {
+        p.reserve(id(n), 8).unwrap();
+    }
+    p.plan(0, &BTreeMap::new()).unwrap();
+    for n in 1..=2 {
+        p.bound(&id(n)).unwrap();
+        p.wait(&id(n), None).unwrap();
+    }
+    let actions = p.plan(18, &charges(9, 9)).unwrap();
+    assert_eq!(actions, [Action::Offload(id(1))]);
+    p.finish(actions[0].clone(), Ok(()));
+    p.acquire(&id(1), id(101)).unwrap();
+    p.acquire(&id(2), id(102)).unwrap();
+    p.reserve(id(3), 8).unwrap();
+    assert_eq!(p.plan(2, &charges(1, 1)).unwrap(), [Action::Resume(id(1))]);
+    assert_eq!(p.snapshot.entries[&id(1)].state, State::Restoring);
+    assert_eq!(p.snapshot.entries[&id(2)].state, State::Queued);
+    assert_eq!(p.snapshot.entries[&id(3)].state, State::AdmissionQueued);
+    assert!(p.plan(2, &charges(1, 1)).unwrap().is_empty());
+    p.finish(Action::Resume(id(1)), Ok(()));
+    assert!(p.plan(2, &charges(1, 1)).unwrap().is_empty());
+    assert_eq!(p.snapshot.entries[&id(1)].state, State::Ready);
+    assert_eq!(p.snapshot.entries[&id(2)].state, State::Ready);
+    assert_eq!(p.snapshot.entries[&id(3)].state, State::Admitted);
+}
+
+#[test]
+fn measured_admission_preserves_one_offloaded_wakeup_and_actual_cache_charge() {
+    let mut p = Policy::new(measured_config()).unwrap();
+    for n in 1..=2 {
+        p.reserve(id(n), 8).unwrap();
+    }
+    p.plan(0, &BTreeMap::new()).unwrap();
+    for n in 1..=2 {
+        p.bound(&id(n)).unwrap();
+        p.wait(&id(n), None).unwrap();
+    }
+    let action = p.plan(18, &charges(9, 9)).unwrap().remove(0);
+    p.finish(action, Ok(()));
+    p.reserve(id(3), 8).unwrap();
+    p.config.max_writebacks = 0;
+    p.plan(10, &charges(1, 1)).unwrap(); // +8 startup +7 recovery >20
+    assert_eq!(p.snapshot.entries[&id(3)].state, State::AdmissionQueued);
+    p.plan(4, &charges(1, 1)).unwrap();
+    assert_eq!(p.snapshot.entries[&id(3)].state, State::Admitted);
+}
+
+#[test]
+fn measured_missing_sample_and_uncertain_restore_never_grant_followers() {
+    let mut p = Policy::new(measured_config()).unwrap();
+    for n in 1..=2 {
+        p.reserve(id(n), 8).unwrap();
+    }
+    p.plan(0, &BTreeMap::new()).unwrap();
+    for n in 1..=2 {
+        p.bound(&id(n)).unwrap();
+        p.wait(&id(n), None).unwrap();
+    }
+    let action = p.plan(18, &charges(9, 9)).unwrap().remove(0);
+    p.finish(action, Ok(()));
+    p.acquire(&id(1), id(101)).unwrap();
+    p.acquire(&id(2), id(102)).unwrap();
+    assert!(p.plan(2, &[(id(2), 1)].into()).is_err());
+    assert_eq!(p.snapshot.entries[&id(1)].state, State::RestoreQueued);
+    let actions = p.plan(2, &charges(1, 1)).unwrap();
+    p.finish(
+        actions[0].clone(),
+        Err(anyhow::anyhow!("lost resume reply")),
+    );
+    assert!(p.plan(2, &charges(1, 1)).unwrap().is_empty());
+    assert_eq!(p.snapshot.entries[&id(1)].state, State::Failed);
+    assert_eq!(p.snapshot.entries[&id(2)].state, State::Queued);
+}
+
+#[test]
+fn measured_resident_request_does_not_manufacture_reclaim_deficit() {
+    let mut p = Policy::new(measured_config()).unwrap();
+    for n in 1..=2 {
+        p.reserve(id(n), 8).unwrap();
+    }
+    p.plan(0, &BTreeMap::new()).unwrap();
+    for n in 1..=2 {
+        p.bound(&id(n)).unwrap();
+        p.wait(&id(n), None).unwrap();
+    }
+    p.acquire(&id(1), id(101)).unwrap();
+    // Parent overhead is real and must not be subtracted as a sharing credit.
+    // Reclaim against actual pressure, not a fictional full resident allowance.
+    assert_eq!(
+        p.plan(21, &charges(1, 1)).unwrap(),
+        [Action::Offload(id(2))]
+    );
+    assert_eq!(p.snapshot.entries[&id(1)].state, State::Queued);
+}
+
+#[test]
+fn measured_high_watermark_stops_admission_until_low_even_without_offload() {
+    let mut c = measured_config();
+    c.max_writebacks = 0;
+    let mut p = Policy::new(c).unwrap();
+    p.reserve(id(1), 1).unwrap();
+    // Startup would fit below the budget (20), but pressure must fence it.
+    assert!(p.plan(18, &BTreeMap::new()).unwrap().is_empty());
+    assert_eq!(p.snapshot.entries[&id(1)].state, State::AdmissionQueued);
+    assert!(p.plan(17, &BTreeMap::new()).unwrap().is_empty());
+    assert_eq!(p.snapshot.entries[&id(1)].state, State::AdmissionQueued);
+    assert!(p.plan(14, &BTreeMap::new()).unwrap().is_empty());
+    assert_eq!(p.snapshot.entries[&id(1)].state, State::Admitted);
+    p.bound(&id(1)).unwrap();
+    p.wait(&id(1), None).unwrap();
+    p.acquire(&id(1), id(101)).unwrap();
+    assert!(p.plan(14, &[(id(1), 1)].into()).unwrap().is_empty());
+    assert_eq!(p.snapshot.entries[&id(1)].state, State::Ready);
+}
+
+#[test]
+fn measured_blocked_startup_can_reclaim_below_high_but_needs_real_relief() {
+    let mut p = Policy::new(measured_config()).unwrap();
+    for n in 1..=2 {
+        p.reserve(id(n), 8).unwrap();
+    }
+    p.plan(0, &BTreeMap::new()).unwrap();
+    for n in 1..=2 {
+        p.bound(&id(n)).unwrap();
+        p.wait(&id(n), None).unwrap();
+    }
+    p.reserve(id(3), 8).unwrap();
+    // Below high (18), but 15 actual + 8 startup does not fit.
+    assert_eq!(
+        p.plan(15, &charges(7, 7)).unwrap(),
+        [Action::Offload(id(1))]
+    );
+    assert_eq!(p.snapshot.entries[&id(3)].state, State::AdmissionQueued);
+    p.finish(Action::Offload(id(1)), Ok(()));
+    p.config.max_writebacks = 0;
+    // An ACK alone is insufficient: parent cache is still charged.
+    p.plan(15, &charges(0, 7)).unwrap();
+    assert_eq!(p.snapshot.entries[&id(3)].state, State::AdmissionQueued);
+    // Retain 8 recovery + 8 startup, then use actual parent charge.
+    p.plan(4, &charges(0, 3)).unwrap();
+    assert_eq!(p.snapshot.entries[&id(3)].state, State::Admitted);
 }

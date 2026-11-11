@@ -2,6 +2,19 @@
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, path::PathBuf};
 
+/// Frozen policy for already bound resident VMs; never changes their hard limits.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ResidentMemoryAccounting {
+    /// Preserve full execution reservations, with optional smaller wait margins.
+    #[default]
+    Reserved,
+    /// After successful Bind, count resident VMs only through measured parent
+    /// charge. Startup, native restore and uncertain controls still reserve
+    /// capacity. This permits memory overcommit, not guaranteed burst capacity.
+    Measured,
+}
+
 /// Fixed startup policy; changing it requires draining this instance first.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -15,10 +28,17 @@ pub struct Config {
     /// Maximum offload calls in flight, including uncertain acknowledgements.
     /// Zero disables offload while keeping the same admission/request path.
     pub max_writebacks: usize,
-    /// Opt-in allowance above measured charge for quiescent Waiting/Queued VMs
+    /// Defaults to Reserved for compatibility. Measured releases startup
+    /// top-ups after successful Bind and does not reacquire them for resident
+    /// tools. Cannot be combined with waiting_memory_margin_bytes. Requires
+    /// fresh cgroup samples, external hard limits and room for workload growth;
+    /// it does not guarantee that all guests can fill their configured memory.
+    #[serde(default)]
+    pub resident_memory_accounting: ResidentMemoryAccounting,
+    /// Reserved-mode opt-in allowance above measured charge for Waiting/Queued VMs
     /// and their in-flight offloads, capped by each VM's full reservation.
     /// Must be positive and no larger than the node budget. None (the default)
-    /// preserves full resident reservations. With Some, the trusted owner must
+    /// preserves full resident reservations in Reserved mode. With Some, the owner must
     /// fence all guest work at Wait and reacquire a full execution permit even
     /// for resident VMs. This is accounting headroom, not a cgroup limit or a
     /// measured UKSM credit; uncooperative/background allocations remain unsafe.
@@ -64,7 +84,9 @@ pub enum Request {
     /// Assert no tool/background process can access the VM until the next permit.
     /// Also finishes the previous Ready permit; stale tokens are rejected.
     /// With waiting_memory_margin_bytes configured, relinquishes unused full
-    /// execution capacity. A later Acquire must reserve it again before Ready.
+    /// execution capacity in Reserved mode. A later Acquire must reserve it
+    /// again before Ready. Measured mode already released that top-up at Bind;
+    /// Wait still fences guest work and makes the VM eligible for offload.
     Wait { id: String, token: Option<String> },
     /// Queue an actual tool request; recovery has priority over new VM creation.
     Acquire { id: String, token: String },
@@ -95,7 +117,8 @@ pub struct Snapshot {
 /// Public state, with logical reservations rather than claimed physical savings.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Entry {
-    /// Full startup/execution allowance, including VMM/helper overhead. Waiting
+    /// Full startup/restore allowance and per-VM hard-limit ceiling, including
+    /// VMM/helper overhead. Reserved mode also retains it for execution. Waiting
     /// states may hold less when Config::waiting_memory_margin_bytes is set;
     /// this does not change guest capacity or the externally installed hard limit.
     pub memory_bytes: u64,

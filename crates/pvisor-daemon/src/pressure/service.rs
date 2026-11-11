@@ -579,6 +579,7 @@ mod tests {
             low_bytes: 14,
             max_writebacks: 16,
             waiting_memory_margin_bytes: None,
+            resident_memory_accounting: Default::default(),
             cgroup_root: root,
         })
         .unwrap();
@@ -902,6 +903,60 @@ mod tests {
                     "executor": {"name": "vm", "kind": "virtual_machine", "isolation": "virtual_machine",
                         "supports_checkpoint": false, "supports_migration": false}}},
                 "value": {"vm": {"state": state, "memory": null}}}}})
+    }
+
+    #[tokio::test]
+    async fn measured_successful_bind_releases_startup_top_up_and_persists_mode() {
+        let (_temp, mut owner) = fixture();
+        owner.policy.config.resident_memory_accounting = ResidentMemoryAccounting::Measured;
+        let (_socket_temp, listener, path) = host_socket();
+        let ids: Vec<_> = (0..3).map(|_| uuid::Uuid::new_v4().to_string()).collect();
+        for id in &ids {
+            owner.policy.reserve(id.clone(), 8).unwrap();
+        }
+        owner.plan().unwrap();
+        assert_eq!(
+            owner.policy.snapshot.entries[&ids[2]].state,
+            State::AdmissionQueued
+        );
+        let binding = binding_fixture(&owner, path);
+        fs::write(binding.cgroup.join("memory.current"), "1\n").unwrap();
+        fs::write(
+            owner.policy.config.cgroup_root.join("memory.current"),
+            "1\n",
+        )
+        .unwrap();
+        let request = envelope(
+            &owner,
+            Request::Bind {
+                id: ids[0].clone(),
+                binding,
+            },
+        );
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request: AgentCtlHostRequest<HostVmCommand> =
+                read_host_frame(&mut stream).await.unwrap();
+            assert_eq!(request.command, HostVmCommand::Status);
+            write_host_frame(&mut stream, &reply(&request, "running"))
+                .await
+                .unwrap();
+        });
+        let owner = Arc::new(Mutex::new(owner));
+        handle(&owner, request).await.unwrap();
+        server.await.unwrap();
+        let mut owner = owner.lock().await;
+        owner.plan().unwrap();
+        assert_eq!(owner.policy.snapshot.entries[&ids[0]].state, State::Active);
+        assert_eq!(
+            owner.policy.snapshot.entries[&ids[2]].state,
+            State::Admitted
+        );
+        let saved: serde_json::Value =
+            serde_json::from_reader(File::open(owner.directory.join("pressure.json")).unwrap())
+                .unwrap();
+        assert_eq!(saved["config"]["resident_memory_accounting"], "measured");
+        assert_eq!(saved["snapshot"]["entries"][&ids[0]]["state"], "active");
     }
 
     #[tokio::test]

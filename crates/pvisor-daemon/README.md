@@ -87,8 +87,47 @@ owned, writeback continues, and no slot is released by dropping the client.
 
 The policy counts measured parent charge exactly once, including shared-pool,
 page-cache and offloaded-VM charges. A RAM or UKSM savings report is **not** an
-additional physical-memory credit. With the default configuration (omitted or
-null `waiting_memory_margin_bytes`), resident VMs retain their full reservation.
+additional physical-memory credit. With the default `resident_memory_accounting:
+"reserved"` (also used when omitted) and omitted or null
+`waiting_memory_margin_bytes`, resident VMs retain their full reservation.
+
+### Measured resident accounting
+
+Set `resident_memory_accounting` to `"measured"` in the frozen pressure config
+to admit against actual node usage plus temporary startup/restore allowances.
+Leave `waiting_memory_margin_bytes` omitted or null; combining a wait margin
+with this mode is rejected. The mode is fixed at scheduler startup:
+
+- Admitted/Binding retain the full startup top-up. Only successful native
+  identity/readiness binding releases it; a low sample during boot is not enough.
+- Active/Ready/Waiting/Queued/Offloading/Offloaded/RestoreQueued count through
+  the measured parent charge, without a separate full resident reservation.
+  Resident Acquire still uses FIFO and the measured budget but needs no second
+  full VM allowance and sends no native Resume.
+- Restoring reserves its full allowance until native acknowledgement; Failed
+  controls retain that allowance and stop grants until proven owner cleanup.
+- New creation waits behind pending requests and writebacks, respects the
+  high/low pressure latch, and preserves capacity for one offloaded VM to wake.
+  Simultaneous startups cannot spend the same headroom twice.
+
+For example, sixteen bound VMs configured for 5 GiB each can all obtain resident
+tool permits when their combined measured node usage is 5 GiB under a 40 GiB
+budget. They do not retain sixteen 5 GiB reservations. UKSM savings affect the
+actual parent measurement only; no extra credit is subtracted from that value.
+High measured usage or an actual admission/restore shortage triggers bounded
+offload of safe waiters, never Active/Ready guests. An offload estimate is not
+proof of reclaimed capacity: admission still requires a fresh measurement.
+
+This is explicit memory overcommit. It does **not** guarantee simultaneous
+full-guest allocation or prevent every OOM: current tools and background growth
+cannot be reclaimed until the owner establishes safe Wait. Keep an external hard
+limit, fresh cgroup measurements, workload-growth headroom and independent exit
+audits. Recovery priority/headroom prevents new admissions from spending the
+last recovery allowance at the current sample; it cannot guarantee progress
+under unbounded growth. OCI startup, guest limits, UKSM and backing protocols
+are unchanged. The same mode is supported with `max_writebacks: 0` for controls.
+
+### Reserved resident accounting
 
 To opt into state-dependent reservations, set `waiting_memory_margin_bytes` to a
 positive byte allowance no larger than the node budget in the frozen startup
@@ -152,6 +191,10 @@ durable admission, cgroup release checks, and same-user IPC/Execution identity.
 State-dependent tests also cover low-charge admission without offload, simultaneous
 resident wake-ups, FIFO handoff after Wait, wake headroom, COW growth reservations,
 and acknowledgement/measurement/failure fences.
+Measured-mode regressions additionally cover release at successful Bind rather
+than Wait, sixteen resident grants under a 40 GiB budget, concurrent startup
+reservations, actual-pressure reclamation, recovery acknowledgement/FIFO,
+parent-cache accounting, wake headroom and missing-sample/control failures.
 These are policy and transport fixtures, not KVM density/performance evidence.
 An ordinary-OCI real-VM acceptance test is required before replaying a batch.
 

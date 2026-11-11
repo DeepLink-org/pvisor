@@ -1,4 +1,4 @@
-use super::api::{Config, Entry, Snapshot, State};
+use super::api::{Config, Entry, ResidentMemoryAccounting, Snapshot, State};
 use anyhow::{Result, ensure};
 use std::collections::{BTreeMap, VecDeque};
 
@@ -34,6 +34,11 @@ impl Policy {
                 .waiting_memory_margin_bytes
                 .is_none_or(|bytes| bytes > 0 && bytes <= config.memory_bytes),
             "invalid waiting memory margin"
+        );
+        ensure!(
+            config.resident_memory_accounting != ResidentMemoryAccounting::Measured
+                || config.waiting_memory_margin_bytes.is_none(),
+            "measured resident accounting cannot use a waiting memory margin"
         );
         Ok(Self {
             snapshot: Snapshot {
@@ -144,7 +149,7 @@ impl Policy {
     }
 
     fn top_up(&self, e: &Entry, charge: u64) -> u64 {
-        reservation_top_up(e, charge, self.config.waiting_memory_margin_bytes)
+        reservation_top_up(e, charge, &self.config)
     }
 
     /// Capacity for one quiescent VM to regain its full execution allowance.
@@ -154,7 +159,16 @@ impl Policy {
             .entries
             .iter()
             .filter_map(|(id, e)| {
-                if self.config.waiting_memory_margin_bytes.is_some() {
+                if self.config.resident_memory_accounting == ResidentMemoryAccounting::Measured {
+                    // Resident tools do not need a second full reservation.
+                    // Preserve one recovery allowance before admitting new VMs,
+                    // including offloads whose acknowledgement is still pending.
+                    matches!(
+                        e.state,
+                        State::Offloading | State::Offloaded | State::RestoreQueued
+                    )
+                    .then(|| e.memory_bytes.saturating_sub(charges[id]))
+                } else if self.config.waiting_memory_margin_bytes.is_some() {
                     matches!(
                         e.state,
                         State::Waiting
@@ -214,16 +228,21 @@ impl Policy {
             self.pressure = false;
         }
         let mut actions = Vec::new();
-        // Do not advance FIFO past a native control or a granted request. Ready
-        // entries leave the queue immediately, but retain their full reservation.
+        // Do not advance FIFO past a native control. Ready entries leave the
+        // queue immediately; only Reserved mode retains their full allowance.
         while let Some(id) = self.requests.front().cloned() {
             let e = &self.snapshot.entries[&id];
             match e.state {
                 State::Queued => {
-                    let extra = e
-                        .memory_bytes
-                        .saturating_sub(charges[&id])
-                        .saturating_sub(self.top_up(e, charges[&id]));
+                    let extra = if self.config.resident_memory_accounting
+                        == ResidentMemoryAccounting::Measured
+                    {
+                        0
+                    } else {
+                        e.memory_bytes
+                            .saturating_sub(charges[&id])
+                            .saturating_sub(self.top_up(e, charges[&id]))
+                    };
                     if !fits(committed, extra, self.config.memory_bytes) {
                         break;
                     }
@@ -247,7 +266,11 @@ impl Policy {
         }
         // Keep capacity for at least one full restore before admitting another
         // VM. Restores take priority; this headroom is not counted twice on resume.
-        if self.requests.is_empty() && self.snapshot.writebacks == 0 {
+        if self.requests.is_empty()
+            && self.snapshot.writebacks == 0
+            && !(self.pressure
+                && self.config.resident_memory_accounting == ResidentMemoryAccounting::Measured)
+        {
             let headroom = self.wake_headroom(charges);
             while let Some(id) = self.admission.front().cloned() {
                 let bytes = self.snapshot.entries[&id].memory_bytes;
@@ -275,10 +298,17 @@ impl Policy {
                 .front()
                 .filter(|_| blocked_request)
                 .map(|id| {
-                    self.snapshot.entries[id]
-                        .memory_bytes
-                        .saturating_sub(charges[id])
-                        .saturating_sub(self.top_up(&self.snapshot.entries[id], charges[id]))
+                    let e = &self.snapshot.entries[id];
+                    if e.state == State::Queued
+                        && self.config.resident_memory_accounting
+                            == ResidentMemoryAccounting::Measured
+                    {
+                        0
+                    } else {
+                        e.memory_bytes
+                            .saturating_sub(charges[id])
+                            .saturating_sub(self.top_up(e, charges[id]))
+                    }
                 })
                 .unwrap_or(0);
             let create_extra = self
@@ -332,8 +362,7 @@ impl Policy {
                         continue;
                     }
                     let charge = charges.get(id).copied().unwrap_or(0);
-                    let top_up =
-                        reservation_top_up(e, charge, self.config.waiting_memory_margin_bytes);
+                    let top_up = reservation_top_up(e, charge, &self.config);
                     // A fully shared VM may have zero private charge but still
                     // hold a waiting margin. Its acknowledged offload can
                     // relinquish that margin for a blocked request, never count
@@ -393,13 +422,19 @@ fn fits(committed: u64, extra: u64, budget: u64) -> bool {
         .is_some_and(|total| total <= budget)
 }
 
-fn reservation_top_up(e: &Entry, charge: u64, waiting_margin: Option<u64>) -> u64 {
+fn reservation_top_up(e: &Entry, charge: u64, config: &Config) -> u64 {
     let full = e.memory_bytes.saturating_sub(charge);
+    if config.resident_memory_accounting == ResidentMemoryAccounting::Measured {
+        return match e.state {
+            State::Admitted | State::Binding | State::Restoring | State::Failed => full,
+            _ => 0,
+        };
+    }
     match e.state {
         State::Offloaded | State::RestoreQueued => 0,
-        State::Waiting | State::Queued | State::Offloading => {
-            waiting_margin.map_or(full, |margin| full.min(margin))
-        }
+        State::Waiting | State::Queued | State::Offloading => config
+            .waiting_memory_margin_bytes
+            .map_or(full, |margin| full.min(margin)),
         _ => full,
     }
 }
