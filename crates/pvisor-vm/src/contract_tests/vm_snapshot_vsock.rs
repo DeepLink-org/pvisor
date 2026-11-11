@@ -146,7 +146,10 @@ fn queued_external_response_rejects_snapshot_and_original_can_resume() {
         .unwrap_err()
         .contains("pending responses"));
     source.thaw().unwrap();
-    submit(&mem, 0, 0, &[0; 52], true);
+    // RST has no payload. A header-only buffer excludes the independent
+    // timesync worker, which needs eight payload bytes and otherwise may
+    // consume this descriptor before the queued RST is delivered.
+    submit(&mem, 0, 0, &[0; 44], true);
     // The thawed worker may drain RX before this thread; completion and the
     // actual RST response are the contract, not which thread drains the queue.
     wait(|| {
