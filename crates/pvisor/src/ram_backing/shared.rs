@@ -187,9 +187,22 @@ impl SharedPool {
         ))
     }
     pub fn forget_candidates(&mut self, session: [u8; 16]) {
-        self.candidates.retain(|_, first| *first != session);
-        self.candidate_order
-            .retain(|id| self.candidates.contains_key(id));
+        self.forget_candidates_batch(session, self.candidate_order.len());
+    }
+    pub(super) fn candidate_count(&self) -> usize {
+        self.candidate_order.len()
+    }
+    // Rotate at most `limit` original entries; callers serialize cleanup passes
+    // but release the pool lock between batches so live RPCs can make progress.
+    pub(super) fn forget_candidates_batch(&mut self, session: [u8; 16], limit: usize) {
+        for _ in 0..limit.min(self.candidate_order.len()) {
+            let id = self.candidate_order.pop_front().unwrap();
+            if self.candidates.get(&id) == Some(&session) {
+                self.candidates.remove(&id);
+            } else {
+                self.candidate_order.push_back(id);
+            }
+        }
     }
     pub fn intern(&mut self, bytes: &[u8]) -> io::Result<Arc<SharedObject>> {
         if bytes.len() != PAGE {
@@ -507,5 +520,25 @@ mod tests {
         b.restore(&mut bytes).unwrap();
         assert_eq!(bytes, [3; PAGE]);
         assert_eq!(a.offset(), b.offset());
+    }
+    #[test]
+    fn bounded_candidate_retirement_preserves_live_sessions() {
+        let mut pool = SharedPool::new(PAGE * 16, 16).unwrap();
+        for n in 0..32u8 {
+            assert!(pool.intern_duplicate(&[n; PAGE], [n % 2 + 1; 16]).is_err());
+        }
+        let count = pool.candidate_count();
+        for _ in 0..count / 4 {
+            pool.forget_candidates_batch([1; 16], 4);
+            assert!(pool.candidates.values().any(|s| *s == [2; 16]));
+        }
+        assert_eq!(pool.candidate_count(), 16);
+        assert!(pool.candidates.values().all(|s| *s == [2; 16]));
+        for n in (1..32u8).step_by(2) {
+            let object = pool.intern_duplicate(&[n; PAGE], [3; 16]).unwrap();
+            let mut restored = [0; PAGE];
+            object.restore(&mut restored).unwrap();
+            assert_eq!(restored, [n; PAGE]);
+        }
     }
 }
