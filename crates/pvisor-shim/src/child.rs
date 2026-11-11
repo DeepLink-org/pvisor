@@ -91,6 +91,11 @@ pub const ENV_STDIO_TERMINAL: &str = "PVISOR_SHIM_STDIO_TERMINAL";
 /// VM runner only: descriptor of the guest-side egress stream owned by the
 /// shim's `VmNetworkAttachment`. Absent when the task runs without egress.
 pub const ENV_VM_NET_FD: &str = "PVISOR_SHIM_VM_NET_FD";
+/// Pid of the shim process that spawned this internal child. The VM runner
+/// compares it against `getppid()` when arming `PR_SET_PDEATHSIG` to close
+/// the fork/prctl race (a parent that died in between never delivers the
+/// signal).
+pub const ENV_PARENT_PID: &str = "PVISOR_SHIM_PARENT_PID";
 /// Injected-sibling descriptors handed to the internal init parent (see
 /// [`SpawnExtras`]).
 pub const ENV_INJECT_FDS: &str = "PVISOR_SHIM_INJECT_FDS";
@@ -426,7 +431,8 @@ pub fn spawn_internal_opts(
         .env(ENV_READY_FD, ready_w.to_string())
         .env(ENV_START_FD, start_r.to_string())
         .env(ENV_FORK_REPORT_FD, fork_w.to_string())
-        .env(ENV_FORK_REPORT_READ_FD, fork_r.to_string());
+        .env(ENV_FORK_REPORT_READ_FD, fork_r.to_string())
+        .env(ENV_PARENT_PID, std::process::id().to_string());
     let plan_env = if arg == INTERNAL_EXEC_ARG {
         ENV_EXEC_PLAN
     } else if arg == INTERNAL_SANDBOX_ARG {
@@ -948,6 +954,12 @@ fn vm_runner_main() -> Result<i32> {
     lift_descriptor_limit();
     let plan: ContainerPlan = read_plan(ENV_PLAN)?;
     let start_fd = fd_from_env(ENV_START_FD)?;
+    let bridge_ports: Vec<u16> = plan
+        .injections
+        .iter()
+        .filter_map(|injection| injection.bridge)
+        .collect();
+    arm_parent_death_cleanup(&plan.id, &bridge_ports)?;
 
     if unsafe { libc::unshare(libc::CLONE_NEWNS) } != 0 {
         return Err(std::io::Error::last_os_error()).context("unshare(CLONE_NEWNS)");
@@ -1102,6 +1114,84 @@ fn vm_runner_main() -> Result<i32> {
         }
     }
     result
+}
+
+/// Sockets the parent-death handler unlinks, precomputed as C strings: the
+/// control socket plus one bridge socket per bridged injection port.
+#[cfg(feature = "vm")]
+fn parent_death_cleanup_paths(
+    task_id: &str,
+    bridge_ports: &[u16],
+) -> Result<Vec<std::ffi::CString>> {
+    let mut paths = vec![crate::sockets::control_socket_path(task_id)];
+    for port in bridge_ports {
+        paths.push(crate::sockets::bridge_socket_path(task_id, *port));
+    }
+    paths
+        .iter()
+        .map(|path| {
+            std::ffi::CString::new(path.clone().into_os_string().into_encoded_bytes())
+                .with_context(|| format!("socket path {path:?}"))
+        })
+        .collect()
+}
+
+/// Socket paths for [`runner_parent_died`], resolved once at runner start.
+/// The handler only reads the static (no lock on the hot path after `set`).
+#[cfg(feature = "vm")]
+static PARENT_DEATH_SOCKETS: std::sync::OnceLock<Vec<std::ffi::CString>> =
+    std::sync::OnceLock::new();
+
+/// SIGTERM handler for the VM runner: unlink the task's sockets and exit.
+/// Only async-signal-safe calls (`unlink`, `_exit`) and a static read.
+#[cfg(feature = "vm")]
+extern "C" fn runner_parent_died(_signal: libc::c_int) {
+    if let Some(paths) = PARENT_DEATH_SOCKETS.get() {
+        for path in paths {
+            // SAFETY: `path` is a NUL-terminated path owned by the static.
+            unsafe { libc::unlink(path.as_ptr()) };
+        }
+    }
+    // SAFETY: immediate process teardown, no unwinding from a signal frame.
+    unsafe { libc::_exit(128 + libc::SIGTERM) };
+}
+
+/// Tie the runner's lifetime to the shim that spawned it. After `Start`
+/// consumes the start pipe's write end, nothing else connects the two
+/// processes: a shim that crashes would leave this runner hosting an
+/// unreachable VM — leaking its memory, its bridge proxies, the pod network
+/// namespace they pin and the task's `/run` sockets. `PR_SET_PDEATHSIG`
+/// with `SIGTERM` (not `SIGKILL`) lets the handler run the same socket
+/// cleanup as the runner-exit belt and braces above; the fork/prctl race
+/// (parent dying between fork and `prctl`, which never re-arms the signal)
+/// is closed by re-checking the spawning pid from `ENV_PARENT_PID`.
+#[cfg(feature = "vm")]
+fn arm_parent_death_cleanup(task_id: &str, bridge_ports: &[u16]) -> Result<()> {
+    let sockets = parent_death_cleanup_paths(task_id, bridge_ports)?;
+    let _ = PARENT_DEATH_SOCKETS.set(sockets);
+    // SAFETY: `sigaction` initialization follows the libc contract; the
+    // handler only performs async-signal-safe calls.
+    unsafe {
+        let mut action: libc::sigaction = std::mem::zeroed();
+        libc::sigemptyset(std::ptr::addr_of_mut!(action.sa_mask));
+        action.sa_sigaction = runner_parent_died as *const () as libc::sighandler_t;
+        if libc::sigaction(libc::SIGTERM, &action, std::ptr::null_mut()) != 0 {
+            return Err(std::io::Error::last_os_error()).context("install SIGTERM handler");
+        }
+        if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM, 0, 0, 0) != 0 {
+            return Err(std::io::Error::last_os_error()).context("PR_SET_PDEATHSIG");
+        }
+    }
+    let expected: u32 = std::env::var(ENV_PARENT_PID)
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .context("parent pid env")?;
+    if unsafe { libc::getppid() } != expected as libc::pid_t {
+        return Err(anyhow::anyhow!(
+            "shim parent {expected} is gone before runner start"
+        ));
+    }
+    Ok(())
 }
 
 /// Poll the egress gate file until the sidecar's policy arrives.
@@ -2153,6 +2243,33 @@ fn pump_bridge(stream: std::net::TcpStream, socket: &str) -> Result<()> {
 mod tests {
     use super::*;
     use crate::plan::{IoPlan, NamespacePlan};
+
+    #[cfg(feature = "vm")]
+    #[test]
+    fn parent_death_cleanup_paths_cover_control_and_every_bridge() {
+        let task_id = "deadbeef";
+        let paths = parent_death_cleanup_paths(task_id, &[44772, 18080]).unwrap();
+        let expected = vec![
+            crate::sockets::control_socket_path(task_id),
+            crate::sockets::bridge_socket_path(task_id, 44772),
+            crate::sockets::bridge_socket_path(task_id, 18080),
+        ];
+        assert_eq!(paths.len(), expected.len());
+        for (cstr, path) in paths.iter().zip(&expected) {
+            assert_eq!(
+                cstr.to_bytes(),
+                path.as_os_str().as_encoded_bytes(),
+                "C string must round-trip the socket path"
+            );
+        }
+        // Every path fits sockaddr_un without truncation.
+        for cstr in &paths {
+            assert!(cstr.to_bytes().len() < 108);
+        }
+        // No bridges: still the control socket.
+        let control_only = parent_death_cleanup_paths(task_id, &[]).unwrap();
+        assert_eq!(control_only.len(), 1);
+    }
 
     #[test]
     fn transferred_pidfd_signals_only_its_original_process_after_exit() {

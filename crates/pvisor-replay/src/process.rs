@@ -1121,6 +1121,106 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "bounded three-minute native lifecycle check; explicitly select for reliability runs"]
+    fn slow_progress_then_idle_cancellation_drains_and_allows_a_fresh_process() {
+        static TERMINATED: std::sync::atomic::AtomicBool =
+            std::sync::atomic::AtomicBool::new(false);
+        extern "C" fn terminated(_: libc::c_int) {
+            TERMINATED.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+        const CHILD: &str = "PVISOR_REPLAY_SLOW_PROGRESS_CHILD";
+        const NAME: &str = "process::tests::slow_progress_then_idle_cancellation_drains_and_allows_a_fresh_process";
+        if let Ok(mode) = std::env::var(CHILD) {
+            if mode == "healthy" {
+                println!("FRESH-PROCESS-OK");
+                return;
+            }
+            unsafe {
+                libc::alarm(150);
+                libc::signal(libc::SIGTERM, terminated as *const () as libc::sighandler_t);
+            }
+            println!("\nREADY {}", std::process::id());
+            io::stdout().flush().unwrap();
+            for step in 1..=3 {
+                thread::sleep(Duration::from_secs(20));
+                if step == 2 {
+                    eprintln!("PROGRESS-{step}");
+                } else {
+                    println!("PROGRESS-{step}");
+                    io::stdout().flush().unwrap();
+                }
+            }
+            while !TERMINATED.load(std::sync::atomic::Ordering::Relaxed) {
+                thread::sleep(Duration::from_millis(10));
+            }
+            let mut delivered = Vec::new();
+            io::stdin().read_to_end(&mut delivered).unwrap();
+            assert!(!delivered.is_empty() && delivered.len() < 512 * 1024);
+            println!("EOF-AFTER-IDLE-CANCEL");
+            io::stdout().flush().unwrap();
+            eprintln!("STDERR-AFTER-IDLE-CANCEL");
+            return;
+        }
+        let child = |mode: &str| {
+            let mut command = Command::new(std::env::current_exe().unwrap());
+            command
+                .args(["--exact", NAME, "--ignored", "--nocapture"])
+                .env("PATH", "")
+                .env(CHILD, mode);
+            command
+        };
+        for redirected in [false, true] {
+            let temporary = tempfile::tempdir().unwrap();
+            let log_path = temporary.path().join("slow-progress.log");
+            let mut spec = shell_spec("", &log_path);
+            spec.command = child("stall");
+            spec.stdin = Some(vec![b'x'; 512 * 1024]);
+            spec.idle_timeout = Some(Duration::from_secs(30));
+            spec.timeout = Duration::from_secs(120);
+            spec.termination_grace = Duration::from_secs(1);
+            spec.stdout_redirect = redirected.then(|| temporary.path().join("stdout"));
+            let started = Instant::now();
+            let output = run_process(spec).unwrap();
+            let elapsed = started.elapsed();
+            assert!(
+                (Duration::from_secs(85)..Duration::from_secs(115)).contains(&elapsed),
+                "redirected={redirected}: {elapsed:?}"
+            );
+            assert!(output.status.success(), "{:?}", output.status);
+            assert!(output.background_cleanup);
+            assert!(!output.timed_out && !output.step_limited);
+            assert!(!output.stdout_truncated && !output.stderr_truncated);
+            let stdout = String::from_utf8(output.stdout_tail).unwrap();
+            let stderr = String::from_utf8(output.stderr_tail).unwrap();
+            for marker in ["PROGRESS-1", "PROGRESS-3", "EOF-AFTER-IDLE-CANCEL"] {
+                assert!(stdout.contains(marker), "{stdout}");
+            }
+            for marker in ["PROGRESS-2", "STDERR-AFTER-IDLE-CANCEL"] {
+                assert!(stderr.contains(marker), "{stderr}");
+            }
+            let pid: i32 = stdout
+                .lines()
+                .find_map(|line| line.strip_prefix("READY "))
+                .unwrap()
+                .parse()
+                .unwrap();
+            assert_ne!(unsafe { libc::kill(pid, 0) }, 0, "child was not reaped");
+            assert!(!process_group_exists(pid).unwrap());
+
+            let mut healthy = shell_spec("", &temporary.path().join("fresh.log"));
+            healthy.command = child("healthy");
+            let output = run_process(healthy).unwrap();
+            assert!(output.status.success());
+            assert!(!output.timed_out && !output.background_cleanup);
+            assert!(
+                String::from_utf8(output.stdout_tail)
+                    .unwrap()
+                    .contains("FRESH-PROCESS-OK")
+            );
+        }
+    }
+
+    #[test]
     fn times_out_and_reaps_the_foreground_process_group() {
         let temporary = tempfile::tempdir().unwrap();
         let log_path = temporary.path().join("timeout.log");
