@@ -15,6 +15,15 @@ pub struct Config {
     /// Maximum offload calls in flight, including uncertain acknowledgements.
     /// Zero disables offload while keeping the same admission/request path.
     pub max_writebacks: usize,
+    /// Opt-in allowance above measured charge for quiescent Waiting/Queued VMs
+    /// and their in-flight offloads, capped by each VM's full reservation.
+    /// Must be positive and no larger than the node budget. None (the default)
+    /// preserves full resident reservations. With Some, the trusted owner must
+    /// fence all guest work at Wait and reacquire a full execution permit even
+    /// for resident VMs. This is accounting headroom, not a cgroup limit or a
+    /// measured UKSM credit; uncooperative/background allocations remain unsafe.
+    #[serde(default)]
+    pub waiting_memory_margin_bytes: Option<u64>,
     /// Existing cgroup v2 subtree containing every managed VM and its helpers.
     /// The service reads it; it never installs or changes resource limits.
     pub cgroup_root: PathBuf,
@@ -54,6 +63,8 @@ pub enum Request {
     Bind { id: String, binding: Binding },
     /// Assert no tool/background process can access the VM until the next permit.
     /// Also finishes the previous Ready permit; stale tokens are rejected.
+    /// With waiting_memory_margin_bytes configured, relinquishes unused full
+    /// execution capacity. A later Acquire must reserve it again before Ready.
     Wait { id: String, token: Option<String> },
     /// Queue an actual tool request; recovery has priority over new VM creation.
     Acquire { id: String, token: String },
@@ -84,7 +95,9 @@ pub struct Snapshot {
 /// Public state, with logical reservations rather than claimed physical savings.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Entry {
-    /// Full memory reservation, including VMM/helper overhead.
+    /// Full startup/execution allowance, including VMM/helper overhead. Waiting
+    /// states may hold less when Config::waiting_memory_margin_bytes is set;
+    /// this does not change guest capacity or the externally installed hard limit.
     pub memory_bytes: u64,
     /// Current state; only Ready authorizes tool dispatch.
     pub state: State,

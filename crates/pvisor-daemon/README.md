@@ -85,22 +85,56 @@ tool cleanup remain explicit owner decisions; this service neither retries a
 tool nor discards an expired queued request. On a disconnect the request stays
 owned, writeback continues, and no slot is released by dropping the client.
 
-The policy combines measured parent charge with full-reservation top-ups for
-resident, admitted, restoring and uncertain VMs. Offloaded VM/page-cache charge
-is still included in the parent sample. A RAM report is **not** a physical-memory
-credit. Recoveries are FIFO and precede new creation; full recovery capacity is
-reserved before resume, and no permit is issued before its acknowledgement.
-Before new admission, capacity for one full offloaded VM is retained. Safe
-resident queue followers may be reclaimed to unblock an offloaded FIFO head;
-Active/Ready VMs are never victims. Victim selection tracks physical and
-commitment deficits separately: a victim's current charge estimates physical
-relief, while charge plus its unused reservation top-up estimates commitment
-relief. New and in-flight writes use the same estimates, and selection stops only
-when both deficits are covered or no eligible writeback slot remains. These are
-selection estimates, not reclaimed-memory credits: acknowledgements and fresh
-accounting still gate admission and recovery. At most 16
-writebacks may run; 16 is a ceiling, not a target. Set zero for the same admission
-and request path with offload disabled. High/low watermarks provide hysteresis.
+The policy counts measured parent charge exactly once, including shared-pool,
+page-cache and offloaded-VM charges. A RAM or UKSM savings report is **not** an
+additional physical-memory credit. With the default configuration (omitted or
+null `waiting_memory_margin_bytes`), resident VMs retain their full reservation.
+
+To opt into state-dependent reservations, set `waiting_memory_margin_bytes` to a
+positive byte allowance no larger than the node budget in the frozen startup
+configuration. For example, `268435456` reserves up to 256 MiB above each waiting
+VM's measured charge; this is an illustrative margin, not a validated production
+setting. No running scheduler can change modes. The accounting becomes:
+
+- Admitted/Binding/Active/Ready/Restoring/Failed: actual charge plus a top-up to
+  the full startup/execution allowance. Uncertain effects retain ownership.
+- Waiting/Queued/Offloading: actual charge plus the configured margin, capped at
+  the full allowance. Offloading keeps this margin until acknowledgement.
+- Offloaded/RestoreQueued: actual charge remains in the parent measurement.
+
+`wait` is an explicit trusted-owner assertion that tool/background work is
+finished and fenced; lower memory usage or elapsed model-wait time alone never
+releases execution capacity. It is not a guest freeze and the daemon does not
+independently inspect guest processes. Idle kernel/helper/cache growth can still
+occur, so margins, fresh measurements and an external parent hard limit remain
+necessary. Do not use this mode for ungated guest requests or background jobs.
+
+Every `acquire`, including a **resident** wake-up, must reacquire the full
+execution allowance before Ready. Requests remain FIFO and take priority over
+creation. Native resume additionally requires its acknowledgement. Multiple
+resident grants in one plan each consume capacity, protecting against concurrent
+COW/allocation bursts within each VM's full allowance. This increases potential
+waiting-VM density, not the number of fully reserved simultaneous tool executions.
+The same optional accounting works with offload disabled (`max_writebacks: 0`).
+
+Before new admission, retain the largest extra allowance needed to wake one
+quiescent VM (resident or offloaded); do not charge that headroom again on Acquire.
+This prevents admission from spending the last wake-up capacity at the current
+sample. It cannot guarantee progress under unbounded external/idle memory growth.
+Resident requests lacking capacity stay queued without necessarily being
+unloaded. If pressure or a blocked request/admission actually requires reclaim,
+safe Waiting/Queued followers may be selected; never Active/Ready VMs or the
+blocked resident FIFO head itself. Reclaiming that head cannot fund its own full
+execution allowance.
+
+Victim selection tracks physical and commitment deficits separately: current
+charge estimates physical relief, and charge plus the **state-specific** top-up
+estimates commitment relief. New and in-flight writes use the same estimates.
+Selection stops when both deficits are covered or no slot remains; estimates
+never grant memory before acknowledgement and fresh accounting. At most 16
+writebacks may run; 16 is a ceiling, not a target. High/low watermarks provide
+hysteresis. OCI startup, guest capacity, cgroup limits, UKSM, compressed backing
+and native offload/resume protocols are unchanged.
 
 Control failures stop further grants/reclamation, retain reservations, and retain
 uncertain writeback slots until proven cleanup. State/transition intent is saved
@@ -115,6 +149,9 @@ Regression coverage includes pressure/no-pressure decisions, writeback ceiling,
 pending relief, restore reservation/FIFO and resident-follower reclamation,
 uncertain controls, stale request tokens, measurement and storage failures,
 durable admission, cgroup release checks, and same-user IPC/Execution identity.
+State-dependent tests also cover low-charge admission without offload, simultaneous
+resident wake-ups, FIFO handoff after Wait, wake headroom, COW growth reservations,
+and acknowledgement/measurement/failure fences.
 These are policy and transport fixtures, not KVM density/performance evidence.
 An ordinary-OCI real-VM acceptance test is required before replaying a batch.
 

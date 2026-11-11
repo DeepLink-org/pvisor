@@ -29,6 +29,12 @@ impl Policy {
             config.max_writebacks <= 16,
             "writeback ceiling must be between 0 and 16"
         );
+        ensure!(
+            config
+                .waiting_memory_margin_bytes
+                .is_none_or(|bytes| bytes > 0 && bytes <= config.memory_bytes),
+            "invalid waiting memory margin"
+        );
         Ok(Self {
             snapshot: Snapshot {
                 instance: uuid::Uuid::new_v4().to_string(),
@@ -137,7 +143,41 @@ impl Policy {
             .ok_or_else(|| anyhow::anyhow!("unknown VM"))
     }
 
-    /// Include actual parent charge once, then top up resident VM commitments.
+    fn top_up(&self, e: &Entry, charge: u64) -> u64 {
+        reservation_top_up(e, charge, self.config.waiting_memory_margin_bytes)
+    }
+
+    /// Capacity for one quiescent VM to regain its full execution allowance.
+    /// It is a new-admission fence, not a second reservation on Acquire.
+    fn wake_headroom(&self, charges: &BTreeMap<String, u64>) -> u64 {
+        self.snapshot
+            .entries
+            .iter()
+            .filter_map(|(id, e)| {
+                if self.config.waiting_memory_margin_bytes.is_some() {
+                    matches!(
+                        e.state,
+                        State::Waiting
+                            | State::Queued
+                            | State::Offloading
+                            | State::Offloaded
+                            | State::RestoreQueued
+                    )
+                    .then(|| {
+                        e.memory_bytes
+                            .saturating_sub(charges[id])
+                            .saturating_sub(self.top_up(e, charges[id]))
+                    })
+                } else {
+                    matches!(e.state, State::Offloaded | State::RestoreQueued)
+                        .then_some(e.memory_bytes)
+                }
+            })
+            .max()
+            .unwrap_or(0)
+    }
+
+    /// Include actual parent charge once, then top up state-specific commitments.
     /// Offloaded pages/cache remain in measured charge; reclaim report byte counts
     /// never become an accounting credit. Missing samples stop every grant.
     pub fn plan(&mut self, parent: u64, charges: &BTreeMap<String, u64>) -> Result<Vec<Action>> {
@@ -153,11 +193,9 @@ impl Policy {
                     .get(id)
                     .ok_or_else(|| anyhow::anyhow!("missing charge for {id}"))?
             };
-            if !matches!(e.state, State::Offloaded | State::RestoreQueued) {
-                committed = committed
-                    .checked_add(e.memory_bytes.saturating_sub(charge))
-                    .ok_or_else(|| anyhow::anyhow!("memory accounting overflow"))?;
-            }
+            committed = committed
+                .checked_add(self.top_up(e, charge))
+                .ok_or_else(|| anyhow::anyhow!("memory accounting overflow"))?;
         }
         self.snapshot.measured_bytes = Some(parent);
         self.snapshot.error = None;
@@ -182,14 +220,23 @@ impl Policy {
             let e = &self.snapshot.entries[&id];
             match e.state {
                 State::Queued => {
+                    let extra = e
+                        .memory_bytes
+                        .saturating_sub(charges[&id])
+                        .saturating_sub(self.top_up(e, charges[&id]));
+                    if !fits(committed, extra, self.config.memory_bytes) {
+                        break;
+                    }
+                    committed += extra;
                     self.snapshot.entries.get_mut(&id).unwrap().state = State::Ready;
                     self.requests.pop_front();
                 }
                 State::RestoreQueued => {
                     let extra = e.memory_bytes.saturating_sub(charges[&id]);
-                    if committed.saturating_add(extra) > self.config.memory_bytes {
+                    if !fits(committed, extra, self.config.memory_bytes) {
                         break;
                     }
+                    committed += extra;
                     self.snapshot.entries.get_mut(&id).unwrap().state = State::Restoring;
                     actions.push(Action::Resume(id));
                     break;
@@ -201,18 +248,12 @@ impl Policy {
         // Keep capacity for at least one full restore before admitting another
         // VM. Restores take priority; this headroom is not counted twice on resume.
         if self.requests.is_empty() && self.snapshot.writebacks == 0 {
-            let headroom = self
-                .snapshot
-                .entries
-                .values()
-                .filter(|e| matches!(e.state, State::Offloaded | State::RestoreQueued))
-                .map(|e| e.memory_bytes)
-                .max()
-                .unwrap_or(0);
+            let headroom = self.wake_headroom(charges);
             while let Some(id) = self.admission.front().cloned() {
                 let bytes = self.snapshot.entries[&id].memory_bytes;
-                if committed.saturating_add(bytes).saturating_add(headroom)
-                    > self.config.memory_bytes
+                if !committed
+                    .checked_add(bytes)
+                    .is_some_and(|next| fits(next, headroom, self.config.memory_bytes))
                 {
                     break;
                 }
@@ -221,20 +262,23 @@ impl Policy {
                 self.admission.pop_front();
             }
         }
-        let blocked_restore = self
-            .requests
-            .front()
-            .is_some_and(|id| self.snapshot.entries[id].state == State::RestoreQueued);
+        let blocked_request = self.requests.front().is_some_and(|id| {
+            matches!(
+                self.snapshot.entries[id].state,
+                State::Queued | State::RestoreQueued
+            )
+        });
         let blocked_create = !self.admission.is_empty() && self.requests.is_empty();
-        if self.pressure || blocked_restore || blocked_create {
+        if self.pressure || blocked_request || blocked_create {
             let restore_extra = self
                 .requests
                 .front()
-                .filter(|_| blocked_restore)
+                .filter(|_| blocked_request)
                 .map(|id| {
                     self.snapshot.entries[id]
                         .memory_bytes
                         .saturating_sub(charges[id])
+                        .saturating_sub(self.top_up(&self.snapshot.entries[id], charges[id]))
                 })
                 .unwrap_or(0);
             let create_extra = self
@@ -242,20 +286,14 @@ impl Policy {
                 .front()
                 .filter(|_| blocked_create)
                 .map(|id| {
-                    self.snapshot.entries[id].memory_bytes.saturating_add(
-                        self.snapshot
-                            .entries
-                            .values()
-                            .filter(|e| matches!(e.state, State::Offloaded | State::RestoreQueued))
-                            .map(|e| e.memory_bytes)
-                            .max()
-                            .unwrap_or(0),
-                    )
+                    self.snapshot.entries[id]
+                        .memory_bytes
+                        .saturating_add(self.wake_headroom(charges))
                 })
                 .unwrap_or(0);
             // Estimates select victims only; grants still require a fresh sample.
             // Physical relief cannot include unused reservation. Commitment
-            // relief includes charge plus its reservation top-up, i.e. their max.
+            // relief includes charge plus its state-specific reservation top-up.
             // Use both estimates for new victims and writes already in flight.
             let mut physical_relief = 0u64;
             let mut commitment_relief = 0u64;
@@ -263,8 +301,8 @@ impl Policy {
                 if e.state == State::Offloading {
                     let charge = charges[id];
                     physical_relief = physical_relief.saturating_add(charge);
-                    commitment_relief =
-                        commitment_relief.saturating_add(charge.max(e.memory_bytes));
+                    commitment_relief = commitment_relief
+                        .saturating_add(charge.saturating_add(self.top_up(e, charge)));
                 }
             }
             let physical_need = if self.pressure {
@@ -287,15 +325,31 @@ impl Policy {
                     break;
                 }
                 if matches!(e.state, State::Waiting | State::Queued) {
+                    // Offloading a blocked resident head cannot create capacity
+                    // for that same VM's full execution allowance. Reclaim safe
+                    // followers instead; the head keeps its place and token.
+                    if blocked_request && self.requests.front() == Some(id) {
+                        continue;
+                    }
                     let charge = charges.get(id).copied().unwrap_or(0);
-                    if charge == 0 {
+                    let top_up =
+                        reservation_top_up(e, charge, self.config.waiting_memory_margin_bytes);
+                    // A fully shared VM may have zero private charge but still
+                    // hold a waiting margin. Its acknowledged offload can
+                    // relinquish that margin for a blocked request, never count
+                    // it as physical relief. Keep legacy zero-charge selection.
+                    if charge == 0
+                        && (self.config.waiting_memory_margin_bytes.is_none()
+                            || top_up == 0
+                            || commitment_relief >= commitment_need)
+                    {
                         continue;
                     }
                     e.state = State::Offloading;
                     self.snapshot.writebacks += 1;
                     physical_relief = physical_relief.saturating_add(charge);
                     commitment_relief =
-                        commitment_relief.saturating_add(charge.max(e.memory_bytes));
+                        commitment_relief.saturating_add(charge.saturating_add(top_up));
                     actions.push(Action::Offload(id.clone()));
                 }
             }
@@ -330,5 +384,22 @@ impl Policy {
                 }
             }
         }
+    }
+}
+
+fn fits(committed: u64, extra: u64, budget: u64) -> bool {
+    committed
+        .checked_add(extra)
+        .is_some_and(|total| total <= budget)
+}
+
+fn reservation_top_up(e: &Entry, charge: u64, waiting_margin: Option<u64>) -> u64 {
+    let full = e.memory_bytes.saturating_sub(charge);
+    match e.state {
+        State::Offloaded | State::RestoreQueued => 0,
+        State::Waiting | State::Queued | State::Offloading => {
+            waiting_margin.map_or(full, |margin| full.min(margin))
+        }
+        _ => full,
     }
 }

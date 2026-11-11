@@ -13,6 +13,7 @@ fn config() -> Config {
         high_bytes: 18,
         low_bytes: 14,
         max_writebacks: 16,
+        waiting_memory_margin_bytes: None,
         cgroup_root: "/sys/fs/cgroup/test".into(),
     }
 }
@@ -287,4 +288,320 @@ async fn ordinary_files_cannot_impersonate_cgroup_accounting() {
     let error = super::serve(state.clone(), config).await.unwrap_err();
     assert!(error.to_string().contains("not a cgroup v2 filesystem"));
     assert!(!state.exists(), "invalid accounting must not create state");
+}
+
+fn elastic_pair() -> Policy {
+    let mut p = pair();
+    p.config.waiting_memory_margin_bytes = Some(1);
+    p
+}
+
+#[test]
+fn waiting_margin_is_explicit_validated_and_roundtrips() {
+    let mut json = serde_json::to_value(config()).unwrap();
+    json.as_object_mut()
+        .unwrap()
+        .remove("waiting_memory_margin_bytes");
+    let legacy: Config = serde_json::from_value(json.clone()).unwrap();
+    assert_eq!(legacy.waiting_memory_margin_bytes, None);
+    for margin in [0, 21] {
+        json["waiting_memory_margin_bytes"] = margin.into();
+        assert!(Policy::new(serde_json::from_value(json.clone()).unwrap()).is_err());
+    }
+    json["waiting_memory_margin_bytes"] = 1.into();
+    let p = Policy::new(serde_json::from_value(json).unwrap()).unwrap();
+    let restored: Config = serde_json::from_slice(&serde_json::to_vec(&p.config).unwrap()).unwrap();
+    assert_eq!(restored.waiting_memory_margin_bytes, Some(1));
+}
+
+#[test]
+fn low_charge_waiters_admit_more_without_offload_in_either_arm() {
+    for writebacks in [0, 16] {
+        let mut p = elastic_pair();
+        p.config.max_writebacks = writebacks;
+        p.reserve(id(3), 8).unwrap();
+        assert!(p.plan(2, &charges(1, 1)).unwrap().is_empty());
+        assert_eq!(p.snapshot.entries[&id(3)].state, State::Admitted);
+        assert_eq!(p.snapshot.entries[&id(1)].state, State::Waiting);
+        p.bound(&id(3)).unwrap();
+        p.wait(&id(3), None).unwrap();
+        p.reserve(id(4), 8).unwrap();
+        let samples = [(id(1), 1), (id(2), 1), (id(3), 1)].into();
+        assert!(p.plan(3, &samples).unwrap().is_empty());
+        assert_eq!(p.snapshot.entries[&id(4)].state, State::Admitted);
+        assert_eq!(p.snapshot.writebacks, 0);
+        // 3*(charge 1 + margin 1) + startup 8 + wake extra 6 = 20.
+    }
+}
+
+fn four_waiters() -> (Policy, BTreeMap<String, u64>) {
+    let mut p = elastic_pair();
+    p.config.max_writebacks = 0;
+    let mut samples = charges(1, 1);
+    for n in 3..=4 {
+        p.reserve(id(n), 8).unwrap();
+        p.plan(samples.len() as u64, &samples).unwrap();
+        p.bound(&id(n)).unwrap();
+        p.wait(&id(n), None).unwrap();
+        samples.insert(id(n), 1);
+    }
+    (p, samples)
+}
+
+#[test]
+fn concurrent_resident_wakes_reserve_full_capacity_and_keep_fifo() {
+    let (mut p, samples) = four_waiters();
+    for n in 1..=4 {
+        p.acquire(&id(n), id(100 + n)).unwrap();
+    }
+    assert!(p.plan(4, &samples).unwrap().is_empty());
+    assert_eq!(p.snapshot.entries[&id(1)].state, State::Ready);
+    assert_eq!(p.snapshot.entries[&id(2)].state, State::Ready);
+    assert_eq!(p.snapshot.entries[&id(3)].state, State::Queued);
+    assert_eq!(p.snapshot.entries[&id(4)].state, State::Queued);
+    // Repeated polls cannot credit a Ready VM's low physical charge.
+    for _ in 0..3 {
+        p.plan(4, &samples).unwrap();
+        assert_eq!(p.snapshot.entries[&id(3)].state, State::Queued);
+    }
+    assert!(p.wait(&id(1), Some(id(999))).is_err());
+    p.wait(&id(1), Some(id(101))).unwrap();
+    p.plan(4, &samples).unwrap();
+    assert_eq!(p.snapshot.entries[&id(3)].state, State::Ready);
+    assert_eq!(p.snapshot.entries[&id(4)].state, State::Queued);
+    p.wait(&id(2), Some(id(102))).unwrap();
+    p.plan(4, &samples).unwrap();
+    assert_eq!(p.snapshot.entries[&id(4)].state, State::Ready);
+}
+
+#[test]
+fn new_admission_preserves_one_resident_wake_and_requests_take_priority() {
+    let (mut p, samples) = four_waiters();
+    p.reserve(id(5), 8).unwrap();
+    p.plan(4, &samples).unwrap();
+    // Actual + waiting margins + new startup = 16 fits, but + wake 6 does not.
+    assert_eq!(p.snapshot.entries[&id(5)].state, State::AdmissionQueued);
+    p.acquire(&id(1), id(101)).unwrap();
+    p.plan(4, &samples).unwrap();
+    assert_eq!(p.snapshot.entries[&id(1)].state, State::Ready);
+    assert_eq!(p.snapshot.entries[&id(5)].state, State::AdmissionQueued);
+}
+
+#[test]
+fn waiting_margin_is_capped_and_active_growth_stays_reserved() {
+    let mut p = elastic_pair();
+    p.config.waiting_memory_margin_bytes = Some(20);
+    p.reserve(id(3), 8).unwrap();
+    p.config.max_writebacks = 0;
+    p.plan(2, &charges(1, 1)).unwrap();
+    assert_eq!(p.snapshot.entries[&id(3)].state, State::AdmissionQueued);
+    p.config.waiting_memory_margin_bytes = Some(1);
+    p.acquire(&id(1), id(101)).unwrap();
+    p.plan(2, &charges(1, 1)).unwrap();
+    assert_eq!(p.snapshot.entries[&id(1)].state, State::Ready);
+    // Writing shared pages may grow charge from 1 to 8 without new permission.
+    // The full execution allowance was already held, not a UKSM savings credit.
+    p.plan(9, &charges(8, 1)).unwrap();
+    assert_eq!(p.snapshot.entries[&id(3)].state, State::AdmissionQueued);
+}
+
+#[test]
+fn blocked_resident_head_reclaims_followers_not_itself_then_resamples() {
+    let mut p = elastic_pair();
+    p.acquire(&id(1), id(101)).unwrap();
+    p.acquire(&id(2), id(102)).unwrap();
+    // Parent includes 5 bytes of node overhead: 5 + 7 + 8 = 20, with 1 top-up.
+    let actions = p.plan(20, &charges(7, 8)).unwrap();
+    assert_eq!(actions, [Action::Offload(id(2))]);
+    assert_eq!(p.snapshot.entries[&id(1)].state, State::Queued);
+    p.finish(actions[0].clone(), Ok(()));
+    // Native completion alone is no memory credit.
+    assert!(p.plan(20, &charges(7, 8)).unwrap().is_empty());
+    assert_eq!(p.snapshot.entries[&id(1)].state, State::Queued);
+    let actions = p.plan(13, &charges(7, 1)).unwrap();
+    assert_eq!(p.snapshot.entries[&id(1)].state, State::Ready);
+    assert_eq!(p.snapshot.entries[&id(2)].state, State::RestoreQueued);
+    assert!(actions.is_empty()); // 5 overhead + 8 executing + 8 restore > 20.
+    p.wait(&id(1), Some(id(101))).unwrap();
+    assert_eq!(p.plan(7, &charges(1, 1)).unwrap(), [Action::Resume(id(2))]);
+    assert_eq!(p.snapshot.entries[&id(2)].state, State::Restoring);
+    p.finish(Action::Resume(id(2)), Ok(()));
+    assert_eq!(p.snapshot.entries[&id(2)].state, State::Ready);
+}
+
+#[test]
+fn elastic_writeback_ceiling_pending_relief_and_uncertain_failure() {
+    let mut p = elastic_pair();
+    p.config.max_writebacks = 1;
+    let actions = p.plan(19, &charges(8, 8)).unwrap();
+    assert_eq!(actions, [Action::Offload(id(1))]);
+    p.acquire(&id(1), id(101)).unwrap();
+    assert!(p.plan(19, &charges(8, 8)).unwrap().is_empty());
+    assert_eq!(p.snapshot.entries[&id(1)].state, State::Offloading);
+    p.finish(actions[0].clone(), Err(anyhow::anyhow!("lost reply")));
+    p.reserve(id(3), 8).unwrap();
+    assert!(p.plan(2, &charges(1, 1)).unwrap().is_empty());
+    assert_eq!(p.snapshot.writebacks, 1);
+    assert_eq!(p.snapshot.entries[&id(1)].state, State::Failed);
+    assert_eq!(p.snapshot.entries[&id(3)].state, State::AdmissionQueued);
+    p.release(&id(1)).unwrap();
+    assert_eq!(p.snapshot.writebacks, 0);
+}
+
+#[test]
+fn restoring_keeps_full_reservation_until_ack_and_never_grants_followers_early() {
+    let mut p = elastic_pair();
+    let action = p.plan(19, &charges(8, 8)).unwrap().remove(0);
+    p.finish(action, Ok(()));
+    p.acquire(&id(1), id(101)).unwrap();
+    p.acquire(&id(2), id(102)).unwrap();
+    assert_eq!(p.plan(2, &charges(1, 1)).unwrap(), [Action::Resume(id(1))]);
+    p.reserve(id(3), 8).unwrap();
+    assert!(p.plan(2, &charges(1, 1)).unwrap().is_empty());
+    assert_eq!(p.snapshot.entries[&id(2)].state, State::Queued);
+    assert_eq!(p.snapshot.entries[&id(3)].state, State::AdmissionQueued);
+    p.finish(Action::Resume(id(1)), Ok(()));
+    p.plan(2, &charges(1, 1)).unwrap();
+    assert_eq!(p.snapshot.entries[&id(2)].state, State::Ready);
+    assert_eq!(p.snapshot.entries[&id(3)].state, State::AdmissionQueued);
+}
+
+#[test]
+fn elastic_missing_sample_cannot_grant_resident_permit() {
+    let mut p = elastic_pair();
+    p.acquire(&id(1), id(101)).unwrap();
+    assert!(p.plan(2, &[(id(2), 1)].into()).is_err());
+    assert_eq!(p.snapshot.entries[&id(1)].state, State::Queued);
+    assert_eq!(p.snapshot.writebacks, 0);
+}
+
+#[test]
+fn sixteen_low_charge_waiters_fit_forty_gib_without_changing_guest_capacity() {
+    let gib = 1u64 << 30;
+    let mut c = config();
+    c.memory_bytes = 40 * gib;
+    c.high_bytes = 36 * gib;
+    c.low_bytes = 30 * gib;
+    c.waiting_memory_margin_bytes = Some(gib / 4);
+    let mut p = Policy::new(c).unwrap();
+    let mut samples = BTreeMap::new();
+    for n in 1..=16 {
+        p.reserve(id(n), 5 * gib + gib / 4).unwrap();
+        let parent = samples.values().sum();
+        assert!(p.plan(parent, &samples).unwrap().is_empty());
+        assert_eq!(p.snapshot.entries[&id(n)].state, State::Admitted);
+        p.bound(&id(n)).unwrap();
+        p.wait(&id(n), None).unwrap();
+        samples.insert(id(n), 320 * (1 << 20));
+    }
+    assert!(p.plan(5 * gib, &samples).unwrap().is_empty());
+    assert!(
+        p.snapshot
+            .entries
+            .values()
+            .all(|e| e.state == State::Waiting)
+    );
+    assert_eq!(p.snapshot.writebacks, 0);
+    // Synthetic accounting example: 5 GiB actual + 4 GiB wait margins,
+    // not sixteen permanent reservations totalling 84 GiB. No UKSM credit.
+}
+
+#[test]
+fn actual_memory_growth_without_safe_wait_never_releases_execution_allowance() {
+    let mut p = Policy::new(Config {
+        waiting_memory_margin_bytes: Some(1),
+        ..config()
+    })
+    .unwrap();
+    for n in 1..=3 {
+        p.reserve(id(n), 8).unwrap();
+    }
+    p.plan(0, &BTreeMap::new()).unwrap();
+    p.bound(&id(1)).unwrap();
+    p.bound(&id(2)).unwrap();
+    for sample in [charges(8, 8), charges(1, 1), charges(7, 7)] {
+        assert!(p.plan(sample.values().sum(), &sample).unwrap().is_empty());
+        assert_eq!(p.snapshot.entries[&id(3)].state, State::AdmissionQueued);
+    }
+    // Only the owner's safe Wait transition makes unused capacity available.
+    p.wait(&id(1), None).unwrap();
+    p.wait(&id(2), None).unwrap();
+    p.plan(2, &charges(1, 1)).unwrap();
+    assert_eq!(p.snapshot.entries[&id(3)].state, State::Admitted);
+}
+
+#[test]
+fn resident_grants_never_double_spend_capacity_across_samples() {
+    for a in 0..=8 {
+        for b in 0..=8 {
+            for overhead in [0, 2, 8, 20] {
+                let mut p = elastic_pair();
+                p.config.max_writebacks = 0;
+                p.acquire(&id(1), id(101)).unwrap();
+                p.acquire(&id(2), id(102)).unwrap();
+                let sample = charges(a, b);
+                p.plan(a + b + overhead, &sample).unwrap();
+                if p.snapshot.entries.values().any(|e| e.state == State::Ready) {
+                    let mut total = overhead;
+                    for n in 1..=2 {
+                        total += match p.snapshot.entries[&id(n)].state {
+                            State::Ready => 8,
+                            State::Queued => (sample[&id(n)] + 1).min(8),
+                            other => panic!("unexpected state {other:?}"),
+                        };
+                    }
+                    assert!(total <= 20, "a={a} b={b} overhead={overhead}");
+                }
+                if p.snapshot.entries[&id(2)].state == State::Ready {
+                    assert_eq!(p.snapshot.entries[&id(1)].state, State::Ready);
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn admission_addition_overflow_cannot_turn_into_capacity() {
+    let mut c = config();
+    c.memory_bytes = u64::MAX;
+    c.high_bytes = u64::MAX;
+    c.low_bytes = u64::MAX - 1;
+    c.waiting_memory_margin_bytes = Some(1);
+    let mut p = Policy::new(c).unwrap();
+    p.reserve(id(1), 8).unwrap();
+    p.plan(u64::MAX - 4, &BTreeMap::new()).unwrap();
+    assert_eq!(p.snapshot.entries[&id(1)].state, State::AdmissionQueued);
+}
+
+#[test]
+fn zero_private_charge_can_relinquish_margin_but_never_physical_bytes() {
+    let (mut p, mut samples) = four_waiters();
+    p.config.max_writebacks = 16;
+    for charge in samples.values_mut() {
+        *charge = 0;
+    }
+    p.acquire(&id(1), id(101)).unwrap();
+    // Pool/node charge is 12. Full head allowance 8 fits once the other three
+    // waiting margins are relinquished. No private bytes are credited as freed.
+    let actions = p.plan(12, &samples).unwrap();
+    assert_eq!(
+        actions,
+        [
+            Action::Offload(id(2)),
+            Action::Offload(id(3)),
+            Action::Offload(id(4))
+        ]
+    );
+    assert!(p.plan(12, &samples).unwrap().is_empty());
+    assert_eq!(p.snapshot.entries[&id(1)].state, State::Queued);
+    for action in actions {
+        p.finish(action, Ok(()));
+    }
+    assert!(p.plan(12, &samples).unwrap().is_empty());
+    assert_eq!(p.snapshot.entries[&id(1)].state, State::Ready);
+
+    let mut p = elastic_pair();
+    // Only node/pool memory is high, and no admission/wake is waiting.
+    // Empty private VM charges cannot satisfy this physical deficit.
+    assert!(p.plan(18, &charges(0, 0)).unwrap().is_empty());
 }

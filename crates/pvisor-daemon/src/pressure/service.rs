@@ -578,6 +578,7 @@ mod tests {
             high_bytes: 18,
             low_bytes: 14,
             max_writebacks: 16,
+            waiting_memory_margin_bytes: None,
             cgroup_root: root,
         })
         .unwrap();
