@@ -253,27 +253,29 @@ impl Policy {
                     )
                 })
                 .unwrap_or(0);
-            // Estimate only how many victims to select, never admission credits.
-            // Existing writes are counted so each 100 ms tick cannot launch a
-            // fresh wave while the first wave is still publishing backing.
-            let mut relief = self
-                .snapshot
-                .entries
-                .iter()
-                .filter(|(_, e)| e.state == State::Offloading)
-                .map(|(id, e)| charges.get(id).copied().unwrap_or(0).max(e.memory_bytes))
-                .fold(0u64, u64::saturating_add);
-            let need = if self.pressure {
+            // Estimates select victims only; grants still require a fresh sample.
+            // Physical relief cannot include unused reservation. Commitment
+            // relief includes charge plus its reservation top-up, i.e. their max.
+            // Use both estimates for new victims and writes already in flight.
+            let mut physical_relief = 0u64;
+            let mut commitment_relief = 0u64;
+            for (id, e) in &self.snapshot.entries {
+                if e.state == State::Offloading {
+                    let charge = charges[id];
+                    physical_relief = physical_relief.saturating_add(charge);
+                    commitment_relief =
+                        commitment_relief.saturating_add(charge.max(e.memory_bytes));
+                }
+            }
+            let physical_need = if self.pressure {
                 parent.saturating_sub(self.config.low_bytes)
             } else {
                 0
-            }
-            .max(
-                committed
-                    .saturating_add(restore_extra)
-                    .saturating_add(create_extra)
-                    .saturating_sub(self.config.memory_bytes),
-            );
+            };
+            let commitment_need = committed
+                .saturating_add(restore_extra)
+                .saturating_add(create_extra)
+                .saturating_sub(self.config.memory_bytes);
             // Reserve slots before yielding to I/O. Never reclaim Active/Ready,
             // even when measurements show pressure. Queued resident followers
             // are eligible, avoiding the FIFO head-of-line deadlock.
@@ -281,7 +283,7 @@ impl Policy {
                 if self.snapshot.writebacks >= self.config.max_writebacks {
                     break;
                 }
-                if relief >= need {
+                if physical_relief >= physical_need && commitment_relief >= commitment_need {
                     break;
                 }
                 if matches!(e.state, State::Waiting | State::Queued) {
@@ -291,7 +293,9 @@ impl Policy {
                     }
                     e.state = State::Offloading;
                     self.snapshot.writebacks += 1;
-                    relief = relief.saturating_add(charge);
+                    physical_relief = physical_relief.saturating_add(charge);
+                    commitment_relief =
+                        commitment_relief.saturating_add(charge.max(e.memory_bytes));
                     actions.push(Action::Offload(id.clone()));
                 }
             }

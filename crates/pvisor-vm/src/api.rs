@@ -1146,6 +1146,13 @@ pub trait RamFileStore: Send {
     /// Write all input bytes at offset into staging, or report an I/O error.
     /// A failed write may have partial effects; this is not a generation commit.
     fn write_at(&mut self, offset: u64, input: &[u8]) -> io::Result<()>;
+    /// Replace a nonempty, 4 KiB-aligned range within logical RAM with zeros,
+    /// without resizing or committing a generation. Zeros must override both
+    /// staged bytes and older generations. The caller must quiesce writers and
+    /// invalidate mapped/file caches through the host filesystem operation.
+    /// Unsupported stores return `Unsupported` without effects; other failures
+    /// may have partial effects and require fail-stop. No VM-control reentry.
+    fn zero_range(&mut self, offset: u64, length: u64) -> io::Result<()>;
     /// Drain staged writes according to the store contract. Does not publish
     /// a checkpoint/generation or authorize removing the backing owner.
     fn flush_writes(&self) -> io::Result<()>;

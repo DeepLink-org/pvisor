@@ -259,6 +259,46 @@ impl Filesystem for RamFs {
     fn flush(&mut self, req: &Request<'_>, ino: u64, fh: u64, _lock_owner: u64, reply: ReplyEmpty) {
         self.fsync(req, ino, fh, false, reply);
     }
+    #[cfg(target_os = "linux")]
+    fn fallocate(
+        &mut self,
+        _req: &Request<'_>,
+        ino: u64,
+        _fh: u64,
+        offset: i64,
+        length: i64,
+        mode: i32,
+        reply: ReplyEmpty,
+    ) {
+        // Linux's hole-punch path drains/invalidate its cached pages around this
+        // request. A store-only zero operation would leave stale FUSE mmap data.
+        if mode != libc::FALLOC_FL_PUNCH_HOLE | libc::FALLOC_FL_KEEP_SIZE {
+            reply.error(libc::EOPNOTSUPP);
+        } else if ino != RAM
+            || offset < 0
+            || length <= 0
+            || offset % 4096 != 0
+            || length % 4096 != 0
+        {
+            reply.error(libc::EINVAL);
+        } else {
+            match self
+                .store
+                .lock()
+                .unwrap()
+                .zero_range(offset as u64, length as u64)
+            {
+                Ok(()) => reply.ok(),
+                Err(error) => {
+                    reply.error(match error.kind() {
+                        io::ErrorKind::Unsupported => libc::EOPNOTSUPP,
+                        io::ErrorKind::InvalidInput => libc::EINVAL,
+                        _ => libc::EIO,
+                    });
+                }
+            }
+        }
+    }
     fn fsync(
         &mut self,
         _req: &Request<'_>,

@@ -114,6 +114,8 @@ pub struct CompressedRam {
     directory: PathBuf,
     staging: Option<tempfile::NamedTempFile>,
     dirty: BTreeMap<u64, u16>,
+    // Subset of dirty: explicit zeros override staging and ancestor contents.
+    zeros: BTreeMap<u64, u16>,
     chain: Option<SnapshotChain>,
     logical_bytes: u64,
     failed: bool,
@@ -148,6 +150,7 @@ impl CompressedRam {
             directory,
             staging: Some(staging),
             dirty: BTreeMap::new(),
+            zeros: BTreeMap::new(),
             chain: None,
             logical_bytes: 0,
             failed: false,
@@ -212,6 +215,7 @@ impl CompressedRam {
             directory: descriptor.directory,
             staging: None,
             dirty: BTreeMap::new(),
+            zeros: BTreeMap::new(),
             chain,
             logical_bytes,
             failed: false,
@@ -284,6 +288,7 @@ impl CompressedRam {
             vec![0; length]
         };
         if let Some(mask) = self.dirty.get(&block) {
+            let mask = mask & !self.zeros.get(&block).copied().unwrap_or(0);
             let staging = self
                 .staging
                 .as_ref()
@@ -302,6 +307,13 @@ impl CompressedRam {
                 staging
                     .as_file()
                     .read_exact_at(&mut output[start..end], offset + start as u64)?;
+            }
+        }
+        if let Some(mask) = self.zeros.get(&block) {
+            for page in 0..length.div_ceil(PAGE_BYTES) {
+                if mask & (1 << page) != 0 {
+                    output[page * PAGE_BYTES..((page + 1) * PAGE_BYTES).min(length)].fill(0);
+                }
             }
         }
         Ok(output)
@@ -329,12 +341,34 @@ impl CompressedRam {
                 .get(&block)
                 .is_some_and(|mask| mask & needed == needed)
             {
-                // Fully staged request ranges do not depend on ancestor data.
-                self.staging
-                    .as_ref()
-                    .unwrap()
-                    .as_file()
-                    .read_exact_at(&mut output[done..done + length], position)?;
+                // Fully overridden requests never need ancestor data, including
+                // a zero subrange beside an unreadable ancestor page.
+                let zeros = self.zeros.get(&block).copied().unwrap_or(0);
+                if zeros & needed == 0 {
+                    self.staging
+                        .as_ref()
+                        .unwrap()
+                        .as_file()
+                        .read_exact_at(&mut output[done..done + length], position)?;
+                } else {
+                    let mut copied = 0;
+                    while copied < length {
+                        let page = (within + copied) / PAGE_BYTES;
+                        let bytes =
+                            (length - copied).min(PAGE_BYTES - (within + copied) % PAGE_BYTES);
+                        let target = &mut output[done + copied..done + copied + bytes];
+                        if zeros & (1 << page) != 0 {
+                            target.fill(0);
+                        } else {
+                            self.staging
+                                .as_ref()
+                                .unwrap()
+                                .as_file()
+                                .read_exact_at(target, position + copied as u64)?;
+                        }
+                        copied += bytes;
+                    }
+                }
             } else {
                 let data = self.read_block(block)?;
                 output[done..done + length].copy_from_slice(&data[within..within + length]);
@@ -386,10 +420,12 @@ impl CompressedRam {
                         // Only boundary pages need old bytes. Keep at most one
                         // decoded block for this request, never across writes.
                         if mask & (1 << page) != 0 {
-                            staging.read_exact_at(
-                                &mut data[page_start - start..page_end - start],
-                                block_offset + page_start as u64,
-                            )?;
+                            if self.zeros.get(&block).copied().unwrap_or(0) & (1 << page) == 0 {
+                                staging.read_exact_at(
+                                    &mut data[page_start - start..page_end - start],
+                                    block_offset + page_start as u64,
+                                )?;
+                            }
                         } else {
                             if decoded.is_none() {
                                 decoded = Some(self.read_block(block)?);
@@ -407,12 +443,50 @@ impl CompressedRam {
                 }
                 let written = (((1u32 << last) - 1) ^ ((1u32 << first) - 1)) as u16;
                 *self.dirty.entry(block).or_default() |= written;
+                if let Some(zeros) = self.zeros.get_mut(&block) {
+                    *zeros &= !written;
+                    if *zeros == 0 {
+                        self.zeros.remove(&block);
+                    }
+                }
                 done += length;
             }
             Ok(())
         })();
         self.failed = result.is_err();
         result
+    }
+
+    /// Explicit sparse zeros, including overrides of nonzero ancestor pages.
+    /// Callers must drain/invalidate the logical inode's cache before resuming.
+    pub fn zero_range(&mut self, offset: u64, length: u64) -> io::Result<()> {
+        self.writable()?;
+        if length == 0
+            || !offset.is_multiple_of(PAGE_BYTES as u64)
+            || !length.is_multiple_of(PAGE_BYTES as u64)
+            || offset
+                .checked_add(length)
+                .is_none_or(|end| end > self.logical_bytes)
+        {
+            return Err(io::Error::new(
+                ErrorKind::InvalidInput,
+                "invalid RAM zero range",
+            ));
+        }
+        let end = offset + length;
+        let mut position = offset;
+        while position < end {
+            let block = position / BLOCK_BYTES as u64;
+            let within = (position % BLOCK_BYTES as u64) as usize;
+            let bytes = (end - position).min((BLOCK_BYTES - within) as u64) as usize;
+            let first = within / PAGE_BYTES;
+            let last = (within + bytes) / PAGE_BYTES;
+            let mask = (((1u32 << last) - 1) ^ ((1u32 << first) - 1)) as u16;
+            *self.dirty.entry(block).or_default() |= mask;
+            *self.zeros.entry(block).or_default() |= mask;
+            position += bytes as u64;
+        }
+        Ok(())
     }
 
     /// Flush writable staging without producing a generation. The offload
@@ -472,6 +546,7 @@ impl CompressedRam {
             }
             self.chain = Some(chain);
             self.dirty.clear();
+            self.zeros.clear();
             self.staging.as_ref().unwrap().as_file().set_len(0)?;
             // Publication is already durable. Failed housekeeping must not turn
             // a valid committed generation into a reported storage failure.
@@ -514,11 +589,132 @@ impl pvisor_vm::api::RamFileStore for CompressedRam {
     fn flush_writes(&self) -> io::Result<()> {
         CompressedRam::flush_writes(self)
     }
+    fn zero_range(&mut self, offset: u64, length: u64) -> io::Result<()> {
+        CompressedRam::zero_range(self, offset, length)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn sparse_zero_overrides_ancestor_and_staging_then_survives_reopen() {
+        use pvisor_vm::api::RamFileStore;
+        let dir = tempfile::tempdir().unwrap();
+        let manifest = tempfile::tempfile().unwrap();
+        let mut store = CompressedRam::create(manifest.try_clone().unwrap(), dir.path()).unwrap();
+        let size = BLOCK_BYTES * 3;
+        store.set_len(size as u64).unwrap();
+        let mut expected = vec![0x5a; size];
+        store.write_at(0, &expected).unwrap();
+        store.sync_all().unwrap();
+        store.write_at(4096, &[0x33; 4096]).unwrap();
+        // Cross block boundaries, override both an ancestor and a staged page.
+        RamFileStore::zero_range(&mut store, 4096, (BLOCK_BYTES * 2) as u64).unwrap();
+        expected[4096..4096 + BLOCK_BYTES * 2].fill(0);
+        // A subsequent partial write must preserve surrounding zeros, not fetch
+        // stale staging or ancestor bytes. A full page must clear the zero mask.
+        store.write_at(4099, &[7, 8]).unwrap();
+        expected[4099..4101].copy_from_slice(&[7, 8]);
+        store.write_at(BLOCK_BYTES as u64, &[0x99; 4096]).unwrap();
+        expected[BLOCK_BYTES..BLOCK_BYTES + 4096].fill(0x99);
+        let mut actual = vec![0; size];
+        store.read_at(0, &mut actual).unwrap();
+        assert_eq!(actual, expected);
+        store.sync_all().unwrap();
+        let reopened = CompressedRam::open(manifest).unwrap();
+        reopened.read_at(0, &mut actual).unwrap();
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn sparse_zero_does_not_materialize_staging_and_rejects_invalid_ranges() {
+        use std::os::unix::fs::MetadataExt;
+        let dir = tempfile::tempdir().unwrap();
+        let manifest = tempfile::tempfile().unwrap();
+        let mut store = CompressedRam::create(manifest, dir.path()).unwrap();
+        let size = 16 * 1024 * 1024;
+        store.set_len(size).unwrap();
+        for (offset, length) in [
+            (0, 0),
+            (1, 4096),
+            (0, 1),
+            (size, 4096),
+            (u64::MAX - 4095, 4096),
+        ] {
+            assert_eq!(
+                store.zero_range(offset, length).unwrap_err().kind(),
+                ErrorKind::InvalidInput
+            );
+        }
+        assert!(store.dirty.is_empty());
+        store.zero_range(0, size).unwrap();
+        let mut bytes = [1; 8192];
+        store.read_at(4095, &mut bytes).unwrap();
+        assert_eq!(bytes, [0; 8192]);
+        let staging = store
+            .staging
+            .as_ref()
+            .unwrap()
+            .as_file()
+            .metadata()
+            .unwrap();
+        assert_eq!(staging.len(), 0);
+        assert_eq!(staging.blocks(), 0);
+        store.sync_all().unwrap();
+        store.read_at(size - 8192, &mut bytes).unwrap();
+        assert_eq!(bytes, [0; 8192]);
+    }
+
+    #[test]
+    fn sparse_zero_retained_after_failed_generation_publication() {
+        let dir = tempfile::tempdir().unwrap();
+        let manifest = tempfile::NamedTempFile::new().unwrap();
+        let mut store = CompressedRam::create(manifest.reopen().unwrap(), dir.path()).unwrap();
+        store.set_len(BLOCK_BYTES as u64).unwrap();
+        store.write_at(0, &vec![0x55; BLOCK_BYTES]).unwrap();
+        store.sync_all().unwrap();
+        store.zero_range(0, BLOCK_BYTES as u64).unwrap();
+        // Force head publication failure without changing the previously durable head.
+        let readonly = File::open(manifest.path()).unwrap();
+        store.manifest = readonly;
+        assert!(store.sync_all().is_err());
+        assert!(store.failed);
+        assert!(!store.zeros.is_empty());
+        let reopened = CompressedRam::open(manifest.reopen().unwrap()).unwrap();
+        let mut bytes = vec![0; BLOCK_BYTES];
+        reopened.read_at(0, &mut bytes).unwrap();
+        assert_eq!(bytes, vec![0x55; BLOCK_BYTES]);
+    }
+
+    #[test]
+    fn sparse_zero_and_partial_writes_survive_repeated_compaction() {
+        let dir = tempfile::tempdir().unwrap();
+        let manifest = tempfile::tempfile().unwrap();
+        let mut store = CompressedRam::create(manifest.try_clone().unwrap(), dir.path()).unwrap();
+        let mut expected = vec![0x55; 3 * BLOCK_BYTES];
+        store.set_len(expected.len() as u64).unwrap();
+        store.write_at(0, &expected).unwrap();
+        store.sync_all().unwrap();
+        for round in 0..24usize {
+            let start = ((round * 7) % 32) * PAGE_BYTES;
+            let length = (1 + round % 16) * PAGE_BYTES;
+            store.zero_range(start as u64, length as u64).unwrap();
+            expected[start..start + length].fill(0);
+            // Unaligned overwrite crosses zero and nonzero page boundaries.
+            let offset = start + length - 3;
+            let input = vec![round as u8 + 1; PAGE_BYTES + 9];
+            store.write_at(offset as u64, &input).unwrap();
+            expected[offset..offset + input.len()].copy_from_slice(&input);
+            store.sync_all().unwrap();
+            assert!(store.chain_depth() <= 8);
+            let reopened = CompressedRam::open(manifest.try_clone().unwrap()).unwrap();
+            let mut actual = vec![0; expected.len()];
+            reopened.read_at(0, &mut actual).unwrap();
+            assert_eq!(actual, expected, "round {round}");
+        }
+    }
+
     #[test]
     fn first_zero_base_partial_writes_tail_and_reopen() {
         let dir = tempfile::tempdir().unwrap();
@@ -799,6 +995,19 @@ mod tests {
             store.read_at(0, &mut bytes).is_err(),
             "unstaged ancestor corruption must not become zeroes"
         );
+        store
+            .zero_range(4 * PAGE_BYTES as u64, PAGE_BYTES as u64)
+            .unwrap();
+        store
+            .read_at(4 * PAGE_BYTES as u64 + 3, &mut bytes)
+            .unwrap();
+        assert_eq!(bytes, [0; 11]);
+        store.write_at(4 * PAGE_BYTES as u64 + 5, b"new").unwrap();
+        store
+            .read_at(4 * PAGE_BYTES as u64 + 3, &mut bytes)
+            .unwrap();
+        assert_eq!(&bytes, b"\0\0new\0\0\0\0\0\0");
+        assert!(store.read_at(0, &mut bytes).is_err());
     }
 
     #[test]

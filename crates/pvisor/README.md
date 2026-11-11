@@ -2279,6 +2279,16 @@ blocks retain the original path. Generic capture and compaction still read all
 required content, including clean ancestors. The complete index, on-disk format,
 mmap writeback drain, durability and resume barriers remain unchanged.
 
+Compressed staging also supports explicit aligned zero ranges for managed
+shared-backing reattachment. A page mask overrides both old staged data and
+immutable ancestors without writing zero payloads to staging. Later partial
+writes preserve the surrounding zeros; publication and compaction encode them
+using the existing generation format. Failure still fences the store, retains
+pending overrides and leaves the previous durable head readable. Linux FUSE
+hole punching performs cache drain/invalidation; calling the store alone does
+not invalidate a mapped logical inode. This removes unnecessary zero staging,
+not compression work on nonzero COW pages or a measured end-to-end latency claim.
+
 ### Protected clean workspace seeds
 
 Linux native Raw version-1 restore can retain one immutable workspace lower

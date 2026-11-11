@@ -92,8 +92,13 @@ credit. Recoveries are FIFO and precede new creation; full recovery capacity is
 reserved before resume, and no permit is issued before its acknowledgement.
 Before new admission, capacity for one full offloaded VM is retained. Safe
 resident queue followers may be reclaimed to unblock an offloaded FIFO head;
-Active/Ready VMs are never victims. Writes already in flight count toward the
-estimated relief, preventing a new wave every sample interval. At most 16
+Active/Ready VMs are never victims. Victim selection tracks physical and
+commitment deficits separately: a victim's current charge estimates physical
+relief, while charge plus its unused reservation top-up estimates commitment
+relief. New and in-flight writes use the same estimates, and selection stops only
+when both deficits are covered or no eligible writeback slot remains. These are
+selection estimates, not reclaimed-memory credits: acknowledgements and fresh
+accounting still gate admission and recovery. At most 16
 writebacks may run; 16 is a ceiling, not a target. Set zero for the same admission
 and request path with offload disabled. High/low watermarks provide hysteresis.
 

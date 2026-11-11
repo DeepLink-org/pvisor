@@ -112,6 +112,84 @@ mod tests {
 
     #[test]
     #[ignore = "requires Linux FUSE mount permission; no VM is started"]
+    fn mounted_sparse_zero_invalidates_cache_and_overrides_committed_data() {
+        let directory = tempfile::tempdir().unwrap();
+        let backing = Backing::create(directory.path(), true).unwrap();
+        let length = 3 * 4096;
+        backing.file.set_len(length as u64).unwrap();
+        backing.file.write_all_at(&vec![0x5a; length], 0).unwrap();
+        backing.finish_offload().unwrap();
+        let address = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                length,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_SHARED,
+                backing.file.as_raw_fd(),
+                0,
+            )
+        };
+        assert_ne!(address, libc::MAP_FAILED);
+        struct Mapping(*mut libc::c_void, usize);
+        impl Drop for Mapping {
+            fn drop(&mut self) {
+                unsafe {
+                    libc::munmap(self.0, self.1);
+                }
+            }
+        }
+        let mapping = Mapping(address, length);
+        // Prime the FUSE cache, then dirty the range to be replaced. Hole punch
+        // must invalidate it, not expose either dirty bytes or the old layer.
+        unsafe {
+            std::ptr::write_bytes(address.cast::<u8>().add(4096), 0x33, 4096);
+        }
+        assert_eq!(
+            unsafe {
+                libc::fallocate(
+                    backing.file.as_raw_fd(),
+                    libc::FALLOC_FL_PUNCH_HOLE | libc::FALLOC_FL_KEEP_SIZE,
+                    4096,
+                    4096,
+                )
+            },
+            0
+        );
+        let mut expected = vec![0x5a; length];
+        expected[4096..8192].fill(0);
+        assert_eq!(
+            unsafe { std::slice::from_raw_parts(address.cast::<u8>(), length) },
+            expected
+        );
+        backing.finish_offload().unwrap();
+        assert_eq!(
+            unsafe { libc::madvise(address, length, libc::MADV_DONTNEED) },
+            0
+        );
+        assert_eq!(
+            unsafe { std::slice::from_raw_parts(address.cast::<u8>(), length) },
+            expected
+        );
+        unsafe {
+            *address.cast::<u8>().add(4103) = 0x91;
+        }
+        expected[4103] = 0x91;
+        backing.finish_offload().unwrap();
+        assert_eq!(
+            unsafe { libc::madvise(address, length, libc::MADV_DONTNEED) },
+            0
+        );
+        assert_eq!(
+            unsafe { std::slice::from_raw_parts(address.cast::<u8>(), length) },
+            expected
+        );
+        drop(mapping);
+        drop(backing);
+        assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 0);
+    }
+
+    #[test]
+    #[ignore = "requires Linux FUSE mount permission; no VM is started"]
     fn mounted_backing_commits_and_refaults_changed_generations() {
         let directory = tempfile::tempdir().unwrap();
         let backing = Backing::create(directory.path(), true).unwrap();

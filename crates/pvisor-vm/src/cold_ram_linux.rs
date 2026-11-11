@@ -34,6 +34,40 @@ fn pagemap_flags(bits: u64) -> u8 {
     present | file
 }
 static PENDING: AtomicU64 = AtomicU64::new(0);
+
+// Only invoked with CPU/device writers stopped and the pager locked. PUNCH_HOLE
+// preserves file length and invalidates the Linux inode cache. Unsupported raw
+// filesystems keep the byte-copy behavior; genuine I/O failures stay fatal.
+fn zero_backing_range(file: &std::fs::File, offset: u64, length: usize) -> io::Result<bool> {
+    use std::os::unix::fs::FileExt;
+    let offset_i64: i64 = offset
+        .try_into()
+        .map_err(|_| io::Error::other("backing offset overflow"))?;
+    if unsafe {
+        libc::fallocate(
+            file.as_raw_fd(),
+            libc::FALLOC_FL_PUNCH_HOLE | libc::FALLOC_FL_KEEP_SIZE,
+            offset_i64,
+            length as i64,
+        )
+    } == 0
+    {
+        return Ok(true);
+    }
+    let error = io::Error::last_os_error();
+    if !matches!(error.raw_os_error(), Some(libc::EOPNOTSUPP | libc::ENOSYS)) {
+        return Err(error);
+    }
+    let zeros = [0; 64 * 1024];
+    for start in (0..length).step_by(zeros.len()) {
+        file.write_all_at(
+            &zeros[..(length - start).min(zeros.len())],
+            offset + start as u64,
+        )?;
+    }
+    Ok(false)
+}
+
 const API: u64 = 0xaa;
 // Linux x86_64 _IOWR/_IOR ABI; this module is compiled only on that target.
 const fn iowr(number: u64, size: u64) -> libc::c_ulong {
@@ -982,6 +1016,8 @@ impl<S: ColdRamStore> Pager<S> {
             .ok_or_else(|| io::Error::other("sharing generation exhausted"))?;
         let started = std::time::Instant::now();
         let pages = self.replaced.len();
+        let mut sparse_zero_bytes = 0;
+        let mut copied_bytes = 0;
         while let Some(&index) = self.replaced.first() {
             let range = self.pages.range(index);
             let region = self
@@ -1007,11 +1043,38 @@ impl<S: ColdRamStore> Pager<S> {
             bytes.copy_from_slice(unsafe {
                 std::slice::from_raw_parts(range.start as *const u8, 4096)
             });
-            backing.file().write_all_at(&bytes, offset)?;
+            let mut count = 1;
+            if bytes == [0; 4096] {
+                // Verify live bytes, never infer zero from a retired pool pin or
+                // a previous free-page report: the guest may have reused it.
+                // Bound each range to 16 MiB and one backing region.
+                while count < 4096 && self.replaced.contains(&(index + count)) {
+                    let next = self.pages.range(index + count);
+                    if next.start != range.start + (count * 4096) as u64
+                        || next.len != 4096
+                        || next.start + next.len > region.as_ptr() as u64 + region.len()
+                    {
+                        break;
+                    }
+                    let live = unsafe { std::slice::from_raw_parts(next.start as *const u8, 4096) };
+                    if live.iter().any(|&byte| byte != 0) {
+                        break;
+                    }
+                    count += 1;
+                }
+                if zero_backing_range(backing.file(), offset, count * 4096)? {
+                    sparse_zero_bytes += count * 4096;
+                } else {
+                    copied_bytes += count * 4096;
+                }
+            } else {
+                backing.file().write_all_at(&bytes, offset)?;
+                copied_bytes += 4096;
+            }
             let mapped = unsafe {
                 libc::mmap(
                     range.start as *mut libc::c_void,
-                    4096,
+                    count * 4096,
                     libc::PROT_READ | libc::PROT_WRITE,
                     libc::MAP_SHARED | libc::MAP_FIXED,
                     backing.file().as_raw_fd(),
@@ -1023,13 +1086,19 @@ impl<S: ColdRamStore> Pager<S> {
             if mapped == libc::MAP_FAILED {
                 return Err(io::Error::last_os_error());
             }
-            if let Some(object) = self.pages[index].cold.take() {
-                self.retired.push(*object);
+            for index in index..index + count {
+                if let Some(object) = self.pages[index].cold.take() {
+                    self.retired.push(*object);
+                }
+                self.replaced.remove(&index);
             }
-            self.replaced.remove(&index);
         }
         if std::env::var_os("PVISOR_EXPERIMENTAL_MEMORY_METRICS").is_some() {
-            eprintln!("pvisor-shared-reattach pages={pages} logical_bytes={} elapsed_us={}", pages * 4096, started.elapsed().as_micros());
+            eprintln!(
+                "pvisor-shared-reattach pages={pages} logical_bytes={} elapsed_us={} copied_bytes={copied_bytes} sparse_zero_bytes={sparse_zero_bytes}",
+                pages * 4096,
+                started.elapsed().as_micros()
+            );
         }
         Ok(())
     }
@@ -1083,10 +1152,7 @@ pub(crate) fn start<S: ColdRamStore + 'static>(
     if options.share_resident && !options.page_granular {
         return Err(io::Error::other("shared RAM requires 4 KiB pages"));
     }
-    if cfg!(any(
-        feature = "tee",
-        feature = "aws-nitro"
-    )) {
+    if cfg!(any(feature = "tee", feature = "aws-nitro")) {
         return Err(io::Error::new(
             io::ErrorKind::Unsupported,
             "Linux cold RAM unavailable with unguarded devices or confidential RAM",
@@ -1112,7 +1178,8 @@ pub(crate) fn start<S: ColdRamStore + 'static>(
         let locked = vmm
             .lock()
             .map_err(|_| io::Error::other("VMM lock poisoned"))?;
-        if locked.has_compact_restore_ram() || locked.is_paused()
+        if locked.has_compact_restore_ram()
+            || locked.is_paused()
             || locked.device_memory_gate().has_prepare()
             || locked.device_memory_gate().has_dedup_advice()
         {
@@ -1590,10 +1657,16 @@ mod tests {
         }
     }
     fn backed_shared_pager(store: Arc<Mutex<SharedStore>>) -> Pager<SharedStore> {
+        backed_shared_pager_with_size(store, 8192)
+    }
+    fn backed_shared_pager_with_size(
+        store: Arc<Mutex<SharedStore>>,
+        size: usize,
+    ) -> Pager<SharedStore> {
         let file = Arc::new(tempfile::tempfile().unwrap());
-        let memory = crate::vmm::ram::map(&[(GuestAddress(0), 8192)], &[], file).unwrap();
+        let memory = crate::vmm::ram::map(&[(GuestAddress(0), size)], &[], file).unwrap();
         memory
-            .write_slice(&vec![0x5a; 8192], GuestAddress(0))
+            .write_slice(&vec![0x5a; size], GuestAddress(0))
             .unwrap();
         let mappings = ranges_for_profile(&memory, u64::MAX, None, true).unwrap();
         let pages = host_sorted_pages(&mappings, Instant::now(), 4096);
@@ -1617,6 +1690,73 @@ mod tests {
             pager.store.lock().unwrap().release(previous).unwrap();
         }
     }
+    #[test]
+    fn shared_backing_sparse_free_pages_preserve_reused_cow_and_neighbors() {
+        use std::os::unix::fs::MetadataExt;
+        let mut a =
+            backed_shared_pager_with_size(Arc::new(Mutex::new(SharedStore::default())), 64 * 4096);
+        let file = a
+            .memory
+            .iter()
+            .next()
+            .unwrap()
+            .file_offset()
+            .unwrap()
+            .file()
+            .try_clone()
+            .unwrap();
+        crate::vmm::ram::reclaim(&a.memory).unwrap();
+        let allocated = file.metadata().unwrap().blocks();
+        a.release_free_pages(&[(4096, 62 * 4096)]).unwrap();
+        // The guest reused one page after reporting it free. Another page was
+        // published to the shared pool then privately modified.
+        a.memory
+            .write_slice(&[0x31], GuestAddress(3 * 4096 + 7))
+            .unwrap();
+        share_page(&mut a, 5);
+        a.memory
+            .write_slice(&[0x42], GuestAddress(5 * 4096 + 11))
+            .unwrap();
+        a.reattach_backing().unwrap();
+        assert!(a.replaced.is_empty());
+        crate::vmm::ram::reclaim(&a.memory).unwrap();
+        assert!(file.metadata().unwrap().blocks() < allocated / 2);
+        let mut expected = vec![0; 64 * 4096];
+        expected[..4096].fill(0x5a);
+        expected[63 * 4096..].fill(0x5a);
+        expected[3 * 4096 + 7] = 0x31;
+        expected[5 * 4096 + 11] = 0x42;
+        let mut actual = vec![0; expected.len()];
+        a.memory.read_slice(&mut actual, GuestAddress(0)).unwrap();
+        assert_eq!(actual, expected);
+        a.reattach_backing().unwrap();
+        crate::vmm::ram::reclaim(&a.memory).unwrap();
+        a.memory.read_slice(&mut actual, GuestAddress(0)).unwrap();
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn shared_backing_sparse_zero_failure_keeps_mapping_and_pending_pages() {
+        use std::os::fd::AsRawFd;
+        let mut a = backed_shared_pager(Arc::new(Mutex::new(SharedStore::default())));
+        a.release_free_pages(&[(0, 4096)]).unwrap();
+        let fd = a
+            .memory
+            .iter()
+            .next()
+            .unwrap()
+            .file_offset()
+            .unwrap()
+            .file()
+            .as_raw_fd();
+        let readonly = std::fs::File::open(format!("/proc/self/fd/{fd}")).unwrap();
+        assert_eq!(unsafe { libc::dup2(readonly.as_raw_fd(), fd) }, fd);
+        assert!(a.reattach_backing().is_err());
+        assert!(a.replaced.contains(&0));
+        assert_eq!(a.memory.read_obj::<u8>(GuestAddress(0)).unwrap(), 0);
+        assert_eq!(a.memory.read_obj::<u8>(GuestAddress(4096)).unwrap(), 0x5a);
+    }
+
     #[test]
     fn shared_backing_two_owners_cow_reclaim_resume_and_independent_exit() {
         let store = Arc::new(Mutex::new(SharedStore::default()));
@@ -1690,8 +1830,11 @@ mod tests {
         let mut a = backed_shared_pager(Arc::new(Mutex::new(SharedStore::default())));
         // The second page must be restored at its backing offset, not offset zero.
         let address = a.pages.range(1).start;
-        let region = a.memory.iter().find(|r| address >= r.as_ptr() as u64
-            && address < r.as_ptr() as u64 + r.len()).unwrap();
+        let region = a
+            .memory
+            .iter()
+            .find(|r| address >= r.as_ptr() as u64 && address < r.as_ptr() as u64 + r.len())
+            .unwrap();
         let guest = GuestAddress(region.start_addr().0 + address - region.as_ptr() as u64);
         assert_eq!(guest.0, 4096);
         share_page(&mut a, 1);
@@ -1732,7 +1875,12 @@ mod tests {
         share_page(&mut a, 0);
         a.memory.write_slice(&[0x31], GuestAddress(0)).unwrap();
         a.generation = u64::MAX;
-        assert!(a.reattach_backing().unwrap_err().to_string().contains("generation exhausted"));
+        assert!(
+            a.reattach_backing()
+                .unwrap_err()
+                .to_string()
+                .contains("generation exhausted")
+        );
         assert!(a.replaced.contains(&0));
         assert!(a.pages[0].cold.is_some());
         assert!(a.retired.is_empty());

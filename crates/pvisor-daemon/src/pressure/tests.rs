@@ -66,6 +66,89 @@ fn in_flight_relief_prevents_repeated_waves() {
 }
 
 #[test]
+fn low_charge_admission_selects_one_reservation_not_every_waiter() {
+    let mut p = pair();
+    p.reserve(id(3), 8).unwrap();
+    // Parent charge is only 2, but resident commitments are 16. The new
+    // reservation needs 4 more: one 8-byte commitment is enough to select.
+    let actions = p.plan(2, &charges(1, 1)).unwrap();
+    assert_eq!(actions, [Action::Offload(id(1))]);
+    for _ in 0..3 {
+        assert!(p.plan(2, &charges(1, 1)).unwrap().is_empty());
+        assert_eq!(p.snapshot.writebacks, 1);
+        assert_eq!(p.snapshot.entries[&id(2)].state, State::Waiting);
+        assert_eq!(p.snapshot.entries[&id(3)].state, State::AdmissionQueued);
+    }
+    p.finish(actions[0].clone(), Ok(()));
+    // Completion introduces full restore headroom; estimates must not bypass it.
+    assert_eq!(p.plan(2, &charges(1, 1)).unwrap(), [Action::Offload(id(2))]);
+    assert_eq!(p.snapshot.entries[&id(3)].state, State::AdmissionQueued);
+}
+
+#[test]
+fn logical_deficit_can_require_multiple_low_charge_victims() {
+    let mut c = config();
+    c.memory_bytes = 40;
+    c.high_bytes = 36;
+    c.low_bytes = 30;
+    let mut p = Policy::new(c).unwrap();
+    for n in 1..=7 {
+        p.reserve(id(n), 5).unwrap();
+    }
+    p.plan(0, &BTreeMap::new()).unwrap();
+    for n in 1..=7 {
+        p.bound(&id(n)).unwrap();
+        p.wait(&id(n), None).unwrap();
+    }
+    p.reserve(id(8), 16).unwrap();
+    let charges = (1..=7).map(|n| (id(n), 1)).collect();
+    // 35 + 16 - 40 = 11: select three 5-byte commitments, not all seven.
+    assert_eq!(
+        p.plan(7, &charges).unwrap(),
+        [
+            Action::Offload(id(1)),
+            Action::Offload(id(2)),
+            Action::Offload(id(3))
+        ]
+    );
+    assert!(p.plan(7, &charges).unwrap().is_empty());
+    assert_eq!(p.snapshot.entries[&id(8)].state, State::AdmissionQueued);
+}
+
+#[test]
+fn in_flight_reservation_cannot_satisfy_physical_watermark() {
+    let mut p = pair();
+    p.config.memory_bytes = 100;
+    p.config.max_writebacks = 1;
+    // Physical deficit is 5. One VM has an 8-byte reservation but only 3 charged.
+    assert_eq!(
+        p.plan(19, &charges(3, 3)).unwrap(),
+        [Action::Offload(id(1))]
+    );
+    assert!(p.plan(19, &charges(3, 3)).unwrap().is_empty());
+    p.config.max_writebacks = 16;
+    assert_eq!(
+        p.plan(19, &charges(3, 3)).unwrap(),
+        [Action::Offload(id(2))]
+    );
+    assert!(p.plan(19, &charges(3, 3)).unwrap().is_empty());
+}
+
+#[test]
+fn physical_and_commitment_deficits_must_both_be_covered() {
+    for (a, b, expected) in [
+        (6, 1, vec![Action::Offload(id(1))]),
+        (1, 6, vec![Action::Offload(id(1)), Action::Offload(id(2))]),
+    ] {
+        let mut p = pair();
+        // Physical deficit 5, commitment deficit 8. An 8-byte reservation
+        // covers only the latter unless its charge also covers the former.
+        assert_eq!(p.plan(19, &charges(a, b)).unwrap(), expected);
+        assert!(p.plan(19, &charges(a, b)).unwrap().is_empty());
+    }
+}
+
+#[test]
 fn pressure_hysteresis_uses_physical_charge() {
     let mut p = pair();
     let actions = p.plan(19, &charges(8, 8)).unwrap();

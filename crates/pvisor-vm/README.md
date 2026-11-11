@@ -1886,9 +1886,18 @@ restoration or change scan/admission/reclaim policies. Default remains off.
 
 The sharing worker tracks replaced pages independently of pool references.
 Under the existing CPU/device transition barrier, offload invalidates old
-publication generations, copies each replaced page (including COW and zeroed
-pages) to its original backing offset, and remaps it MAP_SHARED before existing
-reclaim. The scratch copy is 4 KiB; per-page ownership metadata and deferred
+publication generations, checks live replaced pages and preserves nonzero COW
+bytes at their original backing offsets. Consecutive verified zero pages use
+aligned Linux hole punching and one MAP_SHARED remap per run (at most 16 MiB),
+instead of materializing zero payloads. Free-page reports alone are not proof
+of current zero content: reused guest pages are checked under the same barrier.
+The RAM FUSE adapter drains/invalidates the logical inode through Linux's punch
+operation and records explicit zero overrides in its store; it does not punch
+immutable generation files. Unsupported hole punching falls back to bounded
+zero writes; other errors remain fail-stop with pending mappings/pins retained.
+Existing native reclaim and host publication still follow reattachment.
+Metrics distinguish logical bytes, copied bytes and sparse-zero bytes, not
+physical SSD traffic. The scratch copy is bounded; per-page ownership metadata and deferred
 references are charged to the VM. Detached pins are released outside VM locks.
 The host still commits compressed generations before reporting success.
 Mapping, writeback or commit failure follows fail-stop; API deletion alone is
