@@ -146,3 +146,68 @@ mise run test-py -- discover -s benchmark/tests -p test_workload.py
 Tests use fake transports and clocks, with no VM, AgentENV service, model call or
 benchmark run. Historical single-task localhost validation motivated these
 contracts; it is not end-to-end validation of this refactoring or of current main.
+
+### Supervised startup and sampling
+
+`startup_support.py` provides opt-in helpers for deployment controllers under
+B-SWE-RESIDENT-ENG. The single-task `workload.py` runner does not install systemd
+units or sample resources, so its behavior is unchanged. Existing deployments
+must explicitly adopt these helpers; historical batches remain frozen.
+
+When an `ExecStartPre` isolation check and `ExecStart` payload require **the same**
+identity and restrictions, replace the two commands with one checked entry point:
+
+```ini
+[Service]
+# Retain the deployment's Slice, CPU/memory limits, User, PrivateMounts,
+# InaccessiblePaths, stop supervision and other restrictions unchanged.
+ExecStart=/usr/bin/python3 /opt/replay/startup_support.py --check-script /opt/replay/check_isolation.py --check-arg replay-vm.service -- /usr/bin/python3 /opt/replay/launch.py
+```
+
+Remove only the corresponding isolation `ExecStartPre`, not unrelated pre-start
+checks. The trusted Python checker must exit nonzero on failure and retain all
+resource, blocked-path and input-identity checks. It runs as a child in the
+payload's inherited namespace; success is followed by `exec`, with no shell or
+extra persistent supervisor. This avoids asking systemd to prepare the same
+mount restrictions for two separate service commands. Do not migrate units with
+different pre-start credentials, privilege prefixes or isolation policies this
+way. Keep root-owned deployment code immutable to the workload and retain the
+independent post-exit process/cgroup/mount audit.
+
+In an async cohort controller, use a dedicated pool for blocking metric reads:
+
+```python
+from startup_support import ResourceSampler
+
+async def observe(vm, stop, sampler):
+    while not stop.is_set():
+        sample = await sampler.read(collect_resources, vm)
+        persist_sample(sample)
+        await asyncio.sleep(0.5)
+
+async with ResourceSampler(workers=4) as sampler:
+    # Create observers and run the workload here. In finally: signal stop,
+    # then await all observer tasks before leaving the context.
+    await run_cohort(sampler)
+# Only now remove resources that collectors might still be reading.
+```
+
+`collect_resources` should include its own timestamp, PID/starttime verification
+and cgroup ownership checks. Keep samples' actual acquisition timestamps; do not
+invent fixed-interval samples when reads take longer. Collection exceptions
+propagate. Each observer awaits its read before submitting another; the separate
+pool limits concurrent reads without occupying command-execution workers.
+Context exit drains in-flight reads even after cancellation. Kernel reads cannot
+be forcibly terminated by Python threads: retain an external finite supervisor
+and never claim cleanup until its physical audit passes.
+
+```sh
+mise run test-py -- discover -s benchmark/tests -p test_startup_support.py
+```
+
+The helpers extract techniques tested in a separate warm-image, four-VM ABBA
+startup diagnostic. They do not change Git preheating, OCI preparation, admission
+or the VM runtime, and make no full-80-replay performance claim. The tests above
+exercise check/exec failure, literal arguments, nonblocking collection and
+cancellation ordering without requiring root or a VM. Deployment-level systemd
+isolation must still be qualified on Linux after adopting the helpers.
