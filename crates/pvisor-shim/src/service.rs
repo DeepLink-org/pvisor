@@ -451,7 +451,14 @@ impl PvisorTask {
         .map_err(|error| rpc_error(Code::INTERNAL, format!("vm exec kill join: {error}")))?;
         if let Err(error) = result {
             let message = format!("{error:#}");
-            if !(message.contains("exited") || message.contains("expired")) {
+            // Killing an exec whose runner is already gone must stay
+            // idempotent: the guest supervisor reports "exited"/"expired",
+            // and an unlinked control socket (ENOENT — the runner's death
+            // handler removed it) means the same thing.
+            let already_gone = message.contains("exited")
+                || message.contains("expired")
+                || message.contains("No such file or directory");
+            if !already_gone {
                 return Err(rpc_error(Code::INTERNAL, message));
             }
         }
@@ -1859,9 +1866,20 @@ impl Sandbox for PvisorSandbox {
             ));
         }
         let mut internal = std::mem::replace(&mut state.internal, child::InternalChild::exited());
-        internal
-            .start()
-            .map_err(|error| rpc_error(Code::INTERNAL, format!("{error:#}")))?;
+        if let Err(error) = internal.start() {
+            // A holder that died before Start (its start pipe is gone) must
+            // not leave the exited() placeholder in place: Status would
+            // report a READY pid-0 sandbox forever and WaitSandbox would
+            // hang. Drop the state so later calls surface absence.
+            let failed_id = state.id.clone();
+            drop(sandbox);
+            self.inner
+                .sandbox
+                .lock()
+                .expect("sandbox mutex")
+                .take_if(|state| state.id == failed_id);
+            return Err(rpc_error(Code::INTERNAL, format!("{error:#}")));
+        }
         state.internal = internal;
         state.created_at = SystemTime::now();
         let mut response = StartSandboxResponse::new();

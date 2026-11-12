@@ -453,10 +453,27 @@ fn serve_inner(mut stream: UnixStream, pool: Owner, max_references: usize) -> io
     })();
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     if let Owner::Shared(owner) = &pool {
-        owner
+        // Only cleanup passes serialize here; this gate never blocks live RPCs.
+        // Preserve one rotation's scope while releasing the shared pool between
+        // bounded batches. Concurrent publication may evict candidates, but cannot
+        // publish new candidates belonging to this disconnected session.
+        static CLEANUP: Mutex<()> = Mutex::new(());
+        let _cleanup = CLEANUP
+            .lock()
+            .map_err(|_| io::Error::other("cleanup poisoned"))?;
+        let mut remaining = owner
             .lock()
             .map_err(|_| io::Error::other("pool poisoned"))?
-            .forget_candidates(session);
+            .candidate_count();
+        while remaining != 0 {
+            let batch = remaining.min(256);
+            owner
+                .lock()
+                .map_err(|_| io::Error::other("pool poisoned"))?
+                .forget_candidates_batch(session, batch);
+            remaining -= batch;
+            std::thread::sleep(Duration::from_micros(50));
+        }
     }
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     if !references.is_empty()

@@ -7,7 +7,10 @@ load helpers
 @test "run explicit environment overrides env-file" {
     printf '# comment\nCONTRACT=file\nEMPTY=\n' > "$BATS_TEST_TMPDIR/env"
     run_cli 0 run --name "$NAME" --rm --env-file "$BATS_TEST_TMPDIR/env" -e CONTRACT=explicit "$IMAGE" sh -c 'printf "%s:%s" "$CONTRACT" "${EMPTY-unset}"'
-    [[ "$output" == explicit: ]]
+    if [[ "$output" != explicit: ]]; then
+        printf 'expected output: %q\nactual output: %q\n' 'explicit:' "$output" >&2
+        return 1
+    fi
 }
 
 @test "run later env-file takes precedence" {

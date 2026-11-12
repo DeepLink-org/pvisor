@@ -33,7 +33,9 @@ use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::os::fd::{FromRawFd, RawFd};
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
+use std::sync::LazyLock;
+use std::sync::mpsc;
 
 use anyhow::{Context, Result};
 use log::{debug, warn};
@@ -396,6 +398,53 @@ pub fn spawn_internal(
     )
 }
 
+/// One fork request for the dedicated internal-spawn thread.
+struct InternalSpawnRequest {
+    command: Command,
+    reply: mpsc::Sender<std::io::Result<Child>>,
+}
+
+/// Dedicated fork thread for every internal child (VM runner, sandbox
+/// holder, init/exec parents).
+///
+/// `PR_SET_PDEATHSIG` children must not be forked from pooled worker
+/// threads: the pdeath parent is the *thread* that forks, and pooled
+/// threads (for example tokio `spawn_blocking` workers) idle-exit within
+/// seconds-to-minutes while the shim process lives, which would SIGTERM
+/// healthy long-lived children (observed live: a VM runner and its sandbox
+/// dying with exit status 143 exactly ~11 s after creation once the
+/// forking blocking thread hit its keep-alive). This thread never exits
+/// before the shim process does, so the death signal tracks the shim's
+/// own lifetime.
+static INTERNAL_SPAWNER: LazyLock<mpsc::Sender<InternalSpawnRequest>> = LazyLock::new(|| {
+    let (tx, rx) = mpsc::channel::<InternalSpawnRequest>();
+    std::thread::Builder::new()
+        .name("pvisor-internal-spawner".to_owned())
+        .spawn(move || {
+            for mut request in rx {
+                let _ = request.reply.send(request.command.spawn());
+            }
+        })
+        .expect("spawn the internal fork thread");
+    tx
+});
+
+/// Fork one internal child on the dedicated thread so its parent-death
+/// lifetime is the shim process, not a transient worker thread.
+///
+/// The command must already carry its final configuration; only the spawn
+/// itself is delegated. Panics only if the fork thread died, which means
+/// the shim is shutting down.
+pub fn fork_internal(command: Command) -> std::io::Result<Child> {
+    let (reply, inbox) = mpsc::channel();
+    INTERNAL_SPAWNER
+        .send(InternalSpawnRequest { command, reply })
+        .expect("internal fork thread exited");
+    inbox
+        .recv()
+        .expect("internal fork thread dropped a pending request")
+}
+
 /// [`spawn_internal`] with control over waiting for the internal parent to
 /// exit: the sandbox holder IS the parent and stays alive, so it must be
 /// spawned detached.
@@ -462,11 +511,8 @@ pub fn spawn_internal_opts(
             .join(",");
         command.env(ENV_INJECT_FDS, rendered);
     }
-    let mut child = command
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .spawn()
-        .context("spawn internal process")?;
+    command.stdin(Stdio::null()).stdout(Stdio::null());
+    let mut child = fork_internal(command).context("spawn internal process")?;
 
     // Drop this process's copies of the child-side ends (CLOEXEC already
     // kept the parent-only ends out of the child).
@@ -1038,50 +1084,64 @@ fn vm_runner_main() -> Result<i32> {
     // shim-started attachment inherited via ENV_VM_NET_FD.
     #[cfg(feature = "vm")]
     let gated_attachment = match plan.egress_gate.as_ref() {
-        Some(gate) => match wait_for_egress_rules(gate, std::time::Duration::from_secs(3)) {
-            Ok(Some(rules)) => {
-                // The sidecar's rule syntax has no private-address opt-in;
-                // the pod-level `io.pvisor.vm.network.allow-private`
-                // annotation carries it, mirroring the annotation path.
-                let allow_private =
-                    crate::plan::vm_network_allow_private_enabled(&plan.annotations);
-                match crate::network::VmNetworkAttachment::from_egress_rules(
-                    &rules,
-                    &plan.id,
-                    allow_private,
-                ) {
-                    Ok(attachment) => {
-                        // The sidecar's runtime API only updates nftables in
-                        // the pod netns, which VM traffic never traverses;
-                        // republishing the gate is the dynamic-policy channel.
-                        crate::network::watch_gate(
-                            attachment.egress_runtime().clone(),
-                            gate,
-                            allow_private,
-                        );
-                        Some(attachment)
-                    }
-                    Err(error) => {
-                        eprintln!(
-                            "pvisor shim: egress policy compile failed; \
-                             booting without network (deny all): {error:#}"
-                        );
-                        None
+        Some(gate) => {
+            // The sidecar's rule syntax has no private-address opt-in; the
+            // pod-level `io.pvisor.vm.network.allow-private` annotation
+            // carries it, mirroring the annotation path.
+            let allow_private = crate::plan::vm_network_allow_private_enabled(&plan.annotations);
+            // A gate that is absent, torn or uncompileable at boot must not
+            // strand the task offline for its whole life: boot deny-all
+            // (a NIC with an empty allowlist) and keep watching the gate —
+            // republishing it is the dynamic-policy contract, so a valid
+            // policy that arrives later hot-swaps in.
+            let boot_rules = match wait_for_egress_rules(gate, std::time::Duration::from_secs(3)) {
+                Ok(Some(rules)) => rules,
+                Ok(None) => {
+                    eprintln!(
+                        "pvisor shim: egress policy did not arrive before the deadline; \
+                         booting deny-all and keeping the gate watch"
+                    );
+                    crate::network::EgressRules {
+                        default_action: "deny".to_owned(),
+                        egress: Vec::new(),
                     }
                 }
+                Err(error) => {
+                    eprintln!(
+                        "pvisor shim: egress gate unreadable: {error:#}; \
+                         booting deny-all and keeping the gate watch"
+                    );
+                    crate::network::EgressRules {
+                        default_action: "deny".to_owned(),
+                        egress: Vec::new(),
+                    }
+                }
+            };
+            match crate::network::VmNetworkAttachment::from_egress_rules(
+                &boot_rules,
+                &plan.id,
+                allow_private,
+            ) {
+                Ok(attachment) => {
+                    // The sidecar's runtime API only updates nftables in
+                    // the pod netns, which VM traffic never traverses;
+                    // republishing the gate is the dynamic-policy channel.
+                    crate::network::watch_gate(
+                        attachment.egress_runtime().clone(),
+                        gate,
+                        allow_private,
+                    );
+                    Some(attachment)
+                }
+                Err(error) => {
+                    eprintln!(
+                        "pvisor shim: egress policy compile failed; \
+                         booting without network (deny all): {error:#}"
+                    );
+                    None
+                }
             }
-            Ok(None) => {
-                eprintln!(
-                    "pvisor shim: egress policy did not arrive before the deadline; \
-                     booting without network (deny all)"
-                );
-                None
-            }
-            Err(error) => {
-                eprintln!("pvisor shim: egress gate unreadable: {error:#}");
-                None
-            }
-        },
+        }
         None => None,
     };
     #[cfg(feature = "vm")]
@@ -1194,8 +1254,81 @@ fn arm_parent_death_cleanup(task_id: &str, bridge_ports: &[u16]) -> Result<()> {
     Ok(())
 }
 
+/// The egress gate file this holder unlinks when it dies, precomputed for
+/// the death handler (path hashing is not async-signal-safe). VM builds
+/// only: the gate exists exactly for gated VM pods.
+#[cfg(feature = "vm")]
+static HOLDER_EGRESS_GATE: std::sync::OnceLock<std::ffi::CString> = std::sync::OnceLock::new();
+
+/// Holder death handler: unlink the pod's egress gate (ShutdownSandbox
+/// never runs when the shim crashes, so without this every killed policy
+/// sandbox leaks its gate file in `/run`), then exit like the runner's
+/// parent-death path.
+#[cfg(feature = "vm")]
+extern "C" fn holder_parent_died(_signal: libc::c_int) {
+    if let Some(path) = HOLDER_EGRESS_GATE.get() {
+        // SAFETY: `path` is a NUL-terminated path owned by the static.
+        unsafe { libc::unlink(path.as_ptr()) };
+    }
+    // SAFETY: immediate process teardown, no unwinding from a signal frame.
+    unsafe { libc::_exit(128 + libc::SIGTERM) };
+}
+
+/// The holder must die with its shim: it pins the pod's namespaces and
+/// would otherwise leak them past sandbox teardown when the shim crashes
+/// (observed live: holders reparented to init surviving for days, each
+/// pinning a dead pod's network namespace). `SIGTERM` runs a death handler
+/// that also unlinks this pod's egress gate — the normal StopSandbox path
+/// receives the same treatment, which is idempotent with ShutdownSandbox's
+/// own unlink. The fork/prctl race (parent dying between fork and `prctl`,
+/// which never re-arms the signal) is closed by re-checking the spawning
+/// pid carried in [`ENV_PARENT_PID`].
+fn arm_holder_parent_death(sandbox_id: &str) -> Result<()> {
+    // Non-vm builds have no egress gate; the parameter only feeds it.
+    #[cfg(not(feature = "vm"))]
+    let _ = sandbox_id;
+    #[cfg(feature = "vm")]
+    {
+        let gate = crate::network::egress_gate_path(sandbox_id);
+        if let Some(path) = gate
+            .to_str()
+            .and_then(|bytes| std::ffi::CString::new(bytes).ok())
+        {
+            let _ = HOLDER_EGRESS_GATE.set(path);
+        }
+        // SAFETY: `sigaction` initialization follows the libc contract; the
+        // handler only performs async-signal-safe calls.
+        unsafe {
+            let mut action: libc::sigaction = std::mem::zeroed();
+            libc::sigemptyset(std::ptr::addr_of_mut!(action.sa_mask));
+            action.sa_sigaction = holder_parent_died as *const () as libc::sighandler_t;
+            if libc::sigaction(libc::SIGTERM, &action, std::ptr::null_mut()) != 0 {
+                return Err(std::io::Error::last_os_error()).context("install SIGTERM handler");
+            }
+        }
+    }
+    unsafe {
+        if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM, 0, 0, 0) != 0 {
+            return Err(std::io::Error::last_os_error()).context("PR_SET_PDEATHSIG");
+        }
+    }
+    let expected: u32 = std::env::var(ENV_PARENT_PID)
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .context("parent pid env")?;
+    if unsafe { libc::getppid() } != expected as libc::pid_t {
+        return Err(anyhow::anyhow!(
+            "shim parent {expected} is gone before holder start"
+        ));
+    }
+    Ok(())
+}
+
 /// Poll the egress gate file until the sidecar's policy arrives.
-/// `Ok(None)` on timeout — callers boot deny-all in that case.
+/// `Ok(None)` on timeout — callers boot deny-all in that case. A read that
+/// yields unparseable bytes is a torn view of the sidecar's publish (it
+/// writes the file non-atomically), not a terminal condition: keep polling
+/// the window instead of failing the boot.
 #[cfg(feature = "vm")]
 fn wait_for_egress_rules(
     gate: &Path,
@@ -1204,11 +1337,15 @@ fn wait_for_egress_rules(
     let deadline = std::time::Instant::now() + timeout;
     loop {
         match std::fs::read_to_string(gate) {
-            Ok(contents) => {
-                let rules: crate::network::EgressRules =
-                    serde_json::from_str(&contents).context("parse egress rules")?;
-                return Ok(Some(rules));
-            }
+            Ok(contents) => match serde_json::from_str(&contents) {
+                Ok(rules) => return Ok(Some(rules)),
+                Err(_torn) => {
+                    if std::time::Instant::now() >= deadline {
+                        return Ok(None);
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                }
+            },
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 if std::time::Instant::now() >= deadline {
                     return Ok(None);
@@ -1251,6 +1388,7 @@ fn run_sandbox_holder_requested() -> Result<bool> {
 fn sandbox_holder_main() -> Result<()> {
     let plan: crate::plan::SandboxPlan = read_plan(ENV_SANDBOX_PLAN)?;
     let start_fd = fd_from_env(ENV_START_FD)?;
+    arm_holder_parent_death(&plan.sandbox_id)?;
 
     if let Some(netns) = plan.netns_path.as_deref() {
         setns_by_path(netns, NamespaceKind::Network).context("join sandbox network namespace")?;
@@ -2243,6 +2381,41 @@ fn pump_bridge(stream: std::net::TcpStream, socket: &str) -> Result<()> {
 mod tests {
     use super::*;
     use crate::plan::{IoPlan, NamespacePlan};
+
+    #[cfg(feature = "vm")]
+    #[test]
+    fn torn_gate_read_is_retried_until_the_deadline() {
+        let dir = tempfile::tempdir().unwrap();
+        let gate = dir.path().join("gate.json");
+        // A torn view of the sidecar's non-atomic publish arrives first;
+        // the complete policy lands within the wait window.
+        std::fs::write(&gate, r#"{"defaultAction":"deny","egress":[{"act"#).unwrap();
+        let publisher = std::thread::spawn({
+            let gate = gate.clone();
+            move || {
+                std::thread::sleep(std::time::Duration::from_millis(300));
+                std::fs::write(&gate, r#"{"defaultAction":"deny","egress":[]}"#).unwrap();
+            }
+        });
+        let rules = wait_for_egress_rules(&gate, std::time::Duration::from_secs(3))
+            .expect("torn read must not fail the wait")
+            .expect("valid policy must be picked up");
+        assert_eq!(rules.default_action, "deny");
+        assert!(rules.egress.is_empty());
+        publisher.join().unwrap();
+    }
+
+    #[cfg(feature = "vm")]
+    #[test]
+    fn permanently_unparseable_gate_times_out_to_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let gate = dir.path().join("gate.json");
+        std::fs::write(&gate, "not json at all").unwrap();
+        let started = std::time::Instant::now();
+        let outcome = wait_for_egress_rules(&gate, std::time::Duration::from_millis(400)).unwrap();
+        assert!(outcome.is_none(), "garbage must fall back, not error");
+        assert!(started.elapsed() >= std::time::Duration::from_millis(400));
+    }
 
     #[cfg(feature = "vm")]
     #[test]
