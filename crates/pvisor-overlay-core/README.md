@@ -40,6 +40,23 @@ POSIX/macOS EPERM or Linux/LSB EISDIR while requiring Core's EISDIR and unchange
 trees. All other error comparisons remain exact. It does not mount FUSE, apply
 changes or claim arbitrary POSIX coverage.
 
+`tests/selective_lifecycle.rs` exercises a generated, mount-free acceptance
+lifecycle in private temporary directories with legacy/compact journals and
+checkpoint/strict durability. A host content edit between successful preview and
+execution must reject the conflicting selection without publishing intent or
+consuming candidates. Seed-permuted healthy batches then accept an ordinary
+modification, caller-paired rename, deletion and a file requiring new ancestors,
+while conflicts and unselected bytes/baselines remain staged. Committed recovery
+must not replay over later host edits; final drop and stale handles retain the
+terminal decision. The expected target tree is maintained independently of the
+planner. Default coverage is six seeds across four journal/durability variants;
+`PVISOR_CHAOS_FIRST_SEED` / `PVISOR_CHAOS_SEED_COUNT` select a finite reproducible
+interval (1–65536 seeds). Linux covers raw-byte and Unicode rename destinations;
+macOS uses Unicode names because APFS rejects invalid UTF-8 names. Failed fixtures
+are retained. This does not inject process death, mount FUSE, promise automatic
+rename-selection closure or claim transactionality against writers running during
+publication.
+
 ## Explicit private VM backing metadata (Linux)
 
 `OverlayLayout::with_private_backing()` opts an exclusively owned fresh upper

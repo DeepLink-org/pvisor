@@ -19,6 +19,9 @@ remain owned by Core, not duplicated or re-exported here.
 - `tests/chaos_state_machine.rs`: 16 fixed-seed sequences compare memory and
   durable appends with an independent graph model through retries, identity
   conflicts, cycle rejection and 128 close/validate/read/reopen checks.
+- `tests/framing_recovery.rs`: seeded byte faults at buffer and maximum-line
+  boundaries distinguish bounded incomplete tails from oversized or corrupt
+  complete frames; explicit repair preserves receipts, locks and notifications.
 
 ## Contracts
 
