@@ -169,7 +169,9 @@ fn run_case(seed: u64, compact: bool, strict: bool, counts: &mut Counts) {
         )
         .unwrap();
     }
-    let renamed = if seed.is_multiple_of(2) {
+    // APFS rejects invalid UTF-8 names before the lifecycle can be exercised.
+    // Keep raw-byte names on Linux; macOS uses the Unicode positive control.
+    let renamed = if cfg!(target_os = "macos") || seed.is_multiple_of(2) {
         PathBuf::from(format!("renamed-{seed:x}-界"))
     } else {
         let mut bytes = format!("renamed-{seed:x}-").into_bytes();
