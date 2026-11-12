@@ -107,3 +107,19 @@ access checks, explicit fsync, execution results and audit records remain.
 
 `overlay::LayerMutability` owns the portable lower stability record shared by VM
 and Overlay; it does not depend on a host filesystem implementation.
+
+## Suspension receipt validation
+
+`operation::ExecutionSuspension::from_result` accepts native hibernation evidence
+only when a Hibernated `RunResult` has no guest exit/failure and its checkpoint
+binds the same Run and Execution. The request and checkpoint identities retain
+their byte-length and shape constraints. Validation does not authenticate the
+producer, resolve the snapshot store or implement completion/outbox persistence.
+
+`tests/suspension_receipt_recovery.rs` uses caller-owned fake files to exercise
+close/reopen, every JSON truncation boundary and generated mismatched receipts,
+with explicit valid boundary controls. It preserves failed fixtures; successful
+fixtures are deleted only after assertions. `PVISOR_CHAOS_FIRST_SEED` and
+`PVISOR_CHAOS_SEED_COUNT` select a finite reproducible interval (default 8 seeds,
+maximum 65536). These checks cover Core's parse/validation/serialization
+contracts, not VM suspension or runtime crash recovery.

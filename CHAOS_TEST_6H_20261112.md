@@ -4,9 +4,10 @@
 
 - Campaign window requested by the user: 2026-11-12 22:21 +08:00 through
   2026-11-13 04:21 +08:00 (UTC 14:21–20:21). This is an ongoing campaign
-  checkpoint through Round 02, not six completed hours or a concurrent stress run.
+  checkpoint through Round 03 (16:21Z), not six completed hours or a concurrent
+  stress run. The requested end remains 20:21Z.
 - Baseline: `7fe09e20de3cb7b51222c7d61d75056208da98fb`.
-- Executor: the isolated child thread's `pvisor` worktree,
+- Rounds 01–02 executor: the isolated child thread's `pvisor` worktree,
   `/home/reiase/workspace/pvisor/.delta/worktrees/gyv8kfjp7ksa/pvisor`.
   Parent alone owns branch/PR publication; the test worker does not publish.
   No main merge, semspec approval/revocation, reviewed ledger or approved
@@ -29,6 +30,10 @@
   tests passed under the 1 GiB budget, including 16.49 minutes of changing-seed
   framing tests and a final **33 passed, 0 skipped** package regression.
   NativeHost's zero-coverage limitation remains unchanged; see Round 02 below.
+- Round 03 (15:46–16:21Z): Core suspension-receipt contracts passed, including
+  **18 min 20.759 s** of changing-seed test-body work and a final **91 passed,
+  0 skipped** Core regression. No product defect or implementation fix was found.
+  No new NativeHost or OverlayNet runtime coverage was obtained.
 
 ## Scenario and existing coverage
 
@@ -463,3 +468,219 @@ Clippy passed before the two extra oracle assertions; that is the exact scope
 of its evidence. No rustdoc/doctests, other platform tests, Core/OverlayNet
 package suite, full workspace suite, crash/power-loss experiment or real
 ENOSPC experiment was run in this round. No public API change was made.
+
+## Round 03 — Core suspension receipt parsing and revalidation
+
+### Outcome, handoff and scope
+
+This round completed a bounded non-network Core scenario; it did **not**
+complete the six-hour campaign. The previous executor finished the journal
+round, then a subsequent request was rejected by the agent service. OverlayNet
+had no new execution or unmerged changes from that request; the rejection is
+not a pVisor failure or evidence of network coverage. The parent observed no
+`pvisor-chaos*` services at 15:45:40Z. This executor also read the old
+`ACTIVE_RUN`/`CLEANUP_BLOCKED` paths as absent and observed no `pvisor-c6-*`
+service before starting. It did not clean or write the old checkout.
+
+The sole load executor for this round was
+`/home/reiase/workspace/pvisor/.delta/worktrees/bgn8mdzanjr7/pvisor`
+(Delta worktree `70cc68b2-e44d-4ee2-8b66-9d9722341bd5`). Its inherited HEAD was
+`35393522f528fd8971d4f223d042f3d2988b243b`; original campaign baseline remains
+`7fe09e20de3cb7b51222c7d61d75056208da98fb`. The inherited, untracked NativeHost
+test was left unchanged. Parent owns review, integration and PR updates.
+
+Read root and Core READMEs/instructions, Core execution/operation/overlay
+definitions, existing operation/overlay/control contract tests, and relevant
+runtime completion/Session consumers. There are no intervening or Core-test
+README/AGENT(S) files. Existing tests exercise checkpoint records and operation
+binding, but there was no direct Core external test of
+`ExecutionSuspension::from_result`. The runtime relies on that function before
+projecting Hibernated completion evidence into a Session.
+
+Added `crates/pvisor-core/tests/suspension_receipt_recovery.rs` and documented its
+scope in the Core README. **No production implementation, public interface,
+existing assertion or approved semspec file was changed. No product bug was
+reproduced.** This crate has not undergone API-boundary migration; the test uses
+its existing owning public modules without introducing compatibility exports.
+
+### Scenario and independent expectations
+
+Each seed supplies a JSON-authored valid Hibernated RunResult and receipt, not
+a production-object serialization used to calculate its own expected validity.
+Snapshot hex content uses SplitMix64 without the previous round's `seed | 1`
+alias. Run/request identities vary over 1/255/256-byte values, including Unicode;
+Execution identities contain escaped quote, slash, newline and NUL characters.
+Short identities can repeat across seeds, and these are not claimed to be
+statistically independent streams. Both raw and compressed RAM encodings occur.
+
+Every seed checks:
+
+- A committed fake file is written, synced, closed and reopened. Its receipt
+  must equal the separately authored JSON fields exactly, including request,
+  snapshot, Run/Execution, timestamp, store and encoding.
+- Every proper byte prefix of that serialized RunResult must fail JSON decoding,
+  including cuts inside escapes/Unicode and delimiters. A bounded selection of
+  distinct cuts is also actually written/synced/closed/reopened from another file.
+- A finite 53-case mutation table checks 45 receipt rejections, one outer
+  RunResult decode rejection and seven valid controls. It covers all nine
+  non-Hibernated states, a fabricated state, guest exits including zero and i32
+  extrema, failure evidence, absent/null/wrong-shaped receipts, blank/oversized
+  request IDs, stale outer/inner Run or Execution identities, malformed digests,
+  relative/oversized stores, zero timestamp, unknown RAM encoding, missing
+  receipt members and strict nested unknown fields.
+- Valid controls retain 256-byte ASCII/Unicode request IDs, permitted control
+  bytes in request IDs, absolute root/exact-4096-byte store paths, u64 maximum
+  checkpoint timestamp and explicit null exit/failure. Core does not resolve
+  snapshot paths or authenticate a producer; these permitted inputs must not be
+  misclassified as product defects.
+- All mutation bytes and the earlier committed file remain unchanged after
+  parsing/validation, including expected rejection. Caller repair is explicit:
+  replace only the owned pending bytes with the known valid record, then reopen
+  twice and compare exact receipt identity and bytes again.
+
+The fixtures are fake caller storage. This tests Core's parsing, validation and
+serialization after close/reopen, **not runtime atomic publication, outbox
+recovery, VM termination, process-crash recovery or power-loss durability**.
+No actual snapshot store, mount, socket, guest, network or shared lock is used.
+Successful seed directories are deleted only after all assertions; a failed
+fixture would be retained without Drop cleanup. No failed fixture occurred.
+
+Default interval is first seed `202611120001`, count 8. The explicit count is
+bounded to 1–65536 with checked interval overflow. Counts printed by the harness
+are generated subscenarios, never nextest test counts.
+
+### Safety, commands and actual results
+
+Before copying cache, `du -sh` reported the old target as 1.7 GiB and `df -h .`
+reported 245 GiB available. The only cache copy command was:
+
+```sh
+cp -a --reflink=always /home/reiase/workspace/pvisor/.delta/worktrees/gyv8kfjp7ksa/pvisor/target ./target
+```
+
+The source was read-only; copied Core artifacts had different inode numbers and
+link count 1. No hard links/shared writable cache were used. All subsequent
+Cargo outputs went to the current worktree's `target/`.
+
+The inherited ignored supervisor/helper were inspected and adjusted using
+`apply_patch` in this worktree only. The supervisor additionally reads the
+entry helper's captured cgroup when a very short collected service disappears
+before polling can capture it. It preserves exception/SIGTERM cleanup, separate
+bounded stop and all-process kill of its unique UUID service, durable exclusive
+`ACTIVE_RUN` identity before launch, fail-closed leftover/cleanup gates, final
+inactive plus captured cgroup empty/absent verification, and independent systemd
+runtime deadline. These claims concern only the fixed non-adversarial owned
+tree, not arbitrary same-UID escape resistance or all-namespace mount discovery.
+
+No budget/gate relaxation: each service used one build job, one nextest thread,
+nice 10, CPUQuota 50%, MemoryHigh=MemoryMax=1G, MemorySwapMax=0, TasksMax=128,
+RuntimeMaxSec=900, TimeoutStopSec=5, KillMode=control-group, and inner
+`timeout --kill-after=5s 880s`. Rust debug info/incremental were disabled.
+Startup required >=9 GiB available, load1 <6 and memory PSI full avg10 <0.5
+in two samples >=60 seconds apart, also satisfying the disk gate. Runtime
+sampling every 2 seconds stopped the owned unit at RAM <8 GiB, disk <30 GiB,
+load1 >=6 or PSI >=2. All eight phases qualified in 60.00–60.01 seconds; these
+approximately **480 seconds of admission pauses are not test coverage**.
+
+Exact validation commands, in order:
+
+```sh
+python3 .data/chaos6_supervise.py core-admission mise run test -- pvisor-core -- --offline --test operation_contracts --no-capture
+MISE_TRUSTED_CONFIG_PATHS="$PWD" mise exec -- rustfmt --edition 2024 crates/pvisor-core/tests/suspension_receipt_recovery.rs
+python3 .data/chaos6_supervise.py core-receipts-default mise run test -- pvisor-core -- --offline --test suspension_receipt_recovery --no-capture
+python3 .data/chaos6_supervise.py core-receipts-clippy mise exec -- cargo clippy --offline --locked -p pvisor-core --test suspension_receipt_recovery -- -D warnings
+python3 .data/chaos6_supervise.py core-receipts-clippy-fixed mise exec -- cargo clippy --offline --locked -p pvisor-core --test suspension_receipt_recovery -- -D warnings
+PVISOR_CHAOS_FIRST_SEED=202611120009 PVISOR_CHAOS_SEED_COUNT=12288 python3 .data/chaos6_supervise.py core-receipts-seeds-a mise run test -- pvisor-core -- --offline --test suspension_receipt_recovery --no-capture
+PVISOR_CHAOS_FIRST_SEED=202611132297 PVISOR_CHAOS_SEED_COUNT=6144 python3 .data/chaos6_supervise.py core-receipts-seeds-b mise run test -- pvisor-core -- --offline --test suspension_receipt_recovery --no-capture
+python3 .data/chaos6_supervise.py core-package mise run test -- pvisor-core -- --offline --no-capture
+MISE_TRUSTED_CONFIG_PATHS="$PWD" mise exec -- rustfmt --edition 2024 --check crates/pvisor-core/tests/suspension_receipt_recovery.rs
+python3 .data/chaos6_supervise.py core-final-validation sh -c 'mise exec -- cargo clippy --offline --locked -p pvisor-core --test suspension_receipt_recovery -- -D warnings && mise run test -- pvisor-core -- --offline --no-capture'
+git diff --check
+```
+
+The project mise test task supplies `--locked`; offline is explicit. Nextest
+`--no-capture` serializes tests and reports ignoring the redundant thread flag.
+Initial Clippy failed on two new-test style lints only (`is_multiple_of` and
+byte-string spelling); both were fixed without changing expectations, then
+targeted Clippy passed before the long runs and again at final validation.
+
+| Phase | Observation UTC start–end, including qualification | Actual result / nextest time |
+| --- | --- | --- |
+| Existing Core feasibility | 15:48:00.008–15:49:20.066 | 7 passed, 0 skipped; 0.112 s; build 18.16 s |
+| Default interval | 15:51:55.653–15:52:59.686 | 1 passed, 0 skipped; 0.330 s; 8 seeds |
+| Initial Clippy | 15:53:45.671–15:54:57.723 | Failed two harness style lints; not a product/test failure |
+| Corrected Clippy | 15:55:21.770–15:56:23.800 | Passed `-D warnings` |
+| A | 15:56:28.861–16:09:38.726 | 1 passed, 0 skipped; 727.781 s; 12288 seeds |
+| B | 16:09:51.471–16:17:06.427 | 1 passed, 0 skipped; 372.982 s; 6144 seeds |
+| Core package | 16:17:16.520–16:18:30.578 | 91 passed, 0 skipped; 1.034 s; build 11.37 s |
+| Final Clippy + Core package | 16:19:59.576–16:21:03.608 | Clippy passed; 91 passed, 0 skipped; 1.042 s |
+
+A/B harness test bodies alone measured 727.779104087 + 372.979876451 =
+**1100.758980538 seconds (18 min 20.759 s)** of useful changing-data execution,
+with no workload-padding sleep. B's count was deliberately 6144, rather than
+another 12288, to keep the total useful run in the requested 15–25 minute range
+after observing A's actual throughput; no resource parameter changed.
+
+A/B covered 18432 distinct seed values, with 184320 successful receipt checks,
+829440 expected receipt rejections, 153600 expected outer decode rejections
+(including persisted cuts), 20173824 in-memory proper-prefix decode rejections,
+and 135168 actual persisted-cut checks. These categories overlap: persisted-cut
+checks are included in decode rejections and their offsets are also in the
+exhaustive in-memory prefix loop; do not sum them as independent tests.
+Across default, A/B and two package invocations there were 18456 seed executions,
+18440 distinct seeds (the default eight repeat). Across six Rust test command
+invocations: **192 nextest tests passed, 0 failed, 0 skipped**, including the
+initial seven preexisting tests. Generated expected rejections are not failures.
+
+After the long runs, the positive store-path fixture was made host-native
+instead of hardcoding `/` for Windows. On this Linux host it generates the same
+root/4096-byte/oversized path inputs. A/B were not rerun after that fixture-only
+portability change; final Clippy and the complete Core package, including default
+eight seeds, were rerun on the final source. No Windows result is claimed.
+
+### Resource evidence, cleanup and remaining gaps
+
+| Phase | Samples | Minimum available RAM GiB | Maximum load1 | Maximum PSI full avg10 | Cgroup peak MiB |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Existing Core feasibility | 13 | 8.926 | 3.140 | 0.00 | 549.922 |
+| Default | 5 | 17.120 | 0.773 | 0.00 | 276.934 |
+| Initial Clippy | 9 | 16.873 | 0.338 | 0.00 | 376.246 |
+| Corrected Clippy | 4 | 17.054 | 0.332 | 0.00 | 84.059 |
+| A | 367 | 16.818 | 1.496 | 0.00 | 174.551 |
+| B | 190 | 16.846 | 1.436 | 0.00 | 106.309 |
+| Core package | 10 | 16.683 | 1.103 | 0.00 | 557.965 |
+| Final validation | 5 | 16.850 | 0.328 | 0.00 | 173.523 |
+
+All eight phases recorded memory high/max/oom/oom_kill counters zero, swap limit
+zero and no resource-triggered stop. Minimum available disk was 244.122 GiB.
+The initial build's minimum RAM below 9 GiB was during execution, not admission;
+it stayed above the unchanged 8 GiB runtime stop.
+
+All service cleanup records confirm inactive/unloaded and captured cgroup
+empty/absent; by final inspection every captured cgroup directory had disappeared.
+Stop/kill sometimes reported the UUID unit already collected, followed by the
+explicit successful state/cgroup verification. `ACTIVE_RUN` and `CLEANUP_BLOCKED`
+were absent. A final service listing found no `pvisor-c6-*` or `pvisor-chaos*`
+units. Fixture scan found zero `.data/t/core-receipts-*` roots.
+
+Ignored evidence remains in this executor's own
+`.data/chaos6/<phase>.{log,resources.jsonl,cgroup-start.json,cgroup-final.json}`,
+using phase names from the commands above. It is not committed machine output.
+Final test SHA-256:
+`bd14e792f046c257667f80c539a325f24553004f2eb1ea1819273a43215ca474`.
+A/B pre-portability test SHA-256:
+`a1d39f8bb5e6f5811cbedac39b9435bed52fc445deba79bf79c80beca668cd5a`.
+Unchanged `crates/pvisor-core/src/operation.rs` SHA-256:
+`50c723988d96bc6a5edd389945763e781c1bdb2451ded2aa35ef2bb10e6f32e4`.
+Supervisor/helper SHA-256:
+`af88e8182bfd7b4af87735e3123dec527e39e7ee393a968b0a62ca9050be0cb9` /
+`a18db7475c8e19d4a3fad58cf21fb86a9f0c855512b42334ab6040bb896299ed`.
+
+Rustfmt check, targeted Clippy and whitespace diff checks passed on final source.
+No full workspace/Python suite, doctests/rustdoc, other platform, affected large
+runtime consumer build, NativeHost/OverlayNet runtime, real VM suspend/resume,
+real crash/power-loss, OOM/ENOSPC/fd exhaustion or network scenario was run.
+The existing Core package's pure network unit contracts did execute as part of
+the full small-package regression; that is not network transport coverage.
+There is no fix to publish from this round. Parent should review/integrate this
+contract test/report and assign the next bounded round before 20:21Z.
