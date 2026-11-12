@@ -23,6 +23,22 @@ struct Args {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Schedule explicitly enrolled ordinary OCI executions; never prepares images.
+    PressureServe {
+        /// Fresh private state directory, retained on uncertainty.
+        #[arg(long)]
+        state: PathBuf,
+        /// Frozen pressure::api::Config JSON; reads existing cgroup v2 counters.
+        #[arg(long)]
+        config: PathBuf,
+    },
+    /// Send a pressure::api::Envelope JSON file to the same-user scheduler.
+    PressureRequest {
+        #[arg(long)]
+        socket: PathBuf,
+        #[arg(long)]
+        request: PathBuf,
+    },
     /// Start or reuse a detached same-user daemon; configuration is fixed until stopped.
     Start {
         #[command(flatten)]
@@ -201,6 +217,15 @@ fn main() -> anyhow::Result<()> {
 
 async fn run(command: Command) -> anyhow::Result<()> {
     match command {
+        Command::PressureServe { state, config } => {
+            let config = serde_json::from_slice(&std::fs::read(config)?)?;
+            pvisor_daemon::pressure::serve(state, config).await?;
+        }
+        Command::PressureRequest { socket, request } => {
+            let request = serde_json::from_slice(&std::fs::read(request)?)?;
+            let reply = pvisor_daemon::pressure::exchange(&socket, &request).await?;
+            println!("{}", serde_json::to_string(&reply)?);
+        }
         Command::UserService { options } => user_service::serve(options).await?,
         Command::Start { .. }
         | Command::Status { .. }

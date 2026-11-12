@@ -7,6 +7,112 @@ expiration and API access for the single-node OpenSandbox and E2B profiles.
 Peer discovery, work stealing, owner routing, workflow scheduling, migration
 and cross-node recovery are not provided.
 
+## Opt-in pressure scheduling for ordinary OCI executions
+
+`pressure-serve` adds a cooperative scheduling endpoint in the daemon. It does
+**not** call `prepare-image`, launch a different runtime, change the OCI catalog,
+or choose another RAM backing. Existing OCI creation remains with the caller;
+the scheduler calls the existing authenticated HostVm offload (`file: null`)
+and resume operations on that same live Execution. Unsupported offload remains
+an explicit failure with retained ownership; it never falls back to templates,
+uncompressed backing or another executor.
+
+This is a separately selected **replay/owner integration API**, not automatic
+management of arbitrary `pvisor run` processes, and not an extension of the
+OpenSandbox/E2B prepared-template backend below. Ordinary OCI startup opts in explicitly with `--managed-memory`; see the
+container binding section below. All tools, health checks and file requests for an
+enrolled VM must pass through the trusted owner's scheduling boundary. Direct
+`exec`, automatic guest-idle control and another control authority must not race
+this owner. The owner must already provision an offload-capable VM using main's
+existing configuration; registration does not retrofit backing into a live VM.
+
+Example frozen configuration (byte counts, one existing delegated cgroup v2
+subtree; hard limits and process placement are still the launcher's job):
+
+```json
+{
+  "memory_bytes": 68719476736,
+  "high_bytes": 61847529062,
+  "low_bytes": 54975581388,
+  "max_writebacks": 16,
+  "cgroup_root": "/sys/fs/cgroup/my-replay.slice"
+}
+```
+
+```sh
+pvisor-daemon pressure-serve --state /run/user/1000/pv-pressure --config pressure.json
+# JSON requests use pressure::api::Envelope; response announces the instance.
+pvisor-daemon pressure-request --socket /run/user/1000/pv-pressure/pressure.sock \
+  --request request.json
+```
+
+The Linux-only service reads cgroup v2, never changes CPU/memory/swap limits,
+and never kills a VM. The same-user socket is private, mutations pin the fresh
+daemon instance, and the state directory is exclusively locked. An operator must
+assign one scheduling authority to each managed subtree. VM cgroups must be
+nonoverlapping canonical descendants, with hard memory limits no larger than
+their reservation and swap disabled. Limits, directory identity and parent/child
+accounting are rechecked; a missing/inconsistent sample suspends grants.
+
+The owner's request sequence is:
+
+1. `status` to pin `instance`; `reserve` a new UUID with a full memory allowance
+   including VMM/helpers. Poll until `admitted` with `error: null`, **then** use
+   the normal OCI startup path. Reservation queue time does not consume tool time.
+2. `bind` the normal HostVm socket, exact Session/Execution identity and private
+   cgroup. `binding` retains the reservation while the identity probe runs outside
+   the node lock. A failed probe retains the binding for independent cleanup.
+3. At a genuine model-wait boundary, after all tool/background work has stopped,
+   send `wait` (initial token null). Memory below the high watermark and no
+   blocked admission/recovery means **no offload**, however long the model wait.
+4. When a tool request arrives, keep it in the replay owner and send `acquire`
+   with a fresh UUID token. Poll for `ready` for that token in the same healthy
+   instance. Do not start the tool's execution timeout while queued or restoring.
+   `ready` confirms native resume, not application-service health: probe the
+   existing service before dispatch where that API requires it. A failed probe
+   must trigger owner cleanup, not a false successful tool result.
+5. Once the tool and all descendants have completed/been cleaned, `wait` with
+   its exact permit token returns to model wait. A lost response is reconciled
+   through status; never replay a tool simply because its permit reply was lost.
+6. After the original owner has reaped the VM/helpers and audited mounts, call
+   `release`. Bound resources additionally require the original cgroup identity,
+   recursive `populated 0`, empty `cgroup.procs` and empty `cgroup.threads`.
+   An unbound creation reservation may be released only after its trusted owner
+   has fenced/cancelled startup. The scheduler never infers exit from a timeout.
+
+Request schemas and ownership rules are in `pressure::api`. Queue timeouts and
+tool cleanup remain explicit owner decisions; this service neither retries a
+tool nor discards an expired queued request. On a disconnect the request stays
+owned, writeback continues, and no slot is released by dropping the client.
+
+The policy combines measured parent charge with full-reservation top-ups for
+resident, admitted, restoring and uncertain VMs. Offloaded VM/page-cache charge
+is still included in the parent sample. A RAM report is **not** a physical-memory
+credit. Recoveries are FIFO and precede new creation; full recovery capacity is
+reserved before resume, and no permit is issued before its acknowledgement.
+Before new admission, capacity for one full offloaded VM is retained. Safe
+resident queue followers may be reclaimed to unblock an offloaded FIFO head;
+Active/Ready VMs are never victims. Writes already in flight count toward the
+estimated relief, preventing a new wave every sample interval. At most 16
+writebacks may run; 16 is a ceiling, not a target. Set zero for the same admission
+and request path with offload disabled. High/low watermarks provide hysteresis.
+
+Control failures stop further grants/reclamation, retain reservations, and retain
+uncertain writeback slots until proven cleanup. State/transition intent is saved
+before grants and native effects. Storage uncertainty fails closed. This initial
+endpoint deliberately refuses restart with an undrained ledger: it does not adopt
+live VMs or reconstruct lost permits. Keep `pressure.json`, audit and clean the
+original resources; never delete the ledger and start another scheduler over
+them. Stop the manager only after draining. Neither API restart recovery nor
+automatic registration by the ordinary CLI is implemented here.
+
+Regression coverage includes pressure/no-pressure decisions, writeback ceiling,
+pending relief, restore reservation/FIFO and resident-follower reclamation,
+uncertain controls, stale request tokens, measurement and storage failures,
+durable admission, cgroup release checks, and same-user IPC/Execution identity.
+These are policy and transport fixtures, not KVM density/performance evidence.
+An ordinary-OCI real-VM acceptance test is required before replaying a batch.
+
 ## Same-user discovery and on-demand startup
 
 The installed `pvisor` dispatches `pvisor daemon` to the trusted
@@ -1368,3 +1474,45 @@ uv run --no-project --with e2b==2.59.0 python \
   --images-dir /srv/pvi --template e2b-base \
   --cgroup-root /sys/fs/cgroup/pvd --state /tmp/pvisor-sdk-restart
 ```
+
+### Ordinary Docker-style OCI opt-in
+
+The pressure binding target accepts either the existing Session/Execution identity
+or `{ "container_id": "<64 hex>", "generation": "<32 hex>" }` for an ordinary
+`pvisor run --managed-memory IMAGE ...` launch. The latter uses its dedicated
+host-only socket at `/tmp/pvisor-host-<UID>/docker-<generation>.sock` (canonical
+`/tmp` on macOS); it never forges a Session identity. Socket inode, same UID and
+launch generation are checked, with the same uncertain-effect reservation rules.
+Linux container opt-in provisions raw file backing, not compressed backing or a
+template. Reserve before starting the ordinary CLI, bind after normal startup,
+and gate every tool through Wait/Acquire. After Ready, the replay owner still
+checks guest-channel readiness before starting the tool deadline. No permission
+is granted by a missing endpoint or an incompatible RAM-pool configuration.
+
+
+### Replay-owner checks and contained failures
+
+Process inspection is an owner operation, not a scheduler control timeout.
+Use one monotonic deadline across listing guest `/proc`, reading process
+identities and bounded retries for processes that disappear during inspection.
+The replay integration exercised a 30-second total window and recorded elapsed
+time above the former 3- and 9-second thresholds. Do not reset the window for
+each PID or treat an incomplete scan as proof that the guest is quiescent.
+This budget does not change the tool execution timeout or daemon control limits.
+
+A guest request timeout does not prove the request had no effect. Do not blindly
+retry a mutating tool request or return the VM to safe wait. An owner may contain
+a guest-local fault while keeping peer trajectories running only after proving
+that the affected VM cannot execute more work. In the Active/Ready states, fence
+further requests, terminate that VM, independently verify process/thread exit,
+retire its identity-pinned control socket and audit mounts. Retain the empty
+bound cgroup until `release` acknowledges the returned reservation; only then
+remove its unit/cgroup. Removing the cgroup first makes node accounting uncertain.
+An in-flight control transition, failed cleanup, lost scheduler or inconsistent
+accounting still requires a node-wide safety stop, with reservations retained.
+The daemon does not perform this owner-side isolation automatically.
+
+Report batch termination separately from success: failed, cancelled and unexecuted
+steps are not completed steps. A safely contained infrastructure failure is not
+a model-generated terminal reward. Tool-timeout continuation still requires
+confirmed descendant cleanup and a responsive environment.

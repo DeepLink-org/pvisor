@@ -237,6 +237,7 @@ mod tests {
             cpus: 1,
             memory_mib: 32,
             memory_pool: None,
+            managed_memory: false,
             shared_kernel_base: None,
             auto_remove: false,
             interactive: false,

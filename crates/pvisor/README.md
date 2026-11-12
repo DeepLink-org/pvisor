@@ -469,7 +469,11 @@ Checkpoint restoration/fork starts a new owner directly. Durable operations take
 exclusive `flock` on the Session root's `session.lock`: same UID, `0600`, one hard link,
 no symlink. Its diagnostic record names the lock protocol, PID and operation;
 unknown disk schemas refuse mutation. Different compatible binaries share this
-lock. Residual lock metadata is cleared only after its process has died and no
+lock. Stopped status/review use `SessionDirectoryLock::acquire_read`: the same
+exclusive lock and owner validation, but no diagnostic owner write, truncate or
+fsync. A missing legacy lock inode may be initialized. Existing residual owner
+bytes are preserved, and required completion reconciliation remains durable.
+Residual lock metadata is cleared only after its process has died and no
 valid live owner remains. Apply/drop refuse a valid owner that still holds stage;
 the Execution lease remains an additional fence. Read-only inspect uses the stage's
 ordered lower-mutability declaration; absent or rebound declarations use Mutable.
@@ -1089,6 +1093,29 @@ OpenSandbox/E2B core flows; see its README for exact coverage. Full SDK conforma
 and production density remain unvalidated.
 
 ## Independent container VM lifecycle
+
+`docker::Create.managed_memory` is an explicit Linux x86-64 opt-in for a
+cooperative pressure scheduler. It preserves ordinary OCI image resolution,
+V2 caches, overlays, guest exec and the existing per-container owner. It adds a
+private raw (uncompressed) RAM file and a same-UID host-only control socket for
+that exact container ID/launch generation. `docker::managed` exposes Status,
+Offload-with-existing-backing and Resume using the existing `VmControl`; it
+neither invents a Session nor converts the image to a template. Omission leaves
+the ordinary anonymous-RAM launch unchanged. Pools/shared kernel RAM conflict.
+The private backing is an unlinked SSD file retained by live VM descriptors;
+process exit releases it even without Rust destructors. Its `/proc/PID/fd/N`
+report is a live diagnostic locator, never a reusable checkpoint. The owner
+retires the generation control socket only after reaping its VMM.
+
+This is cooperative: an external owner must reserve memory before launch, bind
+the exact generation and cgroup, declare only process-clean safe waits, and keep
+all tool/attachment/background traffic behind scheduler permits. No timer or
+automatic enrollment is enabled by the flag alone. Native Resume acknowledgement
+is not guest-service readiness: check the existing guest control channel before
+dispatch. Control loss or native failure is uncertain, with no automatic retry;
+retain capacity until independent VM/cgroup/mount teardown. Ordinary direct
+`exec` must not bypass the cooperative owner during a managed wait.
+
 
 On Apple Silicon, a daemon started with `--memory-pool-mode physical-pages`
 provides native 16 KiB physical slots through the same pool socket. The runner
