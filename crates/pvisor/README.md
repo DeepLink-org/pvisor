@@ -2378,3 +2378,7 @@ and retries verify them. Ordinary filesystem/S3 publication and metadata writes
 retain their original barriers. Default is unchanged. This does not claim power
 loss safety from process-interruption tests alone; host crash validation remains
 a separate requirement before enabling the optimization by default.
+
+Import benchmarks measure OCI preparation through publication, not VM boot or
+replay completion. Report these phases separately; import timing improvements
+do not establish equivalent improvements in end-to-end startup latency.
