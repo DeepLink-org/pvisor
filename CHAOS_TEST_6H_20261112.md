@@ -4,7 +4,7 @@
 
 - Campaign window requested by the user: 2026-11-12 22:21 +08:00 through
   2026-11-13 04:21 +08:00 (UTC 14:21–20:21). This is an ongoing campaign
-  checkpoint through Round 03 (16:21Z), not six completed hours or a concurrent
+  checkpoint through Round 04 (17:04Z), not six completed hours or a concurrent
   stress run. The requested end remains 20:21Z.
 - Baseline: `7fe09e20de3cb7b51222c7d61d75056208da98fb`.
 - Rounds 01–02 executor: the isolated child thread's `pvisor` worktree,
@@ -34,6 +34,10 @@
   **18 min 20.759 s** of changing-seed test-body work and a final **91 passed,
   0 skipped** Core regression. No product defect or implementation fix was found.
   No new NativeHost or OverlayNet runtime coverage was obtained.
+- Round 04 (16:25–17:04Z): mount-free `pvisor-overlay-core` selective apply/drop
+  lifecycle checks passed, including **22 min 51.385 s** of changing-seed work.
+  Final small-package regression: **246 passed, 5 existing ignored tests skipped**.
+  No product defect or production implementation change was found.
 
 ## Scenario and existing coverage
 
@@ -684,3 +688,209 @@ The existing Core package's pure network unit contracts did execute as part of
 the full small-package regression; that is not network transport coverage.
 There is no fix to publish from this round. Parent should review/integrate this
 contract test/report and assign the next bounded round before 20:21Z.
+
+## Round 04 — mount-free selective apply, conflict retention and drop
+
+### Outcome and scope
+
+The small independent `pvisor-overlay-core` package fits the existing 1 GiB,
+50% CPU, single-job/no-swap envelope. No large `pvisor`/NativeHost dependency was
+built. This round completed its requested useful 20–30 minute generated run,
+not the overall campaign: the checkpoint remains ongoing, with deadline 20:21Z.
+No product bug was reproduced, no production implementation/API was changed,
+and no assertion or ignored annotation was weakened.
+
+The executor remained the same isolated `bgn8mdzanjr7/pvisor` worktree as Round03,
+with inherited HEAD `35393522f528fd8971d4f223d042f3d2988b243b` and original campaign
+baseline `7fe09e20de3cb7b51222c7d61d75056208da98fb`. Parent separately reviewed and
+published Round03; this child did not push or merge. Already-published journal,
+Core and prepared NativeHost test sources were left unchanged.
+
+Before editing, read the full Overlay Core README, existing namespace/read
+conflict/seal-publication tests, public apply entry points and relevant planning,
+publication/recovery/drop implementations. No nested README/AGENT(S) exists
+under this crate's tests. Existing tests already cover individual conflicts,
+partial acceptance, namespace errors and private interruption states. The new
+external composition adds generated ordering of multiple healthy partial accepts
+after a stale successful preview, retaining two now-conflicting unselected
+changes through every committed batch, reconstruction and final discard.
+
+Added `crates/pvisor-overlay-core/tests/selective_lifecycle.rs` and a README
+validation paragraph. It uses this unmigrated crate's existing public root/apply
+contracts; no crate API migration or compatibility wrapper was introduced.
+
+### Scenario and oracle
+
+Each seed runs four variants: legacy/compact preimage journal ×
+Checkpoint/Strict managed stage. All native paths are exclusively owned
+`TMPDIR/sel4-<seed>-<journal>-<durability>-<random>` fixtures. Each successful case:
+
+1. Creates six small native target files with seed-specific binary/Unicode/NUL
+   contents. The stage changes three files, renames one file, deletes another,
+   and creates a leaf beneath one to three new directories. Rename destinations
+   alternate Unicode and non-UTF-8 Unix names.
+2. Releases the actual writer, opens a new owner on the same backing, verifies
+   staged data and rename/deletion visibility, then releases it before managed
+   sealing. Both durability policies must produce a valid seal.
+3. Checks the full candidate path/kind map against a separately maintained
+   in-memory expected tree. Successful full preview is compared with an owned
+   fixture snapshot and must change no names/bytes/inodes/mode/owner/mtime/ctime.
+   Inspection atime is intentionally not an invariant.
+4. Schedules host **content-only edits between preview and execution** to the
+   two files that will remain unselected. Repeated preview and apply of the
+   conflicting full selection must explicitly reject before writing intent,
+   consuming candidates or changing the captured fixture. The record is loaded
+   afresh between rejection attempts. This is deterministic external-editor
+   interleaving, not an experiment with a writer running during publication.
+5. Applies four disjoint healthy groups in a seed-selected permutation:
+   one modification, caller-paired rename source/destination, one deletion,
+   and the new leaf plus required new-directory ancestors. Twenty-four
+   consecutive seeds exhaust all group orders. Each preview's selected,
+   required and candidate sets must match the independent expectation.
+6. Checks exact target names/types/bytes, remaining candidate kinds, committed
+   ledger count/state/identity, first-touch baselines and both unselected upper
+   payloads after **each** batch. The independent target tree is updated from
+   the requested operation, never calculated from the planner's result.
+7. Edits an already accepted file on the host, then invokes normal committed
+   recovery. It must return no pending apply IDs and perform no replay or
+   mutation of the captured fixture; the host edit and pending candidates survive.
+8. Drops remaining staging, verifies the Discarded publication and absent
+   upper/work, reconciles a stale pre-drop handle by calling discard again,
+   then rejects apply on that reconciled terminal handle without changing bytes.
+
+The test deliberately selects both rename endpoints. It does **not** invent an
+atomic rename-selection closure contract, inject private Prepared/TargetApplied
+states, kill processes, claim power-loss recovery or prove transactionality
+against writers running during apply. Its zero-write comparisons cover the owned
+fixture, not shared lock-file bookkeeping or atime.
+
+Static review found no blocker. Conflict errors are checked by category, not
+the exact path, so separate rejection of each of the two conflicting paths is
+not established. A stale Staged handle calling apply directly, without first
+reconciling through discard, is also outside this test's coverage.
+
+Default first seed is `202611120001`, count 6. Explicit count is bounded to
+1–65536, with checked interval overflow. Seed values drive the complete 24-order
+permutation, 1–3 directory depth, raw/Unicode path form and bounded payload bytes.
+They are deterministic scenario variations, not statistically independent
+random streams. Failed fixtures would remain with their `case.txt` identity;
+there were no failed fixtures.
+
+### Exact commands and execution evidence
+
+All build/test/Clippy commands ran sequentially through the unchanged Round03
+supervisor/helper and its durable exclusive gate. Limits remained:
+`CARGO_BUILD_JOBS=1`, `NEXTEST_TEST_THREADS=1`, nice 10, CPUQuota=50%,
+MemoryHigh=MemoryMax=1G, MemorySwapMax=0, TasksMax=128, RuntimeMaxSec=900,
+TimeoutStopSec=5, KillMode=control-group, inner timeout 880 s/kill-after 5 s,
+Rust debug info off and incremental off. The actual cgroup limits were checked
+inside each service. This round reused only its own independent reflink target
+from Round03; there was no additional old-checkout cache copy or write.
+
+Each phase required two startup samples >=60 seconds apart with available
+RAM >=9 GiB, load1 <6 and memory PSI full avg10 <0.5, also passing disk admission.
+During execution, 2-second samples retained the RAM <8 GiB / disk <30 GiB /
+load1 >=6 / PSI >=2 stop conditions. All eight phases qualified in
+60.00–60.01 s; their approximately **480 seconds of startup pauses are not
+coverage**. No safety budget or threshold changed.
+
+```sh
+python3 .data/chaos6_supervise.py overlay-core-admission mise run test -- pvisor-overlay-core -- --offline --test read_conflicts -E 'test(rename_destination_negative_lookup_prevents_overwriting_host_creation)' --no-capture
+MISE_TRUSTED_CONFIG_PATHS="$PWD" mise exec -- rustfmt --edition 2024 crates/pvisor-overlay-core/tests/selective_lifecycle.rs
+python3 .data/chaos6_supervise.py overlay-selective-default mise run test -- pvisor-overlay-core -- --offline --test selective_lifecycle --no-capture
+python3 .data/chaos6_supervise.py overlay-selective-clippy mise exec -- cargo clippy --offline --locked -p pvisor-overlay-core --test selective_lifecycle -- -D warnings
+python3 .data/chaos6_supervise.py overlay-package-initial mise run test -- pvisor-overlay-core -- --offline --no-capture
+PVISOR_CHAOS_FIRST_SEED=202611120007 PVISOR_CHAOS_SEED_COUNT=2048 python3 .data/chaos6_supervise.py overlay-selective-seeds-a mise run test -- pvisor-overlay-core -- --offline --test selective_lifecycle --no-capture
+PVISOR_CHAOS_FIRST_SEED=202611122055 PVISOR_CHAOS_SEED_COUNT=2048 python3 .data/chaos6_supervise.py overlay-selective-seeds-b mise run test -- pvisor-overlay-core -- --offline --test selective_lifecycle --no-capture
+PVISOR_CHAOS_FIRST_SEED=202611124103 PVISOR_CHAOS_SEED_COUNT=1024 python3 .data/chaos6_supervise.py overlay-selective-seeds-c mise run test -- pvisor-overlay-core -- --offline --test selective_lifecycle --no-capture
+python3 .data/chaos6_supervise.py overlay-package-final mise run test -- pvisor-overlay-core -- --offline --no-capture
+MISE_TRUSTED_CONFIG_PATHS="$PWD" mise exec -- rustfmt --edition 2024 --check crates/pvisor-overlay-core/tests/selective_lifecycle.rs
+git diff --check
+```
+
+Mise supplies `--locked`; offline is explicit. `--no-capture` serializes nextest
+and reports the redundant thread flag being ignored. No source or expectation
+changed between default, Clippy, initial package, A/B/C and final package runs.
+
+| Phase | Observation UTC start–end, includes qualification | Actual nextest result/time |
+| --- | --- | --- |
+| Existing-test feasibility | 16:25:39.940–16:26:53.996 | 1 passed, 12 filtered/skipped; 0.008 s; build 11.59 s |
+| Default | 16:30:33.463–16:31:37.492 | 1 passed, 0 skipped; 1.432 s; 6 seeds / 24 variants |
+| Targeted Clippy | 16:31:57.445–16:33:05.486 | Passed `-D warnings`; 6.98 s dev compilation |
+| Initial package | 16:33:33.498–16:34:55.589 | 246 passed, 5 existing ignored tests skipped; 7.412 s; build 12.66 s |
+| A | 16:35:25.086–16:45:32.300 | 1 passed, 0 skipped; 545.850 s; 2048 seeds / 8192 variants |
+| B | 16:46:13.208–16:56:30.431 | 1 passed, 0 skipped; 554.691 s; 2048 seeds / 8192 variants |
+| C | 16:56:47.935–17:02:20.558 | 1 passed, 0 skipped; 270.851 s; 1024 seeds / 4096 variants |
+| Final package | 17:02:37.488–17:03:47.533 | 246 passed, 5 existing ignored tests skipped; 7.438 s |
+
+A/B/C test bodies measured 545.847769274 + 554.688493280 + 270.848754995 =
+**1371.385017549 seconds = 22 min 51.385 s** of useful changing-data work.
+There is no workload-padding sleep. C used 1024 rather than 2048 seeds after
+observing A/B throughput, keeping the generated campaign inside 20–30 minutes;
+this is a case-count choice, not resource-limit relaxation.
+
+A/B/C together: **5120 distinct seeds / 20480 real directory lifecycle
+variants**, 40960 expected preview rejections, 40960 expected execution conflict
+rejections, 81920 successful partial applies, 81920 no-pending committed recovery
+checks, and 20480 terminal discard lifecycles. These are subscenario counts,
+not nextest tests; recovery checks do not mean 81920 crash-recovery experiments.
+Including three executions of the default six seeds (standalone plus two package
+runs): 5138 seed executions, 5126 distinct seed values, 20552 lifecycle variants.
+Across seven Rust test commands: **497 passed, 0 failed**. The feasibility command
+filtered twelve other tests; each full package invocation separately skipped five
+preexisting ignored manual measurement/screening tests.
+
+Those five are `directory_walk_paired_benchmark`, `append_wal_screening`,
+`read_observation_append_screening`, `immutable_content_receipt_screening` and
+`known_observation_screening`. They were not enabled or edited; this round makes
+no benchmark measurement claim. The macOS-only APFS screening test was not built
+on this Linux host.
+
+### Resources, cleanup and limitations
+
+| Phase | Samples | Minimum available RAM GiB | Maximum load1 | Maximum PSI full avg10 | Cgroup peak MiB |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Existing-test feasibility | 10 | 16.845 | 0.349 | 0.00 | 359.938 |
+| Default | 5 | 17.052 | 0.250 | 0.00 | 199.074 |
+| Targeted Clippy | 7 | 16.988 | 0.383 | 0.00 | 308.230 |
+| Initial package | 14 | 16.767 | 0.420 | 0.00 | 551.762 |
+| A | 276 | 16.859 | 2.385 | 0.00 | 105.586 |
+| B | 281 | 16.059 | 3.143 | 1.00 | 105.637 |
+| C | 139 | 16.606 | 1.864 | 0.00 | 269.625 |
+| Final package | 8 | 16.687 | 1.355 | 0.00 | 118.980 |
+
+All eight phases recorded memory high/max/oom/oom_kill counters zero and swap
+limit zero. No resource stop occurred. B's global full PSI peak 1.00 was during
+execution, below the unchanged 2.00 runtime stop, not a qualifying startup sample.
+Minimum sampled available disk was 243.882 GiB.
+
+Each UUID service's cleanup confirmed inactive/unloaded and its captured cgroup
+empty/absent; all eight cgroup directories were absent afterward. Both gate files
+were absent. Final service listing found no `pvisor-c6-*` / `pvisor-chaos*` unit;
+zero `.data/t/sel4-*` fixture roots remained. Normal apply locks used only the
+unique canonical fixture-target keys. Their persistent lock files in the shared
+private lock namespace may remain by design; the shared directory/files were not
+enumerated for deletion, removed or swept. No claim of an empty shared lock
+namespace is made.
+
+Full ignored evidence is retained in this executor's
+`.data/chaos6/<phase>.{log,resources.jsonl,cgroup-start.json,cgroup-final.json}`
+for the phase names above. No large machine log was committed.
+Final test source SHA-256:
+`ca60cd08fb93baab949dbe91ee121044bf14469faf44dce9e1db0fea0181a36e`.
+Unchanged production `src/apply.rs` SHA-256:
+`4d6b09fe4e1b6ab06588942b7a63dbbfef2963a8a459d4606dd4d0c911e5e669`;
+unchanged `src/core.rs`:
+`e154f68e87c0096fb82ffde69adeec335aed3e04464ab7f7b4ae23e314c458de`.
+Supervisor SHA-256 remains
+`af88e8182bfd7b4af87735e3123dec527e39e7ee393a968b0a62ca9050be0cb9`.
+
+Final targeted rustfmt check and whitespace diff check passed. Targeted Clippy
+passed on the exact unchanged test source before A/B/C. No FUSE mount, VM,
+NativeHost, OverlayNet transport, process-death/power-loss, real ENOSPC/OOM/fd
+exhaustion, hostile concurrent writer or real HOME/session/cache mutation scenario
+was run. No Python/full-workspace/other-platform/doctest/rustdoc or affected large
+runtime consumer build was attempted. The full small-package suite's existing
+private in-process failure/recovery tests did execute; this is not substituted
+for the omitted real-crash experiments. Parent owns review/integration/PR update
+and the next bounded assignment; the six-hour end remains 20:21Z.
