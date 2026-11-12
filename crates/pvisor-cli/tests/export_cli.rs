@@ -105,7 +105,12 @@ fn clap_requires_destination_and_exclusive_explicit_selection_before_io() {
 fn spawn_help_describes_static_policies_and_plain_stdio() {
     let root = tempfile::tempdir().unwrap();
     let text = help(root.path(), &["spawn", "--help"]);
-    for option in ["--safe", "--stdio", "PATH-GLOB:deny|warn"] {
+    for option in [
+        "--safe",
+        "--stdio",
+        "PATH-GLOB:deny|warn",
+        "outside Session storage",
+    ] {
         assert!(text.contains(option), "missing {option}: {text}");
     }
     for option in ["--tui", "--ask", "deny|ask|warn"] {
@@ -126,8 +131,8 @@ fn run_and_spawn_help_match_their_pinned_baselines() {
         ),
         (
             "spawn",
-            // Pin the Session lifecycle wording and caller-provided RAM pin service.
-            "d7d1221a53af117178edcb2837372e1cb9cacacea628982a8528fbd348b35009",
+            // Pin lifecycle/RAM wording and the outside-storage result export rule.
+            "be055fd50ddb3e41434bde7fd7b67d43fdb902f8744b4519f9d990e43ae2632c",
         ),
     ] {
         let text = help(root.path(), &[command, "--help"]);

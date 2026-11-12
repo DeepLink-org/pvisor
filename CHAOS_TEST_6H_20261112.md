@@ -4,7 +4,7 @@
 
 - Campaign window requested by the user: 2026-11-12 22:21 +08:00 through
   2026-11-13 04:21 +08:00 (UTC 14:21–20:21). This is an ongoing campaign
-  checkpoint through Round 07's focused fix validation (18:51Z), not six completed hours or a concurrent
+  checkpoint through Round 07's full CLI validation (19:17Z), not six completed hours or a concurrent
   stress run. The requested end remains 20:21Z.
 - Baseline: `7fe09e20de3cb7b51222c7d61d75056208da98fb`.
 - Rounds 01–02 executor: the isolated child thread's `pvisor` worktree,
@@ -54,7 +54,9 @@
   offline status/review could no longer load the Session. Parent approved rule B
   at 18:41Z; the focused fix now passes **11 targeted tests**, including seven
   new contracts and the original external-blocking recovery test. Wider/final
-  validation is still pending at this checkpoint.
+  follow-up now passes **338 CLI tests, 40 existing tests skipped**, plus the two
+  added helper contracts and package-wide Clippy. Earlier full-run failures and
+  the short-TMPDIR limitation are recorded below rather than erased.
 
 ## Scenario and existing coverage
 
@@ -1467,3 +1469,117 @@ source. Full CLI package, other platforms, hostile concurrent rebinding and
 arbitrary alias coverage are **not yet claimed**. Parent receives this independent
 fix now, without waiting for a long follow-on campaign; further validation will
 be appended separately.
+
+### Helper contracts and complete CLI validation, 19:17Z
+
+The parent independently published the first fix as
+`a5e3e09378eb78d5726b39f8ac973a056971316a`. A subsequent authorized
+`merge_worktrees` captured parent frontier
+`e0742b09-4cf4-4e0c-be66-84162b9d3d2c.2329895`, including the APFS fixture
+adaptation and Round04 review limitations. The merge was clean and preserved
+the worker's two in-progress private helper tests; the checkout now reflects
+that published HEAD. No executor Git merge/push occurred.
+
+Added two helper-level unit contracts without changing the production guard:
+
+- Implicit selected storage, including a relative private Run Home, rejects an
+  internal export and permits a component-distinct sibling. One bounded native
+  test child isolates environment/cwd; no global test environment mutation or
+  actual user HOME/Run Home is used.
+- Ordinary existing symlink ancestors resolve inside/outside storage as expected.
+  Internal and external ENOTDIR obstructions retain their sentinel bytes, and
+  validation creates no export subdirectories. This does not test hostile
+  rebinding or arbitrary alias equivalence.
+
+Those helpers and all eleven focused contracts passed together:
+**13 passed, 166 filtered**, 11.889 s. The first complete CLI run then exposed:
+
+1. The intentionally changed `spawn --help` text no longer matched its pinned
+   digest. Updated only that exact conventional CLI snapshot and its explanatory
+   comment, and added an explicit `outside Session storage` help assertion.
+   No old option assertion was removed; no semspec approval/snapshot was touched.
+2. The preexisting setsid/double-fork fixture rejected the client connection's
+   error kind with its long absolute socket address. Its expected address has
+   109 bytes under `.data/t`, beyond Linux AF_UNIX's 107-byte pathname allowance.
+   The original assertion did not print the raw error, and its temporary fixture
+   was automatically dropped by existing code; the full raw failing run is
+   retained. **No daemon-leak product defect or exact raw errno is inferred.**
+
+The unchanged setsid assertion passed with a shorter **worktree-root TMPDIR**
+(the corresponding address is 101 bytes), alongside both help checks. No `/tmp`
+fallback, assertion change, timeout enlargement or production fix was used for
+that test. The subsequent complete CLI package under this same short-TMPDIR
+environment passed **338 tests, 0 failed, 40 existing ignored tests skipped**,
+99.900 s. The initial long-path result remains **336 passed, 2 failed, 40 skipped**.
+
+Application HOME, XDG config/cache/data/state and default daemon storage were
+private disposable fixture paths for every full-CLI attempt. The ignored runner
+preserves only normal development Cargo/Rustup/mise tool-installation/cache/state
+locations while changing application HOME. Its first bootstrap attempt forgot
+mise's state directory and lost the existing config trust context: it failed
+before compiling or starting tests. Preserving `MISE_STATE_DIR` fixed that
+environment-preparation issue without changing global trust or safety limits.
+
+Exact follow-up commands:
+
+```sh
+MISE_TRUSTED_CONFIG_PATHS="$PWD" mise exec -- rustfmt --edition 2024 crates/pvisor-cli/src/cli/run.rs
+python3 .data/chaos6_native_supervise.py selfexport-helper-and-final mise run test -- pvisor-cli -- --offline --lib --test result_file_destinations --test rootless_result_publication --test run_config_cli -E 'test(result_destination_) | binary(result_file_destinations) | binary(rootless_result_publication) | test(result_file_exports_plain_run_result_for_ordinary_spawn) | test(result_file_write_failure_preserves_completed_workload) | test(result_file_preserves_prepared_spec_envelope)' --no-fail-fast --no-capture
+python3 .data/chaos6_native_supervise.py cli-package-private-home mise exec -- python3 .data/chaos6_cli_private_home.py
+# Preserve the existing mise state directory in the private-HOME runner.
+python3 .data/chaos6_native_supervise.py cli-package-private-home-fixed mise exec -- python3 .data/chaos6_cli_private_home.py
+# Update only the intentional help baseline/explicit wording assertion.
+python3 .data/chaos6_native_supervise.py cli-short-path-diagnostic mise exec -- python3 .data/chaos6_cli_private_home.py --short-tmp --test rootless_local --test export_cli -E 'test(safe_run_reaps_setsid_double_fork_descendants_after_success) | test(run_and_spawn_help_match_their_pinned_baselines) | test(spawn_help_describes_static_policies_and_plain_stdio)'
+python3 .data/chaos6_native_supervise.py cli-package-short-path-final mise exec -- python3 .data/chaos6_cli_private_home.py --short-tmp
+python3 .data/chaos6_native_supervise.py selfexport-final-package-clippy mise exec -- cargo clippy --offline --locked -p pvisor-cli --all-targets -- -D warnings
+MISE_TRUSTED_CONFIG_PATHS="$PWD" mise exec -- rustfmt --edition 2024 --check crates/pvisor-cli/src/cli/run.rs crates/pvisor-cli/tests/result_file_destinations.rs crates/pvisor-cli/tests/export_cli.rs
+git diff --check
+```
+
+The ignored private-HOME runner executes precisely
+`mise run test -- pvisor-cli -- --offline --no-fail-fast --no-capture`, with the
+listed extra selectors only for the short-path diagnostic. Its `--short-tmp`
+changes TMPDIR to this attached worktree root, not a shared external directory.
+
+| Phase | Observation UTC start–end, including admission | Result / nextest time | Peak MiB | Minimum RAM GiB |
+| --- | --- | --- | ---: | ---: |
+| Helpers + focused | 18:55:28.852–18:57:10.991 | 13 passed, 166 filtered; 11.889 s; build 28.30 s | 980.840 | 16.289 |
+| Private-HOME bootstrap | 19:00:16.957–19:01:18.983 | Config-trust environment failure; 0 tests | 27.004 | 17.029 |
+| Initial complete CLI | 19:02:55.529–19:06:44.007 | 336 passed, 2 failed, 40 skipped; 100.221 s; build 66 s | 1386.711 | 16.233 |
+| Short-path/help diagnostic | 19:09:27.805–19:10:31.833 | 3 passed, 25 filtered; 0.479 s | 418.426 | 16.703 |
+| Final complete CLI | 19:10:47.618–19:13:29.876 | 338 passed, 40 skipped; 99.900 s | 204.082 | 16.772 |
+| Package all-target Clippy | 19:14:17.095–19:15:33.162 | Passed `-D warnings`; dev check 13.98 s | 523.910 | 16.613 |
+
+All retained Native budgets/gates, memory high/max/oom/oom_kill=0, no swap and no
+resource-triggered stop. Maximum load1 was 1.204, PSI 0, minimum available disk
+243.440 GiB. Six independent approximately 60-second startup qualifications
+are pauses, not coverage. Final formatting/whitespace checks passed.
+
+Every captured cgroup is absent, gate files are absent and no owned service
+remains. The successful private-HOME roots were removed **after** owned cgroup
+cleanup (`cli-private-home-cleanup.json`); the failed bootstrap and failed
+long-path package HOME roots remain for diagnosis. One successful preexisting
+private nested-mount fixture left a physical directory after namespace teardown.
+Its exact plan/sentinels and absence from current-namespace mountinfo were checked,
+then only that known `.tmpMTcL0v` directory was removed; evidence is in
+`cli-nested-fixture-cleanup.json`. No shared directory sweep or host unmount.
+New helper fixtures are gone; all twelve original self-corruption reproduction
+roots remain. There are no current-namespace mountpoints below this worktree.
+
+Final follow-up source SHA-256:
+`src/cli/run.rs` =
+`165671e77e3b723f8f6c601186f4e921a5f34e134b5d536ffe2e9d86f9847a27`;
+`tests/export_cli.rs` =
+`6ebf29e4e4c72b409bdf64db062b2a7f0c528a8416308d6006a11a5060668080`.
+The seven-contract destination test is unchanged from the first-fix hash.
+The accepted spawn-help SHA-256 is
+`be055fd50ddb3e41434bde7fd7b67d43fdb902f8744b4519f9d990e43ae2632c`.
+Ignored private-HOME runner SHA-256:
+`ab05b0644fce7fff120acec76e7490a59f9c2eb1579d4477fbdf225cdfeff7f9`.
+All raw phase evidence remains local under `.data/chaos6/`.
+
+This is Linux full-package evidence under the disclosed private-HOME/short-TMPDIR
+environment, not macOS acceptance, a green-CI claim or six completed hours.
+Historical macOS APFS and replay-continuation CI failures remain parent-owned
+investigations. Parent requested two bounded 256-seed post-fix Native recovery
+batches before 20:05Z, followed by final auditing/cleanup before 20:21Z.

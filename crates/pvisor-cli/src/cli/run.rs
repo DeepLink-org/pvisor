@@ -4187,6 +4187,128 @@ mod tests {
     }
 
     #[test]
+    fn result_destination_checks_implicit_selected_storage() {
+        const ROOT: &str = "PVISOR_RESULT_STORAGE_TEST_ROOT";
+        const NAME: &str = "cli::run::tests::result_destination_checks_implicit_selected_storage";
+        if let Some(root) = std::env::var_os(ROOT) {
+            let root = PathBuf::from(root);
+            let config = RunConfig::default();
+            assert!(config.overlayfs.is_none());
+            let selected = select_run_storage(&config, &root.join("w"), "run-implicit").unwrap();
+            assert_eq!(selected, root.join("runs/run-implicit"));
+            let storage = resolve_run_storage(&selected).unwrap();
+            assert!(
+                validate_result_file_destination(&storage.join("run-bundle.json"), &storage)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("--result-file must be outside Session storage")
+            );
+            validate_result_file_destination(
+                &root.join("runs/run-implicit2/result.json"),
+                &storage,
+            )
+            .unwrap();
+            assert_eq!(std::fs::read_dir(&storage).unwrap().count(), 0);
+            std::fs::write(root.join("checked"), b"implicit storage validated").unwrap();
+            return;
+        }
+        // Isolate environment/cwd in one native child; do not mutate process-wide
+        // test state or consult the real user's HOME/Run Home.
+        let root = tempfile::Builder::new()
+            .prefix("result-storage-")
+            .tempdir()
+            .unwrap()
+            .keep()
+            .canonicalize()
+            .unwrap();
+        std::fs::create_dir(root.join("w")).unwrap();
+        std::fs::create_dir(root.join("h")).unwrap();
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", NAME, "--nocapture"])
+            .current_dir(&root)
+            .env(ROOT, &root)
+            .env("HOME", root.join("h"))
+            .env("XDG_CONFIG_HOME", root.join("h/config"))
+            .env("XDG_CACHE_HOME", root.join("h/cache"))
+            .env("XDG_STATE_HOME", root.join("h/state"))
+            .env("PVISOR_RUN_HOME", "runs")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                assert!(status.success());
+                break;
+            }
+            if std::time::Instant::now() >= deadline {
+                child.kill().unwrap();
+                child.wait().unwrap();
+                panic!(
+                    "implicit storage child exceeded its watchdog: {}",
+                    root.display()
+                );
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert_eq!(
+            std::fs::read(root.join("checked")).unwrap(),
+            b"implicit storage validated"
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn result_destination_resolves_existing_ancestor_aliases_and_external_obstructions() {
+        let root = tempfile::Builder::new()
+            .prefix("result-alias-")
+            .tempdir()
+            .unwrap()
+            .keep()
+            .canonicalize()
+            .unwrap();
+        let storage = resolve_run_storage(&root.join("stage")).unwrap();
+        std::fs::create_dir(root.join("external")).unwrap();
+        std::os::unix::fs::symlink(&storage, root.join("inside-alias")).unwrap();
+        std::os::unix::fs::symlink(root.join("external"), root.join("outside-alias")).unwrap();
+        std::fs::write(storage.join("blocked"), b"inside sentinel").unwrap();
+        std::fs::write(root.join("external/blocked"), b"outside sentinel").unwrap();
+        for path in [
+            root.join("inside-alias/export/result.json"),
+            storage.join("blocked/result.json"),
+            storage.join("../stage/completion.json"),
+        ] {
+            assert!(
+                validate_result_file_destination(&path, &storage)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("--result-file must be outside Session storage")
+            );
+        }
+        for path in [
+            root.join("outside-alias/export/result.json"),
+            root.join("outside-alias/blocked/result.json"),
+            storage.join("../stage2/run-bundle.json"),
+        ] {
+            validate_result_file_destination(&path, &storage).unwrap();
+        }
+        assert_eq!(
+            std::fs::read(storage.join("blocked")).unwrap(),
+            b"inside sentinel"
+        );
+        assert_eq!(
+            std::fs::read(root.join("external/blocked")).unwrap(),
+            b"outside sentinel"
+        );
+        assert!(!root.join("external/export").exists());
+        assert!(!storage.join("export").exists());
+        assert!(!root.join("stage2").exists());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn removed_interactive_flags_are_rejected() {
         for flag in ["--tui", "--ask"] {
             assert!(Cli::try_parse_from(["pvisor", "spawn", flag, "--", "bash"]).is_err());
