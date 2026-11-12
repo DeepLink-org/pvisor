@@ -604,6 +604,10 @@ fn signal_group(process_group: i32, signal: i32) -> Result<bool, ReplayError> {
 }
 
 #[cfg(all(test, unix))]
+#[path = "process_generated_tests.rs"]
+mod generated_tests;
+
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use std::path::Path;

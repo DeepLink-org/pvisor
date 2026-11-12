@@ -109,3 +109,24 @@ or a timeout, and kill the remaining group. The test temporarily adopts orphaned
 children as a subreaper, verifies SIGKILL, reaps its descendant, and restores the
 prior subreaper setting. An independent ten-second descendant alarm bounds a
 broken cleanup path; the asserted completion budget is three seconds.
+
+`process::generated_tests` adds a finite full-duplex matrix without a shell or
+interpreter. A native child emits 128 KiB+1 stdout and 64 KiB+1 stderr before
+consuming stdin, closes stderr, receives stdin through EOF and echoes the exact
+received bytes to stdout. The parent checks independently held input bytes,
+bounded channel-tail windows (including zero and pipe/read-chunk boundaries),
+redirected stdout, log size/permissions and ordinary nonzero exits. A deliberate
+early stdin-close error is followed by a fresh healthy native process; that
+composition does not reclassify the already-covered stdin-close path as a new
+defect. Each child has a five-second wall deadline and independent eight-second
+alarm, with no descendants. The generated check does not intentionally expire
+deadlines; timeout/cancellation coverage remains in the separate existing tests.
+
+Default coverage is 20 seeds. `PVISOR_CHAOS_FIRST_SEED` and
+`PVISOR_CHAOS_SEED_COUNT` select a checked finite interval (1–4096 seeds per
+invocation). Every seed runs four child lifecycles sequentially, with input at
+most 1 MiB+1 and bounded output. Failed private `replay5-*` fixtures retain seed,
+PID, received-input and log evidence; success cleanup follows reaping/group
+checks and assertions. This is process supervision coverage, not replay
+exactly-once execution, live-agent acceptance or an adversarial process escape
+test.

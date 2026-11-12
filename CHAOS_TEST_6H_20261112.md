@@ -4,7 +4,7 @@
 
 - Campaign window requested by the user: 2026-11-12 22:21 +08:00 through
   2026-11-13 04:21 +08:00 (UTC 14:21–20:21). This is an ongoing campaign
-  checkpoint through Round 04 (17:04Z), not six completed hours or a concurrent
+  checkpoint through Round 05 (17:47Z), not six completed hours or a concurrent
   stress run. The requested end remains 20:21Z.
 - Baseline: `7fe09e20de3cb7b51222c7d61d75056208da98fb`.
 - Rounds 01–02 executor: the isolated child thread's `pvisor` worktree,
@@ -38,6 +38,10 @@
   lifecycle checks passed, including **22 min 51.385 s** of changing-seed work.
   Final small-package regression: **246 passed, 5 existing ignored tests skipped**.
   No product defect or production implementation change was found.
+- Round 05 (17:07–17:47Z): bounded native Replay full-duplex/EOF/tail checks
+  passed, including **22 min 52.570 s** of changing-seed work and a final
+  **155 passed, 1 existing ignored test skipped** package regression. No product
+  defect or production behavior change was found.
 
 ## Scenario and existing coverage
 
@@ -894,3 +898,191 @@ runtime consumer build was attempted. The full small-package suite's existing
 private in-process failure/recovery tests did execute; this is not substituted
 for the omitted real-crash experiments. Parent owns review/integration/PR update
 and the next bounded assignment; the six-hour end remains 20:21Z.
+
+## Round 05 — Replay native full-duplex boundaries and healthy successors
+
+### Outcome and existing coverage
+
+`pvisor-replay` depends on Core/Journal and its own protocol/network libraries,
+not the large `pvisor` runtime. Its existing large-stdin regression compiled and
+passed within the unchanged 1 GiB envelope, although compilation reached the
+hard limit and reclaimed memory (details below). The new finite native process
+composition and complete package regression passed. **No product bug was found,
+no production behavior was changed, and no existing assertion was weakened.**
+This is another ongoing campaign checkpoint, not six completed hours.
+
+Read the crate README/manifest, all process supervision and existing process
+tests, and historical rounds 033/034 in `CHAOS_TEST_CONTINUATION.md`. Pending
+stdin cancellation/EOF, early close, leader exit with inherited pipes, slow
+progress/idle cancellation and a subsequent healthy process were already covered.
+They are not presented as new defects or newly discovered guarantees here.
+No nested README/AGENT(S) exists beneath this crate's source directory.
+
+Added private `src/process_generated_tests.rs`, included from `src/process.rs`
+only under `cfg(all(test, unix))`, and documented it in the crate README. The
+only change to existing `process.rs` is that four-line test module declaration.
+No public API, production test hook or process supervision algorithm changed.
+The worker still used its own `bgn8mdzanjr7/pvisor` worktree, inherited HEAD
+`35393522f528fd8971d4f223d042f3d2988b243b`; parent independently owns publication.
+
+### Native fixture and independent byte oracle
+
+Every seed runs four process lifecycles sequentially, never more than one
+fixture child at a time, with **no descendants**:
+
+1. A native re-execution of the test binary emits 131073 stdout bytes and 65537
+   stderr bytes before reading stdin. It then actually closes stderr, reads
+   stdin to EOF, records received bytes in its private directory, and echoes
+   them to stdout. Both output draining and input delivery must make progress.
+2. The same full-duplex exchange runs with stdout redirected to a private file.
+3. Another native child closes stdin and exits, while 1048577 configured input
+   bytes are pending. The existing expected executor-error path must reject,
+   terminate/reap its child and leave no process group.
+4. A new full-duplex successor, with a different input-length/tail-window index,
+   must complete successfully after that error. Its redirect choice alternates.
+
+Input lengths cover zero/one and ±1 boundaries around 4 KiB, 64 KiB, 128 KiB,
+256 KiB, 512 KiB and 1 MiB (20 choices). Retained tails cover 0/1 and neighboring
+4096/16384/65537-byte boundaries (11 choices). Seeds also vary bounded binary
+payloads, expected ordinary exit code 0/7/23, and successor redirect mode.
+Twenty consecutive default seeds cover all input sizes; longer runs cover the
+combined deterministic index cycle and changing payloads. These are bounded
+scenario variations, not statistically independent streams.
+
+The parent holds exact configured input independently; the child does not read
+it from an oracle file. Comparing its actual received file proves input bytes
+and EOF delivery. Parent-authored stdout/stderr prelude files define the output
+oracle. Exact separate-channel tails, truncation flags, status and cleanup flags
+are checked, including zero retention and stderr half-close. Redirect mode also
+compares the **complete** child stdout body and exact stderr log. The native
+libtest startup prefix is separately bounded below 4096 bytes and excluded from
+fixture-payload counts. Pipe-mode combined logs have unspecified interstream
+ordering: only their total length bound, separate exact tails and input evidence
+are asserted, not an invented global concatenation order. Logs must have mode 0600.
+Pipe-mode full stdout/stderr bodies are not compared byte-for-byte: equal-length
+front-of-stream corruption or small loss masked by the libtest-prefix allowance
+would not necessarily be detected. No full-body pipe fidelity claim is made.
+
+Each child has a five-second wall deadline, 100 ms termination/pipe graces and
+an independent eight-second alarm. That alarm bounds only the child, not a
+deadlocked parent reader; the outer 880/900-second watchdogs remain required.
+Input is at most 1 MiB+1; one duplex child's
+stdout/stderr payload is at most 1245187 bytes. The deliberate early-close child
+has only native harness startup output. Child current directory, HOME and XDG
+paths point into its exclusively created private fixture. No shell, interpreter,
+PATH command, model, external agent, network connection or host configuration is
+used by the generated check. Test code only performs read-only PID/group checks;
+it never signals a PID recovered from a file.
+
+This new matrix does not intentionally expire wall/idle deadlines. The existing
+separate timeout/cancellation regressions execute in the full package run; this
+is not claimed as new timer, 033/034 inherited-pipe or real replay exactly-once
+coverage. Failed `replay5-*` roots would retain seed/PID/received/log evidence.
+Success removes only its owned fixture after reaping/group checks and assertions.
+
+### Commands and actual results
+
+All seven phases used the same durable single-executor supervisor, explicit
+offline/locked mise test entry, one Cargo job, one nextest thread, nice 10,
+CPUQuota=50%, MemoryHigh=MemoryMax=1G, no swap, TasksMax=128, 900-second systemd
+deadline, five-second stop grace/control-group kill, and inner 880-second timeout
+with five-second kill-after. Rust debug info/incremental remained disabled.
+Startup still required >=9 GiB / load1 <6 / PSI full avg10 <0.5 in two samples
+>=60 seconds apart. Runtime sampling stayed at two seconds with the original
+8 GiB RAM / 30 GiB disk / load 6 / PSI 2 stop gates.
+
+```sh
+python3 .data/chaos6_supervise.py replay-admission mise run test -- pvisor-replay -- --offline --lib -E 'test(delivers_stdin_larger_than_a_pipe_without_losing_bytes)' --no-capture
+MISE_TRUSTED_CONFIG_PATHS="$PWD" mise exec -- rustfmt --edition 2024 crates/pvisor-replay/src/process_generated_tests.rs crates/pvisor-replay/src/process.rs
+python3 .data/chaos6_supervise.py replay-duplex-default mise run test -- pvisor-replay -- --offline --lib -E 'test(full_duplex_boundaries_and_healthy_successors_preserve_exact_bytes)' --no-capture
+python3 .data/chaos6_supervise.py replay-duplex-clippy mise exec -- cargo clippy --offline --locked -p pvisor-replay --lib --tests -- -D warnings
+PVISOR_CHAOS_FIRST_SEED=202611120021 PVISOR_CHAOS_SEED_COUNT=2048 python3 .data/chaos6_supervise.py replay-duplex-seeds-a mise run test -- pvisor-replay -- --offline --lib -E 'test(full_duplex_boundaries_and_healthy_successors_preserve_exact_bytes)' --no-capture
+PVISOR_CHAOS_FIRST_SEED=202611122069 PVISOR_CHAOS_SEED_COUNT=3072 python3 .data/chaos6_supervise.py replay-duplex-seeds-b mise run test -- pvisor-replay -- --offline --lib -E 'test(full_duplex_boundaries_and_healthy_successors_preserve_exact_bytes)' --no-capture
+PVISOR_CHAOS_FIRST_SEED=202611125141 PVISOR_CHAOS_SEED_COUNT=2048 python3 .data/chaos6_supervise.py replay-duplex-seeds-c mise run test -- pvisor-replay -- --offline --lib -E 'test(full_duplex_boundaries_and_healthy_successors_preserve_exact_bytes)' --no-capture
+python3 .data/chaos6_supervise.py replay-package-final mise run test -- pvisor-replay -- --offline --no-capture
+MISE_TRUSTED_CONFIG_PATHS="$PWD" mise exec -- rustfmt --edition 2024 --check crates/pvisor-replay/src/process_generated_tests.rs crates/pvisor-replay/src/process.rs
+git diff --check
+```
+
+The test uses default first seed `202611120001`, count 20. Explicit count is
+bounded to 1–4096 with checked interval overflow. B's count 3072, compared with
+A/C's 2048, was chosen after observing A throughput to obtain 20–30 minutes of
+useful data with three bounded invocations. No resource threshold changed.
+`--no-capture` makes nextest serial and ignores the redundant thread setting.
+
+| Phase | Observation UTC start–end, includes qualification | Actual nextest result/time |
+| --- | --- | --- |
+| Existing-test feasibility | 17:07:44.046–17:09:42.220 | 1 passed, 140 filtered/skipped; 0.023 s; build 55.29 s |
+| Default | 17:14:40.051–17:15:54.106 | 1 passed, 141 filtered/skipped; 3.870 s; 20 seeds |
+| Clippy lib/tests | 17:16:09.202–17:17:47.331 | Passed `-D warnings`; dev compilation 37.21 s |
+| A | 17:18:52.778–17:26:25.830 | 1 passed, 141 filtered/skipped; 391.767 s; 2048 seeds |
+| B | 17:26:45.453–17:37:37.055 | 1 passed, 141 filtered/skipped; 589.048 s; 3072 seeds |
+| C | 17:37:47.061–17:45:20.126 | 1 passed, 141 filtered/skipped; 391.765 s; 2048 seeds |
+| Final package | 17:45:29.012–17:47:03.125 | 155 passed, 1 ignored test skipped; 24.867 s; build 7.78 s |
+
+A/B/C test bodies measured 391.763937279 + 589.044768815 + 391.760878475 =
+**1372.569584569 seconds = 22 min 52.570 s** of changing-data execution.
+There is no workload-padding sleep. Supervision tick/pipe polling intervals
+remain part of actual bounded input/output execution, not added delay.
+
+Long-run totals: **7168 distinct seeds, 28672 native child lifecycles**:
+21504 duplex children (10752 redirected), 7168 expected early-stdin-close errors,
+7168 healthy successors, 9556 ordinary nonzero exits and 6561973297 successfully
+delivered input bytes across duplex children. Successors are already included in
+duplex counts; nonzero exits and redirects overlap those counts. The byte total
+is accumulated small, deleted fixtures, not a simultaneously resident file or
+throughput claim. No timer expiration or process descendant is in those totals.
+
+Including standalone and final-package default reruns: 7208 seed executions,
+7188 distinct seed values and 28832 child lifecycles. Across six Rust test
+commands, **160 nextest tests passed, 0 failed**. The single final-package
+ignored test is the existing approximately three-minute
+`slow_progress_then_idle_cancellation_drains_and_allows_a_fresh_process`.
+Its ignored status was not changed and it was not explicitly run. Filtered
+counts in targeted invocations are listed separately, not claimed as coverage.
+
+### Resources, cleanup and limits of evidence
+
+| Phase | Samples | Minimum available RAM GiB | Maximum load1 | Maximum PSI full avg10 | Cgroup peak MiB |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Existing-test feasibility | 32 | 16.826 | 0.933 | 0.00 | 1024.000 |
+| Default | 10 | 16.527 | 0.562 | 0.00 | 603.297 |
+| Clippy | 22 | 16.751 | 0.744 | 0.00 | 414.348 |
+| A | 199 | 16.636 | 0.938 | 0.00 | 106.344 |
+| B | 298 | 16.567 | 1.190 | 0.00 | 106.387 |
+| C | 199 | 16.591 | 0.647 | 0.00 | 111.523 |
+| Final package | 20 | 16.624 | 0.691 | 0.00 | 397.621 |
+
+Initial compilation reached the exact 1 GiB cgroup limit:
+`memory.events max=844`, high=0, oom=0, oom_kill=0. It succeeded after cgroup
+memory-limit reclaim; **this is not evidence of spare compilation headroom**.
+All later phases had high/max/oom/oom_kill=0. No host OOM, cgroup OOM kill,
+resource-triggered stop, swap or parameter retry occurred. Minimum sampled
+disk availability was 243.895 GiB. Seven qualifying startup pauses totaled
+approximately **420 seconds**, excluded from useful execution time.
+
+All seven owned services were confirmed inactive/unloaded with captured cgroup
+empty/absent, and their directories were absent afterward. Final listing found
+no `pvisor-c6-*` / `pvisor-chaos*` service; both gate files were absent. Every
+new `replay5-*` fixture was removed on success. Two transient existing-suite
+`.tmp*` directories surfaced during full regression and were already absent
+at inspection; no manual sweep was done.
+
+Ignored raw evidence remains under this executor's
+`.data/chaos6/<phase>.{log,resources.jsonl,cgroup-start.json,cgroup-final.json}`.
+New test SHA-256:
+`3963a555cdcaa70e140c91035223c4f09d2eb2c12d6627624106bd903d0cf5a0`.
+Final `src/process.rs`, with test-only include, SHA-256:
+`2f1048794ec55a84ab03eef47a220c35625f961905fadd6be9e0862152f650d1`.
+The same source was used for default, Clippy, A/B/C and final package validation.
+No large machine logs were committed.
+
+Final rustfmt and whitespace checks passed; Clippy covered `--lib --tests` with
+warnings denied. No other platform, Python/full-workspace/doctest/rustdoc,
+external agent/model, replay exactly-once proof, hostile process escape or
+resource-exhaustion experiment was run. Existing full-package bridge tests use
+their own local protocol fixtures; they are not external network acceptance.
+Parent has separately authorized a possible Round06 NativeHost retry based on
+the now-measured host memory surplus, with explicit new stage budget/admission
+conditions. No NativeHost workload was started before this round's cleanup.
+The overall campaign still ends at 20:21Z.
