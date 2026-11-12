@@ -179,7 +179,7 @@ pub struct RunArgs {
     #[arg(long)]
     no_agent_defaults: bool,
 
-    /// Atomically write the finalized RunResult as JSON before exit; required with --spec.
+    /// Atomically write the finalized RunResult outside Session storage; required with --spec.
     #[arg(long, value_name = "FILE")]
     result_file: Option<PathBuf>,
 
@@ -1017,6 +1017,8 @@ async fn run_prepared_spec(args: RunArgs) -> anyhow::Result<i32> {
     )
     .context("decode delegated RunSpec")?;
     reject_ask_policies(&spec.policies, &Default::default())?;
+    let storage = resolve_run_storage(&stage_path)?;
+    validate_result_file_destination(&result_path, &storage)?;
     let mut stage_guard = None;
     let (pvisor, config) = {
         let cleanup = args.stage.is_none();
@@ -1072,7 +1074,6 @@ async fn run_prepared_spec(args: RunArgs) -> anyhow::Result<i32> {
             config.record.destination.is_none(),
             "JSON --spec does not accept recording overrides"
         );
-        let storage = resolve_run_storage(&stage_path)?;
         #[cfg(feature = "gateway")]
         let proxy = resolve_proxy(&config)?;
         let builder = configured_runtime_builder(
@@ -1454,6 +1455,9 @@ async fn execute_config(
         super::host_service::reject_guest_exposure(sources)?;
     }
     let storage = resolve_run_storage(&select_run_storage(&config, &workspace, &run_id)?)?;
+    if let Some(path) = &result_file {
+        validate_result_file_destination(path, &storage)?;
+    }
     if config
         .policies
         .scopes()
@@ -2947,6 +2951,44 @@ pub(super) fn canonical_candidate(path: &Path) -> anyhow::Result<PathBuf> {
         resolved.push(name);
     }
     Ok(resolved)
+}
+
+/// Session storage is opaque: optional frontend exports must not write into it.
+/// `storage` is already canonical. Resolve ordinary aliases without creating the
+/// export path; this is admission, not a reservation against concurrent rebinding.
+fn validate_result_file_destination(path: &Path, storage: &Path) -> anyhow::Result<()> {
+    let mut prefix = path.to_path_buf();
+    let mut suffix = Vec::new();
+    let mut destination = loop {
+        match canonical_candidate(&prefix) {
+            Ok(candidate) => break candidate,
+            Err(error)
+                if error
+                    .downcast_ref::<std::io::Error>()
+                    .is_some_and(|error| error.kind() == std::io::ErrorKind::NotADirectory) =>
+            {
+                // An external file blocking the export's parent must retain its
+                // existing post-completion write error, not prevent the guest.
+                // Resolve that file's identity to check storage containment only.
+                suffix.push(
+                    prefix
+                        .file_name()
+                        .context("result destination has no file name")?
+                        .to_owned(),
+                );
+                prefix.pop();
+            }
+            Err(error) => return Err(error).context("resolve --result-file destination"),
+        }
+    };
+    destination.extend(suffix.into_iter().rev());
+    anyhow::ensure!(
+        !destination.starts_with(storage),
+        "--result-file must be outside Session storage: {} is inside {}",
+        path.display(),
+        storage.display()
+    );
+    Ok(())
 }
 
 fn resolve_default_vm_rootfs(config: &mut RunConfig) -> anyhow::Result<()> {

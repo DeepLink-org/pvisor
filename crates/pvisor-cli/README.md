@@ -112,8 +112,19 @@ retaining the completed Run Bundle and completion receipt; it does not rerun the
 workload or undo its side effects. Failures before a RunResult exists do not
 produce a result file.
 
+The result destination must resolve outside this Session's storage directory,
+including an explicit `--stage` directory. Session storage is opaque: exports
+cannot target its Bundle, completion receipt, upper, preimages or an arbitrary
+subdirectory. This is rejected before starting the workload or publishing Session
+artifacts; preflight may leave an empty storage directory that can be reused.
+Choose an external directory instead. External files named `run-bundle.json` or
+`completion.json`, and siblings such as `stage2` beside `stage`, remain valid.
+Existing path ancestors are resolved for admission, not reserved against later
+concurrent path rebinding.
+
 Prepared JSON `--spec` continues to require `--result-file` and retains its
-existing `DelegatedRunOutput` envelope containing `result` and `agentctl`.
+existing `DelegatedRunOutput` envelope containing `result` and `agentctl`. It
+uses the same outside-Session-storage destination rule.
 
 `apply SOURCE` defaults to the recorded project. SOURCE is required: a Session ID,
 stage directory, workspace selector (including `last`), or staged-bind instance

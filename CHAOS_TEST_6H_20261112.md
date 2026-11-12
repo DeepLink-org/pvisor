@@ -4,7 +4,7 @@
 
 - Campaign window requested by the user: 2026-11-12 22:21 +08:00 through
   2026-11-13 04:21 +08:00 (UTC 14:21–20:21). This is an ongoing campaign
-  checkpoint through Round 07's reproduction (18:40Z), not six completed hours or a concurrent
+  checkpoint through Round 07's focused fix validation (18:51Z), not six completed hours or a concurrent
   stress run. The requested end remains 20:21Z.
 - Baseline: `7fe09e20de3cb7b51222c7d61d75056208da98fb`.
 - Rounds 01–02 executor: the isolated child thread's `pvisor` worktree,
@@ -51,8 +51,10 @@
 - Round 07 initial reproduction (18:34–18:40Z): result export to the same
   Session's `run-bundle.json` or `completion.json` overwrote committed evidence
   in four private fixtures. CLI reported a late error, not preflight refusal;
-  offline status/review could no longer load the Session. **Reproduced defect;
-  no fix yet, pending parent choice of destination-protection rule.**
+  offline status/review could no longer load the Session. Parent approved rule B
+  at 18:41Z; the focused fix now passes **11 targeted tests**, including seven
+  new contracts and the original external-blocking recovery test. Wider/final
+  validation is still pending at this checkpoint.
 
 ## Scenario and existing coverage
 
@@ -1292,7 +1294,7 @@ require an independent reproduction/policy decision. The total deadline remains
 
 ## Round 07 — result export overwrites its own authoritative stage records
 
-### Reproduced finding; policy decision pending
+### Reproduction checkpoint at 18:40Z, before policy decision
 
 Parent proposed this new composition after Round06. Static preflight found
 ordinary `execute_config` writing `--result-file` only after
@@ -1339,9 +1341,10 @@ The parent was immediately sent raw outcomes, paths, failure text and two rules:
    leaving external exports supported. This simpler opaque-storage rule also
    forbids apparently harmless `stage/export/result.json`.
 
-The executor recommends rule 2 but has **not implemented a policy before parent
-decision**. Prepared `--spec` has a separate delegated-result export path and
-must be considered for a coherent eventual rule; it has not been probed here.
+At that checkpoint the executor recommended rule 2 but had **not implemented a
+policy before parent decision**. Prepared `--spec` has a separate delegated-result
+export path and had not yet been probed. Parent subsequently approved rule 2;
+the implementation/verification below includes that path.
 
 ### Commands, resources and retained evidence
 
@@ -1381,5 +1384,86 @@ Raw phase logs/resources/cgroup captures are
 SHA-256:
 `e5b8d46a1bfa7af995df294649fe0d410a80bf429ba2289aa6c2cd6626bd7356`.
 The binary/source baseline is unchanged from Round06, inherited HEAD
-`35393522f528fd8971d4f223d042f3d2988b243b`. This is a pending fix/review checkpoint,
-not six completed hours; no workload remains active while awaiting the rule.
+`35393522f528fd8971d4f223d042f3d2988b243b`. This was the pending fix/review
+checkpoint, not six completed hours; no workload remained active while awaiting
+the rule.
+
+### Approved opaque-storage rule and first fix handoff, 18:51Z
+
+Parent explicitly selected rule B at 18:41Z. Rechecking the owning CLI README
+found no public promise of inside-Session export support. The minimal production
+change is confined to `crates/pvisor-cli/src/cli/run.rs`:
+
+- Both ordinary `execute_config` and prepared JSON `run_prepared_spec` resolve storage
+  and reject an inside-tree `--result-file` before guest execution or Session
+  artifact publication. Preflight can leave the resolved storage root empty;
+  refusal does not reserve or consume a Session and the same stage can be reused.
+- The shared private guard reuses `canonical_candidate` and component-aware
+  `Path::starts_with`, not a string-prefix comparison. Existing ancestor aliases
+  are resolved naturally. This is not a filesystem reservation/TOCTOU defense.
+- An external file obstructing an export parent is resolved only far enough to
+  classify containment. Its existing **post-completion export failure** behavior
+  remains intact rather than being converted into a new pre-execution error.
+  This compatibility exception is specifically for ENOTDIR; other destination
+  resolution errors can still fail during admission.
+- CLI help and the owning README document the opaque tree boundary, prepared
+  envelope compatibility, external same-name/sibling validity and admission-only
+  path resolution.
+
+The guarantee is no guest side effect or Session artifact publication on
+refusal, not zero subprocess creation: rootless capability probes may run before
+the guard. No new promise about final-symlink replacement or arbitrary alias/
+concurrent-rebinding semantics is made.
+
+New external Linux regression:
+`crates/pvisor-cli/tests/result_file_destinations.rs`. Seven nextest contracts
+use twelve dedicated success fixtures: four absolute/relative authoritative-file
+cases, four opaque-tree cases (upper/preimages/arbitrary export subdirectory/
+storage root), two external same-name `stage/../stage2` controls, and two
+prepared-spec destination cases. Rejected cases assert the explicit outside-
+storage message, no guest side effects, unchanged lower sentinel and no internal
+artifacts. Each then successfully reuses the **same** stage with a legal external
+export, checking typed Bundle/receipt/result identity, offline status/review and
+cleanup. No preexisting assertion or result-export envelope was weakened.
+
+Before implementing the production guard, the four authoritative-file Rust
+regressions were run with fail-fast disabled: **0 passed, 4 failed, 3 filtered**.
+Those four native failure fixtures are retained in addition to the earlier
+eight Python diagnostic roots. After repair, the complete seven new contracts,
+the unchanged Round06 external-obstruction recovery test and three existing
+ordinary/prepared export tests passed: **11 passed, 13 filtered**, 11.278 seconds.
+
+```sh
+MISE_TRUSTED_CONFIG_PATHS="$PWD" mise exec -- rustfmt --edition 2024 crates/pvisor-cli/tests/result_file_destinations.rs
+python3 .data/chaos6_native_supervise.py selfexport-rust-before mise run test -- pvisor-cli -- --offline --test result_file_destinations -E 'test(rejects_absolute_) | test(rejects_relative_)' --no-fail-fast --no-capture
+# Apply the approved production guard; format only its owning source/test.
+MISE_TRUSTED_CONFIG_PATHS="$PWD" mise exec -- rustfmt --edition 2024 crates/pvisor-cli/src/cli/run.rs crates/pvisor-cli/tests/result_file_destinations.rs
+python3 .data/chaos6_native_supervise.py selfexport-fixed-focused mise run test -- pvisor-cli -- --offline --test result_file_destinations --test rootless_result_publication --test run_config_cli -E 'binary(result_file_destinations) | binary(rootless_result_publication) | test(result_file_exports_plain_run_result_for_ordinary_spawn) | test(result_file_write_failure_preserves_completed_workload) | test(result_file_preserves_prepared_spec_envelope)' --no-fail-fast --no-capture
+python3 .data/chaos6_native_supervise.py selfexport-fixed-clippy mise exec -- cargo clippy --offline --locked -p pvisor-cli --test result_file_destinations --test rootless_result_publication -- -D warnings
+MISE_TRUSTED_CONFIG_PATHS="$PWD" mise exec -- rustfmt --edition 2024 --check crates/pvisor-cli/src/cli/run.rs crates/pvisor-cli/tests/result_file_destinations.rs
+git diff --check
+```
+
+| Phase | Observation UTC start–end, includes 60 s qualification | Actual result | Peak MiB | Minimum RAM GiB |
+| --- | --- | --- | ---: | ---: |
+| Rust before repair | 18:44:22.554–18:45:28.587 | 4 expected regression failures; 1.615 s; build 1.56 s | 407.734 | 16.683 |
+| Fixed focused | 18:46:55.755–18:48:25.851 | 11 passed, 13 filtered; 11.278 s; build 16.80 s | 725.574 | 16.464 |
+| Fixed targeted Clippy | 18:49:08.625–18:50:14.665 | Passed `-D warnings`; dev check 3.78 s | 404.313 | 16.603 |
+
+These phases retained all Native limits/gates. Memory high/max/oom/oom_kill=0,
+maximum load1 0.382, PSI 0, minimum disk 243.652 GiB; no resource pause/stop.
+Cleanup confirmed all owned services inactive/cgroups absent and gates cleared.
+All twelve new successful fixtures were removed; the four Rust before-repair
+roots remain: `rdSLoyEX`, `rdCLqRbz`, `rdSDq5bb`, `rdHtBer0`. They are evidence,
+not uncertain live owners or mounts.
+
+First-handoff production source SHA-256:
+`5f9fd65a54ae0a8a6a4609daddcbba9ccbb5aca4fa1ecd2de414432108713067`;
+new external test SHA-256:
+`e7be8835e69e2dea7f18cb875c08b01353bd39c6266a4d310561bf8cd19e73bd`.
+The focused test run preceded only the final CLI-help wording change; guard and
+test logic are identical. Clippy and format/diff checks used the final handoff
+source. Full CLI package, other platforms, hostile concurrent rebinding and
+arbitrary alias coverage are **not yet claimed**. Parent receives this independent
+fix now, without waiting for a long follow-on campaign; further validation will
+be appended separately.
