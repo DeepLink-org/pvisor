@@ -2347,6 +2347,42 @@ node-owned views, compressed snapshots and other platforms retain their previous
 path. This optimization does not enable offload on restored COW memory and does
 not promise a measured total-memory saving before workload validation.
 
+### Existing immutable OCI pool objects
+
+Filesystem object publication detects an existing regular object before writing
+a temporary duplicate. It preserves create-if-absent conflicts, syncs the existing
+file and its parent directory, and leaves publisher content verification in place.
+Missing objects retain atomic no-clobber publication; concurrent losers still
+validate the winning bytes. Corrupt objects are rejected, never silently repaired.
+This reduces duplicate writes, not the number of durability barriers.
+
+### Bounded image publication experiments
+
+The private diagnostic control `PVISOR_IMAGE_PUBLISH_WORKERS=1..8` limits
+immutable content upload workers per image publication. Unset retains eight.
+Invalid values fail publication; the setting is not a process-wide or host-wide
+I/O limit. Concurrent images each have their own worker bound. All workers are
+joined before metadata/COMMIT/HEAD publication, and content verification,
+no-clobber writes and durability barriers remain unchanged. This control does
+not change extraction or the number of concurrent image imports.
+
+### Experimental batched local content directory barriers
+
+`PVISOR_IMAGE_BATCH_DIRECTORY_SYNC=1` coalesces directory barriers for local
+Pool content uploads only. Every new or reused object still receives a file
+sync and publisher digest verification. Each publication owns its directory
+set, joins all upload workers, and syncs unique directories child-first, including
+ancestors up to the pool parent, before writing metadata/COMMIT/HEAD. A failed
+barrier aborts publication; no destructor commits. Unreachable objects may remain
+and retries verify them. Ordinary filesystem/S3 publication and metadata writes
+retain their original barriers. Default is unchanged. This does not claim power
+loss safety from process-interruption tests alone; host crash validation remains
+a separate requirement before enabling the optimization by default.
+
+Import benchmarks measure OCI preparation through publication, not VM boot or
+replay completion. Report these phases separately; import timing improvements
+do not establish equivalent improvements in end-to-end startup latency.
+
 ### Shared-pool disconnect fairness
 
 Physical-pool candidate retirement uses serialized cleanup passes with at most

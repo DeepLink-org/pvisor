@@ -781,3 +781,44 @@ fn images_share_content_survive_source_removal_and_copy_up_without_raw_mirror() 
         "two revisions share the same two content objects"
     );
 }
+
+#[test]
+fn failed_content_directory_barrier_never_advances_pool_head() {
+    // Run with PVISOR_IMAGE_BATCH_DIRECTORY_SYNC=1 to exercise this boundary.
+    if std::env::var_os("PVISOR_IMAGE_BATCH_DIRECTORY_SYNC").as_deref()
+        != Some(std::ffi::OsStr::new("1"))
+    {
+        return;
+    }
+    let tmp = tempfile::tempdir().unwrap();
+    let source = ImageStore::new(Some(tmp.path().join("source"))).unwrap();
+    let pool = tmp.path().join("pool");
+    let mut old = None;
+    for revision in ['a', 'b'] {
+        let digest = format!("sha256:{}", revision.to_string().repeat(64));
+        let rootfs = source.root.join("rootfs-v3/sha256").join(&digest[7..]);
+        fs::create_dir(&rootfs).unwrap();
+        fs::write(rootfs.join("file"), revision.to_string()).unwrap();
+        let image = PreparedImage {
+            rootfs,
+            digest,
+            env: BTreeMap::new(),
+            entrypoint: vec![],
+            cmd: vec![],
+        };
+        super::super::storage::FAIL_BATCH_DIRECTORY_SYNC.with(|fail| fail.set(true));
+        let result = publish_local_image(&pool, &source, &image, "example:barrier", "amd64");
+        super::super::storage::FAIL_BATCH_DIRECTORY_SYNC.with(|fail| fail.set(false));
+        assert!(result.is_err());
+        let current = published_local_image(&pool, "example:barrier", "amd64").unwrap();
+        match (&old, current) {
+            (None, None) => {}
+            (Some(expected), Some(Response::Prepared { image_handle, .. })) => {
+                assert_eq!(expected, &image_handle)
+            }
+            _ => panic!("failed barrier advanced HEAD"),
+        }
+        old =
+            Some(publish_local_image(&pool, &source, &image, "example:barrier", "amd64").unwrap());
+    }
+}

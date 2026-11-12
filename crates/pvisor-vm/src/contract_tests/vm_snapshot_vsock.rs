@@ -146,7 +146,10 @@ fn queued_external_response_rejects_snapshot_and_original_can_resume() {
         .unwrap_err()
         .contains("pending responses"));
     source.thaw().unwrap();
-    submit(&mem, 0, 0, &[0; 52], true);
+    // RX parsing requires a data region even though RST has no payload.
+    // One data byte accepts RST but excludes the independent timesync worker,
+    // which needs eight bytes and might otherwise consume this descriptor.
+    submit(&mem, 0, 0, &[0; 45], true);
     // The thawed worker may drain RX before this thread; completion and the
     // actual RST response are the contract, not which thread drains the queue.
     wait(|| {
@@ -154,6 +157,12 @@ fn queued_external_response_rejects_snapshot_and_original_can_resume() {
         used(&mem, 0) == 1
     });
     assert_eq!(used(&mem, 0), 1);
+    // A malformed descriptor can complete with zero bytes; require a real packet.
+    assert_eq!(
+        mem.read_obj::<u32>(GuestAddress(base(0) + 0x2008)).unwrap(),
+        44
+    );
+    assert_eq!(mem.read_obj::<u32>(GuestAddress(0x10000 + 24)).unwrap(), 0);
     assert_eq!(mem.read_obj::<u16>(GuestAddress(0x10000 + 30)).unwrap(), 3);
     freeze(&mut source);
     assert!(source.capture_state().is_ok());

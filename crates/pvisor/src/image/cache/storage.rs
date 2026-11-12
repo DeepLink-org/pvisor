@@ -321,6 +321,23 @@ impl Storage {
             result => result,
         }
     }
+    pub(super) fn put_deferred(
+        &self,
+        key: &str,
+        bytes: &[u8],
+        directories: &std::sync::Mutex<std::collections::BTreeSet<PathBuf>>,
+    ) -> anyhow::Result<()> {
+        validate_key(key)?;
+        ensure!(bytes.len() <= MAX_OBJECT, "cache object exceeds size limit");
+        let Self::Filesystem(root) = self else {
+            anyhow::bail!("directory batching requires filesystem storage");
+        };
+        let target = confined(root, key, true)?;
+        match write_immutable(root, &target, bytes, Some(directories)) {
+            Err(error) if is_conflict(&error) => Ok(()),
+            result => result,
+        }
+    }
     pub(crate) fn compare_and_swap(
         &self,
         key: &str,
@@ -352,20 +369,9 @@ impl Storage {
                 let target = confined(root, key, true)?;
                 let parent = target.parent().context("object requires parent")?;
                 if mode == PutMode::Create {
-                    let mut staging = tempfile::NamedTempFile::new_in(parent)?;
-                    use std::io::Write;
-                    staging.write_all(&bytes)?;
-                    staging.as_file().sync_all()?;
-                    match staging.persist_noclobber(&target) {
-                        Ok(_) => {}
-                        Err(e) if e.error.kind() == std::io::ErrorKind::AlreadyExists => {
-                            return Err(conflict());
-                        }
-                        Err(e) => return Err(e.error.into()),
-                    }
-                    fs::File::open(parent)?.sync_all()?;
-                    return Ok(());
+                    return write_immutable(root, &target, &bytes, None);
                 }
+
                 // Keep the lock file permanently: unlinking it would allow two
                 // processes to lock different inodes for the same HEAD.
                 let lock = OpenOptions::new()
@@ -407,6 +413,95 @@ impl Storage {
         }
         Ok(())
     }
+}
+
+// The batch owns this set until all writers have joined. No drop-time commit:
+// errors leave unreachable objects but cannot advance an image HEAD.
+fn object_directory_barrier(
+    root: &Path,
+    parent: &Path,
+    directories: Option<&std::sync::Mutex<std::collections::BTreeSet<PathBuf>>>,
+) -> anyhow::Result<()> {
+    if let Some(directories) = directories {
+        let mut directories = directories.lock().unwrap();
+        let mut directory = parent;
+        loop {
+            directories.insert(directory.to_owned());
+            if directory == root {
+                break;
+            }
+            directory = directory.parent().context("object escaped pool root")?;
+            ensure!(directory.starts_with(root), "object escaped pool root");
+        }
+        // Persist the root entry too, including concurrent creation by a peer.
+        if let Some(parent) = root.parent() {
+            directories.insert(parent.to_owned());
+        }
+    } else {
+        fs::File::open(parent)?.sync_all()?;
+    }
+    Ok(())
+}
+
+fn write_immutable(
+    root: &Path,
+    target: &Path,
+    bytes: &[u8],
+    directories: Option<&std::sync::Mutex<std::collections::BTreeSet<PathBuf>>>,
+) -> anyhow::Result<()> {
+    let parent = target.parent().context("object requires parent")?;
+    let open_existing = || -> anyhow::Result<()> {
+        let existing = OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+            .open(target)?;
+        ensure!(
+            existing.metadata()?.is_file(),
+            "cache object is not a regular file"
+        );
+        existing.sync_all()?;
+        object_directory_barrier(root, parent, directories)
+    };
+    match fs::symlink_metadata(target) {
+        Ok(_) => {
+            open_existing()?;
+            return Err(conflict());
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
+    let mut staging = tempfile::NamedTempFile::new_in(parent)?;
+    use std::io::Write;
+    staging.write_all(bytes)?;
+    staging.as_file().sync_all()?;
+    match staging.persist_noclobber(target) {
+        Ok(_) => object_directory_barrier(root, parent, directories),
+        Err(e) if e.error.kind() == std::io::ErrorKind::AlreadyExists => {
+            // Independently drain a racing winner before a dependent HEAD commits.
+            open_existing()?;
+            Err(conflict())
+        }
+        Err(e) => Err(e.error.into()),
+    }
+}
+
+#[cfg(test)]
+thread_local! { pub(super) static FAIL_BATCH_DIRECTORY_SYNC: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
+
+pub(super) fn flush_object_directories(
+    directories: &std::sync::Mutex<std::collections::BTreeSet<PathBuf>>,
+) -> anyhow::Result<usize> {
+    #[cfg(test)]
+    if FAIL_BATCH_DIRECTORY_SYNC.with(|fail| fail.get()) {
+        return Err(std::io::Error::from_raw_os_error(libc::EIO).into());
+    }
+    let directories = directories.lock().unwrap();
+    let mut paths = directories.iter().collect::<Vec<_>>();
+    paths.sort_by_key(|p| std::cmp::Reverse(p.components().count()));
+    for path in &paths {
+        fs::File::open(path)?.sync_all()?;
+    }
+    Ok(paths.len())
 }
 
 pub(crate) fn s3_location(location: &str) -> anyhow::Result<(&str, &str)> {
@@ -696,6 +791,36 @@ mod tests {
         drop(storage);
     }
     #[test]
+    fn existing_immutable_object_does_not_create_a_temporary_duplicate() {
+        use std::os::unix::fs::MetadataExt;
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("objects");
+        let storage = Storage::filesystem(root.clone(), true).unwrap();
+        storage
+            .put("data/blob", vec![7; 1024 * 1024], true)
+            .unwrap();
+        let parent = root.join("data");
+        let before = fs::metadata(&parent).unwrap();
+        let inode = fs::metadata(parent.join("blob")).unwrap().ino();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        let error = storage
+            .write("data/blob", vec![9; 1024 * 1024], PutMode::Create)
+            .unwrap_err();
+        assert!(is_conflict(&error));
+        assert_eq!(
+            storage.get("data/blob").unwrap().unwrap(),
+            vec![7; 1024 * 1024]
+        );
+        assert_eq!(fs::metadata(parent.join("blob")).unwrap().ino(), inode);
+        let after = fs::metadata(&parent).unwrap();
+        assert_eq!(
+            (before.mtime(), before.mtime_nsec()),
+            (after.mtime(), after.mtime_nsec()),
+            "reuse must not create/unlink a temporary duplicate"
+        );
+    }
+
+    #[test]
     fn filesystem_objects_reject_symlinks_and_non_regular_files() {
         let temp = tempfile::tempdir().unwrap();
         let storage = Storage::filesystem(temp.path().join("objects"), true).unwrap();
@@ -769,5 +894,71 @@ mod cas_tests {
                 "different images need no common publication state"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod directory_batch_tests {
+    use super::*;
+    use std::collections::BTreeSet;
+    use std::sync::Mutex;
+    #[test]
+    fn batch_coalesces_ancestors_and_preserves_existing_bytes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("objects");
+        let store = Storage::filesystem(root.clone(), true).unwrap();
+        let directories = Mutex::new(BTreeSet::new());
+        for i in 0..20 {
+            store
+                .put_deferred(&format!("data/sha256/object{i}"), b"content", &directories)
+                .unwrap();
+        }
+        store
+            .put_deferred("data/sha256/object0", b"different", &directories)
+            .unwrap();
+        assert_eq!(
+            store.get("data/sha256/object0").unwrap().unwrap(),
+            b"content"
+        );
+        assert_eq!(flush_object_directories(&directories).unwrap(), 4);
+        assert!(directories.lock().unwrap().contains(&root));
+    }
+    #[test]
+    fn failed_directory_drain_is_reported_and_retryable() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("objects");
+        let store = Storage::filesystem(root.clone(), true).unwrap();
+        let directories = Mutex::new(BTreeSet::new());
+        store
+            .put_deferred("data/blob", b"content", &directories)
+            .unwrap();
+        FAIL_BATCH_DIRECTORY_SYNC.with(|fail| fail.set(true));
+        let result = flush_object_directories(&directories);
+        FAIL_BATCH_DIRECTORY_SYNC.with(|fail| fail.set(false));
+        assert!(result.is_err());
+        assert_eq!(flush_object_directories(&directories).unwrap(), 3);
+    }
+    #[test]
+    fn deferred_conflicting_writers_preserve_one_complete_object() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Storage::filesystem(tmp.path().join("objects"), true).unwrap();
+        let barrier = std::sync::Barrier::new(2);
+        std::thread::scope(|scope| {
+            for byte in [1, 2] {
+                let store = &store;
+                let barrier = &barrier;
+                scope.spawn(move || {
+                    let directories = Mutex::new(BTreeSet::new());
+                    barrier.wait();
+                    store
+                        .put_deferred("data/blob", &vec![byte; 1024 * 1024], &directories)
+                        .unwrap();
+                    flush_object_directories(&directories).unwrap();
+                });
+            }
+        });
+        let bytes = store.get("data/blob").unwrap().unwrap();
+        assert_eq!(bytes.len(), 1024 * 1024);
+        assert!(bytes.iter().all(|b| *b == bytes[0]));
     }
 }
