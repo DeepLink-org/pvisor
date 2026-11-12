@@ -21,11 +21,13 @@ use std::time::{Duration, Instant};
 
 pub use crate::image::oci::PullProgress;
 
+mod branch;
 /// VM-isolated Dockerfile builds and OCI image publication.
 pub mod build;
 mod images;
 /// Opt-in host-only native controls for cooperative memory scheduling.
 pub mod managed;
+mod owner_shutdown;
 mod staging;
 pub use staging::StagedMount;
 /// Persistent Docker-style network management and IPAM.
@@ -262,6 +264,12 @@ pub struct Create {
     /// Live backing only, not a restart checkpoint or shared memory pool.
     #[serde(default)]
     pub managed_memory_compression: bool,
+    /// Experimental Linux snapshot-branch source. Ordinary OCI startup is
+    /// retained; capture is requested only after the cooperative caller has
+    /// verified initialization and stopped guest requests. Requires managed
+    /// memory, no network/mounts/pool/TTY, and excludes UKSM. Defaults false.
+    #[serde(default)]
+    pub branchable: bool,
     /// Optional private shared boot-kernel directory on Apple Silicon macOS.
     /// Equal firmware bytes map one read-only inode with private COW writes.
     /// Canonicalized at creation, retained across start, and excluded from guest
@@ -298,6 +306,10 @@ pub struct Create {
 pub struct Instance<Backing = CachedImage> {
     /// Schema version; unknown versions refuse mutation.
     pub schema: u32,
+    /// Internal initialized-machine baseline for a single-use OCI branch.
+    /// A missing binding for this identity is fatal, never a cold-start fallback.
+    #[serde(default)]
+    pub branch_base: Option<String>,
     /// Full 64-hex container ID.
     pub id: String,
     /// Unique user-visible name.
@@ -782,6 +794,7 @@ impl Store {
         progress: &mut dyn FnMut(PullProgress),
     ) -> anyhow::Result<Instance> {
         managed::validate_config(&config)?;
+        branch::validate_config(&config)?;
         staging::validate_mounts(&mut config)?;
         if let Some(platform) = &config.platform {
             require_native_platform(platform)?;
@@ -970,6 +983,7 @@ impl Store {
         config
             .mounts
             .sort_by_key(|mount| mount.target.components().count());
+        branch::validate_config(&config)?;
         let mut targets = std::collections::BTreeSet::new();
         ensure!(
             config.mounts.iter().all(|m| targets.insert(&m.target)),
@@ -989,6 +1003,7 @@ impl Store {
         let user = config.user.clone().unwrap_or_else(|| image.user.clone());
         let instance = Instance {
             schema: 1,
+            branch_base: None,
             id,
             name,
             image,
@@ -1041,6 +1056,12 @@ impl Store {
                 return Ok(instance);
             }
             if instance.state != "starting" {
+                if instance.branch_base.is_some() {
+                    ensure!(
+                        instance.generation.is_empty(),
+                        "snapshot branches are single-use; a failed/exited branch cannot restart"
+                    );
+                }
                 ensure!(
                     !self.active(&instance)?,
                     "container is already running or starting"
@@ -1126,10 +1147,19 @@ impl Store {
                         .unwrap_or_default()
                 );
             }
-            ensure!(
-                Instant::now() < deadline,
-                "container startup timed out; inspect logs before retrying"
-            );
+            if Instant::now() >= deadline {
+                let cleanup = cancel_failed_start(self, &instance, Duration::from_secs(10));
+                bail!(
+                    "container startup timed out (30s); {}",
+                    match cleanup {
+                        Ok(()) =>
+                            "owner confirmed runner exit; inspect logs before retrying".to_string(),
+                        Err(error) => format!(
+                            "runner termination unconfirmed: {error:#}; retain backing and audit exit"
+                        ),
+                    }
+                );
+            }
             std::thread::sleep(Duration::from_millis(20));
         }
     }
@@ -1466,10 +1496,69 @@ pub fn internal_if_requested() -> anyhow::Result<bool> {
     if mode.ends_with("-owner") {
         owner(&store, instance)?;
     } else {
-        let lower = store.open_image(&instance.image)?;
-        run_vm(&store, instance, lower)?;
+        let (lower, verified_build) =
+            match branch::startup_stage(&store, &instance, "image-root", || {
+                branch::image_root(&store, &instance)
+            })? {
+                Some((lower, build)) => (lower, Some(build)),
+                None => (store.open_image(&instance.image)?, None),
+            };
+        run_vm(&store, instance, lower, verified_build)?;
     }
     Ok(true)
+}
+
+// Startup rejection is not a successful run or permission to kill its FUSE
+// owner first. Publish only to the admitted generation, then use the existing
+// ten-second forced-stop confirmation budget, separate from startup readiness.
+fn cancel_failed_start(
+    store: &Store,
+    instance: &Instance,
+    timeout: Duration,
+) -> anyhow::Result<()> {
+    {
+        let _lock = store.lock()?;
+        let current = store.resolve(&instance.id)?;
+        ensure!(
+            current.generation == instance.generation,
+            "startup generation changed; no stop sent"
+        );
+        if store.active(instance)? {
+            crate::util::write_private_json(
+                &store.directory(&instance.id).join("startup-timeout.json"),
+                &instance.generation,
+            )?;
+            crate::util::write_private_json(
+                &store.directory(&instance.id).join("force-stop.json"),
+                &instance.generation,
+            )?;
+        }
+    }
+    let deadline = Instant::now() + timeout;
+    while store.active(instance)? {
+        ensure!(
+            Instant::now() < deadline,
+            "owner did not confirm VM termination"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    // A lost owner lease alone can also mean an abrupt owner death. Require
+    // its generation-specific settlement receipt; external audits still verify
+    // cgroups, mount namespaces and descendants independently.
+    let completion: Completion = serde_json::from_reader(
+        File::open(
+            store
+                .root
+                .join("results")
+                .join(format!("{}.json", instance.id)),
+        )
+        .context("owner exited without a completion receipt")?,
+    )?;
+    ensure!(
+        completion.generation == instance.generation,
+        "stale owner completion receipt"
+    );
+    Ok(())
 }
 
 struct ChildGuard(std::process::Child);
@@ -1591,6 +1680,9 @@ impl Drop for PublishedListeners {
 }
 
 fn owner(store: &Store, mut instance: Instance) -> anyhow::Result<()> {
+    // Install before FUSE threads exist. SIGTERM/INT request runner retirement;
+    // they must not destroy its backing service while it is closing FUSE FDs.
+    let _termination = owner_shutdown::Termination::install()?;
     use std::os::fd::FromRawFd;
     let directory = store.directory(&instance.id);
     // Private self-exec consumes fd 0, which the admitting parent has already
@@ -1650,13 +1742,16 @@ fn run_owner_generation(store: &Store, instance: &mut Instance) -> anyhow::Resul
         let stderr_offset = stderr.metadata()?.len();
         // Declare before ChildGuard: the VMM must be reaped before its FUSE owner.
         let (_ram_owner, ram_channel) = if instance.config.managed_memory_compression {
-            let (owner, channel) = managed::ParentBacking::prepare(
-                &directory,
-                managed::Target {
-                    container_id: instance.id.clone(),
-                    generation: instance.generation.clone(),
-                },
-            )?;
+            let (owner, channel) =
+                branch::startup_stage(store, instance, "backing-prepare", || {
+                    managed::ParentBacking::prepare(
+                        &directory,
+                        managed::Target {
+                            container_id: instance.id.clone(),
+                            generation: instance.generation.clone(),
+                        },
+                    )
+                })?;
             (Some(owner), Some(channel))
         } else {
             (None, None)
@@ -1693,9 +1788,23 @@ fn run_owner_generation(store: &Store, instance: &mut Instance) -> anyhow::Resul
         // Close and join listeners before committing completion/releasing the
         // owner lease. Stop must not acknowledge while a listener is still live.
         let mut publications = PublishedListeners::start(listeners, &endpoint)?;
+        let mut ready_span = branch::StartupSpan::begin(store, instance, "owner-ready-wait")?;
         loop {
+            if let Some(signal) = owner_shutdown::requested() {
+                let error =
+                    format!("owner received signal {signal}; retiring runner before backing");
+                let _ = ready_span.finish(Some(&error));
+                branch::startup_stage(store, instance, "runner-reap", || {
+                    Ok(owner_shutdown::terminate_and_reap(&mut child)?)
+                })?;
+                bail!("{error}");
+            }
             publications.check()?;
             if let Some(status) = child.try_wait()? {
+                branch::startup_stage(store, instance, "runner-reap", || Ok(()))?;
+                if instance.state == "starting" {
+                    ready_span.finish(Some("runner exited before readiness"))?;
+                }
                 ensure!(
                     directory
                         .join(format!("boot-{}", instance.generation))
@@ -1710,6 +1819,7 @@ fn run_owner_generation(store: &Store, instance: &mut Instance) -> anyhow::Resul
                 && endpoint.exists()
                 && let Ok(Reply::Ready) = store.request(instance, &Request::Ping {})
             {
+                ready_span.finish(None)?;
                 instance.state = "running".into();
                 let _guard = store.lock()?;
                 store.save(instance)?;
@@ -1725,8 +1835,18 @@ fn run_owner_generation(store: &Store, instance: &mut Instance) -> anyhow::Resul
                     .as_deref()
                     == Some(&instance.generation)
             {
-                child.kill()?;
-                let _ = child.wait()?;
+                ready_span.finish(Some("forced stop before readiness"))?;
+                branch::startup_stage(store, instance, "runner-reap", || {
+                    Ok(owner_shutdown::terminate_and_reap(&mut child)?)
+                })?;
+                if File::open(directory.join("startup-timeout.json"))
+                    .ok()
+                    .and_then(|f| serde_json::from_reader::<_, String>(f).ok())
+                    .as_deref()
+                    == Some(&instance.generation)
+                {
+                    bail!("startup readiness timed out; runner reaped before backing release");
+                }
                 return Ok(137);
             }
             std::thread::sleep(Duration::from_millis(20));
@@ -1752,7 +1872,8 @@ fn settle_owner_generation(
     } else {
         Ok(())
     };
-    let result = result.and_then(|code| cleanup.map(|()| code));
+    let branch_cleanup = branch::retire(instance);
+    let result = result.and_then(|code| cleanup.and(branch_cleanup).map(|()| code));
     // ChildGuard has reaped the VMM before sealing any Session. A seal failure is
     // an instance failure, not permission to invent an uncommitted Session receipt.
     let result = if spawned {
@@ -1939,11 +2060,12 @@ fn prepare_resolver(
 fn run_vm<Backing>(
     store: &Store,
     instance: Instance<Backing>,
-    image_root: ImageRoot,
+    mut image_root: ImageRoot,
+    verified_build: Option<branch::VerifiedBuild>,
 ) -> anyhow::Result<()> {
     use pvisor_vm::api::{
-        OverlayConfig, PermissionSemantics, RuntimeSupport, VmBuilder, VmConfiguration, VmPlatform,
-        VmRuntime,
+        OverlayConfig, PermissionSemantics, RuntimeSupport, VmBuilder, VmConfiguration, VmControl,
+        VmPlatform, VmRuntime,
     };
     require_native_platform(&instance.image.platform)?;
     if std::env::var_os("PVISOR_KRUN_LOG").is_some() {
@@ -1952,6 +2074,16 @@ fn run_vm<Backing>(
     let _lease = acquire_lease(&store.directory(&instance.id).join("vm.lock"))?;
     let endpoint = socket(&instance)?;
     managed::validate_config(&instance.config)?;
+    branch::validate_config(&instance.config)?;
+    let mut branch_restore = branch::startup_stage(store, &instance, "restore-prepare", || {
+        branch::restore(
+            store,
+            &instance,
+            image_root.rootfs(),
+            verified_build.as_ref(),
+        )
+    })?;
+    let is_branch = branch_restore.is_some();
     #[cfg(any(
         all(target_os = "macos", target_arch = "aarch64"),
         all(target_os = "linux", target_arch = "x86_64")
@@ -1970,6 +2102,9 @@ fn run_vm<Backing>(
         })
         .transpose()?;
     let mut vm = VmBuilder::new(instance.config.cpus, instance.config.memory_mib)?;
+    if instance.config.branchable {
+        vm.snapshot_profile()?;
+    }
     if VmPlatform::embedded_kernel().is_none() {
         vm.set_firmware_path(VmPlatform::resolve_firmware_path(None)?)?;
     }
@@ -1977,18 +2112,27 @@ fn run_vm<Backing>(
         vm.shared_kernel_base(directory.clone())?;
     }
     let directory = store.directory(&instance.id);
+    let mut branch_control = branch::Endpoint::bind(store, &instance, &mut image_root)?;
     let managed_ram = if instance.config.managed_memory {
         let backing = std::sync::Arc::new(if instance.config.managed_memory_compression {
-            managed::Backing::from_parent(&managed::Target {
-                container_id: instance.id.clone(),
-                generation: instance.generation.clone(),
+            branch::startup_stage(store, &instance, "backing-handoff", || {
+                managed::Backing::from_parent(&managed::Target {
+                    container_id: instance.id.clone(),
+                    generation: instance.generation.clone(),
+                })
             })?
         } else {
             managed::Backing::create(&directory, false)?
         });
         // Shared pages must reattach to the owned backing before reclaim,
         // whether the backing is raw or compressed.
-        vm.ram_backing(backing.file.try_clone()?)?;
+        if let Some(restore) = branch_restore.take() {
+            branch::startup_stage(store, &instance, "restore-configure", || {
+                Ok(vm.machine_restore_with_branch_offload(restore, backing.file.try_clone()?)?)
+            })?;
+        } else {
+            vm.ram_backing(backing.file.try_clone()?)?;
+        }
         Some(backing)
     } else {
         None
@@ -2012,7 +2156,11 @@ fn run_vm<Backing>(
         vm.ram_backing(tempfile::tempfile_in(&directory)?)?;
     }
     let mut lowers = vec![image_root.rootfs().to_owned()];
-    let mut lower_mutability = vec![pvisor_overlay_core::LayerMutability::Mutable];
+    let mut lower_mutability = vec![if instance.config.branchable {
+        pvisor_overlay_core::LayerMutability::Immutable
+    } else {
+        pvisor_overlay_core::LayerMutability::Mutable
+    }];
     if instance.config.network {
         let resolver = directory.join(format!("resolver-{}", instance.generation));
         prepare_resolver(
@@ -2063,6 +2211,8 @@ fn run_vm<Backing>(
             libc::_exit(137);
         }
     });
+    let mut restore_span = branch::StartupSpan::begin(store, &instance, "vm-restore")?;
+    let mut resume_span = branch::StartupSpan::begin(store, &instance, "vm-ready-total")?;
     let mut guest = pvisor_guest::GuestConfig {
         argv: instance.argv,
         env: instance.env,
@@ -2168,7 +2318,8 @@ fn run_vm<Backing>(
     vm.vsock_port(control::CONTROL_PORT, endpoint, true)?;
     vm.task_stdio(-1, 1, 2)?;
     let ready = directory.join(format!("boot-{}", instance.generation));
-    vm.run(|handle| {
+    let run_result = vm.run(|handle| {
+        restore_span.finish(None).map_err(io::Error::other)?;
         #[cfg(any(
             all(target_os = "macos", target_arch = "aarch64"),
             all(target_os = "linux", target_arch = "x86_64")
@@ -2185,16 +2336,34 @@ fn run_vm<Backing>(
         }
         if let Some(endpoint) = &mut managed_control {
             endpoint
-                .start(std::sync::Arc::new(handle))
+                .start(std::sync::Arc::new(handle.clone()))
                 .map_err(io::Error::other)?;
         }
-        fs::write(ready, b"ready")
-    })?;
+        if let Some(endpoint) = &mut branch_control {
+            endpoint.start(handle.clone()).map_err(io::Error::other)?;
+        }
+        if is_branch {
+            handle.resume().map_err(io::Error::other)?;
+        }
+        fs::write(ready, b"ready")?;
+        resume_span.finish(None).map_err(io::Error::other)
+    });
+    if let Err(error) = &run_result {
+        let message = error.to_string();
+        let _ = restore_span.finish(Some(&message));
+        let _ = resume_span.finish(Some(&message));
+    }
+    run_result?;
     Ok(())
 }
 
 #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
-fn run_vm<Backing>(_: &Store, _: Instance<Backing>, _: ImageRoot) -> anyhow::Result<()> {
+fn run_vm<Backing>(
+    _: &Store,
+    _: Instance<Backing>,
+    _: ImageRoot,
+    _: Option<branch::VerifiedBuild>,
+) -> anyhow::Result<()> {
     bail!("container VMs require Apple Silicon macOS or Linux x86_64")
 }
 
@@ -2207,6 +2376,49 @@ pub use pvisor_guest::control::{
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn startup_timeout_stop_is_generation_bound_and_never_claims_exit() {
+        let (_tmp, store, _) = fixture();
+        let mut instance = store.create(request()).unwrap();
+        instance.generation = uuid();
+        instance.state = "starting".into();
+        store.save(&instance).unwrap();
+        let dir = store.directory(&instance.id);
+        let lease = acquire_lease(&dir.join("owner.lock")).unwrap();
+        let mut stale = instance.clone();
+        stale.generation = uuid();
+        assert!(cancel_failed_start(&store, &stale, Duration::ZERO).is_err());
+        assert!(!dir.join("force-stop.json").exists());
+        assert!(cancel_failed_start(&store, &instance, Duration::ZERO).is_err());
+        let forced: String =
+            serde_json::from_reader(File::open(dir.join("force-stop.json")).unwrap()).unwrap();
+        assert_eq!(forced, instance.generation);
+        assert!(store.active(&instance).unwrap());
+        drop(lease);
+        assert!(cancel_failed_start(&store, &instance, Duration::ZERO).is_err());
+        crate::util::write_private_json(
+            &store
+                .root
+                .join("results")
+                .join(format!("{}.json", instance.id)),
+            &Completion {
+                generation: stale.generation,
+                code: 125,
+                error: Some("old failure".into()),
+            },
+        )
+        .unwrap();
+        assert!(cancel_failed_start(&store, &instance, Duration::ZERO).is_err());
+        finish_instance(
+            &store,
+            &mut instance,
+            125,
+            Some("startup failed after reap".into()),
+        )
+        .unwrap();
+        assert!(cancel_failed_start(&store, &instance, Duration::ZERO).is_ok());
+    }
 
     #[test]
     fn compression_rejects_unmanaged_config_and_defaults_off_for_old_records() {
@@ -3231,6 +3443,7 @@ mod tests {
             memory_pool: None,
             managed_memory: false,
             managed_memory_compression: false,
+            branchable: false,
             shared_kernel_base: None,
             auto_remove: false,
             interactive: false,

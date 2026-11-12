@@ -3,6 +3,76 @@
 use pvisor_vm::api::{self, RestoreState, SnapshotState, VmBuilder, VmConfiguration};
 
 #[test]
+fn branch_offload_rejects_unauthorized_machine_state_without_poisoning_builder() {
+    let state = serde_json::from_value(serde_json::json!({
+        "version":1,"cpus":[],"devices":[],"ram":[]
+    }))
+    .unwrap();
+    let mut builder = VmBuilder::new(1, 128).unwrap();
+    let error = builder
+        .machine_restore_with_branch_offload(
+            api::MachineRestore {
+                state,
+                ram_file: std::sync::Arc::new(tempfile::tempfile().unwrap()),
+                ram_extents: vec![],
+            },
+            tempfile::tempfile().unwrap(),
+        )
+        .unwrap_err();
+    if !cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+        assert_eq!(error.kind(), std::io::ErrorKind::Unsupported);
+    }
+    builder.ram_backing(tempfile::tempfile().unwrap()).unwrap();
+}
+
+#[test]
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+fn branch_listener_rebinding_requires_one_exact_binding_and_is_atomic() {
+    let value = serde_json::json!({
+        "version":1,"cpus":[],"ram":[],"pio_devices":[],"kvm":null,
+        "devices":[{"base":4096,"len":4096,"device":{"kind":"Virtio","state":{
+            "version":1,"device_type":19,"avail_features":0,"acked_features":0,
+            "features_select":0,"acked_features_select":0,"queue_select":0,"device_status":0,
+            "config_generation":0,"shm_region_select":0,"interrupt_status":0,"irq_line":null,"queues":null,
+            "device":{"queues":null,"state":{"kind":"Vsock","state":{
+                "cid":3,"host_port_map":null,"unix_ipc_port_map":{"7000":["/tmp/source.sock",true]},"tsi_flags":0
+            }}}
+        }}}]
+    });
+    // Backend state is intentionally host-specific. This fixture checks the
+    // KVM snapshot's public atomic-rebinding contract without starting a VM.
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    {
+        let mut state: api::MachineSnapshot = serde_json::from_value(value).unwrap();
+        let before = serde_json::to_value(&state).unwrap();
+        assert!(state
+            .rebind_vsock_listener(
+                7001,
+                "/tmp/source.sock".as_ref(),
+                "/tmp/child.sock".as_ref()
+            )
+            .is_err());
+        assert_eq!(before, serde_json::to_value(&state).unwrap());
+        assert!(state
+            .rebind_vsock_listener(7000, "/tmp/wrong.sock".as_ref(), "/tmp/child.sock".as_ref())
+            .is_err());
+        assert_eq!(before, serde_json::to_value(&state).unwrap());
+        state
+            .rebind_vsock_listener(
+                7000,
+                "/tmp/source.sock".as_ref(),
+                "/tmp/child.sock".as_ref(),
+            )
+            .unwrap();
+        let after = serde_json::to_string(&state).unwrap();
+        assert!(after.contains("/tmp/child.sock"));
+        assert!(!after.contains("/tmp/source.sock"));
+    }
+    #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+    let _ = value;
+}
+
+#[test]
 fn managed_filesystem_validation_is_atomic_and_excludes_snapshots() {
     let root = tempfile::tempdir().unwrap();
     let mut builder = VmBuilder::new(1, 128).unwrap();

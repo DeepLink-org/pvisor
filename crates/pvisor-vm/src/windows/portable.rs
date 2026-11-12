@@ -114,6 +114,13 @@ impl VmConfiguration for VmBuilder {
     fn machine_restore(&mut self, restore: MachineRestore) -> io::Result<()> {
         Err(unsupported("machine_restore"))
     }
+    fn machine_restore_with_branch_offload(
+        &mut self,
+        restore: MachineRestore,
+        private_delta: File,
+    ) -> io::Result<()> {
+        Err(unsupported("snapshot branch offload"))
+    }
 }
 
 impl VmRuntime for VmBuilder {
@@ -193,6 +200,14 @@ impl FrozenMemory for FrozenMachine<'_> {
 }
 
 impl SnapshotState for MachineSnapshot {
+    fn rebind_vsock_listener(
+        &mut self,
+        port: u32,
+        source: &Path,
+        destination: &Path,
+    ) -> io::Result<()> {
+        Err(unsupported("branch listener"))
+    }
     fn prepare_protected_workspace_seed(&mut self, tag: &str) -> io::Result<usize> {
         Err(unsupported("prepare_protected_workspace_seed"))
     }

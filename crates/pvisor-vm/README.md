@@ -1,5 +1,22 @@
 # pvisor-vm
 
+### 实验性快照分支 offload（Linux x86-64）
+
+`machine_restore_with_branch_offload` 复用经过授权的整机快照和只读 RAM
+基底，每个分支独占空的可写增量 backing；不运行 UKSM，不查找重复页。
+CPU/设备全部静止后，新增 COW 页先写入并同步增量文件，再改映射和释放驻留页。
+已有增量通过内核脏页写回，干净基底不复制、不修改，也不对基底执行 cache
+驱逐。改写为零仍保留覆盖语义。压缩 backing 的拥有者须在恢复前提交压缩代。
+这不是持久化检查点：增量映射清单随 VM 存活，进程退出后不能独立恢复。
+读 pagemap、写回或映射替换失败时须终止 runner，不能重试或恢复；增量碎片
+超过 4096 个连续区段会显式失败，避免无界 VMA 增长。
+
+普通快照恢复仍拒绝 offload，只有显式分支模式拥有保存私有页的权限。
+分支模式排除其他冷页 pager 和 KSM advice。`rebind_vsock_listener` 仅重绑
+已捕获且无活动连接的监听端点，恰好匹配一个来源；不复制外部连接。
+单元回归验证真实 mmap/COW 和 I/O 错误路径，不替代整机 KVM、FUSE 压缩和
+OCI 分支端到端验收。
+
 pVisor 的 Rust VM 运行时。VMM、设备、架构支持和虚拟化后端在同一个 crate 中编译，对外使用统一的 Rust API。
 
 ## 设备支持范围
@@ -1959,3 +1976,34 @@ advice 的实例保留原有所有权策略，不进入匿名零映射替换。�
 
 工程验证及 64/256 MiB 整个 VMM 的 footprint/RSS 对照见
 [allocator reclaim 实验](../../benchmark/memory/README.md#pid-1-allocator-reclaim-and-whole-vmm-memory)。
+
+### Retained lazy OCI capture
+
+Overlay device capture may skip complete lower materialization only when both
+an immutable lower declaration and a validated backend snapshot-owner binding
+are present. Private write drains and preimage synchronization still run.
+Snapshots persist the lower index and binding; restore rejects absent/changed
+backends and rebinding rejects relocating these roots. Ordinary snapshots retain
+full materialization; the optional field is absent in their existing wire form.
+This avoids repeating OCI expansion inside the frozen device-capture window.
+RAM capture/synchronization and restore hashing are unchanged.
+
+### Snapshot control-channel drain
+
+Resumable snapshot capture probes vsock before parking CPUs, sharing the existing
+freeze-acquisition deadline. Workers and guest CPUs keep running while requests,
+responses and five-second closed-proxy tombstones drain; state changes and the
+final blocker are logged. A pre-freeze timeout invokes no capture action. Frozen
+capture checks again and still rejects live connections, responses and reaper
+work. This does not cancel guest commands or retry snapshot publication.
+
+Only a concrete Unix acceptor matching its configured port, path and proxy ID,
+with plain AF_VSOCK and an empty accept backlog, may survive as configuration.
+It is recreated at the branch's independently rebound endpoint; host descriptors
+and external connections are never copied. TSI and unbound listeners remain
+unsupported. Callers must stop admitting source requests across capture; the
+running-state probe alone is not a freeze or a promise about future arrivals.
+
+Host-only channel regressions on macOS without mise/nextest use the serial special
+runner `cargo test -p pvisor-vm --lib snapshot_channel -- --test-threads=1`.
+They cover real Unix sockets and failure gates, not full guest branch restoration.

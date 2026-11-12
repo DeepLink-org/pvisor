@@ -1,11 +1,11 @@
 //! Complete MMIO bus inventory for the macOS cold-restore coordinator.
 //! CPU parking and RAM gating remain the VMM caller's responsibility.
 use crate::devices::{
+    Bus, BusDevice,
     legacy::{
-        GicSnapshot, Gpio, GpioSnapshot, IrqChipDevice, RtcSnapshot, Serial, SerialSnapshot, RTC,
+        GicSnapshot, Gpio, GpioSnapshot, IrqChipDevice, RTC, RtcSnapshot, Serial, SerialSnapshot,
     },
     virtio::{MmioSnapshot, MmioTransport},
-    Bus, BusDevice,
 };
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -36,6 +36,26 @@ fn supported(device: &dyn BusDevice) -> bool {
 }
 
 impl Bus {
+    /// Probe while CPUs/workers can still drain control responses. Frozen
+    /// capture independently validates again; this is not a snapshot itself.
+    pub fn snapshot_channel_blocker(&self) -> Result<Option<String>, String> {
+        for (base, _, device) in self.mapped_devices() {
+            let device = match device.try_lock() {
+                Ok(device) => device,
+                Err(std::sync::TryLockError::WouldBlock) => {
+                    return Ok(Some(format!("bus_busy at {base:#x}")));
+                }
+                Err(_) => return Err(format!("poisoned bus device at {base:#x}")),
+            };
+            if let Some(virtio) = device.as_any().downcast_ref::<MmioTransport>() {
+                if let Some(reason) = virtio.snapshot_blocker()? {
+                    return Ok(Some(format!("device {base:#x}: {reason}")));
+                }
+            }
+        }
+        Ok(None)
+    }
+
     /// Poll while CPUs are parked, releasing the VMM lock between executions.
     /// Never close the RAM gate until every worker has stopped. Unsupported
     /// mappings are detected before requesting any device to freeze.

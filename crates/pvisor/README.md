@@ -1,5 +1,61 @@
 # PolicyVisor (pVisor)
 
+## Experimental initialized OCI branches
+
+Linux x86-64 has an opt-in `pvisor run --branchable --managed-memory --network none`
+profile. It boots the ordinary OCI image and current supervisor; it does not use
+UKSM, convert an image to a template, or require a user-prepared snapshot. After
+initialization/tool-service readiness, the cooperative owner stops guest requests
+and calls `pvisor container branch SOURCE --quiescent --names a b c d` once. The
+command captures one machine baseline and creates **stopped** branches; ordinary
+`pvisor start` launches them. It does not infer readiness or run rollout actions.
+
+Branchable sources retain their authenticated V2 OCI projection at its original
+canonical path. Capture checks the retained descriptor and root inode instead of
+materializing/copying the entire image. The sealed branch manifest binds this
+reference to the original OCI image/config/platform. Children reattach the same
+lazy backend: untouched files still come from the verified cache on demand.
+Only private upper/work directories are copied inside the VM freeze. This uses
+the existing native immutable-stage rebinding; saved filesystem state and private
+copies still undergo runtime validation. The cache and retained projection must
+remain available until every branch exits. Removing either fails restore, never
+falls back to a mutable tag or a cold launch. No automatic projection/baseline GC
+is implemented; even an opted-in source that never branches retains its projection.
+Ordinary non-branchable images keep their temporary-directory cleanup behavior.
+
+Preparation has a separate 1800-second client wait. The client must acknowledge
+the exact baseline and VM generation within five seconds, and the server rechecks
+that the generation is running before freezing. A disconnected/stale client cannot
+trigger a late capture. The 600-second capture/publication reply wait and
+30-second barrier acquisition timeout remain unchanged; they are not cancellation
+proof for in-progress kernel I/O. RAM hashing and baseline publication occur after
+the source resumes. `capture-prepare-lower.json`, `capture-frozen-state.json` and
+`capture-publish.json` distinguish running, complete and failed phases.
+
+Version-2 branch baselines require the pinned lazy image reference; old copied
+version-1 baselines are retained as evidence and rejected by this build. Full RAM
+hash validation on each branch restore remains in place. Native indexed/zero-page
+RAM sharing across independent OCI supervisors is not enabled by this change.
+Capture/preparation must still be measured separately from replay; phase receipts
+alone never authorize restore or establish faster end-to-end startup.
+
+Each branch pins the same immutable RAM file with private COW mappings, owns its
+writable filesystem layers and control endpoint, and uses a separate private delta backing.
+`--managed-memory-compression` also compresses that delta after native offload.
+The existing managed control endpoint remains responsible for offload/resume;
+no new timer or scheduler policy is enabled. Shared baseline bytes must be counted
+separately from per-branch deltas when measuring storage or memory.
+
+This initial profile rejects bridge networking, extra/image-declared mounts,
+TTY/stdin attachment, auto-removal, memory pools and shared-kernel mode. It does
+not silently disable requested features. Captured active connections are rejected.
+Only same-host/same-boot/same-build restores are allowed; branches are single-use
+and cannot themselves branch. Missing/tampered bindings reject launch rather than
+falling back to cold boot. Baselines and failed captures are retained for audit;
+there is no automatic baseline garbage collection. RAM delta files are live
+offload backing, not independent crash-recovery artifacts. Real KVM/compressed
+backing qualification is required before using this profile for rollout comparisons.
+
 **Run a coding agent in a staged workspace, review its file changes, and apply
 only what you keep.**
 
@@ -2427,3 +2483,55 @@ docker::tests::managed_shared_pool_acceptance_is_independent_of_compression`)
 also uses this runner. These checks start no VM; they do not exercise Linux reattachment or FUSE.
 Use the standard runner when it is installed, and validate Linux-specific
 `shared_backing_` tests separately before any real workload experiment.
+
+For host-only branch/image regressions on macOS without `mise`/`cargo-nextest`,
+the explicit serial fallback runner is:
+`cargo test -p pvisor --lib image::cache::direct::tests -- --test-threads=1` and
+`cargo test -p pvisor --lib docker::branch::tests -- --test-threads=1`.
+These do not start VMs; Linux initialized-branch and compressed-offload validation
+remains a separate required gate before replay.
+
+Retaining a branch OCI projection also grants its live lazy backend an explicit
+snapshot-owner binding. The device capture validates and saves that binding
+instead of expanding every image file. Reopening the retained owner reinstalls
+the capability only after descriptor and directory verification. Ordinary image
+owners do not grant it; private upper/work synchronization, RAM capture and
+content verification remain required. This is not a complete PR94 RAM restore
+optimization or a claim of faster end-to-end branch startup without KVM results.
+
+### Branch startup timing and failed-start ownership
+
+Branch generations persist `startup-GENERATION-PHASE.json` receipts for retained
+image/build verification, RAM/machine hashes, filesystem checks/rebinding, backing
+preparation/handoff, VM restore and guest readiness. Running receipts survive a
+killed runner; only an observed completion marks a phase complete. Wall-clock
+labels accompany monotonic elapsed times. No input data, credentials, guest
+commands or new retry are added. Hash verification remains enabled.
+
+The ordinary startup readiness deadline remains 30 seconds. A rejected startup
+requests termination through the exact generation's owner and waits the existing
+10-second forced-stop confirmation budget, separately from readiness. Failure to
+confirm exit remains an error. The private detached owner catches TERM/INT before
+creating FUSE workers, retires/reaps its runner with the backing still alive,
+then releases the mount. The frontend and embedded API do not install handlers.
+SIGKILL, host failure and uninterruptible I/O still require independent exit audit;
+a stop request or timeout is never proof that the runner has exited.
+
+On macOS without mise/nextest the host-only special runner is serial libtest:
+`cargo test -p pvisor --lib docker::owner_shutdown::tests -- --test-threads=1`
+and the existing branch regression runner. Linux additionally provides the
+ignored `owner_signal_with_fuse_keeps_mount_until_runner_exit` test: a real FUSE
+backing, dependent process with an open backing FD, TERM/INT and post-reap unmount;
+it starts no VM and must run with mount permission before branch qualification.
+
+
+Branch startup reuses the executable SHA-256 only between image opening and RAM
+restore in the same private runner. The typed result is not stored in metadata or
+cached across launches. Restore still revalidates the manifest, host boot,
+configuration and retained image, and compares the manifest's build digest with
+that result. RAM content is fully SHA-256 verified for every branch, including
+logical sparse zero ranges; machine and filesystem checks are unchanged. Dev and
+test profiles optimize the `sha2` dependency to avoid spending the startup budget
+in an unoptimized compression backend. No digest algorithm, timeout or runtime
+CPU/memory budget changes. `restore-build-binding` records the reused comparison;
+`image-build-hash` records the single executable scan.

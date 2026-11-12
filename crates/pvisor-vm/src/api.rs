@@ -332,6 +332,23 @@ pub trait VmConfiguration: Sized {
     /// snapshot profile. Writable RAM backing and unsupported device/build profiles
     /// reject restoration; a successfully restored machine starts paused.
     fn machine_restore(&mut self, restore: MachineRestore) -> io::Result<()>;
+    /// Linux/x86-64 experimental snapshot branch: restore the same authenticated
+    /// immutable machine baseline, with an exclusive empty read/write file for
+    /// this branch's private RAM changes. No UKSM scan or dedup pool is used.
+    /// All ordinary machine-restore authorization and filesystem-isolation
+    /// requirements still apply. The caller must not reuse, mutate, truncate or
+    /// close the backing service while the VM lives; a compressed FUSE backing
+    /// requires publication by its owner after offload acknowledgement and
+    /// before resume. This is live offload storage, not a durable checkpoint.
+    /// Restored CPUs start paused. Offload retains clean baseline mappings and
+    /// saves modified pages before discarding residency. Failed transitions
+    /// prohibit resume. Other platforms/profiles return Unsupported; validation
+    /// errors do not replace previously configured restore state.
+    fn machine_restore_with_branch_offload(
+        &mut self,
+        restore: MachineRestore,
+        private_delta: File,
+    ) -> io::Result<()>;
 }
 
 /// Consume configuration and run one VM in its dedicated runner process. The
@@ -453,9 +470,13 @@ pub enum RamDedupSkipReason {
 /// The resumable operation thaws the source after successful or rejected actions.
 /// Save-and-stop capture remains parked; freeze failure requires termination.
 pub trait SnapshotControl: VmControl {
-    /// Freeze CPUs, drain devices and invoke action within timeout. The borrowed
-    /// guard cannot escape. A completed/rejected action resumes the source; failure
-    /// to establish or release the barrier requires terminating the runner.
+    /// Wait for control channels to drain while the source runs, then freeze
+    /// CPUs/devices using the same timeout budget. The capture action itself is
+    /// synchronous and not preempted by this timeout. A drain timeout leaves the
+    /// source running and does not invoke action; freeze/thaw failures require
+    /// terminating the runner. The borrowed guard cannot escape. A completed or
+    /// rejected action resumes the source. Callers must prevent new requests;
+    /// capture rechecks channel state after freezing.
     fn with_snapshot_quiesced<T>(
         &self,
         timeout: Duration,
@@ -578,6 +599,17 @@ pub trait FrozenMemory {
 /// Inspect opaque state and rebind captured filesystems to caller-owned copies.
 /// Rebinding preserves the old state on error; it does not copy or publish files.
 pub trait SnapshotState {
+    /// Rebind exactly one frozen, connection-free host vsock listener for a
+    /// same-host branch. Guest port and CID stay unchanged; only the absolute
+    /// host socket path changes. Caller owns an unused private destination and
+    /// authenticates the snapshot. Active connections cannot be captured and
+    /// are not reconstructed here. Missing/ambiguous bindings leave state intact.
+    fn rebind_vsock_listener(
+        &mut self,
+        port: u32,
+        source: &Path,
+        destination: &Path,
+    ) -> io::Result<()>;
     /// Return validated captured CPU count; malformed snapshot data is InvalidData.
     fn cpu_count(&self) -> io::Result<usize>;
     /// Report whether a valid captured kernel layout is present; malformed state is an error.

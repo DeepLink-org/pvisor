@@ -1,5 +1,13 @@
 # pVisor application frontends
 
+Experimental Linux OCI branching uses ordinary `run --branchable --managed-memory
+--network none` followed, at an explicitly quiescent initialized boundary, by
+`container branch SOURCE --quiescent --names a b c d`. Output contains branch IDs,
+names and baseline IDs, not environment secrets. The command creates stopped
+branches; launch them with `start`. No separate image/template preparation is
+required. See the runtime README for the no-network profile, lifetime and
+validation limits. An omitted branch flag preserves ordinary startup behavior.
+
 `pvisor-cli` owns two executables: `pvisor` and
 `pvisor-replay`, with their argument parsing, terminal adapters, rendering and
 companion lookup.

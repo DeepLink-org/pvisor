@@ -69,6 +69,12 @@ impl VmmHandle {
                 );
             }
         }
+        if resume_source {
+            wait_snapshot_channels(deadline, || {
+                let locked = vmm.lock().map_err(|_| "VMM lock poisoned")?;
+                locked.snapshot_channel_blocker()
+            })?;
+        }
         loop {
             let result = vmm
                 .lock()
@@ -376,7 +382,10 @@ impl VmControl for VmmHandle {
 #[cfg(test)]
 mod shared_backing_tests {
     use super::*;
-    use std::sync::{Arc, Mutex, Weak, atomic::{AtomicBool, AtomicUsize, Ordering}};
+    use std::sync::{
+        Arc, Mutex, Weak,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+    };
 
     fn stopped_handle() -> VmmHandle {
         VmmHandle {
@@ -405,5 +414,90 @@ mod shared_backing_tests {
         }));
         assert_eq!(handle.offload_ram().unwrap_err(), "VMM has stopped");
         assert_eq!(calls.load(Ordering::SeqCst), 0);
+    }
+}
+
+/// Wait with CPUs/workers running and no VMM lock held across sleeps. A timeout
+/// here has not frozen anything; the capture action must never run afterwards.
+#[cfg(any(
+    all(target_os = "macos", target_arch = "aarch64"),
+    all(target_os = "linux", target_arch = "x86_64")
+))]
+fn wait_snapshot_channels(
+    deadline: std::time::Instant,
+    mut probe: impl FnMut() -> Result<Option<String>, String>,
+) -> Result<(), String> {
+    let started = std::time::Instant::now();
+    let mut previous = None;
+    loop {
+        let blocker = probe()?;
+        if std::time::Instant::now() >= deadline {
+            return Err(format!(
+                "snapshot channel drain timed out before freeze: {}",
+                blocker.as_deref().unwrap_or("deadline exhausted")
+            ));
+        }
+        if blocker != previous || blocker.is_none() {
+            eprintln!(
+                "pvisor-snapshot-channel elapsed_ms={} blocker={:?}",
+                started.elapsed().as_millis(),
+                blocker
+            );
+            previous = blocker.clone();
+        }
+        if blocker.is_none() {
+            return Ok(());
+        }
+        std::thread::sleep(
+            std::time::Duration::from_millis(10)
+                .min(deadline.saturating_duration_since(std::time::Instant::now())),
+        );
+    }
+}
+
+#[cfg(all(
+    test,
+    any(
+        all(target_os = "macos", target_arch = "aarch64"),
+        all(target_os = "linux", target_arch = "x86_64")
+    )
+))]
+mod snapshot_channel_tests {
+    use super::wait_snapshot_channels;
+    use std::time::{Duration, Instant};
+    #[test]
+    fn snapshot_channel_drains_before_capture() {
+        let mut polls = 0;
+        wait_snapshot_channels(Instant::now() + Duration::from_secs(1), || {
+            polls += 1;
+            Ok(if polls < 3 {
+                Some("closed=1".into())
+            } else {
+                None
+            })
+        })
+        .unwrap();
+        assert_eq!(polls, 3);
+    }
+    #[test]
+    fn snapshot_channel_timeout_reports_blocker_and_does_not_run_action() {
+        let mut called = false;
+        let result = wait_snapshot_channels(Instant::now() + Duration::from_millis(20), || {
+            Ok(Some("responses=2".into()))
+        })
+        .map(|()| called = true);
+        assert!(result.unwrap_err().contains("responses=2"));
+        assert!(!called);
+    }
+    #[test]
+    fn snapshot_channel_fault_and_exhausted_budget_are_not_retried() {
+        assert_eq!(
+            wait_snapshot_channels(Instant::now() + Duration::from_secs(1), || Err(
+                "poisoned".into()
+            ))
+            .unwrap_err(),
+            "poisoned"
+        );
+        assert!(wait_snapshot_channels(Instant::now(), || Ok(None)).is_err());
     }
 }

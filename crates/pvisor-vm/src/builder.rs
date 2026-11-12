@@ -85,11 +85,7 @@ impl<B: Backend> Builder<B> {
             ));
         }
         if !cfg!(all(target_os = "linux", target_arch = "x86_64"))
-            || cfg!(any(
-                feature = "tee",
-                feature = "efi",
-                feature = "aws-nitro"
-            ))
+            || cfg!(any(feature = "tee", feature = "efi", feature = "aws-nitro"))
             || !(1..=2).contains(&self.resources.vcpu_config().vcpu_count)
             || self.resources.snapshot_profile
             || !self.vsock_ports.is_empty()
@@ -143,11 +139,7 @@ impl<B: Backend> Builder<B> {
     }
     pub(crate) fn shared_kernel_base(&mut self, directory: PathBuf) -> io::Result<()> {
         if !cfg!(all(target_os = "macos", target_arch = "aarch64"))
-            || cfg!(any(
-                feature = "tee",
-                feature = "aws-nitro",
-                feature = "efi"
-            ))
+            || cfg!(any(feature = "tee", feature = "aws-nitro", feature = "efi"))
             || self.resources.snapshot_profile
         {
             return Err(io::Error::new(
@@ -838,6 +830,18 @@ impl<B: crate::backend::SnapshotBackend> Builder<B> {
         }
         self.snapshot_profile()?;
         self.resources.machine_restore = Some(Arc::new(restore));
+        self.resources.branch_ram_backing = None;
+        Ok(())
+    }
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    pub(crate) fn machine_restore_with_branch_offload(
+        &mut self,
+        restore: crate::vmm::snapshot::MachineRestore,
+        private_delta: File,
+    ) -> io::Result<()> {
+        crate::vmm::branch_ram::validate_delta(&private_delta, &restore.ram_file)?;
+        self.machine_restore(restore)?;
+        self.resources.branch_ram_backing = Some(Arc::new(private_delta));
         Ok(())
     }
 }

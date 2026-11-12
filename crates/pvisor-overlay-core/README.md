@@ -765,3 +765,12 @@ exercise apply/reuse refusal with both ephemeral recording settings.
 
 `LayerMutability` is defined by `pvisor-core::overlay` and re-exported unchanged
 here, so portable VM configuration does not require the Unix filesystem driver.
+
+### Retained lazy snapshot owners
+
+`ReadOnlyBackend::snapshot_binding` defaults to no capability. An explicit
+producer validates its retained directory and authenticated revision on every
+call; the exact stable registration exposes the opaque binding through
+`backend::snapshot_binding`. Namespace stability alone is insufficient. Snapshot
+consumers must persist this dependency and refuse missing/changed owners or
+relocated lazy roots. Generic `materialize_tree` and owned exports are unchanged.

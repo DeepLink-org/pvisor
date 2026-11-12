@@ -117,6 +117,16 @@ pub trait ReadOnlyBackend: Send + Sync {
     fn materialize_file(&self, relative: &Path) -> io::Result<()>;
     /// An owned tree copy must include unvisited image objects too.
     fn materialize_tree(&self, relative: &Path) -> io::Result<()>;
+    /// Optional immutable snapshot owner binding for this exact registered root.
+    /// The producer must validate the retained directory identity and authenticated
+    /// revision on every call. It must keep storage alive beyond source teardown
+    /// and support reopening the same lazy backend before restoring the snapshot.
+    /// The opaque nonempty binding must change if that owner or revision changes.
+    /// Default None requires ordinary full materialization. Errors must propagate;
+    /// neither this capability nor namespace stability authorizes mutable lowers.
+    fn snapshot_binding(&self) -> io::Result<Option<String>> {
+        Ok(None)
+    }
 }
 
 struct Attachment {
@@ -423,6 +433,30 @@ pub fn materialize_tree(path: &Path) -> io::Result<()> {
         entry.backend.materialize_tree(&relative)?;
     }
     Ok(())
+}
+
+/// Validate an explicit retained snapshot owner on an exact stable registration.
+/// Returns None for native paths, nested paths and ordinary backend attachments.
+/// Does not materialize content. Consumers must persist the binding, prohibit
+/// relocating that lazy root, and require the same binding before restore.
+pub fn snapshot_binding(path: &Path) -> io::Result<Option<String>> {
+    let Some((entry, relative)) = find(path)? else {
+        return Ok(None);
+    };
+    if !relative.as_os_str().is_empty() || !entry.stable_namespace {
+        return Ok(None);
+    }
+    let binding = entry.backend.snapshot_binding()?;
+    if binding
+        .as_ref()
+        .is_some_and(|value| value.is_empty() || value.len() > 65536)
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "invalid snapshot owner binding",
+        ));
+    }
+    Ok(binding)
 }
 
 pub fn link_count(path: &Path, native: u64) -> io::Result<u64> {

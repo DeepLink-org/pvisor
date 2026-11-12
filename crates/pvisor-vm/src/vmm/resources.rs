@@ -131,6 +131,8 @@ pub struct VmResources {
     pub machine_restore: Option<Arc<crate::vmm::snapshot::MachineRestore>>,
     /// Live MAP_SHARED RAM backing, supplied by the owning supervisor.
     pub ram_backing: Option<Arc<File>>,
+    /// Exclusive per-branch delta, never the shared immutable snapshot file.
+    pub branch_ram_backing: Option<Arc<File>>,
     /// Host-private, read-only boot kernel baselines; never writable guest data.
     pub shared_kernel_base: Option<PathBuf>,
     /// The vCpu and memory configuration for this microVM.
@@ -391,6 +393,7 @@ mod tests {
         VmResources {
             shared_kernel_base: None,
             ram_backing: None,
+            branch_ram_backing: None,
             vm_config: VmConfig::default(),
             firmware_config: None,
             kernel_cmdline: default_kernel_cmdline(),

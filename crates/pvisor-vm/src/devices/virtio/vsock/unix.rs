@@ -4,10 +4,10 @@ use super::{
 };
 
 use nix::errno::Errno;
-use nix::fcntl::{fcntl, FcntlArg, OFlag};
+use nix::fcntl::{FcntlArg, OFlag, fcntl};
 use nix::sys::socket::{
-    accept, bind, connect, listen, recv, send, shutdown, socket, AddressFamily, Backlog, MsgFlags,
-    Shutdown, SockFlag, SockType, UnixAddr,
+    AddressFamily, Backlog, MsgFlags, Shutdown, SockFlag, SockType, UnixAddr, accept, bind,
+    connect, listen, recv, send, shutdown, socket,
 };
 use std::collections::HashMap;
 use std::num::Wrapping;
@@ -16,10 +16,10 @@ use std::os::unix::io::{AsRawFd, RawFd};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
+use super::super::Queue as VirtQueue;
 #[cfg(target_os = "macos")]
 use super::super::linux_errno::linux_errno_raw;
-use super::super::Queue as VirtQueue;
-use super::muxer::{push_packet, MuxerRx};
+use super::muxer::{MuxerRx, push_packet};
 use super::muxer_rxq::MuxerRxQ;
 use super::packet::{TsiAcceptReq, TsiConnectReq, TsiListenReq, TsiSendtoAddr, VsockPacket};
 use super::proxy::{NewProxyType, Proxy, ProxyError, ProxyStatus, ProxyUpdate};
@@ -653,6 +653,7 @@ impl AsRawFd for UnixProxy {
 }
 
 pub struct UnixAcceptorProxy {
+    path: PathBuf,
     id: u64,
     fd: OwnedFd,
     peer_port: u32,
@@ -674,11 +675,19 @@ impl UnixAcceptorProxy {
         .map_err(ProxyError::CreatingSocket)?;
         listen(&fd, Backlog::new(5).map_err(ProxyError::CreatingSocket)?)
             .map_err(ProxyError::CreatingSocket)?;
-        Ok(UnixAcceptorProxy { id, fd, peer_port })
+        Ok(UnixAcceptorProxy {
+            path: path.clone(),
+            id,
+            fd,
+            peer_port,
+        })
     }
 }
 
 impl Proxy for UnixAcceptorProxy {
+    fn snapshot_listener(&self) -> Option<(u32, &std::path::Path)> {
+        Some((self.peer_port, &self.path))
+    }
     fn id(&self) -> u64 {
         self.id
     }

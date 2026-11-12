@@ -514,7 +514,7 @@ pub(super) fn run_internal(store: &Store, id: &str, generation: &str) -> anyhow:
         "stale build instance"
     );
     let lower = open_build_image(store, &instance.image)?;
-    super::run_vm(store, instance, lower)
+    super::run_vm(store, instance, lower, None)
 }
 
 #[derive(Clone)]
@@ -622,6 +622,7 @@ impl Stage {
             memory_pool: None,
             managed_memory: false,
             managed_memory_compression: false,
+            branchable: false,
             shared_kernel_base: None,
             auto_remove: false,
             interactive: false,
@@ -633,6 +634,7 @@ impl Stage {
         };
         let instance = Instance {
             schema: 1,
+            branch_base: None,
             id,
             name: format!("build_{}", uuid()),
             image: base.image.clone(),

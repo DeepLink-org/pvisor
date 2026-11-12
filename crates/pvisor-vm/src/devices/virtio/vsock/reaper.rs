@@ -71,8 +71,8 @@ impl ReaperThread {
         }
     }
 
-    pub fn is_idle(&self) -> bool {
-        self.released_map.is_empty() && self.receiver.is_empty()
+    pub(super) fn pending(&self) -> (usize, usize) {
+        (self.released_map.len(), self.receiver.len())
     }
 
     pub fn run(self) -> JoinHandle<Self> {

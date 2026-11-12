@@ -45,7 +45,7 @@ fn architecture() -> &'static str {
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 pub use direct::DirectImage;
-pub(crate) use direct::{attach_runner_lowers, private_owner as direct_image_owner};
+pub(crate) use direct::{RetainedImage, attach_runner_lowers, private_owner as direct_image_owner};
 pub(crate) use network::run_internal_if_requested as run_image_access_internal;
 pub(crate) use pool::{open_local_image, publish_local_image, published_local_image};
 pub(crate) use portable::export_pool;

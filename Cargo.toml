@@ -110,6 +110,15 @@ split-debuginfo = "off"
 [profile.dev.package.blake3]
 opt-level = 3
 
+# Full snapshot SHA-256 verification is on the branch startup deadline. Keep
+# its compression backend optimized in dev/test builds without weakening hashes
+# or changing the rest of the runtime's development profile.
+[profile.dev.package.sha2]
+opt-level = 3
+
+[profile.test.package.sha2]
+opt-level = 3
+
 [profile.test]
 debug = 0
 incremental = false

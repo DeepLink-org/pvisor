@@ -346,9 +346,105 @@ impl ServerSnapshot {
 }
 
 impl FsSnapshot {
+    /// Only the overlay's persisted, authenticated lazy binding may use this
+    /// path. Projection metadata can grow; logical image contents cannot.
+    pub(super) fn bind_lazy_projection(
+        &mut self,
+        root: &Path,
+        binding: &str,
+        capture: bool,
+    ) -> io::Result<()> {
+        use pvisor_overlay_core::backend;
+        use std::os::unix::fs::OpenOptionsExt;
+        if backend::snapshot_binding(root)?.as_deref() != Some(binding) {
+            return Err(invalid("lazy snapshot owner missing or changed"));
+        }
+        self.validate_readonly_handles()?;
+        let Self::Passthrough(state) = self else {
+            return Err(unsupported(
+                "lazy snapshot requires a native projection layer",
+            ));
+        };
+        if state.root != root.as_os_str().as_bytes() {
+            return Err(invalid("lazy snapshot root mismatch"));
+        }
+        let mut inodes = state.inodes.clone();
+        for saved in &mut inodes {
+            let path = relative_path(
+                root,
+                saved
+                    .path
+                    .as_deref()
+                    .ok_or_else(|| invalid("missing lazy inode path"))?,
+            )?;
+            if capture {
+                // Only referenced files, never the unvisited image tree.
+                backend::materialize_file(&path)?;
+            }
+            let file = File::options()
+                .read(true)
+                .custom_flags(pin_flags())
+                .open(&path)?;
+            let identity = FileIdentity::read(&file)?;
+            let old = &saved.identity;
+            #[allow(clippy::useless_conversion)]
+            // libc mode constants differ in width across hosts.
+            let (mask, directory_mode, regular_mode, symlink_mode) = (
+                u32::from(libc::S_IFMT),
+                u32::from(libc::S_IFDIR),
+                u32::from(libc::S_IFREG),
+                u32::from(libc::S_IFLNK),
+            );
+            let kind = identity.mode & mask;
+            let directory = kind == directory_mode;
+            let regular = kind == regular_mode;
+            let symlink = kind == symlink_mode;
+            // Adding a projected child/alias changes physical ctime/nlink (and
+            // directory size/mtime). The binding authenticates logical metadata;
+            // replacement inode, permissions and regular bytes still must match.
+            if identity.dev != old.dev
+                || identity.ino != old.ino
+                || identity.mode != old.mode
+                || identity.uid != old.uid
+                || identity.gid != old.gid
+                || identity.nlink == 0
+                || (!directory
+                    && (identity.size != old.size
+                        || identity.mtime != old.mtime
+                        || identity.mtime_nsec != old.mtime_nsec))
+                || regular != saved.digest.is_some()
+                || symlink != saved.link_target.is_some()
+            {
+                return Err(invalid("lazy snapshot inode changed"));
+            }
+            if regular {
+                let digest = file_digest(
+                    &File::options()
+                        .read(true)
+                        .custom_flags(libc::O_NOFOLLOW)
+                        .open(&path)?,
+                )?;
+                if !capture && Some(digest) != saved.digest {
+                    return Err(invalid("lazy snapshot file content changed"));
+                }
+                saved.digest = Some(digest);
+            }
+            if symlink
+                && Some(std::fs::read_link(&path)?.as_os_str().as_bytes().to_vec())
+                    != saved.link_target
+            {
+                return Err(invalid("lazy snapshot symlink changed"));
+            }
+            saved.identity = identity;
+        }
+        state.inodes = inodes;
+        Ok(())
+    }
     pub(super) fn validate_writeback(&self, enabled: bool) -> io::Result<()> {
         match self {
-            Self::ReadOnly(inner) | Self::Augment { inner, .. } => inner.validate_writeback(enabled),
+            Self::ReadOnly(inner) | Self::Augment { inner, .. } => {
+                inner.validate_writeback(enabled)
+            }
             Self::Overlay(state) => state.validate_writeback(enabled),
             Self::Passthrough(state) if state.writeback == enabled => Ok(()),
             Self::Null if !enabled => Ok(()),

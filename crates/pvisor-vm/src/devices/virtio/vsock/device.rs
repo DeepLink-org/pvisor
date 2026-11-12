@@ -17,9 +17,9 @@ use super::super::{
     ActivateError, ActivateResult, DeviceQueue, DeviceState, Queue as VirtQueue, QueueConfig,
     VirtioDevice,
 };
+use super::TsiFlags;
 use super::muxer::VsockMuxer;
 use super::packet::VsockPacket;
-use super::TsiFlags;
 use super::{defs, defs::uapi};
 use crate::devices::virtio::InterruptTransport;
 
@@ -191,6 +191,10 @@ impl Vsock {
 }
 
 impl VirtioDevice for Vsock {
+    fn snapshot_blocker(&self) -> Result<Option<String>, String> {
+        self.muxer.snapshot_blocker()
+    }
+
     fn freeze(&mut self) -> Result<bool, String> {
         self.frozen = true;
         self.muxer.freeze()

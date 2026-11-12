@@ -14,6 +14,9 @@ impl RamDedupControl for VmmHandle {
             .map_err(|_| "VM transition lock poisoned")?;
         let vmm = self.vmm.upgrade().ok_or("VMM has stopped")?;
         let locked = vmm.lock().map_err(|_| "VMM lock poisoned")?;
+        if locked.has_branch_ram() {
+            return Err("snapshot branch offload excludes RAM dedup advice".into());
+        }
         let cold = self
             .cold_pager_started
             .load(std::sync::atomic::Ordering::Acquire);
@@ -169,7 +172,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[ignore = "B-MEMORY-DIAG: opt-in address-scoped memory diagnostic"]
     fn memory_diagnostic() {
-        use serde_json::{json, Value};
+        use serde_json::{Value, json};
         use std::{
             os::fd::AsRawFd,
             os::unix::fs::MetadataExt,
@@ -403,9 +406,11 @@ mod tests {
                 }
                 let sums = [verify(&first, &changed[0]), verify(&second, &changed[1])];
                 verify_file(&file, &expected);
-                assert!(crate::vmm::ram::reclaim(&first)
-                    .unwrap_err()
-                    .contains("private"));
+                assert!(
+                    crate::vmm::ram::reclaim(&first)
+                        .unwrap_err()
+                        .contains("private")
+                );
                 emit(
                     trial,
                     seed,
@@ -429,7 +434,8 @@ mod tests {
                         .try_clone()
                         .unwrap(),
                 );
-                let third = crate::memory::map_snapshot_ram(&mappings, retained, &[], &ranges).unwrap();
+                let third =
+                    crate::memory::map_snapshot_ram(&mappings, retained, &[], &ranges).unwrap();
                 verify(&third, &expected);
                 emit(
                     trial,
@@ -655,10 +661,12 @@ mod tests {
                 panic!("blocked advice")
             });
             assert_eq!(report.accepted_bytes, 0);
-            assert!(report
-                .mappings
-                .iter()
-                .all(|r| r.status == RamDedupStatus::Skipped(reason)));
+            assert!(
+                report
+                    .mappings
+                    .iter()
+                    .all(|r| r.status == RamDedupStatus::Skipped(reason))
+            );
         }
     }
 
@@ -736,10 +744,11 @@ mod tests {
         })
         .unwrap();
         assert!(gate.has_dedup_advice());
-        assert!(gate
-            .set_prepare(Some(Arc::new(|_| Ok(()))))
-            .unwrap_err()
-            .contains("dedup"));
+        assert!(
+            gate.set_prepare(Some(Arc::new(|_| Ok(()))))
+                .unwrap_err()
+                .contains("dedup")
+        );
         gate.set_prepare(None).unwrap();
         gate.open();
         assert!(gate.has_dedup_advice());
@@ -759,7 +768,8 @@ mod tests {
         }];
         let ranges = [(GuestAddress(0), page)];
         let first = crate::memory::map_snapshot_ram(&mappings, file.clone(), &[], &ranges).unwrap();
-        let second = crate::memory::map_snapshot_ram(&mappings, file.clone(), &[], &ranges).unwrap();
+        let second =
+            crate::memory::map_snapshot_ram(&mappings, file.clone(), &[], &ranges).unwrap();
         // Real advice is allowed to be unavailable on the test host; it must
         // never prevent private COW writes or require a running KSM scanner.
         for memory in [&first, &second] {
@@ -772,9 +782,11 @@ mod tests {
         }
         first.write_slice(b"first VM", GuestAddress(0)).unwrap();
         second.write_slice(b"other VM", GuestAddress(0)).unwrap();
-        assert!(crate::vmm::ram::reclaim(&first)
-            .unwrap_err()
-            .contains("private"));
+        assert!(
+            crate::vmm::ram::reclaim(&first)
+                .unwrap_err()
+                .contains("private")
+        );
         let mut bytes = [0; 8];
         first.read_slice(&mut bytes, GuestAddress(0)).unwrap();
         assert_eq!(&bytes, b"first VM");
@@ -802,7 +814,8 @@ mod tests {
                 .try_clone()
                 .unwrap(),
         );
-        let third = crate::memory::map_snapshot_ram(&mappings, retained_file, &[], &ranges).unwrap();
+        let third =
+            crate::memory::map_snapshot_ram(&mappings, retained_file, &[], &ranges).unwrap();
         third.read_slice(&mut bytes, GuestAddress(0)).unwrap();
         assert_eq!(&bytes, b"baseline");
     }

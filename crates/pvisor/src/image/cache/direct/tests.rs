@@ -54,6 +54,119 @@ fn image(client: CacheClient, digest: String, base: &Path) -> DirectImage {
     DirectImage::new(source, base).unwrap()
 }
 
+fn branch_image(base: &Path) -> DirectImage {
+    use crate::image::oci::{ImageStore, PreparedImage};
+    let source = ImageStore::new(Some(base.join("source"))).unwrap();
+    let digest = format!("sha256:{}", "a".repeat(64));
+    let rootfs = source.root.join("rootfs-v3/sha256").join(&digest[7..]);
+    fs::create_dir(&rootfs).unwrap();
+    fs::write(rootfs.join("visited"), b"shared image").unwrap();
+    fs::hard_link(rootfs.join("visited"), rootfs.join("alias")).unwrap();
+    fs::create_dir(rootfs.join("nested")).unwrap();
+    fs::write(rootfs.join("nested/unvisited"), b"lazy after source exit").unwrap();
+    let prepared = PreparedImage {
+        rootfs,
+        digest: digest.clone(),
+        env: Default::default(),
+        entrypoint: vec![],
+        cmd: vec![],
+    };
+    let pool = base.join("pool");
+    let handle =
+        super::super::pool::publish_local_image(&pool, &source, &prepared, "branch:test", "amd64")
+            .unwrap();
+    let scratch = base.join("scratch");
+    fs::create_dir(&scratch).unwrap();
+    super::super::pool::open_local_image(&pool, None, &[], &handle, "amd64", &digest, &scratch)
+        .unwrap()
+}
+
+#[test]
+fn retained_image_keeps_lazy_revision_and_inode_after_source_exit() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut image = branch_image(temp.path());
+    let root = image.root().to_owned();
+    backend::materialize_file(&root.join("visited")).unwrap();
+    let before = fs::metadata(root.join("visited")).unwrap();
+    assert!(backend::snapshot_binding(&root).unwrap().is_none());
+    let retained = image.retain_for_branch().unwrap();
+    let binding = backend::snapshot_binding(&root).unwrap().unwrap();
+    assert!(
+        !root.join("nested").exists(),
+        "retaining must not traverse unread image content"
+    );
+    drop(image);
+    assert!(backend::attributes(&root).unwrap().is_none());
+    let one = retained.open().unwrap();
+    assert_eq!(
+        backend::snapshot_binding(&root).unwrap().as_ref(),
+        Some(&binding)
+    );
+    assert_eq!(
+        backend::read_at(&root.join("nested/unvisited"), 0, 80)
+            .unwrap()
+            .unwrap(),
+        b"lazy after source exit"
+    );
+    backend::materialize_file(&root.join("alias")).unwrap();
+    let alias = fs::metadata(root.join("alias")).unwrap();
+    assert_eq!((alias.dev(), alias.ino()), (before.dev(), before.ino()));
+    let before = fs::metadata(root.join("visited")).unwrap();
+    drop(one);
+    // Reopen again after all live attachments disappeared. The baseline has
+    // durable directory lifetime without depending on the source VM process.
+    let two = retained.open().unwrap();
+    backend::materialize_file(&root.join("visited")).unwrap();
+    let after = fs::metadata(root.join("visited")).unwrap();
+    assert_eq!(
+        (
+            before.dev(),
+            before.ino(),
+            before.ctime(),
+            before.ctime_nsec()
+        ),
+        (after.dev(), after.ino(), after.ctime(), after.ctime_nsec())
+    );
+    drop(two);
+    assert!(root.is_dir());
+}
+
+#[test]
+fn retained_image_rejects_replaced_descriptor_and_directory() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut image = branch_image(temp.path());
+    let retained = image.retain_for_branch().unwrap();
+    let root = image.root().to_owned();
+    drop(image);
+    let descriptor = root.parent().unwrap().join(DESCRIPTOR);
+    let original = fs::read(&descriptor).unwrap();
+    fs::write(&descriptor, b"{}").unwrap();
+    assert!(retained.open().is_err());
+    fs::write(&descriptor, &original).unwrap();
+    let old = root.with_file_name("old-lower");
+    fs::rename(&root, &old).unwrap();
+    fs::create_dir(&root).unwrap();
+    assert!(retained.open().is_err());
+    fs::remove_dir(&root).unwrap();
+    std::os::unix::fs::symlink(&old, &root).unwrap();
+    assert!(retained.open().is_err());
+}
+
+#[test]
+fn ordinary_image_still_removes_projection_and_legacy_cannot_be_retained() {
+    let temp = tempfile::tempdir().unwrap();
+    let image = branch_image(temp.path());
+    let root = image.root().to_owned();
+    drop(image);
+    assert!(!root.exists());
+    let (temp, _server, client, digest) = fixture();
+    let mut legacy = self::image(client, digest, temp.path());
+    let root = legacy.root().to_owned();
+    assert!(legacy.retain_for_branch().is_err());
+    drop(legacy);
+    assert!(!root.exists());
+}
+
 #[test]
 fn private_experiments_are_strict_without_changing_process_environment() {
     assert!(!experiment_setting("test", None).unwrap());
@@ -83,6 +196,7 @@ fn resolved_node_reuse_requires_a_completed_projection_and_keeps_traversal_error
         reuse_resolved_nodes: true,
         stream_reads: false,
         direct_copy: false,
+        snapshot_owner: Arc::new(Mutex::new(None)),
     };
     let before = projection.project(Path::new("large")).unwrap();
     assert!(
@@ -287,6 +401,7 @@ fn direct_copy_fills_upper_without_materializing_lower_in_both_copy_paths() {
             reuse_resolved_nodes: false,
             stream_reads: false,
             direct_copy: true,
+            snapshot_owner: Arc::new(Mutex::new(None)),
         });
         projection.project(Path::new("large")).unwrap();
         let _owner = backend::BackendAttachment::new_stable_namespace(&root, projection).unwrap();
@@ -370,6 +485,7 @@ fn runner_handoff_reopens_the_backend_and_retires_with_its_owner() {
     let DirectImage {
         attachment,
         _directory,
+        ..
     } = image(client, digest, temp.path());
     let root = attachment.root().to_owned();
     backend::materialize_file(&root.join("large")).unwrap();
@@ -461,6 +577,7 @@ fn index_page_capability_survives_direct_handoff_without_reopening_revision() {
     let DirectImage {
         attachment,
         _directory,
+        ..
     } = DirectImage::new(source, temp.path()).unwrap();
     let root = attachment.root().to_owned();
     let descriptor = root.parent().unwrap().join(DESCRIPTOR);
@@ -486,4 +603,27 @@ fn index_page_capability_survives_direct_handoff_without_reopening_revision() {
     legacy.as_object_mut().unwrap().remove("metadata_pages");
     let legacy: Binding = serde_json::from_value(legacy).unwrap();
     assert!(!legacy.metadata_pages);
+}
+
+#[test]
+fn retained_snapshot_binding_checks_owner_on_every_capture() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut image = branch_image(temp.path());
+    let root = image.root().to_owned();
+    image.retain_for_branch().unwrap();
+    let binding = backend::snapshot_binding(&root).unwrap();
+    assert!(binding.is_some());
+    assert!(!root.join("nested").exists());
+    assert!(
+        backend::snapshot_binding(&root.join("visited"))
+            .unwrap()
+            .is_none()
+    );
+    let descriptor = root.parent().unwrap().join(DESCRIPTOR);
+    let bytes = fs::read(&descriptor).unwrap();
+    fs::write(&descriptor, b"{}").unwrap();
+    assert!(backend::snapshot_binding(&root).is_err());
+    fs::write(&descriptor, bytes).unwrap();
+    assert_eq!(backend::snapshot_binding(&root).unwrap(), binding);
+    assert!(!root.join("nested").exists());
 }

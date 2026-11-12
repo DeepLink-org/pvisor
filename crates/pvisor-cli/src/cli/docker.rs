@@ -78,6 +78,16 @@ pub(super) enum DockerCommand {
 
 #[derive(Debug, Subcommand)]
 pub(super) enum ContainerCommand {
+    /// Capture an initialized no-network OCI VM and create stopped COW branches.
+    /// No template preparation; call only before independent tool commands.
+    Branch {
+        source: String,
+        #[arg(long, required = true, num_args = 1..)]
+        names: Vec<String>,
+        /// Assert initialization is complete and no guest requests are in flight.
+        #[arg(long, required = true)]
+        quiescent: bool,
+    },
     #[command(disable_help_flag = true)]
     Run(Box<Run>),
     Exec(Exec),
@@ -108,6 +118,7 @@ impl DockerCommand {
     fn ungroup(self) -> Self {
         match self {
             Self::Container { command } => match command {
+                command @ ContainerCommand::Branch { .. } => Self::Container { command },
                 ContainerCommand::Run(args) => Self::Run(args),
                 ContainerCommand::Exec(args) => Self::Exec(args),
                 ContainerCommand::Ls(args) => Self::Ps(args),
@@ -174,6 +185,9 @@ pub(super) struct Run {
     /// Compress managed RAM backing on offload (Linux/FUSE; opt-in).
     #[arg(long, requires = "managed_memory")]
     managed_memory_compression: bool,
+    /// Allow explicit same-task COW branching after initialization (no network).
+    #[arg(long, requires = "managed_memory")]
+    branchable: bool,
     /// Use the same-user shared memory pool, starting its daemon if needed (--memory-pool auto).
     #[arg(short = 'M', conflicts_with = "memory_pool")]
     shared_memory_pool: bool,
@@ -426,6 +440,27 @@ pub(super) fn run(command: DockerCommand) -> anyhow::Result<i32> {
         return builder::run(args);
     }
     let store = Store::discover()?;
+    if let DockerCommand::Container {
+        command:
+            ContainerCommand::Branch {
+                source,
+                names,
+                quiescent,
+            },
+    } = command
+    {
+        ensure!(
+            quiescent,
+            "branch creation requires the cooperative quiescent boundary"
+        );
+        let children = store.branch(&source, &names)?;
+        let rows = children
+            .iter()
+            .map(|i| serde_json::json!({"id":i.id,"name":i.name,"baseline":i.branch_base}))
+            .collect::<Vec<_>>();
+        println!("{}", serde_json::to_string_pretty(&rows)?);
+        return Ok(0);
+    }
     match command {
         DockerCommand::Build(_)
         | DockerCommand::Builder(_)
@@ -564,6 +599,7 @@ pub(super) fn run(command: DockerCommand) -> anyhow::Result<i32> {
                     .transpose()?,
                 managed_memory: args.managed_memory,
                 managed_memory_compression: args.managed_memory_compression,
+                branchable: args.branchable,
                 shared_kernel_base: args.shared_kernel_base,
                 auto_remove: args.rm,
                 interactive: args.interactive,
@@ -855,6 +891,56 @@ mod tests {
     struct Cli {
         #[command(subcommand)]
         command: DockerCommand,
+    }
+
+    #[test]
+    fn branch_cli_keeps_oci_entry_and_requires_explicit_quiescence() {
+        assert!(Cli::try_parse_from(["pvisor", "run", "--branchable", "alpine"]).is_err());
+        let parsed = Cli::try_parse_from([
+            "pvisor",
+            "run",
+            "--branchable",
+            "--managed-memory",
+            "--network",
+            "none",
+            "alpine",
+        ])
+        .unwrap();
+        let DockerCommand::Run(run) = parsed.command else {
+            panic!("ordinary OCI entry lost")
+        };
+        assert!(run.branchable);
+        assert!(
+            Cli::try_parse_from(["pvisor", "container", "branch", "source", "--names", "a"])
+                .is_err()
+        );
+        let parsed = Cli::try_parse_from([
+            "pvisor",
+            "container",
+            "branch",
+            "source",
+            "--quiescent",
+            "--names",
+            "a",
+            "b",
+            "c",
+            "d",
+        ])
+        .unwrap();
+        let DockerCommand::Container {
+            command:
+                ContainerCommand::Branch {
+                    source,
+                    names,
+                    quiescent,
+                },
+        } = parsed.command.ungroup()
+        else {
+            panic!("branch command lost")
+        };
+        assert_eq!(source, "source");
+        assert_eq!(names, ["a", "b", "c", "d"]);
+        assert!(quiescent);
     }
 
     #[test]

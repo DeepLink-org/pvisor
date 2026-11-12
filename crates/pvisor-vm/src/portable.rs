@@ -82,10 +82,7 @@ fn capabilities() -> Capabilities {
         )) && !cfg!(any(feature = "tee", feature = "aws-nitro")),
         cold_ram_faults: cfg!(all(target_os = "macos", target_arch = "aarch64"))
             || (cfg!(all(target_os = "linux", target_arch = "x86_64"))
-                && !cfg!(any(
-                    feature = "tee",
-                    feature = "aws-nitro"
-                ))),
+                && !cfg!(any(feature = "tee", feature = "aws-nitro"))),
     }
 }
 #[cfg(all(test, target_os = "linux"))]
@@ -165,10 +162,7 @@ mod cold_ram_tests {
                 .unwrap_err();
             if cfg!(all(
                 target_arch = "x86_64",
-                not(any(
-                    feature = "tee",
-                    feature = "aws-nitro"
-                ))
+                not(any(feature = "tee", feature = "aws-nitro"))
             )) {
                 assert_eq!(error.kind(), io::ErrorKind::Other);
                 assert_eq!(error.to_string(), "VMM has stopped");
@@ -184,10 +178,7 @@ mod cold_ram_tests {
             VmPlatform::capabilities().cold_ram_faults,
             cfg!(all(
                 target_arch = "x86_64",
-                not(any(
-                    feature = "tee",
-                    feature = "aws-nitro"
-                ))
+                not(any(feature = "tee", feature = "aws-nitro"))
             ))
         );
         let activity = VmPlatform::cold_ram_activity();
@@ -463,6 +454,28 @@ impl VmConfiguration for VmBuilder {
             Err(unsupported("machine snapshot"))
         }
     }
+    fn machine_restore_with_branch_offload(
+        &mut self,
+        restore: MachineRestore,
+        private_delta: File,
+    ) -> io::Result<()> {
+        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+        {
+            self.inner.machine_restore_with_branch_offload(
+                crate::vmm::snapshot::MachineRestore {
+                    state: serde_json::from_value(restore.state.state).map_err(io::Error::other)?,
+                    ram_file: restore.ram_file,
+                    ram_extents: restore.ram_extents,
+                },
+                private_delta,
+            )
+        }
+        #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+        {
+            let _ = (restore, private_delta);
+            Err(unsupported("snapshot branch offload"))
+        }
+    }
     fn machine_restore(&mut self, restore: MachineRestore) -> io::Result<()> {
         #[cfg(any(
             all(target_os = "macos", target_arch = "aarch64"),
@@ -698,6 +711,54 @@ impl FrozenMemory for FrozenMachine<'_> {
     }
 }
 impl SnapshotState for MachineSnapshot {
+    fn rebind_vsock_listener(
+        &mut self,
+        port: u32,
+        source: &Path,
+        destination: &Path,
+    ) -> io::Result<()> {
+        #[cfg(any(
+            all(target_os = "linux", target_arch = "x86_64"),
+            all(target_os = "macos", target_arch = "aarch64")
+        ))]
+        {
+            use crate::devices::snapshot::BusDeviceSnapshot;
+            if port == 0
+                || !source.is_absolute()
+                || !destination.is_absolute()
+                || source == destination
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "invalid branch listener paths",
+                ));
+            }
+            let mut state: crate::vmm::snapshot::MachineSnapshot =
+                serde_json::from_value(self.state.clone()).map_err(io::Error::other)?;
+            let mut matched = 0;
+            for device in &mut state.devices {
+                if let BusDeviceSnapshot::Virtio(mmio) = &mut device.device {
+                    matched += usize::from(
+                        mmio.rebind_vsock_listener(port, source, destination)
+                            .map_err(io::Error::other)?,
+                    );
+                }
+            }
+            if matched != 1 {
+                return Err(io::Error::other("expected exactly one branch listener"));
+            }
+            self.state = serde_json::to_value(state).map_err(io::Error::other)?;
+            Ok(())
+        }
+        #[cfg(not(any(
+            all(target_os = "linux", target_arch = "x86_64"),
+            all(target_os = "macos", target_arch = "aarch64")
+        )))]
+        {
+            let _ = (port, source, destination);
+            Err(unsupported("branch listener"))
+        }
+    }
     fn has_kernel_layout(&self) -> io::Result<bool> {
         match self.state.get("kernel_layout") {
             None | Some(serde_json::Value::Null) => Ok(false),
@@ -795,7 +856,9 @@ impl SnapshotState for MachineSnapshot {
             all(target_os = "linux", target_arch = "x86_64")
         ))]
         {
-            self.rebind(tag, |device, tag| device.prepare_protected_workspace_seed(tag))
+            self.rebind(tag, |device, tag| {
+                device.prepare_protected_workspace_seed(tag)
+            })
         }
         #[cfg(not(any(
             all(target_os = "macos", target_arch = "aarch64"),

@@ -65,6 +65,7 @@ struct Projection {
     reuse_resolved_nodes: bool,
     stream_reads: bool,
     direct_copy: bool,
+    snapshot_owner: Arc<Mutex<Option<RetainedImage>>>,
 }
 
 fn io_error(error: anyhow::Error) -> io::Error {
@@ -350,6 +351,20 @@ impl ReadOnlyBackend for Projection {
         Ok(offset)
     }
 
+    fn snapshot_binding(&self) -> io::Result<Option<String>> {
+        let owner = self
+            .snapshot_owner
+            .lock()
+            .map_err(|_| io::Error::other("snapshot owner lock poisoned"))?;
+        let Some(owner) = owner.as_ref() else {
+            return Ok(None);
+        };
+        owner.verify().map_err(io_error)?;
+        serde_json::to_string(owner)
+            .map(Some)
+            .map_err(io::Error::other)
+    }
+
     fn materialize_tree(&self, relative: &Path) -> io::Result<()> {
         let node = self.project(relative)?;
         if node.attr.kind == FileType::Directory {
@@ -395,8 +410,94 @@ impl ReadOnlyBackend for Projection {
 
 pub struct DirectImage {
     attachment: BackendAttachment,
-    _directory: tempfile::TempDir,
+    snapshot_owner: Arc<Mutex<Option<RetainedImage>>>,
+    _directory: Option<tempfile::TempDir>,
+    _network: Vec<super::network::NetworkAccess>,
 }
+
+/// Host-only reference to an immutable V2 image projection. Its logical contents
+/// remain authenticated by the cache; retaining it does not materialize files.
+/// The source and branches may populate placeholders, but never mutate image
+/// contents. No automatic GC of this experimental retained projection exists.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct RetainedImage {
+    root: PathBuf,
+    descriptor_sha256: String,
+    device: u64,
+    inode: u64,
+}
+
+impl RetainedImage {
+    pub(crate) fn root(&self) -> &Path {
+        &self.root
+    }
+
+    // Authenticate the exact owner/descriptor before starting any backend or
+    // reading guest files. Directory timestamps are deliberately not pinned:
+    // legitimate lazy lookups populate the shared projection after capture.
+    pub(crate) fn verify(&self) -> anyhow::Result<()> {
+        ensure!(
+            self.root.canonicalize()? == self.root,
+            "retained image path changed"
+        );
+        let parent = private_owner(&self.root).context("invalid retained image owner")?;
+        for path in [parent, self.root.as_path()] {
+            let m = fs::symlink_metadata(path)?;
+            ensure!(
+                m.is_dir() && m.uid() == unsafe { libc::geteuid() },
+                "unsafe retained image directory"
+            );
+        }
+        let owner = fs::symlink_metadata(parent)?;
+        ensure!(
+            owner.mode() & 0o077 == 0,
+            "unsafe retained image permissions"
+        );
+        let m = fs::symlink_metadata(&self.root)?;
+        ensure!(
+            (m.dev(), m.ino()) == (self.device, self.inode),
+            "retained image inode changed"
+        );
+        let descriptor = parent.join(DESCRIPTOR);
+        let m = fs::symlink_metadata(&descriptor)?;
+        ensure!(
+            m.is_file()
+                && m.uid() == unsafe { libc::geteuid() }
+                && m.mode() & 0o077 == 0
+                && m.len() < 1024 * 1024,
+            "unsafe retained image descriptor"
+        );
+        ensure!(
+            crate::environment_snapshot::file_hash(&descriptor)? == self.descriptor_sha256,
+            "retained image descriptor changed"
+        );
+        Ok(())
+    }
+
+    pub(crate) fn open(&self) -> anyhow::Result<DirectImage> {
+        self.verify()?;
+        let mut owners = attach_runner_lowers(std::iter::once(&self.root))?;
+        ensure!(
+            owners._attachments.len() == 1,
+            "retained image backend missing"
+        );
+        let snapshot_owner = owners
+            .snapshot_owners
+            .pop()
+            .context("snapshot owner missing")?;
+        *snapshot_owner
+            .lock()
+            .map_err(|_| anyhow::anyhow!("snapshot owner lock poisoned"))? = Some(self.clone());
+        Ok(DirectImage {
+            snapshot_owner,
+            attachment: owners._attachments.pop().unwrap(),
+            _directory: None,
+            _network: owners._network,
+        })
+    }
+}
+
 impl DirectImage {
     pub(super) fn new(source: RemoteFs, store: &Path) -> anyhow::Result<Self> {
         let directory = tempfile::Builder::new().prefix(PREFIX).tempdir_in(store)?;
@@ -413,18 +514,52 @@ impl DirectImage {
         };
         let descriptor = directory.path().join(DESCRIPTOR);
         Persistence::atomic_write(&descriptor, &serde_json::to_vec(&binding)?, 0o600)?;
-        let attachment = attach(&root, source)?;
+        let (attachment, snapshot_owner) = attach(&root, source)?;
         Ok(Self {
             attachment,
-            _directory: directory,
+            snapshot_owner,
+            _directory: Some(directory),
+            _network: Vec::new(),
         })
     }
     pub(crate) fn root(&self) -> &Path {
         self.attachment.root()
     }
+
+    /// Transfer only directory lifetime to a branch baseline; keep this process's
+    /// backend attachment until its VM exits. Ordinary images still auto-remove.
+    /// Call only on an image opened against the pinned OCI digest/platform.
+    pub(crate) fn retain_for_branch(&mut self) -> anyhow::Result<RetainedImage> {
+        let root = self.root().canonicalize()?;
+        let descriptor = private_owner(&root)
+            .context("missing image owner")?
+            .join(DESCRIPTOR);
+        let binding: Binding = serde_json::from_reader(std::fs::File::open(&descriptor)?)?;
+        ensure!(
+            binding.version == 1 && binding.handle.starts_with("pvisor-v2:"),
+            "branch retention requires an authenticated V2 image"
+        );
+        let m = fs::symlink_metadata(&root)?;
+        let retained = RetainedImage {
+            root,
+            descriptor_sha256: crate::environment_snapshot::file_hash(&descriptor)?,
+            device: m.dev(),
+            inode: m.ino(),
+        };
+        retained.verify()?;
+        if let Some(directory) = self._directory.take() {
+            let _retained_directory = directory.keep();
+        }
+        *self
+            .snapshot_owner
+            .lock()
+            .map_err(|_| anyhow::anyhow!("snapshot owner lock poisoned"))? = Some(retained.clone());
+        Ok(retained)
+    }
 }
 
-fn attach(root: &Path, source: RemoteFs) -> anyhow::Result<BackendAttachment> {
+type SnapshotOwner = Arc<Mutex<Option<RetainedImage>>>;
+fn attach(root: &Path, source: RemoteFs) -> anyhow::Result<(BackendAttachment, SnapshotOwner)> {
     // Only authenticated V2 revisions grant logical namespace stability.
     // Legacy/test sources retain their original live projection contract.
     let stable_namespace = source.digest.starts_with("pvisor-v2:");
@@ -445,6 +580,7 @@ fn attach(root: &Path, source: RemoteFs) -> anyhow::Result<BackendAttachment> {
         .context("direct lower has no owner")?
         .join("objects");
     fs::create_dir_all(&objects)?;
+    let snapshot_owner = Arc::new(Mutex::new(None));
     let projection = Arc::new(Projection {
         root: root.to_owned(),
         objects,
@@ -455,17 +591,20 @@ fn attach(root: &Path, source: RemoteFs) -> anyhow::Result<BackendAttachment> {
         reuse_resolved_nodes,
         stream_reads,
         direct_copy,
+        snapshot_owner: snapshot_owner.clone(),
     });
     projection.prepare_metadata(Path::new(""))?;
-    if stable_namespace {
-        BackendAttachment::new_stable_namespace(root, projection).map_err(Into::into)
+    let attachment = if stable_namespace {
+        BackendAttachment::new_stable_namespace(root, projection)?
     } else {
-        BackendAttachment::new(root, projection).map_err(Into::into)
-    }
+        BackendAttachment::new(root, projection)?
+    };
+    Ok((attachment, snapshot_owner))
 }
 
 pub(crate) struct RunnerLowers {
     _attachments: Vec<BackendAttachment>,
+    snapshot_owners: Vec<SnapshotOwner>,
     _network: Vec<super::network::NetworkAccess>,
     pub(crate) read_only: Vec<PathBuf>,
     pub(crate) read_write: Vec<PathBuf>,
@@ -477,6 +616,7 @@ pub(crate) fn attach_runner_lowers<'a>(
 ) -> anyhow::Result<RunnerLowers> {
     let mut owners = RunnerLowers {
         _attachments: vec![],
+        snapshot_owners: vec![],
         _network: vec![],
         read_only: vec![],
         read_write: vec![],
@@ -543,7 +683,9 @@ pub(crate) fn attach_runner_lowers<'a>(
             binding.metadata_cache,
             binding.metadata_pages,
         )?;
-        owners._attachments.push(attach(&root, source)?);
+        let (attachment, snapshot_owner) = attach(&root, source)?;
+        owners._attachments.push(attachment);
+        owners.snapshot_owners.push(snapshot_owner);
     }
     Ok(owners)
 }

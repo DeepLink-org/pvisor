@@ -4,9 +4,9 @@
 //! Configure, instantiate and boot the VM's CPUs and devices.
 
 use crate::kernel::cmdline::Cmdline;
+use crossbeam_channel::Sender;
 #[cfg(target_os = "macos")]
 use crossbeam_channel::unbounded;
-use crossbeam_channel::Sender;
 #[cfg(target_os = "macos")]
 use std::collections::HashMap;
 use std::fmt::{Display, Formatter};
@@ -36,7 +36,7 @@ use crate::devices::legacy::{IoApic, IrqChipT};
 use crate::devices::legacy::{IrqChip, IrqChipDevice};
 #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
 use crate::devices::legacy::{KvmGicV2, KvmGicV3};
-use crate::devices::virtio::{port_io, MmioTransport, PortDescription, VirtioDevice, Vsock};
+use crate::devices::virtio::{MmioTransport, PortDescription, VirtioDevice, Vsock, port_io};
 #[cfg(target_arch = "x86_64")]
 use crate::vmm::device_manager::legacy::PortIODeviceManager;
 use crate::vmm::device_manager::mmio::MMIODeviceManager;
@@ -52,7 +52,7 @@ use kbs_types::Tee;
 
 use crate::arch::{ArchMemoryInfo, InitrdConfig};
 #[cfg(not(any(feature = "tee", feature = "aws-nitro")))]
-use crate::devices::virtio::{fs::ExportTable, VirtioShmRegion};
+use crate::devices::virtio::{VirtioShmRegion, fs::ExportTable};
 use crate::polly::event_manager::{Error as EventManagerError, EventManager};
 use crate::utils::eventfd::EventFd;
 use crate::utils::worker_message::WorkerMessage;
@@ -80,8 +80,6 @@ use libc::{STDERR_FILENO, STDIN_FILENO, STDOUT_FILENO};
 #[cfg(target_arch = "x86_64")]
 use linux_loader::loader::{self, KernelLoader};
 use nix::unistd::isatty;
-#[cfg(all(target_arch = "x86_64", not(feature = "efi"), not(feature = "tee")))]
-use vm_memory::mmap::MmapRegion;
 #[cfg(not(any(feature = "tee", feature = "aws-nitro")))]
 use vm_memory::Address;
 use vm_memory::Bytes;
@@ -89,6 +87,8 @@ use vm_memory::Bytes;
 use vm_memory::GuestMemory;
 #[cfg(all(target_arch = "x86_64", not(feature = "tee")))]
 use vm_memory::GuestRegionMmap;
+#[cfg(all(target_arch = "x86_64", not(feature = "efi"), not(feature = "tee")))]
+use vm_memory::mmap::MmapRegion;
 use vm_memory::{GuestAddress, GuestMemoryMmap};
 
 #[cfg(all(target_arch = "aarch64", feature = "efi"))]
@@ -992,11 +992,35 @@ pub fn build_microvm_for_arch<A: crate::backend::Architecture>(
     let exit_code = Arc::new(AtomicI32::new(i32::MAX));
 
     let device_memory_gate = crate::devices::virtio::memory_gate::register(&guest_memory);
-    #[cfg(any(all(target_os = "macos", target_arch = "aarch64"), all(target_os = "linux", target_arch = "x86_64")))]
-    let compact_restore_ram = vm_resources.machine_restore.as_ref().is_some_and(|restore| !restore.ram_extents.is_empty());
-    #[cfg(not(any(all(target_os = "macos", target_arch = "aarch64"), all(target_os = "linux", target_arch = "x86_64"))))]
+    #[cfg(any(
+        all(target_os = "macos", target_arch = "aarch64"),
+        all(target_os = "linux", target_arch = "x86_64")
+    ))]
+    let compact_restore_ram = vm_resources
+        .machine_restore
+        .as_ref()
+        .is_some_and(|restore| !restore.ram_extents.is_empty());
+    #[cfg(not(any(
+        all(target_os = "macos", target_arch = "aarch64"),
+        all(target_os = "linux", target_arch = "x86_64")
+    )))]
     let compact_restore_ram = false;
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    let branch_ram = vm_resources
+        .branch_ram_backing
+        .as_ref()
+        .map(|delta| {
+            let restore = vm_resources
+                .machine_restore
+                .as_ref()
+                .ok_or_else(|| "branch offload requires machine restore".to_owned())?;
+            super::branch_ram::BranchRam::new(&guest_memory, restore, delta.clone())
+        })
+        .transpose()
+        .map_err(|e| StartMicrovmError::Internal(Error::VcpuControl(e)))?;
     let mut vmm = Vmm {
+        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+        branch_ram,
         compact_restore_ram,
         device_memory_gate,
         guest_memory,
