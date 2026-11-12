@@ -4,7 +4,7 @@
 
 - Campaign window requested by the user: 2026-11-12 22:21 +08:00 through
   2026-11-13 04:21 +08:00 (UTC 14:21–20:21). This is an ongoing campaign
-  checkpoint through Round 05 (17:47Z), not six completed hours or a concurrent
+  checkpoint through Round 07's reproduction (18:40Z), not six completed hours or a concurrent
   stress run. The requested end remains 20:21Z.
 - Baseline: `7fe09e20de3cb7b51222c7d61d75056208da98fb`.
 - Rounds 01–02 executor: the isolated child thread's `pvisor` worktree,
@@ -42,6 +42,17 @@
   passed, including **22 min 52.570 s** of changing-seed work and a final
   **155 passed, 1 existing ignored test skipped** package regression. No product
   defect or production behavior change was found.
+- Round 06 (17:52–18:31Z): explicitly authorized larger-memory NativeHost stage
+  compiled and executed the previously untested result-publication candidate.
+  Default four seeds plus **1280 changing seeds / 21 min 14.981 s** passed;
+  final targeted related regression **4 passed, 13 filtered/skipped**. NativeHost
+  zero coverage above describes the earlier constrained rounds, not this latest
+  checkpoint. No product defect or production change was found in Round06.
+- Round 07 initial reproduction (18:34–18:40Z): result export to the same
+  Session's `run-bundle.json` or `completion.json` overwrote committed evidence
+  in four private fixtures. CLI reported a late error, not preflight refusal;
+  offline status/review could no longer load the Session. **Reproduced defect;
+  no fix yet, pending parent choice of destination-protection rule.**
 
 ## Scenario and existing coverage
 
@@ -880,7 +891,7 @@ namespace is made.
 Full ignored evidence is retained in this executor's
 `.data/chaos6/<phase>.{log,resources.jsonl,cgroup-start.json,cgroup-final.json}`
 for the phase names above. No large machine log was committed.
-Final test source SHA-256:
+Test source SHA-256 used for the runs above, before the portability adjustment:
 `ca60cd08fb93baab949dbe91ee121044bf14469faf44dce9e1db0fea0181a36e`.
 Unchanged production `src/apply.rs` SHA-256:
 `4d6b09fe4e1b6ab06588942b7a63dbbfef2963a8a459d4606dd4d0c911e5e669`;
@@ -898,6 +909,20 @@ runtime consumer build was attempted. The full small-package suite's existing
 private in-process failure/recovery tests did execute; this is not substituted
 for the omitted real-crash experiments. Parent owns review/integration/PR update
 and the next bounded assignment; the six-hour end remains 20:21Z.
+
+### macOS fixture portability follow-up
+
+CI for `f6b5e2ac` failed in this new test at `core.rename`, before exercising
+the intended lifecycle: APFS rejected a raw invalid-UTF-8 destination with
+`EILSEQ` (92). Job `131400375870` recorded 759 passes, one failure, eight skips
+and 426 tests not run after fail-fast. This was a test-fixture portability
+error, not evidence that the production overlay violated its contract.
+
+The fixture now keeps Linux's raw-byte branch and uses the Unicode destination
+on macOS. All state, byte-content, conflict, apply and discard assertions remain
+unchanged. The earlier Linux long batches predate this source adjustment; their
+generated inputs are unchanged on Linux. Local revalidation and macOS CI for
+the adjusted source are separate evidence, not retroactively passing that job.
 
 ## Round 05 — Replay native full-duplex boundaries and healthy successors
 
@@ -1086,3 +1111,275 @@ Parent has separately authorized a possible Round06 NativeHost retry based on
 the now-measured host memory surplus, with explicit new stage budget/admission
 conditions. No NativeHost workload was started before this round's cleanup.
 The overall campaign still ends at 20:21Z.
+
+## Round 06 — resumed safe NativeHost result-publication candidate
+
+### Outcome and explicitly authorized stage change
+
+The parent observed sustained available memory recovery during Rounds04/05 and,
+at approximately 17:46Z, explicitly authorized one new bounded NativeHost build
+attempt with **MemoryHigh=3G, MemoryMax=4G, MemorySwapMax=0**, while keeping one
+build job and CPUQuota=50%. Startup now required **available RAM >=14 GiB**
+in the same two qualifying samples >=60 seconds apart, with load1 <6 and memory
+PSI full avg10 <0.5. The 8 GiB / disk 30 GiB / load 6 / PSI 2 runtime stop gates,
+TasksMax=128, nice 10, 900/880-second watchdogs and five-second cleanup grace
+were unchanged. This is a documented, parent-authorized stage budget based on
+measured host surplus, not an automatic retry or concealment of Round01's OOM.
+
+After Round05's service/cgroup cleanup, necessary doctor checks passed. The
+initial build succeeded, and the original prepared
+`crates/pvisor-cli/tests/rootless_result_publication.rs` default four seeds
+executed successfully for the first time in this campaign. Five bounded
+changing-seed batches and related targeted regressions then passed.
+**No source modification, product bug or production fix occurred in this round.**
+The earlier zero NativeHost coverage remains historical evidence; it has now
+been supplemented, not retroactively relabeled as passing.
+
+The same isolated executor/worktree and inherited HEAD
+`35393522f528fd8971d4f223d042f3d2988b243b` were used. The candidate's source was
+unchanged throughout this round and from the prepared first-round fixture.
+Reviewed its source, the full CLI README, relevant runtime development
+instructions and existing ordinary result-export regressions before selecting
+validation. No new crate-boundary, plugin, benchmark or approved semspec work.
+
+### Supervision, admission and doctor
+
+New ignored `.data/chaos6_native_supervise.py` and
+`.data/chaos6_native_entry.py` were created using `apply_patch`, leaving the
+small-package supervisor's source/hash unchanged. They retain the same shared
+durable `ACTIVE_RUN`/`CLEANUP_BLOCKED` gate, pre-launch exclusive creation/fsync,
+exception/SIGTERM cleanup, independent bounded stop/all-process kill of only the
+UUID-owned service, captured cgroup inactive/empty verification and fail-closed
+leftover handling. The native entry checks actual kernel CPU/memory/swap/task
+limits before exec. This covers the fixed non-adversarial process tree, not
+arbitrary same-UID escape or all-mount-namespace authentication.
+
+The native supervisor additionally refuses a launch unless at least 1020 seconds
+remain before **20:21Z**, allowing the full 900-second service and bounded cleanup
+without a last-minute 900-second tail extending beyond the campaign. All actual
+Round06 services ended well before that cutoff.
+
+Doctor checked only readable/writable character device `/dev/fuse`,
+`fusermount3` availability and successful creation of an independent
+user/mount/network namespace with `unshare --user --map-root-user --mount --net
+/bin/true`. It did not alter host namespace configuration, install tools, request
+sudo or weaken safe admission. Each of the nine phases independently qualified
+at the >=14 GiB startup gate in 60.00–60.01 seconds; their approximately
+**540 seconds of admission pauses are not coverage**.
+
+### Actual scenario coverage
+
+The scenario/independent byte oracle described in Round01 is now actually
+executed: a fresh safe NativeHost Session stages seed-specific append/rename
+effects and exits 0/7/23; only the later frontend `--result-file` export is
+obstructed, either by a nonempty directory or a file blocking its parent.
+The expected CLI error must preserve typed terminal Bundle/receipt evidence,
+exact candidate bytes, once-only effects and original host contents.
+
+Offline status/review and subsequent selective apply/drop must not rerun the
+guest or mutate immutable completion/Bundle bytes. Only `accepted` is published;
+scratch/rename/effects remain staged until explicit drop. After removing only the
+known export obstruction, a fresh safe Session exports an ordinary identity-bound
+RunResult and must have a different Run identity. Both owners must be gone,
+control sockets absent, final candidate counts zero and fixture paths absent
+from the test's **own** `/proc/self/mountinfo` view before success cleanup.
+
+This is not a completion-receipt corruption injection, arbitrary process escape
+test, exactly-once proof or all-namespace mount inventory. Deny-all network policy
+is installed, but no traffic is generated and no OverlayNet transport behavior
+is claimed. All HOME/XDG/run/stage/workspace and result paths are disposable
+private fixture paths. Each of nine CLI commands per seed has a 25-second timeout
+with two-second kill-after; the outer owned cgroup remains the failure boundary.
+Shared apply locks use canonical fixture target keys and are not swept.
+
+### Exact commands and timings
+
+All Cargo work remained offline, locked through mise, one job/one test thread,
+Rust debug info/incremental disabled, and this worktree's private `target/`.
+
+```sh
+python3 .data/chaos6_native_supervise.py native-doctor sh -c 'set -eu; test -c /dev/fuse; test -r /dev/fuse; test -w /dev/fuse; command -v fusermount3; unshare --user --map-root-user --mount --net /bin/true'
+python3 .data/chaos6_native_supervise.py native-default mise run test -- pvisor-cli -- --offline --test rootless_result_publication --no-capture
+PVISOR_CHAOS_FIRST_SEED=20261116 PVISOR_CHAOS_SEED_COUNT=256 python3 .data/chaos6_native_supervise.py native-seeds-a mise run test -- pvisor-cli -- --offline --test rootless_result_publication --no-capture
+PVISOR_CHAOS_FIRST_SEED=20261372 PVISOR_CHAOS_SEED_COUNT=256 python3 .data/chaos6_native_supervise.py native-seeds-b mise run test -- pvisor-cli -- --offline --test rootless_result_publication --no-capture
+PVISOR_CHAOS_FIRST_SEED=20261628 PVISOR_CHAOS_SEED_COUNT=256 python3 .data/chaos6_native_supervise.py native-seeds-c mise run test -- pvisor-cli -- --offline --test rootless_result_publication --no-capture
+PVISOR_CHAOS_FIRST_SEED=20261884 PVISOR_CHAOS_SEED_COUNT=256 python3 .data/chaos6_native_supervise.py native-seeds-d mise run test -- pvisor-cli -- --offline --test rootless_result_publication --no-capture
+PVISOR_CHAOS_FIRST_SEED=20262140 PVISOR_CHAOS_SEED_COUNT=256 python3 .data/chaos6_native_supervise.py native-seeds-e mise run test -- pvisor-cli -- --offline --test rootless_result_publication --no-capture
+python3 .data/chaos6_native_supervise.py native-related-final mise run test -- pvisor-cli -- --offline --test rootless_result_publication --test run_config_cli -E 'test(safe_result_export_collision_retains_committed_stage_and_allows_successor) | test(result_file_exports_plain_run_result_for_ordinary_spawn) | test(result_file_write_failure_preserves_completed_workload) | test(result_file_preserves_prepared_spec_envelope)' --no-capture
+python3 .data/chaos6_native_supervise.py native-clippy mise exec -- cargo clippy --offline --locked -p pvisor-cli --test rootless_result_publication -- -D warnings
+MISE_TRUSTED_CONFIG_PATHS="$PWD" mise exec -- rustfmt --edition 2024 --check crates/pvisor-cli/tests/rootless_result_publication.rs
+git diff --check
+```
+
+| Phase | Observation UTC start–end, includes qualification | Actual nextest result/time |
+| --- | --- | --- |
+| Doctor | 17:52:13.631–17:53:15.660 | FUSE/helper/namespace checks passed; no Rust test |
+| Initial default | 17:53:36.621–17:56:26.945 | 1 passed, 0 skipped; 4.375 s; four seeds; build 104 s |
+| A | 17:57:27.348–18:03:38.085 | 1 passed, 0 skipped; 254.596 s; 256 seeds; automatic Cargo rebuild 54.30 s |
+| B | 18:04:00.938–18:09:17.525 | 1 passed, 0 skipped; 254.978 s; 256 seeds |
+| C | 18:09:29.725–18:14:46.301 | 1 passed, 0 skipped; 253.927 s; 256 seeds |
+| D | 18:14:53.985–18:20:10.570 | 1 passed, 0 skipped; 255.383 s; 256 seeds |
+| E | 18:20:17.238–18:25:35.852 | 1 passed, 0 skipped; 256.097 s; 256 seeds |
+| Related final | 18:26:36.843–18:27:44.884 | 4 passed, 13 filtered/skipped; 5.000 s |
+| Targeted Clippy | 18:28:20.418–18:30:42.660 | Passed `-D warnings`; dev compilation 81 s |
+
+The first authorized build succeeded without retrying a resource or compilation
+failure. A later normal test command A also caused Cargo to recompile
+`pvisor-vm`, `pvisor` and `pvisor-cli` for 54.30 seconds, despite unchanged test
+source/budget. That compilation is reported rather than described as test time;
+its cause was not diagnosed. There was no failure/parameter retry loop or further
+budget change. B–E reused the resulting artifacts (0.19–0.20 s Cargo preparation).
+Clippy is separate check-profile compilation, not another test count.
+
+Five long nextest executions sum to **1274.981 seconds = 21 min 14.981 s**
+of useful changing-seed test execution, excluding compilation and admission.
+They cover 1280 distinct seed values, 640 instances of each export-obstruction
+shape, and expected original guest exits 0/7/23 in counts 426/427/427.
+Each seed also runs the distinct healthy successor: **2560 safe stage lifecycles
+and 11520 CLI command invocations** in the long batches. The complete structural
+seed cycle is 42, with changing payload identity beyond that; these are not
+claimed as independent random streams.
+
+Including initial default and final default rerun: **1288 seed executions,
+1284 distinct seeds, 2576 safe stage lifecycles and 11592 CLI invocations** in
+this generated test. Across seven Rust test invocations, **10 nextest tests
+passed, 0 failed**; the final invocation separately filtered thirteen unrelated
+tests. Expected export errors are successful adverse-input assertions, not
+product test failures. No full CLI package/workspace regression is implied.
+
+### Resource evidence, cleanup and gaps
+
+| Phase | Samples | Minimum available RAM GiB | Maximum load1 | Maximum PSI full avg10 | Cgroup peak MiB |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Doctor | 4 | 17.118 | 0.409 | 0.00 | 6.727 |
+| Initial default/build | 58 | 15.904 | 0.433 | 0.18 | 1686.797 |
+| A | 158 | 15.953 | 1.683 | 0.00 | 1267.727 |
+| B | 131 | 16.752 | 1.226 | 0.00 | 107.555 |
+| C | 131 | 16.742 | 1.624 | 0.00 | 107.008 |
+| D | 131 | 16.542 | 1.447 | 0.00 | 106.141 |
+| E | 132 | 16.416 | 0.888 | 0.00 | 106.613 |
+| Related final | 7 | 16.696 | 0.590 | 0.00 | 461.492 |
+| Clippy | 44 | 16.368 | 1.092 | 0.36 | 1007.734 |
+
+All nine phases had memory high/max/oom/oom_kill counters zero, no swap and no
+resource-triggered stop. Minimum available disk was 243.677 GiB. Actual initial
+compile peak was 1768734720 bytes; the 4 GiB hard limit was not approached.
+
+All nine service cleanup records confirm inactive/unloaded and captured cgroup
+empty/absent; all captured directories had disappeared at final inspection.
+`ACTIVE_RUN` and `CLEANUP_BLOCKED` were absent, and the final service listing
+contained no `pvisor-c6-*` / `pvisor-chaos*` unit. All **1288 logged fixture paths**
+were checked and none remained. Fixture process/socket and current-namespace
+mount assertions passed in every case. Persistent shared target-key lock files
+were not deleted or swept; no empty-shared-lock-directory claim is made.
+
+Raw ignored evidence remains in the same local
+`.data/chaos6/<phase>.{log,resources.jsonl,cgroup-start.json,cgroup-final.json}`
+layout. Candidate SHA-256 throughout:
+`6b02964db0b502130a2dbb6d284dc7d913d889da9f4fc08dab7468d693e66bda`.
+Native supervisor/helper SHA-256:
+`01a29cc68132a7ce20cc7086fd76bb219bf271b0bf8785bfbaefdd312213bce2` /
+`b236a17e82392c46f315509055c14caffa54b1d2efa17927055d33c731f51aca`.
+
+Targeted warnings-denied Clippy, rustfmt and whitespace checks passed. No KVM/VM,
+macOS/Windows, live model, network traffic, process-death/power-loss, resource
+exhaustion, global namespace/host configuration change, full CLI/workspace/Python
+suite or doctest/rustdoc was run. Parent requested evaluating a separate next
+scenario where a successful result export targets its own stage's authoritative
+artifact; that is **not covered by the collision-failure case above** and will
+require an independent reproduction/policy decision. The total deadline remains
+20:21Z, with at least twenty minutes reserved for final regression/cleanup.
+
+## Round 07 — result export overwrites its own authoritative stage records
+
+### Reproduced finding; policy decision pending
+
+Parent proposed this new composition after Round06. Static preflight found
+ordinary `execute_config` writing `--result-file` only after
+`wait_cli_session` returns, with no destination-containment guard. The CLI README
+documents ordinary result export, retained Bundle/receipt and post-completion
+write errors, but does not explicitly authorize destruction of the Session's
+own evidence or delegate that outcome to the user.
+
+Two diagnostic phases used only dedicated private NativeHost fixtures and the
+unchanged Round06 binary/test-source state. Four cases each covered
+`run-bundle.json` / `completion.json` × explicit absolute same path / ordinary
+relative `../s/<artifact>` path. No symlink aliases, host paths or network traffic
+were involved. Each native workload staged `effects = once` and `accepted =
+changed` and completed with guest exit 0; its lower workspace remained unchanged.
+
+In all four corrected cases:
+
+- `run.json` exists, and the selected authoritative artifact has been replaced
+  by a **plain Core RunResult** with `state = completed`, `exit_code = 0`,
+  `run_id`, `execution_id`, etc., instead of its required enclosing schema.
+- CLI ultimately returns **1, not 0**. Bundle-target cases report
+  `load finalized Run record ... completion Bundle digest mismatch`; receipt
+  targets report `unknown field run_id, expected ... version, result,
+  bundle_blake3`. This is a late detection after export overwrite, **not** an
+  explicit unsupported-target refusal before execution/publication.
+- Offline `status <stage> --json` and `review <stage> --json` both return 1,
+  reporting no usable Run under the stage. No successful intact recovery is
+  claimed.
+
+The first diagnostic harness incorrectly treated **any** nonzero spawn exit as
+an acceptable rejection, so it exited 0 despite logging corruption. That was an
+oracle error, not a passing product result. Its predicate was corrected to
+require established Session authority to remain readable regardless of export
+exit, with explicit once-only staged-effect evidence. Fresh fixtures reproduced
+all four failures, and the corrected diagnostic exited 1 with:
+`4 completed private Sessions lost authoritative records during result export`.
+No production code was changed or expectation weakened to obtain these results.
+
+The parent was immediately sent raw outcomes, paths, failure text and two rules:
+
+1. Protect only authoritative artifacts, maintaining an explicit complete set of
+   reserved paths/directories as Session formats evolve.
+2. Reject `--result-file` inside the current Session/stage control-storage tree,
+   leaving external exports supported. This simpler opaque-storage rule also
+   forbids apparently harmless `stage/export/result.json`.
+
+The executor recommends rule 2 but has **not implemented a policy before parent
+decision**. Prepared `--spec` has a separate delegated-result export path and
+must be considered for a coherent eventual rule; it has not been probed here.
+
+### Commands, resources and retained evidence
+
+```sh
+python3 .data/chaos6_native_supervise.py selfexport-before python3 .data/chaos6_self_export_probe.py
+# Corrected only the ignored diagnostic predicate; no production changes.
+python3 .data/chaos6_native_supervise.py selfexport-before-corrected python3 .data/chaos6_self_export_probe.py
+```
+
+Both used the exact Round06 Native budget/admission/cleanup/watchdogs, including
+>=14 GiB double-sample startup, CPU 50%, one job, 3G high/4G max, no swap and
+unchanged runtime stops. Each qualified for 60.00–60.01 seconds, not counted
+as product execution. There were **0 Rust/nextest test invocations** in these
+two phases; these are native diagnostic cases, not new passing test counts.
+
+| Phase | Observation UTC start–end | Cases / result | Peak cgroup MiB | Minimum RAM GiB | Maximum load1 / PSI |
+| --- | --- | --- | ---: | ---: | --- |
+| Initial diagnostic | 18:34:52.041–18:35:54.073 | Four corruptions logged; harness exit 0 due to predicate error, not product PASS | 74.738 | 17.098 | 0.456 / 0.00 |
+| Corrected diagnostic | 18:36:56.600–18:37:58.623 | Four reproduced failures; expected diagnostic assertion exit 1 | 26.105 | 16.982 | 0.439 / 0.00 |
+
+Minimum disk was 243.650 GiB. Both cgroups recorded memory high/max/oom/oom_kill=0,
+with no resource stop. Both service/cgroup cleanups confirmed inactive/empty/
+absent; the final unit listing and gate files were empty/absent. This cleaned
+only owned processes, not the damaged evidence.
+
+All eight diagnostic roots are deliberately retained under
+`.data/t/selfexport7-*`, each with exact spawn/status/review commands, stdout,
+stderr, outcome JSON and the damaged private Session. Corrected reproduction
+roots:
+`selfexport7-9_m0kkh_`, `selfexport7-me4rejly`, `selfexport7-k226xp72`,
+`selfexport7-prxmwlfa`. The initial four roots remain separate evidence of the
+diagnostic predicate mistake. No shared lock directory or failed fixture was swept.
+
+Raw phase logs/resources/cgroup captures are
+`.data/chaos6/selfexport-before.*` and
+`.data/chaos6/selfexport-before-corrected.*`. Corrected ignored diagnostic
+SHA-256:
+`e5b8d46a1bfa7af995df294649fe0d410a80bf429ba2289aa6c2cd6626bd7356`.
+The binary/source baseline is unchanged from Round06, inherited HEAD
+`35393522f528fd8971d4f223d042f3d2988b243b`. This is a pending fix/review checkpoint,
+not six completed hours; no workload remains active while awaiting the rule.
