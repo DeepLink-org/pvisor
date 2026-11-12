@@ -1,11 +1,63 @@
 # Bounded six-hour chaos campaign: 2026-11-12
 
+## Closed-window summary
+
+**The 2026-11-12 14:21–20:21 UTC six-hour iteration window is complete.**
+The final delayed audit was recorded at **20:21:00.053187Z** (Beijing
+2026-11-13 04:21:00). This was design, bounded compilation, resource pauses,
+test execution, investigation/repair and observation—not six continuous hours
+of workload. The first recorded host observation was 14:22:10Z.
+
+- **One product defect fixed:** `--result-file` could overwrite its own
+  Session's authoritative records. Parent-approved opaque-storage admission
+  was published in `a5e3e093`; helper/help-snapshot follow-up in `79835afa`.
+- **NativeHost is no longer zero coverage.** The historical early-zero
+  checkpoints below remain unchanged. Later safe NativeHost execution passed
+  the original default cases, 1280 pre-fix changing seeds, **512 post-fix seeds**,
+  and a **360.433-second** live-owner/late-export-fault experiment with a healthy
+  successor. Seeds/subscenarios and repeated defaults are not independent
+  nextest tests.
+- Parent verified at **19:58Z** that code revision
+  `79835afaeb1cf867e8680b8fa4fac20baee79bf0` had **33 CI checks SUCCESS**,
+  no failures/skips/pending checks. This does not erase older failures or prove
+  the historical Replay supplier-startup timeout's root cause.
+
+| Component | Final local package evidence |
+| --- | --- |
+| Journal | 33 passed, 0 skipped |
+| Core | 91 passed, 0 skipped |
+| Overlay Core | 246 passed, 5 existing ignored tests skipped; later APFS-adapted default passed on Linux |
+| Replay | 155 passed, 1 existing ignored long-lifecycle test skipped |
+| CLI | **338 passed, 0 failed, 40 existing tests skipped**, with disclosed private HOME/short worktree TMPDIR |
+
+All recorded nextest invocations, including repeated checks and pre-fix runs:
+**42 invocations, 1640 test executions: 1634 passed and 6 historical failures**.
+Those six are four pre-fix regressions plus the first full CLI run's intentional
+help-baseline mismatch and long-socket-path fixture failure; the final CLI run
+passed. Summed nextest wall time was **6934.221 s (1 h 55 min 34.221 s)**.
+The additional six-minute native diagnostic's measured CLI lifecycle was
+**360.433 s**; short native diagnostics/doctor, compilation/checks, admission
+pauses and delayed observation are not folded into that runtime total.
+
+At closure, all **47 captured owned cgroups** were absent, no owned service or
+unresolved gate remained, and all **1816 logged successful Native fixture paths**
+were absent. Ten delayed audits confirmed the **12 damaged-record reproduction
+fixtures plus 2 failed-run HOME roots** remained content-identical. Persistent
+shared target-key lock files may remain by design; no shared directory was swept.
+
+Limits remain explicit: Linux local execution is not other-platform NativeHost/
+VM acceptance, a full-workspace/Python/rustdoc run, hostile TOCTOU/alias defense,
+all-namespace mount authentication or exactly-once execution. The APFS fixture
+adaptation has CI evidence, but the earlier Replay CI timing failure is not
+claimed root-caused or repaired. Phase-by-phase historical failures, source
+versions, exact commands, resource peaks and skipped coverage follow below.
+
 ## Scope and status
 
 - Campaign window requested by the user: 2026-11-12 22:21 +08:00 through
-  2026-11-13 04:21 +08:00 (UTC 14:21–20:21). This is an ongoing campaign
-  checkpoint through Round 07's full CLI validation (19:17Z), not six completed hours or a concurrent
-  stress run. The requested end remains 20:21Z.
+  2026-11-13 04:21 +08:00 (UTC 14:21–20:21). The window is now closed after
+  the actual 20:21Z audit. Intermediate ongoing checkpoints below are retained
+  as history, not descriptions of the final coverage or continuous-load claims.
 - Baseline: `7fe09e20de3cb7b51222c7d61d75056208da98fb`.
 - Rounds 01–02 executor: the isolated child thread's `pvisor` worktree,
   `/home/reiase/workspace/pvisor/.delta/worktrees/gyv8kfjp7ksa/pvisor`.
@@ -57,6 +109,11 @@
   follow-up now passes **338 CLI tests, 40 existing tests skipped**, plus the two
   added helper contracts and package-wide Clippy. Earlier full-run failures and
   the short-TMPDIR limitation are recorded below rather than erased.
+- Round 08 (19:40–19:47Z): one six-minute safe NativeHost lifecycle passed with
+  a late external result-directory obstruction installed 120 seconds after
+  confirmed guest readiness, followed by a healthy distinct Session. Only an
+  ignored local diagnostic driver/report was added; no default six-minute CI test.
+  Delayed read-only audits through 20:21Z remain observation, not execution.
 
 ## Scenario and existing coverage
 
@@ -1583,3 +1640,260 @@ environment, not macOS acceptance, a green-CI claim or six completed hours.
 Historical macOS APFS and replay-continuation CI failures remain parent-owned
 investigations. Parent requested two bounded 256-seed post-fix Native recovery
 batches before 20:05Z, followed by final auditing/cleanup before 20:21Z.
+
+### Post-fix changing-seed recovery and audit checkpoint, 19:33Z
+
+Both requested post-fix Native batches passed on the guarded CLI. These are
+useful additional coverage because the guard's external ENOTDIR compatibility
+did not exist during Round06's original long run. No source changes occurred
+after the successful full CLI package/Clippy checks.
+
+```sh
+PVISOR_CHAOS_FIRST_SEED=20262396 PVISOR_CHAOS_SEED_COUNT=256 python3 .data/chaos6_native_supervise.py native-postfix-seeds-a mise run test -- pvisor-cli -- --offline --test rootless_result_publication --no-capture
+PVISOR_CHAOS_FIRST_SEED=20262652 PVISOR_CHAOS_SEED_COUNT=256 python3 .data/chaos6_native_supervise.py native-postfix-seeds-b mise run test -- pvisor-cli -- --offline --test rootless_result_publication --no-capture
+python3 .data/chaos6_supervise.py overlay-apfs-adapted-default mise run test -- pvisor-overlay-core -- --offline --test selective_lifecycle --no-capture
+git diff --check
+```
+
+| Phase | Observation UTC start–end, includes qualification | Result / nextest time | Peak MiB | Minimum RAM GiB |
+| --- | --- | --- | ---: | ---: |
+| Post-fix Native A | 19:20:14.567–19:25:37.170 | 1 passed, 0 skipped; 261.001 s; 256 seeds | 106.539 | 16.781 |
+| Post-fix Native B | 19:25:46.469–19:31:07.082 | 1 passed, 0 skipped; 259.113 s; 256 seeds | 106.520 | 16.718 |
+| Parent-adapted Overlay default | 19:31:32.419–19:32:36.452 | 1 passed, 0 skipped; 1.405 s; 6 seeds / 24 variants | 217.211 | 16.985 |
+
+The Native phases retained the 14 GiB admission / 3G high / 4G max stage.
+The small Overlay default deliberately used the **unchanged small-package**
+9 GiB admission / 1G high=1G max supervisor; CPU50%, one build job, no swap and
+all other safety gates stayed unchanged. These were serial, with confirmed
+cleanup before each next launch. Three 60-second qualifications are excluded
+from useful work.
+
+Native A/B provide **520.114 seconds (8 min 40.114 s)** of post-fix
+changing-seed execution: 512 new distinct seeds, 1024 safe Session lifecycles,
+4608 CLI invocations, and 512 expected export errors followed by distinct healthy
+successors. Both obstruction shapes occur 256 times. These are two passing
+nextest tests, not 512 nextest tests. No minimum-duration padding was added.
+All 512 logged Native fixture paths were checked absent after success.
+
+The Overlay rerun used the parent's APFS-adapted source SHA-256
+`719a11b2343dc26f06117a7b622f0175afa3e34be5f3729456b6d996d8d877bc`.
+It retained all state/content assertions and Linux raw-name cases, with the same
+default 24 variants / 96 partial applies / 96 committed no-op recovery checks.
+This is **Linux validation of the new source**, not a local macOS run or evidence
+that the earlier A/B/C ran on the portability-adjusted source.
+
+All three phases had memory high/max/oom/oom_kill=0, PSI 0, no swap and no
+resource-triggered stop. Maximum load1 was 1.239; minimum available disk
+243.435 GiB. Raw evidence uses the phase names above in `.data/chaos6/`.
+
+At **19:33:36Z**, the executor's audit confirmed:
+
+- All **46 captured owned cgroup directories** from this worktree's phases are
+  absent. No `pvisor-c6-*` / `pvisor-chaos*` service remains; `ACTIVE_RUN` and
+  `CLEANUP_BLOCKED` are absent. This is fixed non-adversarial owned-tree cleanup,
+  not proof against arbitrary same-UID escapes.
+- No new successful Core-receipt, Replay, selective-lifecycle or result-helper
+  fixture root remains; no root-level temporary test directory remains.
+  Current-namespace mountinfo contains no mountpoint below this worktree.
+- All **12 pre-fix self-corruption evidence fixtures** and the **two nonpassing
+  CLI private-HOME roots** remain deliberately retained. No failed evidence,
+  shared apply-lock directory or unrelated process was removed.
+- Available memory was 17,892,188 KiB, memory PSI full avg10 0.00. No final host
+  resource-pressure injection or cleanup through a shared directory occurred.
+
+Current checkout HEAD remains the parent's first-fix
+`a5e3e09378eb78d5726b39f8ac973a056971316a`, plus the helper/help-baseline/report
+follow-up awaiting parent integration. The executor has not pushed or merged a
+Git branch.
+
+This is a **19:33Z ongoing checkpoint**, not a claim that the 14:21–20:21 UTC
+window has completed. No workload is active at this checkpoint. Parent owns the
+remaining schedule and final 20:21Z campaign close; no new long phase may start
+after 20:05Z, and the Native supervisor has its stricter service-tail cutoff.
+
+## Round 08 — long-lived owner with late external export obstruction
+
+### Outcome and experimental variable
+
+The parent requested a genuinely longer owner lifetime, not repetitions of
+short Sessions. The ignored local `.data/chaos6_late_export.py` driver ran one
+safe NativeHost workload for approximately six minutes, with one once-only
+effect and six bounded minute-progress entries. The external export destination
+was absent/normal at startup. After confirming a live owner and guest readiness,
+the driver waited for the specified fault time and installed a dedicated owned
+nonempty directory at the external result path.
+
+This variable distinguishes **admission from reservation across owner lifetime**.
+The timed waits keep the actual Session alive across late fault insertion and
+subsequent progress checks; they are not presented as CPU work or added campaign
+padding. No six-minute default CI test was added. No new production defect,
+production code change, permission enlargement or safety-budget change occurred.
+
+Exact invocation:
+
+```sh
+python3 .data/chaos6_native_supervise.py native-late-export python3 .data/chaos6_late_export.py
+```
+
+The long CLI command had `timeout --kill-after=2s 450s`; ordinary control,
+review/apply/drop/successor commands retained their 25-second/two-second bounds.
+The existing outer 880/900-second watchdogs, 3G/4G/no-swap Native cgroup,
+CPUQuota50%, nice10, one build job, >=14 GiB double-sample startup and all runtime
+stop/cleanup gates remained unchanged. No build/test ran concurrently.
+
+### Observed timeline and assertions
+
+| UTC | Observation |
+| --- | --- |
+| 19:40:12.371 | First admission sample; qualification lasted 60.009 s, not testing |
+| 19:41:12.442 | Driver created its private fixture and launched the long CLI |
+| 19:41:12.891 | Guest ready marker visible; live status confirmed owner PID 33741 and the Session identity; startup 0.428 s |
+| 19:42:12.890 | Same owner/Run still live and Running, 60.020 s after readiness |
+| 19:43:12.890 | Same owner live at fault admission; owned external obstruction installed 120.020 s after readiness |
+| 19:43:12.907 | Immediate post-fault status still Running, same owner and Run |
+| 19:45:12.889 | Same owner still Running 240.018 s after readiness |
+| 19:47:13.408 | Guest completed exit 0; frontend clearly failed result export with exit 1; offline validation, acceptance/drop and distinct healthy successor passed |
+| 19:47:13.409 | Successful private fixture removed after owner/socket/current-namespace mount checks |
+| 19:47:15.434 | Outer supervisor confirmed service inactive/cgroup empty or absent; gate cleared |
+
+The measured long CLI lifecycle was **360.432871896 seconds**. The complete
+driver made thirteen finite CLI invocations across two safe Session lifecycles.
+This is **one native diagnostic experiment, not a nextest test or seed batch**.
+No timing interruption, timeout or environmental skip occurred.
+
+The long Session's Bundle and completion receipt remained readable, terminal
+Completed/exit 0 and identity-matching despite frontend export failure.
+Once-only bytes were exactly `once`; progress was exactly `tick-0` through
+`tick-5`; final accepted/scratch bytes matched their independent expected values.
+All remained staged before acceptance, with the original lower sentinel and
+workspace unchanged. Offline status/review succeeded without modifying immutable
+Bundle/receipt bytes or rerunning effects.
+
+Selective acceptance published only `accepted`; the once marker/scratch remained
+staged before explicit drop. After removing only the known obstruction, a fresh
+safe Session exported an ordinary RunResult with a different Run identity and
+healthy upper bytes. Its drop/status, both owner exits, control-socket absence,
+unchanged lower sentinel and current-namespace mount checks passed before
+fixture deletion. No all-namespace mount inventory, arbitrary same-UID escape
+proof or exactly-once execution guarantee is inferred.
+
+### Resource and evidence record
+
+Admission/runtime/post-cleanup sampling produced 184 records: minimum available
+RAM **16.615 GiB**, minimum available disk **243.439 GiB**, maximum load1 **0.785**,
+memory PSI full avg10 **0.00**, cgroup peak **33.211 MiB**. Memory high/max/oom/
+oom_kill counters were zero; no swap or resource stop. All owned service/cgroup
+cleanup checks passed. The successful `l6myjq9he_` fixture is absent.
+
+Ignored evidence is in:
+
+- `.data/chaos6/native-late-export.{log,resources.jsonl,cgroup-start.json,cgroup-final.json}`
+- `.data/chaos6/late-export/events.json`, `commands.json`, long/control stdout/
+  stderr, and copies of the immutable Bundle/receipt.
+
+Driver SHA-256:
+`73f855e44fcaf92507de8ff4ce405111eeef77594bc52650ca5da466c33a3eeb`.
+No large machine log or driver was committed. A clean worktree merge captured
+parent frontier `e0742b09-4cf4-4e0c-be66-84162b9d3d2c.2334254`; checkout HEAD is now
+the parent's published follow-up
+`79835afaeb1cf867e8680b8fa4fac20baee79bf0`. CLI/runtime behavior hashes remain
+those validated above; the executor did not publish or perform a Git merge.
+
+No further execution workload is scheduled. The remaining window is reserved
+for explicitly allowed low-frequency **read-only delayed cleanup/evidence
+audits**, which will be logged separately and excluded from actual test time.
+The 14:21–20:21 UTC six-hour window is not declared complete before the final
+clock observation.
+
+## Final closure — 20:21 UTC
+
+### Delayed read-only audits
+
+The last execution workload completed at 19:47:13Z and its service/cgroup cleanup
+was confirmed at 19:47:15Z. There were **no new execution loads after that**,
+including after the 20:05Z no-new-long-load cutoff. Remaining waits were explicitly
+allowed delayed observation, not useful test duration or additional passing tests.
+
+```sh
+nice -n 10 timeout --kill-after=5s 1000s python3 .data/chaos6_delayed_audit.py 20:00
+nice -n 10 timeout --kill-after=5s 1000s python3 .data/chaos6_delayed_audit.py 20:15
+nice -n 10 timeout --kill-after=5s 1000s python3 .data/chaos6_delayed_audit.py 20:21
+```
+
+The observer only reads resource counters, captured cgroup paths, owned service
+state, known fixture paths/current-namespace mountinfo, informational historical
+PIDs and retained failed-evidence contents. It writes ignored audit records; it
+does not launch guests/builds/tests, signal PIDs, mutate configuration or repair/
+delete retained evidence. Recorded PIDs are not signal authority; the two late
+experiment PIDs were absent at every delayed observation, and no birth-identity
+or arbitrary same-UID escape claim is made.
+
+Ten observations ran from **19:54:40.575543Z through 20:21:00.053187Z**.
+Every observation confirmed:
+
+- All 47 captured owned cgroup directories absent; no `pvisor-c6-*` /
+  `pvisor-chaos*` unit and neither `ACTIVE_RUN` nor `CLEANUP_BLOCKED`.
+- All 1816 logged successful Native fixture paths absent; no current-namespace
+  mountpoint below the worktree.
+- All fourteen retained evidence roots present and unchanged: eight native
+  diagnostic roots, four Rust before-fix roots, and two nonpassing CLI private
+  HOME roots. Regular-file bytes/modes and symlink targets were compared without
+  following symlink directories or opening sockets/FIFOs/devices.
+
+The retained-evidence canonical manifest digest stayed:
+`15e4a4ed0526ab3dad0c694253bcaccf008ec2091a4fe3078c856e41d458e081`.
+Evidence is local and ignored:
+`.data/chaos6/failed-evidence-integrity-baseline.json`,
+`.data/chaos6/delayed-audits.jsonl`. Observer source SHA-256:
+`75f35565677322ff8d744f8257c9bd9de4d3275ed4adb2af4ad2a207480968a9`.
+No raw machine logs or six-minute diagnostic were added to default CI.
+
+Final 20:21:00Z resources: **17.103 GiB available RAM, 243.425 GiB available
+disk, load1 0.279, memory PSI full avg10 0.00**. Across delayed observations,
+minimum available RAM was 16.855 GiB and maximum load1 0.417. No residual owned
+workload or evidence mutation appeared. The observer itself exited successfully
+after the final sample; a subsequent read-only service listing was also empty.
+
+### Runtime/count accounting and coverage limits
+
+The aggregate was calculated from each nextest summary in the current
+worktree's phase logs and the previous executor's eight named Journal phase
+logs, read-only from its known evidence directory. First-round NativeHost
+compilation attempts had zero test bodies and do not enter test counts.
+`.data/chaos6/validation-totals.json` retains the per-invocation accounting.
+
+- **42 nextest invocations, 1640 executions, 1634 pass / 6 historical fail**.
+  Repeated package/default runs count as repeated executions, not unique tests.
+  Per-phase ignored/filtered counts remain separate; they are not summed as
+  unique skipped coverage.
+- **6934.221 seconds of summed nextest wall runtime**, including pre-fix failures.
+  The first two complete CLI runs are both represented: 336/2 then 338/0.
+  Four intended pre-fix regression failures remain failures in this accounting.
+- The **360.432871896-second native long CLI** is separate from nextest.
+  Together these recorded measures are approximately **2 h 1 min 34.654 s**,
+  not six hours. Short Python/native diagnostics and doctor are separately
+  recorded, not silently relabeled as nextest or included in that sum.
+- Design/read/review, successful/failed compilation and Clippy, resource
+  qualification/cooldowns, harness/bootstrap correction and delayed observation
+  occupy other parts of the six-hour iteration window. Their idle waits are not
+  test coverage. Original resource stops/OOM, the first diagnostic predicate
+  error, CLI help/socket failures and historical CI failures are preserved.
+
+The final local checks are the package counts in the closing summary, targeted
+guard/implicit/symlink contracts, post-fix changing seeds and the live-owner
+late-fault diagnostic. CLI all-target Clippy, targeted rustfmt and whitespace
+checks passed. No new build/test was started during final observation or after
+the deadline.
+
+Parent's **19:58Z** GitHub check snapshot for code head `79835afa` was all
+**33 SUCCESS**. APFS portability now has CI evidence. That snapshot does not
+retroactively validate earlier source versions or explain/fix the historical
+Replay supplier-startup timing failure, which stopped reproducing on the later
+revision without a proven root cause. This closing report-only change is not
+itself a new locally executed CI revision.
+
+Final code HEAD is
+`79835afaeb1cf867e8680b8fa4fac20baee79bf0`; the executor's only outstanding
+tracked change is this report. Parent alone owns the closing report commit/PR
+publication. No main merge, executor Git push, semspec approval/revocation or
+approved-ledger/snapshot edit occurred.
