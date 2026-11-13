@@ -146,3 +146,56 @@ mise run test-py -- discover -s benchmark/tests -p test_workload.py
 Tests use fake transports and clocks, with no VM, AgentENV service, model call or
 benchmark run. Historical single-task localhost validation motivated these
 contracts; it is not end-to-end validation of this refactoring or of current main.
+
+### Concurrent controller sampling and wait diagnostics
+
+`resource_sampler.py` and `wait_timing.py` are opt-in B-SWE-RESIDENT-ENG
+helpers extracted from the 80-trajectory deployment controller. They do not
+change the synchronous single-task runner or the product VM runtime. Both
+pVisor and AgentENV controllers can use the same interfaces.
+
+```python
+from resource_sampler import ResourceSampler, collect_to_log
+
+async with ResourceSampler(workers=4) as sampler:
+    # Each observer awaits a read, then sleeps 0.5s; never queue catch-up reads.
+    await sampler.read(collect_to_log, collect_vm, owned_record, group_name,
+                       log_path, submitted_monotonic_ns, due_monotonic_ns)
+    sampler.check()
+```
+
+The deployment must verify PID/starttime and cgroup ownership, create fresh
+output files, supervise observers, and propagate observer failure. Collection,
+JSON serialization and persistence belong in the worker, not the asyncio loop.
+Cancel and await each observer **before** stopping its VM; `read()` drains even
+on repeated cancellation, and `check()` preserves failures that would otherwise
+be hidden by cancellation. Kernel reads cannot be killed by Python: retain a
+finite external service guard and independent physical shutdown audit.
+
+`collect_to_log` records queue/read/schedule latency. Its read duration excludes
+serialization and persistence; do not interpret it as total worker time.
+`measured_wait(backend, seconds, op, call, emit)` timestamps pause worker dispatch,
+the full planned sleep, wake lateness and resume dispatch. `call` is the
+controller's async, bounded blocking-call adapter. `emit` must be thread-safe
+(it is also invoked from workers), include monotonic/wall timestamps, and avoid
+blocking the controller. Failed pause does not claim sleep/resume success; the
+owner retains responsibility for cleanup on any exception/cancellation.
+`monitor_loop` records timer lateness and persists through the sampler.
+
+The historical UKSM controller additionally skipped an offload-only process
+scan, keeping STOP/ack/CONT and final audits. That backend is not present in the
+current single-task runner; this PR does not enable offload or remove checks
+from a current backend. Historical implementation changes are preserved in
+`sampling-controller-diagnostic.diff` for review, not as an applicable patch.
+The helpers require explicit adoption by a concurrent deployment.
+
+Engineering evidence: `sampling-evidence.json`. These single-run results cover
+the combined deployment changes, not an isolated speedup of these extracted
+helpers. The AgentENV reference used the old collector. Preparation is excluded;
+parent-cgroup usage includes charged services/cache, not proof of external cache
+attribution. Original commands, sleeps, admission and deadlines were retained.
+
+```sh
+mise run test-py -- discover -s benchmark/tests -p test_resource_sampler.py
+mise run test-py -- discover -s benchmark/tests -p test_wait_timing.py
+```
