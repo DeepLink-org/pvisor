@@ -14,7 +14,7 @@ use std::os::unix::fs::MetadataExt;
 use std::os::unix::io::{AsRawFd, FromRawFd, RawFd};
 use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
 use caps::{has_cap, CapSet, Capability};
@@ -583,6 +583,12 @@ pub struct PassthroughFs {
     // do with an fd opened with this flag.
     inodes: RwLock<MultikeyBTreeMap<Inode, InodeAltKey, Arc<InodeData>>>,
     inode_alloc: Arc<InodeAllocator>,
+    // Virtual device nodes materialized as host-safe placeholder files by
+    // this session (per-pod ephemeral backing): passthrough inodes whose
+    // replies project back as the recorded character/block device. The
+    // written `user.pvisor.virtual_node` attribute documents the same fact
+    // for tools that walk the tree outside this process.
+    virtual_nodes: Mutex<BTreeMap<Inode, (bool, u32, u32)>>,
 
     // File descriptors for open files and directories. Unlike the fds in `inodes`, these _can_ be
     // used for reading and writing data.
@@ -676,6 +682,86 @@ impl PassthroughFs {
             self.cfg.attr_timeout,
             self.cfg.entry_timeout,
         )))
+    }
+
+
+    /// Apply a recorded virtual device node to raw attributes: placeholder
+    /// regular files created by `create_virtual_whiteout` project back as
+    /// the recorded character/block device. Session registry lookup; no
+    /// extra descriptor or attribute syscall on the hot path.
+    fn project_virtual_node(&self, inode: Inode, st: &mut libc::stat64) {
+        if st.st_mode & libc::S_IFMT != libc::S_IFREG {
+            return;
+        }
+        let Some(&(block, major, minor)) = self.virtual_nodes.lock().unwrap().get(&inode) else {
+            return;
+        };
+        st.st_mode = (st.st_mode & !libc::S_IFMT)
+            | if block { libc::S_IFBLK } else { libc::S_IFCHR };
+        let (major, minor) = (major as u64, minor as u64);
+        st.st_rdev = ((minor & 0xff)
+            | ((major & 0xfff) << 8)
+            | ((minor & !0xff) << 12)
+            | ((major & !0xfff) << 32)) as _;
+    }
+
+    /// Create the host-safe placeholder for a guest whiteout device
+    /// (char 0,0): host security policies commonly deny mknod of whiteout
+    /// devices to sandbox processes, and whiteouts are only stat'ed and
+    /// listed, never opened. Records `user.pvisor.virtual_node` on an empty
+    /// regular file; every read path projects it back as the device.
+    fn create_virtual_whiteout(&self, ctx: Context, parent: Inode, name: &CStr) -> io::Result<Entry> {
+        let data = self
+            .inodes
+            .read()
+            .unwrap()
+            .get(&parent)
+            .cloned()
+            .ok_or_else(ebadf)?;
+        // SAFETY: all pointers remain valid for the duration of the call.
+        let fd = unsafe {
+            libc::openat(
+                data.file.as_raw_fd(),
+                name.as_ptr(),
+                libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_CLOEXEC,
+                0o600,
+            )
+        };
+        if fd < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: the new descriptor is valid until the closing drop below.
+        let set = unsafe {
+            libc::fsetxattr(
+                fd,
+                c"user.pvisor.virtual_node".as_ptr(),
+                b"c:0:0".as_ptr() as *const libc::c_void,
+                5,
+                0,
+            )
+        };
+        // SAFETY: closing the freshly opened descriptor we still own.
+        unsafe { libc::close(fd) };
+        if set < 0 {
+            // SAFETY: best-effort cleanup of the placeholder we just made.
+            unsafe {
+                libc::unlinkat(data.file.as_raw_fd(), name.as_ptr(), 0);
+            }
+            return Err(io::Error::last_os_error());
+        }
+        let mut entry = match self.lookup(ctx, parent, name) {
+            Ok(entry) => entry,
+            Err(error) => {
+                return Err(error);
+            }
+        };
+        self.virtual_nodes
+            .lock()
+            .unwrap()
+            .insert(entry.inode, (false, 0, 0));
+        entry.attr.st_mode = (entry.attr.st_mode & !libc::S_IFMT) | libc::S_IFCHR;
+        entry.attr.st_rdev = 0;
+        Ok(entry)
     }
 
     pub(in crate::devices::virtio::fs) fn with_dax_file(
@@ -1078,6 +1164,7 @@ impl PassthroughFs {
         Ok(PassthroughFs {
             inodes: RwLock::new(MultikeyBTreeMap::new()),
             inode_alloc,
+            virtual_nodes: Mutex::new(BTreeMap::new()),
 
             handles: RwLock::new(BTreeMap::new()),
             next_handle: AtomicU64::new(1),
@@ -1426,11 +1513,14 @@ impl PassthroughFs {
             .ok_or_else(ebadf)?;
 
         let native = stat(&data.file)?;
-        let st = if self.cfg.managed {
+        let mut st = if self.cfg.managed {
             managed::attributes(&data.file, native)?
         } else {
             native
         };
+        if !self.cfg.managed {
+            self.project_virtual_node(data.inode, &mut st);
+        }
 
         Ok((st, self.cfg.attr_timeout))
     }
@@ -1667,7 +1757,7 @@ impl FileSystem for PassthroughFs {
         let f = unsafe { File::from_raw_fd(fd) };
 
         let (native, mnt_id) = statx(&f)?;
-        let st = if self.cfg.managed {
+        let mut st = if self.cfg.managed {
             managed::attributes(&f, native)?
         } else {
             native
@@ -1691,28 +1781,28 @@ impl FileSystem for PassthroughFs {
         // insertion are one table transaction: no duplicate alternate key can
         // replace an inode which another request has already received.
         let mut inodes = self.inodes.write().unwrap();
-        let inode = if let Some(data) = inodes.get_alt(&altkey) {
+        let data = if let Some(data) = inodes.get_alt(&altkey) {
             data.refcount.fetch_add(1, Ordering::Acquire);
-            data.inode
+            data.clone()
         } else {
             let inode = self.inode_alloc.next();
-            inodes.insert(
+            let data = Arc::new(InodeData {
                 inode,
-                altkey,
-                Arc::new(InodeData {
-                    inode,
-                    file: f,
-                    dev: st.st_dev,
-                    mnt_id,
-                    refcount: AtomicU64::new(1),
-                }),
-            );
-            inode
+                file: f,
+                dev: st.st_dev,
+                mnt_id,
+                refcount: AtomicU64::new(1),
+            });
+            inodes.insert(inode, altkey, data.clone());
+            data
         };
         drop(inodes);
 
+        if !self.cfg.managed {
+            self.project_virtual_node(data.inode, &mut st);
+        }
         Ok(Entry {
-            inode,
+            inode: data.inode,
             generation: 0,
             attr: st,
             attr_flags,
@@ -1841,6 +1931,9 @@ impl FileSystem for PassthroughFs {
             let name = unsafe { CStr::from_bytes_with_nul_unchecked(dir_entry.name) };
             let entry = self.lookup(ctx, inode, name)?;
             let lookup_inode = entry.inode;
+            // Virtual device placeholders list as their projected type.
+            let mut dir_entry = dir_entry;
+            dir_entry.type_ = (entry.attr.st_mode & libc::S_IFMT) >> 12;
             let result = add_entry(dir_entry, entry);
             if !matches!(&result, Ok(written) if *written != 0) {
                 self.forget(ctx, lookup_inode, 1);
@@ -2342,11 +2435,20 @@ impl FileSystem for PassthroughFs {
             )
         };
 
-        if res < 0 {
-            Err(io::Error::last_os_error())
-        } else {
-            self.lookup(ctx, parent, name)
+        if res == 0 {
+            return self.lookup(ctx, parent, name);
         }
+        let error = io::Error::last_os_error();
+        // Guest whiteouts (char 0,0) may be denied to this process by host
+        // policy; materialize the host-safe placeholder instead.
+        if error.raw_os_error() == Some(libc::EPERM)
+            && mode & libc::S_IFMT == libc::S_IFCHR
+            && rdev == 0
+            && !self.cfg.managed
+        {
+            return self.create_virtual_whiteout(ctx, parent, name);
+        }
+        Err(error)
     }
 
     fn link(
@@ -2933,6 +3035,47 @@ impl PassthroughFs {
 mod tests {
     use super::super::super::filesystem::root_context;
     use super::*;
+
+    #[test]
+    fn unmanaged_whiteout_mknod_falls_back_to_a_projected_placeholder() {
+        let root = tempfile::tempdir().unwrap();
+        let fs = PassthroughFs::new(
+            Config {
+                root_dir: root.path().to_string_lossy().into_owned(),
+                ..Default::default()
+            },
+            Arc::new(InodeAllocator::new()),
+        )
+        .unwrap();
+        fs.init(FsOptions::empty()).unwrap();
+        let ctx = root_context();
+        // Direct char(0,0) mknod may or may not be permitted for this test
+        // user; when it is denied the fallback must still materialize the
+        // host-safe placeholder and project it back as the device.
+        let direct = fs.mknod(
+            ctx,
+            1,
+            c"wh",
+            libc::S_IFCHR | 0o644,
+            0,
+            0,
+            super::Extensions::default(),
+        );
+        let _ = direct;
+        // The placeholder constructor is the EPERM fallback body; exercise it
+        // directly because this host may permit real whiteout devices.
+        let entry = fs
+            .create_virtual_whiteout(ctx, 1, c"wh2")
+            .expect("placeholder construction");
+        assert_eq!(entry.attr.st_mode & libc::S_IFMT, libc::S_IFCHR);
+        assert_eq!(entry.attr.st_rdev, 0);
+        let physical = std::fs::symlink_metadata(root.path().join("wh2")).unwrap();
+        assert!(physical.is_file());
+        let (attr, _) = fs.getattr(ctx, entry.inode, None).unwrap();
+        assert_eq!(attr.st_mode & libc::S_IFMT, libc::S_IFCHR);
+        assert_eq!(attr.st_rdev, 0);
+        fs.forget(ctx, entry.inode, 1);
+    }
 
     #[test]
     fn managed_creation_failure_does_not_leak_unpublished_lookup_references() {
