@@ -1621,6 +1621,34 @@ impl OverlayFs {
         inode
     }
 
+    /// Single-critical-section publication of a fresh creation: inode
+    /// allocation, the regular-file upper binding and the guest lookup
+    /// reference previously took the nodes lock three times in a row.
+    fn publish_created_inode(&self, path: &Path, attr: &bindings::stat64) -> u64 {
+        let mut nodes = self.nodes.lock().unwrap();
+        let inode = match nodes.by_path.get(path) {
+            Some(&inode) => inode,
+            None => {
+                let inode = self.inode_alloc.next();
+                nodes.insert_path(path.to_path_buf(), inode);
+                inode
+            }
+        };
+        if attr.st_mode & libc::S_IFMT == libc::S_IFREG {
+            if attr.st_nlink > 1 || nodes.objects_by_inode.contains_key(&inode) {
+                nodes.bind_object(inode, (0, attr.st_dev as _, attr.st_ino));
+            }
+            nodes.by_inode.insert(inode, path.to_path_buf());
+        }
+        if inode != fuse::ROOT_ID && !nodes.legacy_lookup_refs.contains(&inode) {
+            let count = nodes.lookup_refs.entry(inode).or_default();
+            *count = count
+                .checked_add(1)
+                .expect("guest lookup reference overflow");
+        }
+        inode
+    }
+
     fn inode_for_backing(&self, path: PathBuf, backing: &BackingResolution) -> u64 {
         let metadata = &backing.entry.metadata;
         if !metadata.is_file() || metadata.nlink() < 2 {
@@ -2164,13 +2192,9 @@ impl OverlayFs {
     fn created_entry(&self, path: PathBuf, mut entry: Entry) -> io::Result<Entry> {
         self.backing_attributes(&self.core.upper_path(&path), &mut entry.attr)?;
         entry.attr_flags &= !fuse::ATTR_SUBMOUNT;
-        let inode = self.allocate_inode(path.clone());
-        if entry.attr.st_mode & libc::S_IFMT == libc::S_IFREG {
-            self.bind_upper(&path, inode, &entry.attr);
-        }
+        let inode = self.publish_created_inode(&path, &entry.attr);
         entry.inode = inode;
         entry.attr.st_ino = inode as _;
-        self.acquire_guest_lookup(inode);
         Ok(entry)
     }
 
@@ -2387,6 +2411,14 @@ impl OverlayFs {
         // OverlayCore reports host errno; passthrough already reports Linux
         // errno. Convert only at the core boundary, never the whole request.
         self.core.copy_up(path).map_err(linux_error)?;
+        self.writable_inner_settled(ctx, path)
+    }
+
+    /// Passthrough resolution for a path whose fence drained and copy-up
+    /// settled earlier in the same exclusive admission: only the inner inode
+    /// and the regular-file upper binding remain. Re-fencing and re-copying
+    /// would repeat identical host work for every metadata-only setattr.
+    fn writable_inner_settled(&self, ctx: Context, path: &Path) -> io::Result<u64> {
         let entry = self.inner_entry(Layer(0), path, ctx)?;
         if entry.attr.st_mode & libc::S_IFMT == libc::S_IFREG {
             let inode = self.nodes.lock().unwrap().by_path.get(path).copied();
@@ -3603,6 +3635,8 @@ impl FileSystem for OverlayFs {
         } else {
             None
         };
+        // prepare_metadata_change settled the copy-up under this exclusive
+        // admission; skip the repeated fence and copy_up of writable_inner.
         let requested = attr;
         #[cfg(target_os = "linux")]
         let mut native_valid = valid;
@@ -3653,7 +3687,7 @@ impl FileSystem for OverlayFs {
                 }
             }
         }
-        let inner = self.writable_inner(ctx, &path)?;
+        let inner = self.writable_inner_settled(ctx, &path)?;
         let result = self.layers[0].setattr(ctx, inner, native_attr, None, native_valid);
         if inner != fuse::ROOT_ID {
             self.layers[0].forget(ctx, inner, 1);
