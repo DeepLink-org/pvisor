@@ -1768,11 +1768,22 @@ fn create_release_forget_cycles_do_not_leak_host_descriptors() {
     // dentry references — otherwise the runner hits RLIMIT_NOFILE and the
     // guest sees EMFILE while barely holding any descriptors itself.
     #[cfg(target_os = "linux")]
-    fn descriptor_count() -> usize {
-        std::fs::read_dir("/proc/self/fd").unwrap().count()
+    fn descriptor_count(root: &std::path::Path) -> usize {
+        // Count only descriptors under this sandbox's own tree: sibling tests
+        // in the same process open and close unrelated tempdirs concurrently,
+        // and a process-wide count turns their churn into false leaks.
+        std::fs::read_dir("/proc/self/fd")
+            .unwrap()
+            .filter_map(|entry| {
+                let path = entry.unwrap().path();
+                std::fs::read_link(&path)
+                    .ok()
+                    .filter(|target| target.starts_with(root))
+            })
+            .count()
     }
     #[cfg(not(target_os = "linux"))]
-    fn descriptor_count() -> usize {
+    fn descriptor_count(_root: &std::path::Path) -> usize {
         0
     }
 
@@ -1791,7 +1802,7 @@ fn create_release_forget_cycles_do_not_leak_host_descriptors() {
 
     // Warm up every lazily-created service descriptor, then measure.
     for round in 0..2 {
-        let before = descriptor_count();
+        let before = descriptor_count(root.path());
         for i in 0..64 {
             let mut create = fuse::CreateIn {
                 flags: (libc::O_WRONLY | libc::O_CREAT) as u32,
@@ -1821,7 +1832,7 @@ fn create_release_forget_cycles_do_not_leak_host_descriptors() {
                 fuse::ForgetIn { nlookup: 1 }.as_slice(),
             );
         }
-        let after = descriptor_count();
+        let after = descriptor_count(root.path());
         if after > before + 4 {
             #[cfg(target_os = "linux")]
             for entry in std::fs::read_dir("/proc/self/fd").unwrap() {
