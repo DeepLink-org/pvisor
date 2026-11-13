@@ -14,6 +14,7 @@ pub mod sys;
 pub use core::{
     BackingIdentity, BackingResolution, DirectoryEntry, LayerMutability, OPAQUE_NAME,
     OVERRIDE_STAT_XATTR, OverlayCore, OverlayLayout, PRIVATE_BACKING_XATTR, PreparedCopyUp,
+    VIRTUAL_NODE_XATTR,
     PreparedCopyUps, ROOT_METADATA_NAME, Resolved, ResolvedMetadata,
     STORED_FUSEOVERLAYFS_XATTR_PREFIX, STORED_OVERLAY_XATTR_PREFIX, WHITEOUT_PREFIX,
     fingerprint_at, guest_overlay_xattr_name, is_opaque_directory, is_private_metadata_xattr,

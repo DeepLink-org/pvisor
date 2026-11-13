@@ -989,6 +989,61 @@ struct DirectoryNamesCache {
     version: u64,
 }
 
+/// A device node recorded in the private `user.pvisor.virtual_node` attribute
+/// of a host-safe placeholder regular file, encoded `<c|b>:<major>:<minor>`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct VirtualNode {
+    block: bool,
+    major: u32,
+    minor: u32,
+}
+
+impl VirtualNode {
+    fn encode(self) -> String {
+        format!(
+            "{}:{}:{}",
+            if self.block { 'b' } else { 'c' },
+            self.major,
+            self.minor
+        )
+    }
+
+    fn decode(bytes: &[u8]) -> Option<Self> {
+        let mut parts = std::str::from_utf8(bytes).ok()?.split(':');
+        let block = match parts.next()? {
+            "c" => false,
+            "b" => true,
+            _ => return None,
+        };
+        let major = parts.next()?.parse().ok()?;
+        let minor = parts.next()?.parse().ok()?;
+        parts.next().is_none().then_some(Self {
+            block,
+            major,
+            minor,
+        })
+    }
+
+    fn mode_bits(self) -> u32 {
+        if self.block {
+            libc::S_IFBLK
+        } else {
+            libc::S_IFCHR
+        }
+    }
+
+    fn rdev(self) -> u64 {
+        // GNU makedev layout; libc does not expose the helper on musl.
+        let major = self.major as u64;
+        let minor = self.minor as u64;
+        (minor & 0xff) | ((major & 0xfff) << 8) | ((minor & !0xff) << 12) | ((major & !0xfff) << 32)
+    }
+}
+
+fn is_virtual_node_xattr(name: &CStr) -> bool {
+    name.to_bytes() == pvisor_overlay_core::VIRTUAL_NODE_XATTR.as_bytes()
+}
+
 pub struct OverlayFs {
     profile: pvisor_overlay_core::profile::Profile,
     // Structural namespace and metadata changes (rename, unlink, rmdir, link,
@@ -2424,6 +2479,16 @@ impl OverlayFs {
                 }
             }
         }
+        #[cfg(target_os = "linux")]
+        if remote.is_none() {
+            // Virtual device nodes are placeholder regular files; project the
+            // recorded type and numbers so the guest sees the device it
+            // created. One attribute read per reply, ENODATA fast path.
+            if let Some(node) = self.virtual_node(path) {
+                attr.st_mode = (attr.st_mode & !libc::S_IFMT) | node.mode_bits();
+                attr.st_rdev = node.rdev() as _;
+            }
+        }
         Ok(())
     }
 
@@ -2574,13 +2639,29 @@ impl OverlayFs {
             publication_version = Some(cache.version);
             self.profile.add("directory_names_cache_misses", 1);
         }
-        let (names, types): (Vec<_>, Vec<_>) = self
+        let (names, mut types): (Vec<_>, Vec<_>) = self
             .core
             .directory_candidates(path)
             .map_err(linux_error)?
             .into_iter()
             .map(|(name, type_)| (name.as_bytes().to_vec(), type_))
             .unzip();
+        #[cfg(target_os = "linux")]
+        for (name, type_) in names.iter().zip(types.iter_mut()) {
+            // Virtual device placeholders are physical regular files; plain
+            // readdir reports their projected type from the private record.
+            if *type_ == libc::DT_REG as u32 {
+                if let Some(node) = self
+                    .virtual_node(&self.core.upper_path(&path.join(OsStr::from_bytes(name.as_slice()))))
+                {
+                    *type_ = if node.block {
+                        libc::DT_BLK as u32
+                    } else {
+                        libc::DT_CHR as u32
+                    };
+                }
+            }
+        }
         let snapshot = DirectoryNames {
             path: path.to_owned(),
             names: Arc::new(names),
@@ -2697,18 +2778,20 @@ impl OverlayFs {
     /// Create a guest overlayfs whiteout (char device 0,0) at `path` in the
     /// writable upper layer. Follows the MKNOD path so Core records the
     /// absence preimage and clears any outer `.wh.` marker that the preceding
-    /// rename left at the old name; the guest sees the same real char node it
+    /// rename left at the old name; the guest sees the same char node it
     /// would see on a native overlayfs upperdir.
     fn create_guest_whiteout(&self, ctx: Context, path: &Path) -> io::Result<Entry> {
         let (upper_parent, upper_name) = self.upper_parent(ctx, path)?;
-        let created = self.layers[0].mknod(
+        let created = self.create_virtual_node(
             ctx,
+            path,
             upper_parent,
             &upper_name,
-            backend::FileType::CharDevice.mode() | 0o600,
-            0,
-            0,
-            Extensions::default(),
+            VirtualNode {
+                block: false,
+                major: 0,
+                minor: 0,
+            },
         );
         if upper_parent != fuse::ROOT_ID {
             self.layers[0].forget(ctx, upper_parent, 1);
@@ -2716,6 +2799,62 @@ impl OverlayFs {
         let created = created?;
         self.layers[0].forget(ctx, created.inode, 1);
         self.created_entry(path.to_path_buf(), created)
+    }
+
+    /// Create the host-safe representation of a guest device node. The
+    /// `upper_parent`/`prepare_create` admission has already run; this only
+    /// replaces the physical `mknod` (which host security policies commonly
+    /// deny to sandbox processes for whiteout devices) with a placeholder
+    /// regular file carrying the private record. Guests stat and list device
+    /// nodes but never open them, so the projected placeholder preserves
+    /// every observable semantic.
+    fn create_virtual_node(
+        &self,
+        ctx: Context,
+        path: &Path,
+        upper_parent: u64,
+        upper_name: &CStr,
+        node: VirtualNode,
+    ) -> io::Result<Entry> {
+        let (created, handle, _) = self.layers[0].create(
+            ctx,
+            upper_parent,
+            upper_name,
+            backend::FileType::RegularFile.mode() | 0o600,
+            false,
+            (libc::O_WRONLY | libc::O_EXCL) as u32,
+            0,
+            Extensions::default(),
+        )?;
+        if let Some(handle) = handle {
+            self.layers[0].release(
+                ctx,
+                created.inode,
+                (libc::O_WRONLY | libc::O_EXCL) as u32,
+                handle,
+                false,
+                false,
+                None,
+            )?;
+        }
+        pvisor_overlay_core::sys::set_xattr(
+            &self.core.upper_path(path),
+            OsStr::new(pvisor_overlay_core::VIRTUAL_NODE_XATTR),
+            node.encode().as_bytes(),
+            0,
+        )
+        .map_err(linux_error)?;
+        Ok(created)
+    }
+
+    /// The virtual device recorded at `path`, if any.
+    fn virtual_node(&self, path: &Path) -> Option<VirtualNode> {
+        pvisor_overlay_core::sys::get_xattr(
+            path,
+            OsStr::new(pvisor_overlay_core::VIRTUAL_NODE_XATTR),
+        )
+        .ok()
+        .and_then(|bytes| VirtualNode::decode(&bytes))
     }
 
     fn allocate_handle(&self, handle: Handle) -> u64 {
@@ -4045,41 +4184,67 @@ impl FileSystem for OverlayFs {
         #[cfg(target_os = "macos")]
         let (native_ctx, native_mode, native_umask) = (ctx, mode, umask);
         let (upper_parent, upper_name) = self.upper_parent(ctx, &path)?;
-        let created = self.layers[0].mknod(
-            native_ctx,
-            upper_parent,
-            &upper_name,
-            native_mode,
-            rdev,
-            native_umask,
-            extensions,
-        );
-        #[cfg(target_os = "linux")]
-        let created = created.and_then(|created| {
-            if let Some(parent_attr) = virtual_parent {
-                let gid = if parent_attr.st_mode & libc::S_ISGID != 0 {
-                    parent_attr.st_gid
-                } else {
-                    ctx.gid
-                };
-                let guest_mode = (created.attr.st_mode & libc::S_IFMT) | (mode & !umask & 0o7777);
-                let mut identity = created.attr;
-                identity.st_uid = ctx.uid;
-                identity.st_gid = gid;
-                identity.st_mode = guest_mode;
-                if let Err(error) =
-                    self.store_private_identity(&self.core.upper_path(&path), &identity)
-                {
-                    // No guest lookup has been published. Do not leave a
-                    // host-owned node behind after essential metadata failed.
-                    let _ = self.layers[0].unlink(native_ctx, upper_parent, &upper_name);
-                    self.layers[0].forget(ctx, created.inode, 1);
-                    return Err(linux_error(error));
-                }
-            }
-            Ok(created)
-        });
-        if upper_parent != fuse::ROOT_ID {
+        // Guest whiteouts (char 0,0, written by docker overlay2 stores) become
+        // host-safe placeholder files; hosts commonly deny mknod of whiteout
+        // devices to sandbox processes. All other device numbers keep the
+        // real passthrough so opened devices behave natively. The virtual
+        // parent path never applies to a whiteout: it only matches regular
+        // files and sockets, not char devices.
+        #[allow(clippy::useless_conversion)] // mode_t differs by platform
+        let guest_whiteout =
+            mode & u32::from(libc::S_IFMT) == u32::from(libc::S_IFCHR) && rdev == 0;
+        let created = if guest_whiteout {
+            self.create_virtual_node(
+                ctx,
+                &path,
+                upper_parent,
+                &upper_name,
+                VirtualNode {
+                    block: false,
+                    major: 0,
+                    minor: 0,
+                },
+            )
+        } else {
+            self.layers[0]
+                .mknod(
+                    native_ctx,
+                    upper_parent,
+                    &upper_name,
+                    native_mode,
+                    rdev,
+                    native_umask,
+                    extensions,
+                )
+                .and_then(|created| {
+                    #[cfg(target_os = "linux")]
+                    if let Some(parent_attr) = virtual_parent {
+                        let gid = if parent_attr.st_mode & libc::S_ISGID != 0 {
+                            parent_attr.st_gid
+                        } else {
+                            ctx.gid
+                        };
+                        let guest_mode =
+                            (created.attr.st_mode & libc::S_IFMT) | (mode & !umask & 0o7777);
+                        let mut identity = created.attr;
+                        identity.st_uid = ctx.uid;
+                        identity.st_gid = gid;
+                        identity.st_mode = guest_mode;
+                        if let Err(error) =
+                            self.store_private_identity(&self.core.upper_path(&path), &identity)
+                        {
+                            // No guest lookup has been published. Do not leave a
+                            // host-owned node behind after essential metadata failed.
+                            let _ = self.layers[0].unlink(native_ctx, upper_parent, &upper_name);
+                            self.layers[0].forget(ctx, created.inode, 1);
+                            return Err(linux_error(error));
+                        }
+                    }
+                    #[cfg(target_os = "macos")]
+                    let _ = &virtual_parent;
+                    Ok(created)
+                })
+        };        if upper_parent != fuse::ROOT_ID {
             self.layers[0].forget(ctx, upper_parent, 1);
         }
         let created = created?;
@@ -4668,6 +4833,11 @@ impl FileSystem for OverlayFs {
             // guest write could forge nested-overlay control state.
             return Err(io::Error::from_raw_os_error(libc::EPERM));
         }
+        if is_virtual_node_xattr(name) {
+            // The device-projection record is server-private; a direct guest
+            // write could forge device nodes the host forbids.
+            return Err(io::Error::from_raw_os_error(libc::EPERM));
+        }
         let stored = stored_overlay_xattr(name);
         let effective = stored.as_deref().unwrap_or(name);
         if self.virtual_metadata
@@ -4705,6 +4875,9 @@ impl FileSystem for OverlayFs {
         // completed-write visibility invariant.
         let _operation = self.read_operation()?;
         if pvisor_overlay_core::is_stored_overlay_xattr(OsStr::from_bytes(name.to_bytes())) {
+            return Err(super::super::linux_errno::enodata());
+        }
+        if is_virtual_node_xattr(name) {
             return Err(super::super::linux_errno::enodata());
         }
         let stored = stored_overlay_xattr(name);
@@ -4756,7 +4929,10 @@ impl FileSystem for OverlayFs {
                     {
                         continue;
                     }
-                    if self.rejects_native_acl(name.as_bytes()) {
+                    if self.rejects_native_acl(name.as_bytes())
+                        || name.as_encoded_bytes()
+                            == pvisor_overlay_core::VIRTUAL_NODE_XATTR.as_bytes()
+                    {
                         continue;
                     }
                     if let Some(guest) = pvisor_overlay_core::guest_overlay_xattr_name(name) {
@@ -4787,6 +4963,9 @@ impl FileSystem for OverlayFs {
     fn removexattr(&self, ctx: Context, inode: u64, name: &CStr) -> io::Result<()> {
         let (_operation, path) = self.write_inode_operation(inode)?;
         if pvisor_overlay_core::is_stored_overlay_xattr(OsStr::from_bytes(name.to_bytes())) {
+            return Err(io::Error::from_raw_os_error(libc::EPERM));
+        }
+        if is_virtual_node_xattr(name) {
             return Err(io::Error::from_raw_os_error(libc::EPERM));
         }
         let stored = stored_overlay_xattr(name);
@@ -4938,7 +5117,8 @@ impl FileSystem for OverlayFs {
                     DirEntry {
                         ino: inode,
                         offset: (index + 1) as u64,
-                        type_: Self::dtype(backing.entry.metadata.mode()),
+                        // The projected mode carries virtual device types.
+                        type_: Self::dtype(entry.attr.st_mode),
                         name,
                     },
                     entry,
