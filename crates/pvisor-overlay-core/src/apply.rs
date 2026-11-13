@@ -4632,7 +4632,6 @@ mod tests {
         crate::sys::set_xattr(
             path,
             OsStr::new(crate::OVERRIDE_STAT_XATTR),
-            OsStr::new(crate::VIRTUAL_NODE_XATTR),
             format!("{uid}:{gid}:{mode:o}").as_bytes(),
             0,
         )
@@ -4803,10 +4802,10 @@ mod tests {
                     (expected.uid, expected.gid, expected.mode)
                 );
                 for name in [
-                crate::PRIVATE_BACKING_XATTR,
-                crate::OVERRIDE_STAT_XATTR,
-                crate::VIRTUAL_NODE_XATTR,
-            ] {
+                    crate::PRIVATE_BACKING_XATTR,
+                    crate::OVERRIDE_STAT_XATTR,
+                    crate::VIRTUAL_NODE_XATTR,
+                ] {
                     assert_eq!(
                         crate::sys::get_xattr(&path, OsStr::new(name)).unwrap(),
                         crate::sys::get_xattr(&source, OsStr::new(name)).unwrap()
@@ -4831,7 +4830,6 @@ mod tests {
             crate::sys::set_xattr(
                 &corrupt,
                 OsStr::new(crate::OVERRIDE_STAT_XATTR),
-            OsStr::new(crate::VIRTUAL_NODE_XATTR),
                 b"invalid",
                 0,
             )
@@ -4882,7 +4880,6 @@ mod tests {
         crate::sys::set_xattr(
             &record.upper.path().join("modified"),
             OsStr::new(crate::OVERRIDE_STAT_XATTR),
-            OsStr::new(crate::VIRTUAL_NODE_XATTR),
             b"invalid",
             0,
         )

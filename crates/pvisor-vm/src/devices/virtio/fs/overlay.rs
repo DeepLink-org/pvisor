@@ -1024,9 +1024,9 @@ impl VirtualNode {
 
     fn mode_bits(self) -> u32 {
         if self.block {
-            libc::S_IFBLK
+            libc::S_IFBLK as u32
         } else {
-            libc::S_IFCHR
+            libc::S_IFCHR as u32
         }
     }
 
@@ -2462,7 +2462,9 @@ impl OverlayFs {
             // recorded type and numbers so the guest sees the device it
             // created. One attribute read per reply, ENODATA fast path.
             if let Some(node) = self.virtual_node(path) {
-                attr.st_mode = (attr.st_mode & !libc::S_IFMT) | node.mode_bits();
+                #[allow(clippy::unnecessary_cast)] // mode_t differs by platform
+                let mode = attr.st_mode as u32;
+                attr.st_mode = ((mode & !libc::S_IFMT) | node.mode_bits()) as _;
                 attr.st_rdev = node.rdev() as _;
             }
         }
@@ -2576,7 +2578,7 @@ impl OverlayFs {
             publication_version = Some(cache.version);
             self.profile.add("directory_names_cache_misses", 1);
         }
-        let (names, mut types): (Vec<_>, Vec<_>) = self
+        let (names, mut types): (Vec<Vec<u8>>, Vec<u32>) = self
             .core
             .directory_candidates(path)
             .map_err(linux_error)?
@@ -4111,7 +4113,7 @@ impl FileSystem for OverlayFs {
         // host-safe placeholder files; hosts commonly deny mknod of whiteout
         // devices to sandbox processes. All other device numbers keep the
         // real passthrough so opened devices behave natively.
-        let created = if mode & libc::S_IFMT == libc::S_IFCHR && rdev == 0 {
+        let created = if mode & (libc::S_IFMT as u32) == (libc::S_IFCHR as u32) && rdev == 0 {
             self.create_virtual_node(
                 ctx,
                 &path,
@@ -4989,7 +4991,7 @@ impl FileSystem for OverlayFs {
                         ino: inode,
                         offset: (index + 1) as u64,
                         // The projected mode carries virtual device types.
-                        type_: Self::dtype(entry.attr.st_mode),
+                        type_: Self::dtype(entry.attr.st_mode as u32),
                         name,
                     },
                     entry,
