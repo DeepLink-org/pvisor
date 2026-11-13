@@ -1162,6 +1162,8 @@ Design: 负载、对照、控制变量与有效样本判据。
 
 ### B-SWE-RESIDENT-ENG：真实 SWE 工具与模型等待期间的 VM 资源 {#b-swe-resident-eng}
 
+- **Concurrent-controller diagnostics:** `replay/resource_sampler.py` and `replay/wait_timing.py` provide bounded blocking sampling, cancellation draining and wait attribution; opt-in engineering helpers only. See `replay/README.md` and `replay/sampling-evidence.json`. No new public benchmark claim or measurement entry.
+
 - **Model-free single-task adapter:** `replay/workload.py` reuses normalized command/wait semantics with current pVisor CLI and optional AgentENV transports. See `replay/README.md` for initialization, evaluator classification and create-through-cleanup timing. This is engineering-only tooling, not a replacement for B-REPLAY native context recovery, a prepared density campaign, or evidence for historical offload gains. It does not change the unprepared `agent/swe_resident.json` measurement/publication entry.
 
 - **JSON 入口状态：** 未准备 [agent/swe_resident.json](agent/swe_resident.json)（拒绝测量）。

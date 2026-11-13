@@ -1,0 +1,351 @@
+--- uksm/controller.py.before
++++ uksm/controller.py.after
+@@ -1,3 +1,6 @@
++from wait_timing import measured_wait, monitor_loop
++from resource_sampler import ResourceSampler, collect_to_log
++SAMPLER = None
+ from admission import reserve_start, admission_blocked, mark_ready, RESTORE_WAITING, CAP
+ import asyncio
+ import json
+@@ -45,23 +48,32 @@
+         await asyncio.gather(task, return_exceptions=True)
+         raise
+
++def collect_vm(record, group_name):
++    row = dict(unix_ns=time.time_ns(), monotonic_ns=time.monotonic_ns(),
++               groups={}, vmm_smaps_rollup={})
++    if record and alive(record):
++        row['groups'][group_name] = metrics(pathlib.Path(record['cgroup']))
++        try:
++            row['vmm_smaps_rollup'][str(record['pid'])] = pathlib.Path(
++                '/proc', str(record['pid']), 'smaps_rollup').read_text()
++        except FileNotFoundError:
++            row['sampling_process_disappeared'] = True
++    return row
++
+ async def sample_vm(backend, out, group_name):
+-    with (out/'host-resources.jsonl').open('x') as log:
+-        (out/'host-resources.jsonl').chmod(0o644)
+-        while True:
+-            row = dict(unix_ns=time.time_ns(), monotonic_ns=time.monotonic_ns(),
+-                       groups={}, vmm_smaps_rollup={})
+-            if backend.record and alive(backend.record):
+-                record = backend.record
+-                row['groups'][group_name] = metrics(pathlib.Path(record['cgroup']))
+-                try:
+-                    row['vmm_smaps_rollup'][str(record['pid'])] = pathlib.Path(
+-                        '/proc', str(record['pid']), 'smaps_rollup').read_text()
+-                except FileNotFoundError:
+-                    pass
+-            log.write(json.dumps(row)+'\n')
+-            log.flush()
+-            await asyncio.sleep(.5)
++    path = out/'host-resources.jsonl'
++    # Fresh output directory is owned by this job. Never overwrite old samples.
++    with path.open('x'):
++        path.chmod(0o644)
++    due = time.monotonic_ns()
++    while True:
++        record = dict(backend.record) if backend.record else None
++        submitted = time.monotonic_ns()
++        await SAMPLER.read(collect_to_log, collect_vm, record, group_name,
++                           path, submitted, due)
++        # Preserve previous completion-to-next-sample interval. No catch-up burst.
++        due = time.monotonic_ns()+500_000_000
++        await asyncio.sleep(.5)
+
+ async def job(plan, item, binding, template, arrival, smoke=False):
+     out = BASE/('smoke' if smoke else 'tasks')/item['name']
+@@ -77,6 +89,12 @@
+             (out/'operations.jsonl').chmod(0o644)
+             log.write(json.dumps(dict(op=op, phase=phase, unix_ns=time.time_ns(),
+                                       monotonic_ns=time.monotonic_ns(), **extra))+'\n')
++
++    def wait_event(op, phase, **extra):
++        with (out/'wait-details.jsonl').open('a') as log:
++            (out/'wait-details.jsonl').chmod(0o644)
++            log.write(json.dumps(dict(op=op, phase=phase, unix_ns=time.time_ns(),
++                                     monotonic_ns=time.monotonic_ns(), **extra))+'\n')
+
+     async def command(text, timeout=180):
+         row = await call(backend.run, text, timeout)
+@@ -117,9 +135,7 @@
+         for index, step in enumerate(steps):
+             wait = 'wait-'+str(index)
+             event(wait, 'begin', planned_seconds=step['wait_before_s'])
+-            await call(backend.enter_wait)
+-            await asyncio.sleep(step['wait_before_s'])
+-            await call(backend.leave_wait)
++            await measured_wait(backend, step['wait_before_s'], wait, call, wait_event)
+             event(wait, 'end')
+             if step['skip']:
+                 continue
+@@ -146,6 +162,16 @@
+         error = exc
+         result['error'] = traceback.format_exc()
+     finally:
++        observer.cancel()
++        observed = (await asyncio.gather(observer, return_exceptions=True))[0]
++        if isinstance(observed, BaseException) and not isinstance(observed, asyncio.CancelledError):
++            error = error or observed
++            result['sampling_error'] = repr(observed)
++        try:
++            SAMPLER.check()
++        except Exception as exc:
++            error = error or exc
++            result['sampling_error'] = repr(exc)
+         try:
+             event('vm-stop','begin')
+             await call(backend.stop)
+@@ -156,8 +182,6 @@
+         except BaseException as exc:
+             error = error or exc
+             result['cleanup_error'] = traceback.format_exc()
+-        observer.cancel()
+-        await asyncio.gather(observer, return_exceptions=True)
+         save(out/'result.json',result)
+     if error:
+         raise error
+@@ -194,7 +218,7 @@
+                         except Exception as exc:
+                             failures.append(dict(name=name,error=repr(exc)))
+                         del active[name]
+-                row = host_sample()
++                row = await SAMPLER.read(host_sample)
+                 events = dict(line.split() for line in row['slice']['memory.events'].splitlines())
+                 if int(events['oom_kill']) or int(row['slice']['memory.swap.current']):
+                     raise RuntimeError('Experiment slice reported OOM kill or swap usage')
+@@ -229,7 +253,7 @@
+     while True:
+         await asyncio.sleep(1)
+         if mode!='offload':continue
+-        row=host_sample();memory=int(row['slice']['memory.current'])
++        row=await SAMPLER.read(host_sample);memory=int(row['slice']['memory.current'])
+         progress=json.loads((BASE/'progress.json').read_text()) if (BASE/'progress.json').exists() else {}
+         high = memory>=POLICY["offload_high_fraction"]*CAP or (high and memory>POLICY["offload_low_fraction"]*CAP)
+         blocked=(progress.get('queued',0)>0 and admission_blocked()) or RESTORE_WAITING.is_set()
+@@ -238,7 +262,7 @@
+             victims=[b for b in LIVE.values() if b.waiting and not b.offloaded and not b.closed][:16]
+         if victims:await asyncio.gather(*(call(b.offload) for b in victims))
+
+-async def supervise():
++async def supervise_workload():
+     task=asyncio.current_task()
+     def request_stop():STOP.set();task.cancel()
+     asyncio.get_running_loop().add_signal_handler(signal.SIGTERM,request_stop)
+@@ -261,6 +285,21 @@
+                                          mounts=mounts, workspaces=[str(p) for p in workspaces]))
+         assert safe, 'pVisor resources remain'
+
++async def supervise():
++    global SAMPLER
++    async with ResourceSampler(workers=4) as sampler:
++        SAMPLER = sampler
++        monitor = asyncio.create_task(monitor_loop(sampler, BASE/'event-loop-lag.jsonl'))
++        try:
++            await supervise_workload()
++        finally:
++            monitor.cancel()
++            observed = (await asyncio.gather(monitor, return_exceptions=True))[0]
++            SAMPLER = None
++            if isinstance(observed, BaseException) and not isinstance(observed, asyncio.CancelledError):
++                raise observed
++            sampler.check()
++
+ if __name__=='__main__':
+     try:
+         asyncio.run(supervise())
+--- uksm/backend.py.before
++++ uksm/backend.py.after
+@@ -128,7 +128,9 @@
+     self.checked('kill -STOP '+str(self.sampler))
+     from sampler_pause import wait_stopped
+     wait_stopped(lambda:self.g.read('/proc/'+str(self.sampler)+'/stat'),self.sampler_starttime)
+-   self.clean();self.waiting=True;self.event('safe-wait')
++   if MODE=='offload':self.clean()
++   self.waiting=True
++   self.event('safe-wait' if MODE=='offload' else 'sampler-paused', offload_safety_checked=MODE=='offload')
+  def leave_wait(self):
+   with self.lock:
+    if self.uncertain:raise RuntimeError('Native control outcome uncertain; no tool continuation')
+@@ -139,6 +141,7 @@
+    if self.waiting and self.sampler:self.checked('kill -CONT '+str(self.sampler))
+    self.waiting=False
+  def offload(self,forced=False):
++  if MODE!='offload':raise RuntimeError('Offload disabled for this run')
+   with self.lock:
+    if not self.waiting or self.offloaded or self.closed:return False
+    self.native('offload');self.offloaded=True
+--- agentenv/controller.py.before
++++ agentenv/controller.py.after
+@@ -1,3 +1,6 @@
++from wait_timing import measured_wait, monitor_loop
++from resource_sampler import ResourceSampler, collect_to_log
++SAMPLER = None
+ from admission import reserve_start, mark_ready
+ from scheduler_client import STOP
+ import concurrent.futures
+@@ -45,22 +48,32 @@
+         await asyncio.gather(task, return_exceptions=True)
+         raise
+
++def collect_vm(record, group_name):
++    row = dict(unix_ns=time.time_ns(), monotonic_ns=time.monotonic_ns(),
++               groups={}, vmm_smaps_rollup={})
++    if record and alive(record):
++        row['groups'][group_name] = metrics(pathlib.Path(record['cgroup']))
++        try:
++            row['vmm_smaps_rollup'][str(record['pid'])] = pathlib.Path(
++                '/proc', str(record['pid']), 'smaps_rollup').read_text()
++        except FileNotFoundError:
++            row['sampling_process_disappeared'] = True
++    return row
++
+ async def sample_vm(backend, out, group_name):
+-    with (out/'host-resources.jsonl').open('x') as log:
+-        while True:
+-            row = dict(unix_ns=time.time_ns(), monotonic_ns=time.monotonic_ns(),
+-                       groups={}, vmm_smaps_rollup={})
+-            if backend.record and alive(backend.record):
+-                record = backend.record
+-                row['groups'][group_name] = metrics(pathlib.Path(record['cgroup']))
+-                try:
+-                    row['vmm_smaps_rollup'][str(record['pid'])] = pathlib.Path(
+-                        '/proc', str(record['pid']), 'smaps_rollup').read_text()
+-                except FileNotFoundError:
+-                    pass
+-            log.write(json.dumps(row)+'\n')
+-            log.flush()
+-            await asyncio.sleep(.5)
++    path = out/'host-resources.jsonl'
++    # Fresh output directory is owned by this job. Never overwrite old samples.
++    with path.open('x'):
++        path.chmod(0o644)
++    due = time.monotonic_ns()
++    while True:
++        record = dict(backend.record) if backend.record else None
++        submitted = time.monotonic_ns()
++        await SAMPLER.read(collect_to_log, collect_vm, record, group_name,
++                           path, submitted, due)
++        # Preserve previous completion-to-next-sample interval. No catch-up burst.
++        due = time.monotonic_ns()+500_000_000
++        await asyncio.sleep(.5)
+
+ async def job(plan, item, binding, template, arrival, smoke=False):
+     out = BASE/('smoke' if smoke else 'tasks')/item['name']
+@@ -75,6 +88,12 @@
+         with (out/'operations.jsonl').open('a') as log:
+             log.write(json.dumps(dict(op=op, phase=phase, unix_ns=time.time_ns(),
+                                       monotonic_ns=time.monotonic_ns(), **extra))+'\n')
++
++    def wait_event(op, phase, **extra):
++        with (out/'wait-details.jsonl').open('a') as log:
++            (out/'wait-details.jsonl').chmod(0o644)
++            log.write(json.dumps(dict(op=op, phase=phase, unix_ns=time.time_ns(),
++                                     monotonic_ns=time.monotonic_ns(), **extra))+'\n')
+
+     async def command(text, timeout=180):
+         row = await call(backend.run, text, timeout)
+@@ -116,9 +135,7 @@
+         for index, step in enumerate(steps):
+             wait = 'wait-'+str(index)
+             event(wait, 'begin', planned_seconds=step['wait_before_s'])
+-            await call(backend.enter_wait)
+-            await asyncio.sleep(step['wait_before_s'])
+-            await call(backend.leave_wait)
++            await measured_wait(backend, step['wait_before_s'], wait, call, wait_event)
+             event(wait, 'end')
+             if step['skip']:
+                 continue
+@@ -145,6 +162,16 @@
+         error = exc
+         result['error'] = traceback.format_exc()
+     finally:
++        observer.cancel()
++        observed = (await asyncio.gather(observer, return_exceptions=True))[0]
++        if isinstance(observed, BaseException) and not isinstance(observed, asyncio.CancelledError):
++            error = error or observed
++            result['sampling_error'] = repr(observed)
++        try:
++            SAMPLER.check()
++        except Exception as exc:
++            error = error or exc
++            result['sampling_error'] = repr(exc)
+         try:
+             event('vm-stop','begin')
+             await call(backend.stop)
+@@ -155,8 +182,6 @@
+         except BaseException as exc:
+             error = error or exc
+             result['cleanup_error'] = traceback.format_exc()
+-        observer.cancel()
+-        await asyncio.gather(observer, return_exceptions=True)
+         save(out/'result.json',result)
+     if error:
+         raise error
+@@ -198,7 +223,7 @@
+                         except Exception as exc:
+                             failures.append(dict(name=name,error=repr(exc)))
+                         del active[name]
+-                row = host_sample()
++                row = await SAMPLER.read(host_sample)
+                 events = dict(line.split() for line in row['slice']['memory.events'].splitlines())
+                 if int(events['oom_kill']) or int(row['slice']['memory.swap.current']):
+                     raise RuntimeError('Experiment slice reported OOM kill or swap usage')
+@@ -230,7 +255,7 @@
+             task.cancel()
+         await asyncio.gather(*active.values(),return_exceptions=True)
+
+-async def supervise():
++async def supervise_workload():
+     asyncio.get_running_loop().set_default_executor(concurrent.futures.ThreadPoolExecutor(max_workers=192))
+     task=asyncio.current_task()
+     asyncio.get_running_loop().add_signal_handler(signal.SIGTERM,task.cancel)
+@@ -247,6 +272,21 @@
+                                          mounts=mounts, workspaces=[str(p) for p in workspaces]))
+         assert safe, 'AgentENV resources remain'
+
++async def supervise():
++    global SAMPLER
++    async with ResourceSampler(workers=4) as sampler:
++        SAMPLER = sampler
++        monitor = asyncio.create_task(monitor_loop(sampler, BASE/'event-loop-lag.jsonl'))
++        try:
++            await supervise_workload()
++        finally:
++            monitor.cancel()
++            observed = (await asyncio.gather(monitor, return_exceptions=True))[0]
++            SAMPLER = None
++            if isinstance(observed, BaseException) and not isinstance(observed, asyncio.CancelledError):
++                raise observed
++            sampler.check()
++
+ if __name__=='__main__':
+     try:
+         asyncio.run(supervise())
+--- agentenv/backend.py.before
++++ agentenv/backend.py.after
+@@ -2,7 +2,7 @@
+ import base64,fcntl,json,pathlib,shlex,sys,time,urllib.request,threading
+ D=pathlib.Path(__file__).resolve().parent
+ sys.path.insert(0,str(D/'sdk/site-packages'))
+-STATE=pathlib.Path('/var/lib/agentenv-waves-30s-20261112')
++STATE=pathlib.Path('/var/lib/agentenv-sampler48-20261112')
+ ENDPOINT='http://127.0.0.1:18350'
+ def save(p,x):
+  p.write_text(json.dumps(x,indent=2));p.chmod(0o644)
+@@ -32,12 +32,12 @@
+    new=set((STATE/'launch-records').glob('*.json'))-before
+    assert len(new)==1,'Cannot identify new VM'
+    self.record=json.loads(next(iter(new)).read_text());assert alive(self.record)
+-   g=pathlib.Path(self.record['cgroup']);assert g.parent.name=='agentenv-waves-30s-20261112.service'
++   g=pathlib.Path(self.record['cgroup']);assert g.parent.name=='agentenv-sampler48-20261112.service'
+    for p in [g,*g.parents]:
+     for n in ['cpu.max','memory.max','memory.high']:
+      f=p/n
+      if f.exists():
+-      expected = str(json.loads((D/'policy.json').read_text())['batch_memory_cap_gib']*2**30) if n=='memory.max' and p.name=='agentenvwaves30s20261112.slice' else 'max'
++      expected = str(json.loads((D/'policy.json').read_text())['batch_memory_cap_gib']*2**30) if n=='memory.max' and p.name=='agentenvsampler4820261112.slice' else 'max'
+       if n=='memory.max' and p==g:expected=str(int(5.25*2**30))
+       assert f.read_text().split()[0]==expected,str(f)
+    check_contract(g,self.out/'resource-contract.json')
