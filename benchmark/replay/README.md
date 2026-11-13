@@ -159,8 +159,15 @@ from resource_sampler import ResourceSampler, collect_to_log
 
 async with ResourceSampler(workers=4) as sampler:
     # Each observer awaits a read, then sleeps 0.5s; never queue catch-up reads.
-    await sampler.read(collect_to_log, collect_vm, owned_record, group_name,
-                       log_path, submitted_monotonic_ns, due_monotonic_ns)
+    await sampler.read(
+        collect_to_log,
+        collect_vm,
+        owned_record,
+        group_name,
+        log_path,
+        submitted_monotonic_ns,
+        due_monotonic_ns,
+    )
     sampler.check()
 ```
 
