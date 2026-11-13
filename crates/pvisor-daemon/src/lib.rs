@@ -4,4 +4,6 @@ pub mod runtime;
 
 pub mod memory_pool;
 
+pub mod pressure;
+
 mod native;

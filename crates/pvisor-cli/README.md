@@ -48,7 +48,10 @@ state is read through immutable accessors, and native checkpoint deletion delega
 to the runtime service with the same request-local admission hooks. VM launch options are assembled through
 `VmExecutionInputs`; RunSpec's existing wire encoding remains compatible, while
 runtime admission validates the typed inputs before starting any drivers. Each running Session owns its recorded private control socket; stopped Session operations
-run directly in the caller. Embedded execution publishes the same discovery record.
+run directly in the caller. Stopped `status` and `review` retain exclusive Session
+locking and owner validation without rewriting the diagnostic lock owner or syncing
+it on acquisition/release. Required completion reconciliation remains durable.
+Embedded execution publishes the same discovery record.
 Execution-state fork may branch a running source from an immutable checkpoint.
 The runtime's execution-operation lease fences source identity, checkpoint
 references and request replay; the source retains its live Execution lease.
@@ -410,6 +413,23 @@ native host-root workflow. It writes only isolated temporary fixtures and never
 applies to the real host root.
 
 ## Docker command profile (experimental)
+
+On Linux x86-64, `pvisor run --managed-memory IMAGE ...` opts the ordinary
+container VM into host-only native offload/resume controls with private raw RAM
+backing. This does not start a pressure scheduler, import templates, change OCI
+cache lookup, or trigger offload merely because a VM is idle. A cooperative
+replay owner reserves/binds it through `pvisor-daemon pressure-serve`, reports
+safe waits and obtains a request permit before using the existing guest exec
+channel. Do not mix direct interactive/exec/background access with those waits.
+The flag conflicts with `--memory-pool`, `-M` and `--shared-kernel-base`; omission
+preserves ordinary main startup. The default backing remains uncompressed. Add
+`--managed-memory-compression` with `--managed-memory` to opt into private
+compressed backing (Linux/FUSE). The container configuration retains this choice;
+unsupported FUSE setup fails without fallback. Offload acknowledgement includes
+compressed publication and Resume is serialized after it. This is live backing,
+not a checkpoint, and does not enable shared RAM or automatic idle offload.
+See the runtime's independent-container contract and validation limits.
+
 
 `pvisor run` creates a container, optionally with Linux staged binds as described
 below; `spawn` retains its existing Session stage/review/apply semantics.

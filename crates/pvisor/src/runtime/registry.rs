@@ -127,17 +127,30 @@ impl SessionDirectoryLock {
     /// links/foreign ownership. Refuses a live owner, busy lock, unknown schema,
     /// or residual diagnostic owner whose process has not died. No retries.
     pub fn acquire(record: &RunRecord, operation: &str) -> anyhow::Result<Self> {
-        Self::lock(record, operation, false)
+        Self::lock(record, operation, false, true)
     }
 
     /// Exclusively observe an existing Session lock without creating it, updating its
     /// owner record, syncing or truncating it on release. Missing locks fail closed.
     /// Uses the same inode, validation and lock order as mutation ownership.
     pub fn observe_existing(record: &RunRecord) -> anyhow::Result<Self> {
-        Self::lock(record, "apply-preview", true)
+        Self::lock(record, "apply-preview", true, false)
     }
 
-    fn lock(record: &RunRecord, operation: &str, observe: bool) -> anyhow::Result<Self> {
+    /// Exclusively lock a status/review operation without publishing or clearing a
+    /// diagnostic owner record. May initialize a missing legacy lock inode; retains
+    /// the same identity, live-owner, residual-owner and flock checks as mutation.
+    /// Durable reconciliation, if needed, remains the caller's responsibility.
+    pub fn acquire_read(record: &RunRecord) -> anyhow::Result<Self> {
+        Self::lock(record, "read", true, true)
+    }
+
+    fn lock(
+        record: &RunRecord,
+        operation: &str,
+        observe: bool,
+        create: bool,
+    ) -> anyhow::Result<Self> {
         use std::io::{Read, Seek, Write};
         use std::os::unix::fs::OpenOptionsExt;
         const PROTOCOL: &str = "pvisor-session-lock-1";
@@ -156,15 +169,15 @@ impl SessionDirectoryLock {
         let path = root.join("session.lock");
         let mut file = OpenOptions::new()
             .read(true)
-            .write(!observe)
-            .create(!observe)
+            .write(!observe || create)
+            .create(create)
             .truncate(false)
             .mode(0o600)
             .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK)
             .open(&path)
             .with_context(|| {
                 format!(
-                    "open existing Session operation lock {} (preview never initializes locks)",
+                    "open Session operation lock {} (preview never initializes locks)",
                     path.display()
                 )
             })?;
@@ -1090,10 +1103,12 @@ mod tests {
         drop(SessionDirectoryLock::acquire(&run, "review").unwrap());
         fs::hard_link(&path, stage.join("alias.lock")).unwrap();
         assert!(SessionDirectoryLock::acquire(&run, "apply").is_err());
+        assert!(SessionDirectoryLock::acquire_read(&run).is_err());
         fs::remove_file(stage.join("alias.lock")).unwrap();
         fs::remove_file(&path).unwrap();
         std::os::unix::fs::symlink(stage.join("run.json"), &path).unwrap();
         assert!(SessionDirectoryLock::acquire(&run, "drop").is_err());
+        assert!(SessionDirectoryLock::acquire_read(&run).is_err());
         fs::remove_file(&path).unwrap();
         let mut unknown = run.clone();
         unknown.schema_version = 99;
@@ -1206,11 +1221,13 @@ mod tests {
             assert!(SessionDirectoryLock::acquire(&run, "contender").is_err());
             assert!(RunLease::acquire(&stage).is_err());
         }
+        drop(SessionDirectoryLock::acquire_read(&run).unwrap());
         assert_eq!(owner_before, snapshot(&path));
         assert_eq!(lease_before, snapshot(&lease_path));
         // Observation retains legacy owner validation, without clearing bad bytes.
         fs::write(&path, b"unknown-owner").unwrap();
         assert!(SessionDirectoryLock::observe_existing(&run).is_err());
+        assert!(SessionDirectoryLock::acquire_read(&run).is_err());
         assert_eq!(fs::read(&path).unwrap(), b"unknown-owner");
         fs::remove_file(&lease_path).unwrap();
         std::os::unix::fs::symlink(&path, &lease_path).unwrap();
@@ -1235,6 +1252,7 @@ mod tests {
         };
         fs::write(&path, serde_json::to_vec(&owner).unwrap()).unwrap();
         assert!(SessionDirectoryLock::acquire(&run, "drop").is_err());
+        assert!(SessionDirectoryLock::acquire_read(&run).is_err());
         let mut child = std::process::Command::new("/bin/sh")
             .args(["-c", "exit 0"])
             .spawn()

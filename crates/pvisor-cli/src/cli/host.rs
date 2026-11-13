@@ -87,6 +87,9 @@ impl SessionCommand {
         if matches!(self, Self::Fork(args) if args.restores_execution()) {
             return Ok(None);
         }
+        if matches!(self, Self::Status(_) | Self::Review(_)) {
+            return pvisor::SessionDirectoryLock::acquire_read(record).map(Some);
+        }
         pvisor::SessionDirectoryLock::acquire(record, self.operation()).map(Some)
     }
     fn selection(&self) -> Option<(Option<&Path>, &Path)> {
@@ -270,6 +273,61 @@ mod tests {
             }
         }
         drop(owner);
+    }
+
+    #[test]
+    fn status_review_lock_keeps_owner_bytes_and_metadata_but_excludes_mutation() {
+        use std::os::unix::fs::MetadataExt;
+        let root = tempfile::tempdir().unwrap();
+        let record: pvisor::RunRecord = serde_json::from_value(serde_json::json!({
+            "schema_version":1, "run_id":"source", "session_id":"source",
+            "agent":"probe", "pid":0, "command":["probe"], "state":"completed",
+            "started_at_unix_ms":1, "finished_at_unix_ms":2,
+            "storage":root.path(), "network":{}, "gateway_listen":null, "overlay":null
+        }))
+        .unwrap();
+        record.write().unwrap();
+        let path = root.path().join("session.lock");
+        // Legacy Sessions need not have initialized this inode yet.
+        let first = pvisor::SessionDirectoryLock::acquire_read(&record).unwrap();
+        assert!(pvisor::SessionDirectoryLock::acquire(&record, "apply").is_err());
+        drop(first);
+        let before = std::fs::metadata(&path).unwrap();
+        for verb in ["status", "review"] {
+            let parsed = super::super::Cli::try_parse_from(["pvisor", verb, "source"]).unwrap();
+            let command = match parsed.command {
+                super::super::Command::Status(args) => SessionCommand::Status(args.args),
+                super::super::Command::Review(args) => SessionCommand::Review(args),
+                _ => unreachable!(),
+            };
+            let guard = command.lock_source(&record).unwrap().unwrap();
+            assert!(pvisor::SessionDirectoryLock::acquire(&record, "drop").is_err());
+            drop(guard);
+            let after = std::fs::metadata(&path).unwrap();
+            assert!(std::fs::read(&path).unwrap().is_empty());
+            assert_eq!(
+                (
+                    before.ino(),
+                    before.mtime(),
+                    before.mtime_nsec(),
+                    before.ctime(),
+                    before.ctime_nsec()
+                ),
+                (
+                    after.ino(),
+                    after.mtime(),
+                    after.mtime_nsec(),
+                    after.ctime(),
+                    after.ctime_nsec()
+                )
+            );
+        }
+        // Mutating callers still publish their owner and prevent reads.
+        let guard = pvisor::SessionDirectoryLock::acquire(&record, "apply").unwrap();
+        assert!(!std::fs::read(&path).unwrap().is_empty());
+        assert!(pvisor::SessionDirectoryLock::acquire_read(&record).is_err());
+        drop(guard);
+        assert!(std::fs::read(&path).unwrap().is_empty());
     }
 
     #[test]

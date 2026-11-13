@@ -469,7 +469,11 @@ Checkpoint restoration/fork starts a new owner directly. Durable operations take
 exclusive `flock` on the Session root's `session.lock`: same UID, `0600`, one hard link,
 no symlink. Its diagnostic record names the lock protocol, PID and operation;
 unknown disk schemas refuse mutation. Different compatible binaries share this
-lock. Residual lock metadata is cleared only after its process has died and no
+lock. Stopped status/review use `SessionDirectoryLock::acquire_read`: the same
+exclusive lock and owner validation, but no diagnostic owner write, truncate or
+fsync. A missing legacy lock inode may be initialized. Existing residual owner
+bytes are preserved, and required completion reconciliation remains durable.
+Residual lock metadata is cleared only after its process has died and no
 valid live owner remains. Apply/drop refuse a valid owner that still holds stage;
 the Execution lease remains an additional fence. Read-only inspect uses the stage's
 ordered lower-mutability declaration; absent or rebound declarations use Mutable.
@@ -1089,6 +1093,52 @@ OpenSandbox/E2B core flows; see its README for exact coverage. Full SDK conforma
 and production density remain unvalidated.
 
 ## Independent container VM lifecycle
+
+`docker::Create.managed_memory` is an explicit Linux x86-64 opt-in for a
+cooperative pressure scheduler. It preserves ordinary OCI image resolution,
+V2 caches, overlays, guest exec and the existing per-container owner. It adds a
+private raw (uncompressed) RAM file and a same-UID host-only control socket for
+that exact container ID/launch generation. `docker::managed` exposes Status,
+Offload-with-existing-backing and Resume using the existing `VmControl`; it
+neither invents a Session nor converts the image to a template. Omission leaves
+the ordinary anonymous-RAM launch unchanged. Pools/shared kernel RAM conflict.
+The private backing is an unlinked SSD file retained by live VM descriptors;
+process exit releases it even without Rust destructors. Its `/proc/PID/fd/N`
+report is a live diagnostic locator, never a reusable checkpoint. The owner
+retires the generation control socket only after reaping its VMM.
+
+`Create.managed_memory_compression` additionally selects the existing compressed
+RAM store and a private FUSE mapping; it requires `managed_memory` and host FUSE
+support. This is default-off, persists in container configuration, and does not
+change OCI image preparation or scheduler policy. Setup failure is explicit:
+there is no raw-backing fallback. After native CPU/device writeback and reclaim,
+the same serialized control worker drains the logical backing and commits the
+compressed generation before acknowledging Offloaded. Resume cannot overtake
+publication; a drain/commit error fences subsequent controls until teardown.
+The native RAM report precedes compression and is not a measurement of net host
+memory saved. Compression CPU, staging I/O and page-cache charges remain real costs.
+
+Compressed staging, immutable layers and the FUSE mount are private to this launch
+under the instance directory. The existing container owner retains the FUSE mount outside the VMM process,
+which uses `_exit`. A private inherited socketpair fences generation/inode handoff
+and compressed publication; no new image or launch path is introduced. The owner
+reaps the VMM before joining publication and releasing the mount. A child-channel
+disconnect does not release backing ownership. This does not turn stalled native
+I/O into successful teardown.
+Normal destruction unmounts before removing storage; forced process death can leave
+mounts/files which the external owner must independently audit. No durable checkpoint
+or crash recovery is provided. Unit storage/protocol tests are not Linux KVM/FUSE
+acceptance or evidence of improved density; qualify this opt-in before deployment.
+
+This is cooperative: an external owner must reserve memory before launch, bind
+the exact generation and cgroup, declare only process-clean safe waits, and keep
+all tool/attachment/background traffic behind scheduler permits. No timer or
+automatic enrollment is enabled by the flag alone. Native Resume acknowledgement
+is not guest-service readiness: check the existing guest control channel before
+dispatch. Control loss or native failure is uncertain, with no automatic retry;
+retain capacity until independent VM/cgroup/mount teardown. Ordinary direct
+`exec` must not bypass the cooperative owner during a managed wait.
+
 
 On Apple Silicon, a daemon started with `--memory-pool-mode physical-pages`
 provides native 16 KiB physical slots through the same pool socket. The runner
