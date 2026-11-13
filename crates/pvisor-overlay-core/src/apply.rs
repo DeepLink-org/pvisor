@@ -4632,7 +4632,6 @@ mod tests {
         crate::sys::set_xattr(
             path,
             OsStr::new(crate::OVERRIDE_STAT_XATTR),
-            OsStr::new(crate::VIRTUAL_NODE_XATTR),
             format!("{uid}:{gid}:{mode:o}").as_bytes(),
             0,
         )
@@ -4781,6 +4780,15 @@ mod tests {
             crate::sys::set_xattr(&path, OsStr::new(crate::PRIVATE_BACKING_XATTR), b"1", 0)
                 .unwrap();
         }
+        // A virtual whiteout placeholder record must survive the raw snapshot
+        // exactly like the other private controls.
+        crate::sys::set_xattr(
+            &upper.join("directory/file"),
+            OsStr::new(crate::VIRTUAL_NODE_XATTR),
+            b"c:0:0",
+            0,
+        )
+        .unwrap();
         let record = late_conflict_record(&tmp.path().join("unused-target"), &upper);
         let snapshot = tmp.path().join("snapshot");
         let restored = tmp.path().join("restored");
@@ -4803,13 +4811,15 @@ mod tests {
                     (expected.uid, expected.gid, expected.mode)
                 );
                 for name in [
-                crate::PRIVATE_BACKING_XATTR,
-                crate::OVERRIDE_STAT_XATTR,
-                crate::VIRTUAL_NODE_XATTR,
-            ] {
+                    crate::PRIVATE_BACKING_XATTR,
+                    crate::OVERRIDE_STAT_XATTR,
+                    crate::VIRTUAL_NODE_XATTR,
+                ] {
+                    // Presence and value must match; paths without the record
+                    // stay absent on both sides.
                     assert_eq!(
-                        crate::sys::get_xattr(&path, OsStr::new(name)).unwrap(),
-                        crate::sys::get_xattr(&source, OsStr::new(name)).unwrap()
+                        crate::sys::get_xattr(&path, OsStr::new(name)).ok(),
+                        crate::sys::get_xattr(&source, OsStr::new(name)).ok()
                     );
                 }
             }
@@ -4831,7 +4841,6 @@ mod tests {
             crate::sys::set_xattr(
                 &corrupt,
                 OsStr::new(crate::OVERRIDE_STAT_XATTR),
-            OsStr::new(crate::VIRTUAL_NODE_XATTR),
                 b"invalid",
                 0,
             )
@@ -4882,7 +4891,6 @@ mod tests {
         crate::sys::set_xattr(
             &record.upper.path().join("modified"),
             OsStr::new(crate::OVERRIDE_STAT_XATTR),
-            OsStr::new(crate::VIRTUAL_NODE_XATTR),
             b"invalid",
             0,
         )

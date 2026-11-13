@@ -366,6 +366,8 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Mutex;
 
+    use crate::devices::virtio::linux_errno::linux_errno_raw;
+
     #[derive(Default)]
     struct FakeFs {
         names: Vec<&'static [u8]>,
@@ -567,7 +569,8 @@ mod tests {
             ..Default::default()
         };
         let error = read_directory_page(&fs, context(), 1, 0, 1 << 20).unwrap_err();
-        assert_eq!(error.raw_os_error(), Some(libc::ENOSYS));
+        // The fallback is pre-mapped to the Linux wire errno.
+        assert_eq!(error.raw_os_error(), Some(linux_errno_raw(libc::ENOSYS)));
         assert!(fs.lookup_refs.lock().unwrap().is_empty());
         assert_eq!(
             fs.opened.load(Ordering::Relaxed),
@@ -599,7 +602,8 @@ mod tests {
         };
         let header = size_of::<ReadIndexOut>();
         let error = read_directory_page(&fs, context(), 1, 0, (header + 8) as u32).unwrap_err();
-        assert_eq!(error.raw_os_error(), Some(libc::ENOSYS));
+        // The fallback is pre-mapped to the Linux wire errno.
+        assert_eq!(error.raw_os_error(), Some(linux_errno_raw(libc::ENOSYS)));
     }
 
     #[test]
@@ -826,7 +830,8 @@ mod tests {
             }
             .as_slice(),
         );
-        assert_eq!(reply.error, -(libc::ENOSYS as i32));
+        // The wire carries the Linux errno regardless of host platform.
+        assert_eq!(reply.error, -linux_errno_raw(libc::ENOSYS));
     }
 
     #[test]

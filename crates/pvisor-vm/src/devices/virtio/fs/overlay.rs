@@ -1024,11 +1024,12 @@ impl VirtualNode {
         })
     }
 
+    #[allow(clippy::useless_conversion)] // mode_t differs by platform
     fn mode_bits(self) -> u32 {
         if self.block {
-            libc::S_IFBLK
+            u32::from(libc::S_IFBLK)
         } else {
-            libc::S_IFCHR
+            u32::from(libc::S_IFCHR)
         }
     }
 
@@ -2479,13 +2480,18 @@ impl OverlayFs {
                 }
             }
         }
-        #[cfg(target_os = "linux")]
         if remote.is_none() {
             // Virtual device nodes are placeholder regular files; project the
             // recorded type and numbers so the guest sees the device it
             // created. One attribute read per reply, ENODATA fast path.
             if let Some(node) = self.virtual_node(path) {
-                attr.st_mode = (attr.st_mode & !libc::S_IFMT) | node.mode_bits();
+                #[allow(clippy::useless_conversion)] // mode_t differs by platform
+                let projected = (u32::from(attr.st_mode) & !u32::from(libc::S_IFMT))
+                    | node.mode_bits();
+                // mode_t differs by platform; the narrowing store is exact.
+                #[allow(clippy::unnecessary_cast)]
+                let narrowed = projected as _;
+                attr.st_mode = narrowed;
                 attr.st_rdev = node.rdev() as _;
             }
         }
@@ -2639,14 +2645,14 @@ impl OverlayFs {
             publication_version = Some(cache.version);
             self.profile.add("directory_names_cache_misses", 1);
         }
-        let (names, mut types): (Vec<_>, Vec<_>) = self
+        let (names, types): (Vec<Vec<u8>>, Vec<u32>) = self
             .core
             .directory_candidates(path)
             .map_err(linux_error)?
             .into_iter()
             .map(|(name, type_)| (name.as_bytes().to_vec(), type_))
             .unzip();
-        #[cfg(target_os = "linux")]
+        let mut types = types;
         for (name, type_) in names.iter().zip(types.iter_mut()) {
             // Virtual device placeholders are physical regular files; plain
             // readdir reports their projected type from the private record.
@@ -4240,8 +4246,6 @@ impl FileSystem for OverlayFs {
                             return Err(linux_error(error));
                         }
                     }
-                    #[cfg(target_os = "macos")]
-                    let _ = &virtual_parent;
                     Ok(created)
                 })
         };        if upper_parent != fuse::ROOT_ID {
@@ -5118,7 +5122,10 @@ impl FileSystem for OverlayFs {
                         ino: inode,
                         offset: (index + 1) as u64,
                         // The projected mode carries virtual device types.
-                        type_: Self::dtype(entry.attr.st_mode),
+                        type_: Self::dtype({
+                            #[allow(clippy::useless_conversion)] // mode_t differs by platform
+                            u32::from(entry.attr.st_mode)
+                        }),
                         name,
                     },
                     entry,

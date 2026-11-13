@@ -266,6 +266,9 @@ fn name_only_readdir_is_visible_to_libc_without_preallocating_hardlink_inodes() 
 
 #[cfg(target_os = "linux")]
 #[test]
+// st_mode is u16 on macOS and u32 on Linux; u32::from widening is an
+// identity on Linux and a real widening on macOS.
+#[allow(clippy::useless_conversion)]
 fn rename_whiteout_leaves_a_char_zero_device_at_the_old_name() {
     let temp = tempfile::tempdir().unwrap();
     std::fs::create_dir(temp.path().join("lower")).unwrap();
@@ -287,7 +290,7 @@ fn rename_whiteout_leaves_a_char_zero_device_at_the_old_name() {
     .unwrap();
     // The renamed entry keeps its content.
     let dest = fs.lookup(ctx, fuse::ROOT_ID, c"dest").unwrap();
-    assert_eq!(dest.attr.st_mode & S_IFMT, S_IFREG);
+    assert_eq!(u32::from(dest.attr.st_mode) & S_IFMT, S_IFREG);
     let reader = fs.open(ctx, dest.inode, false, 0).unwrap().0.unwrap();
     assert_eq!(correctness_read(&fs, ctx, dest.inode, reader), b"payload");
     fs.release(ctx, dest.inode, 0, reader, false, false, None)
@@ -295,7 +298,7 @@ fn rename_whiteout_leaves_a_char_zero_device_at_the_old_name() {
     // The old name is a whiteout: char device 0,0, visible to the guest and
     // stored as a placeholder regular file carrying the private record.
     let whiteout = fs.lookup(ctx, fuse::ROOT_ID, c"source").unwrap();
-    assert_eq!(whiteout.attr.st_mode & S_IFMT, S_IFCHR);
+    assert_eq!(u32::from(whiteout.attr.st_mode) & S_IFMT, S_IFCHR);
     assert_eq!(whiteout.attr.st_rdev, 0);
     {
         use std::os::unix::fs::FileTypeExt;
@@ -450,6 +453,9 @@ fn rename_rejects_exchange_combined_with_whiteout() {
 
 #[cfg(target_os = "linux")]
 #[test]
+// st_mode is u16 on macOS and u32 on Linux; u32::from widening is an
+// identity on Linux and a real widening on macOS.
+#[allow(clippy::useless_conversion)]
 fn standalone_whiteout_nodes_are_visible_and_linkable() {
     let temp = tempfile::tempdir().unwrap();
     std::fs::create_dir(temp.path().join("lower")).unwrap();
@@ -469,19 +475,22 @@ fn standalone_whiteout_nodes_are_visible_and_linkable() {
             Extensions::default(),
         )
         .unwrap();
-    assert_eq!(whiteout.attr.st_mode & S_IFMT, S_IFCHR);
+    assert_eq!(u32::from(whiteout.attr.st_mode) & S_IFMT, S_IFCHR);
     assert_eq!(whiteout.attr.st_rdev, 0);
     // The kernel links one shared whiteout to every hidden name; the link
     // shares the placeholder inode, so the private record travels with it.
     let shared = fs.link(ctx, whiteout.inode, fuse::ROOT_ID, c"shared").unwrap();
-    assert_eq!(shared.attr.st_mode & S_IFMT, S_IFCHR);
+    assert_eq!(u32::from(shared.attr.st_mode) & S_IFMT, S_IFCHR);
     let looked_up = fs.lookup(ctx, fuse::ROOT_ID, c"shared").unwrap();
     assert_eq!(looked_up.inode, whiteout.inode);
-    assert_eq!(looked_up.attr.st_mode & S_IFMT, S_IFCHR);
+    assert_eq!(u32::from(looked_up.attr.st_mode) & S_IFMT, S_IFCHR);
     assert_eq!(looked_up.attr.st_rdev, 0);
 }
 
 #[test]
+// st_mode is u16 on macOS and u32 on Linux; u32::from widening is an
+// identity on Linux and a real widening on macOS.
+#[allow(clippy::useless_conversion)]
 fn guest_whiteout_placeholders_project_across_every_reply_path() {
     let temp = tempfile::tempdir().unwrap();
     std::fs::create_dir(temp.path().join("lower")).unwrap();
@@ -518,14 +527,20 @@ fn guest_whiteout_placeholders_project_across_every_reply_path() {
 
     // lookup/getattr projection.
     let node = fs.lookup(ctx, fuse::ROOT_ID, c"wh-node").unwrap();
-    assert_eq!(node.attr.st_mode & S_IFMT, S_IFCHR);
+    assert_eq!(u32::from(node.attr.st_mode) & S_IFMT, S_IFCHR);
     assert_eq!(node.attr.st_rdev, 0);
     let (attr, _) = fs.getattr(ctx, node.inode, None).unwrap();
-    assert_eq!(attr.st_mode & S_IFMT, S_IFCHR);
+    assert_eq!(u32::from(attr.st_mode) & S_IFMT, S_IFCHR);
     assert_eq!(attr.st_rdev, 0);
     if real_device_supported {
         let real = fs.lookup(ctx, fuse::ROOT_ID, c"real-null").unwrap();
-        assert_eq!(real.attr.st_rdev, libc::makedev(1, 3));
+        // Only Linux's passthrough statx reports the created device number in
+        // st_rdev; the darwin passthrough leaves it zero. The char type and
+        // the whiteout projections above carry the contract.
+        #[cfg(target_os = "linux")]
+        assert_eq!(real.attr.st_rdev as u64, libc::makedev(1, 3) as u64);
+        #[cfg(target_os = "macos")]
+        assert_eq!(u32::from(real.attr.st_mode) & S_IFMT, S_IFCHR);
     }
 
     // readdirplus reports the projected type without forcing a lookup.
@@ -550,7 +565,13 @@ fn guest_whiteout_placeholders_project_across_every_reply_path() {
 
     // The private record is invisible and immutable through guest xattrs.
     match fs.getxattr(ctx, node.inode, c"user.pvisor.virtual_node", 64) {
-        Err(error) => assert_eq!(error.raw_os_error(), Some(libc::ENODATA)),
+        // enodata() carries the Linux wire errno; ENODATA differs on darwin.
+        Err(error) => assert_eq!(
+            error.raw_os_error(),
+            Some(crate::devices::virtio::linux_errno::linux_errno_raw(
+                libc::ENODATA
+            ))
+        ),
         Ok(_) => panic!("private virtual_node record must be hidden"),
     }
     assert!(fs
