@@ -8,6 +8,13 @@
 // guest accounts for that count when it instantiates the inode. A later page
 // must not be treated as proof that a missing name does not exist; only the
 // `COMPLETE` flag does that. Network and I/O errors stay errors.
+//
+// Anything this page cannot represent (notably backing directory cookies
+// with bit 62/63 set, which hashed host directories such as ext4 dx produce
+// routinely) must fall back with `ENOSYS`: the guest kernel treats that as
+// "directory image unsupported" per open directory handle and retries with
+// ordinary READDIR. Never surface `EOVERFLOW` to the guest for a directory
+// page — the guest would retry the identical request forever.
 
 use std::io;
 use std::mem::size_of;
@@ -26,6 +33,14 @@ pub const GUEST_META_VALID: Duration = Duration::from_secs(24 * 60 * 60);
 // Keep backing cookies stable when one-shot synthetic names disappear.
 // Bit 62 leaves the merged cookie representable as a guest signed loff_t.
 const BACKING_COOKIE_BASE: u64 = 1 << 62;
+
+/// The directory image cannot describe this directory; the guest must fall
+/// back to ordinary READDIR for it. `ENOSYS` is the pre-existing signal the
+/// guest kernel caches per directory handle (and per inode for lookup
+/// prefetch), so this degrades without error propagation or retries.
+fn image_fallback() -> io::Error {
+    linux_error(io::Error::from_raw_os_error(libc::ENOSYS))
+}
 
 /// One directory page, ready to place after the FUSE output header.
 #[derive(Debug, PartialEq, Eq)]
@@ -130,7 +145,7 @@ fn collect_page<F: FileSystem>(
                 continue;
             }
             if attrs.inode >= BACKING_COOKIE_BASE {
-                return Err(linux_error(io::Error::from_raw_os_error(libc::EOVERFLOW)));
+                return Err(image_fallback());
             }
             let entry = DirEntry {
                 ino: attrs.attr.st_ino,
@@ -178,7 +193,10 @@ fn collect_page<F: FileSystem>(
                     return Ok(1);
                 }
                 if entry.offset >= BACKING_COOKIE_BASE {
-                    return Err(linux_error(io::Error::from_raw_os_error(libc::EOVERFLOW)));
+                    // A backing cookie outside the representable range cannot
+                    // be merged; the whole directory falls back to ordinary
+                    // READDIR instead of failing every enumeration.
+                    return Err(image_fallback());
                 }
                 entry.offset += BACKING_COOKIE_BASE;
                 let inode = attrs.inode;
@@ -201,7 +219,9 @@ fn collect_page<F: FileSystem>(
         )?;
     }
     if stopped && !wrote {
-        return Err(linux_error(io::Error::from_raw_os_error(libc::EOVERFLOW)));
+        // Nothing fit the guest's budget. Nothing actually overflowed; fall
+        // back rather than surfacing a misleading error the guest would retry.
+        return Err(image_fallback());
     }
     Ok(DirectoryPage {
         next_offset: last_offset,
@@ -354,6 +374,9 @@ mod tests {
         closed: AtomicUsize,
         fail_release: Mutex<bool>,
         fail_read_after: Option<usize>,
+        /// Added to every emitted backing cookie; stands in for the large
+        /// d_off values hashed host directories (ext4 dx, ZFS, NFS) produce.
+        cookie_bias: u64,
         lookup_refs: Mutex<BTreeMap<u64, u64>>,
         forgotten: Mutex<Vec<(u64, u64)>>,
     }
@@ -429,7 +452,7 @@ mod tests {
                 let written = add_entry(
                     DirEntry {
                         ino: attr.st_ino,
-                        offset: (index as u64) + 1,
+                        offset: (index as u64) + 1 + self.cookie_bias,
                         type_: u32::from(libc::DT_REG),
                         name,
                     },
@@ -532,8 +555,55 @@ mod tests {
     }
 
     #[test]
-    fn a_mib_budget_returns_one_complete_page() {
-        let names: Vec<&[u8]> = (0..80).map(|_| b"file".as_slice()).collect();
+    fn unrepresentable_backing_cookies_fall_back_to_enosys() {
+        // Hashed host directories produce d_off values with bit 62/63 set.
+        // The directory image must fall back (ENOSYS: the guest switches this
+        // directory handle to ordinary READDIR) instead of failing with
+        // EOVERFLOW, which the guest kernel would retry byte-identically
+        // forever.
+        let fs = FakeFs {
+            names: vec![b"hashA", b"hashB"],
+            cookie_bias: 1 << 62,
+            ..Default::default()
+        };
+        let error = read_directory_page(&fs, context(), 1, 0, 1 << 20).unwrap_err();
+        assert_eq!(error.raw_os_error(), Some(libc::ENOSYS));
+        assert!(fs.lookup_refs.lock().unwrap().is_empty());
+        assert_eq!(
+            fs.opened.load(Ordering::Relaxed),
+            fs.closed.load(Ordering::Relaxed)
+        );
+    }
+
+    #[test]
+    fn boundary_backing_cookies_still_merge() {
+        // The largest representable backing cookie merges with the base and
+        // resumes cleanly; only cookies at or beyond the base fall back.
+        let fs = FakeFs {
+            names: vec![b"edge"],
+            cookie_bias: (1 << 62) - 2,
+            ..Default::default()
+        };
+        let page = read_directory_page(&fs, context(), 1, 0, 1 << 20).unwrap();
+        assert!(page.complete);
+        assert_eq!(page.next_offset, (1 << 62) - 1 + (1 << 62));
+    }
+
+    #[test]
+    fn budget_too_small_for_the_first_record_falls_back_to_enosys() {
+        // Nothing fit the guest budget: no overflow occurred, so this must
+        // also degrade to the fallback signal rather than a retriable error.
+        let fs = FakeFs {
+            names: vec![b"toolongname"],
+            ..Default::default()
+        };
+        let header = size_of::<ReadIndexOut>();
+        let error = read_directory_page(&fs, context(), 1, 0, (header + 8) as u32).unwrap_err();
+        assert_eq!(error.raw_os_error(), Some(libc::ENOSYS));
+    }
+
+    #[test]
+    fn a_mib_budget_returns_one_complete_page() {        let names: Vec<&[u8]> = (0..80).map(|_| b"file".as_slice()).collect();
         let fs = FakeFs {
             names: names.clone(),
             synthetics: Vec::new(),
@@ -664,6 +734,99 @@ mod tests {
             names.extend(record_names(&page.records).unwrap());
         }
         assert_eq!(names, vec![b"file".to_vec(); 9000]);
+    }
+
+    #[test]
+    fn readindex_fallback_reaches_the_guest_as_enosys_on_the_wire() {
+        use super::super::super::descriptor_utils::{Reader, Writer};
+        use super::super::super::queue::DescriptorChain;
+        use super::super::fuse::{
+            InHeader, InitInCompat, InitInExt, Opcode, OutHeader, ReadIn,
+        };
+        use super::super::server::Server;
+        use std::sync::{atomic::AtomicI32, Arc};
+        use vm_memory::{Bytes, GuestAddress, GuestMemoryMmap};
+
+        // The wire-level contract for D1: a directory whose backing cookies
+        // are unrepresentable must surface -ENOSYS (the per-directory
+        // fallback signal the guest kernel caches), never -EOVERFLOW.
+        let fs = FakeFs {
+            names: vec![b"hashA", b"hashB"],
+            cookie_bias: 1 << 62,
+            ..Default::default()
+        };
+        let server = Server::new(fs, true);
+        let mem = GuestMemoryMmap::from_ranges(&[(GuestAddress(0), 2 << 20)]).unwrap();
+        let request = |opcode: Opcode, payload: &[u8]| {
+            mem.write_slice(payload, GuestAddress(0x10000)).unwrap();
+            let descriptors = std::iter::once((0x10000u64, payload.len() as u32, 1u16))
+                .chain(std::iter::once((0x20000, size_of::<OutHeader>() as u32, 3)))
+                .chain((0..256).map(|i| (0x21000 + i * 4096, 4096, 3)));
+            for (i, (address, len, flags)) in descriptors.enumerate() {
+                let base = (i * 16) as u64;
+                mem.write_obj(address.to_le(), GuestAddress(base)).unwrap();
+                mem.write_obj(len.to_le(), GuestAddress(base + 8)).unwrap();
+                mem.write_obj(
+                    (if i == 257 { 2u16 } else { flags }).to_le(),
+                    GuestAddress(base + 12),
+                )
+                .unwrap();
+                mem.write_obj(((i + 1) as u16).to_le(), GuestAddress(base + 14))
+                .unwrap();
+            }
+            let chain = DescriptorChain::checked_new(&mem, GuestAddress(0), 1024, 0).unwrap();
+            server
+                .handle_message(
+                    (
+                        InHeader {
+                            opcode: opcode as u32,
+                            nodeid: 1,
+                            unique: 7,
+                            ..Default::default()
+                        },
+                        Reader::new(&mem, chain.clone()).unwrap(),
+                    ),
+                    Writer::new(&mem, chain).unwrap(),
+                    false,
+                    &None,
+                    &Arc::new(AtomicI32::new(0)),
+                    #[cfg(target_os = "macos")]
+                    &None,
+                )
+                .unwrap();
+            let header: OutHeader = mem.read_obj(GuestAddress(0x20000)).unwrap();
+            header
+        };
+        let flags = super::super::fuse::FsOptions::INIT_EXT
+            | super::super::fuse::FsOptions::MAX_PAGES
+            | super::super::fuse::FsOptions::PVISOR_META;
+        let mut init = InitInCompat {
+            major: 7,
+            minor: 42,
+            flags: flags.bits() as u32,
+            ..Default::default()
+        }
+        .as_slice()
+        .to_vec();
+        init.extend_from_slice(
+            InitInExt {
+                flags2: (flags.bits() >> 32) as u32,
+                ..Default::default()
+            }
+            .as_slice(),
+        );
+        let initialized = request(Opcode::Init, &init);
+        assert_eq!(initialized.error, 0);
+        let reply = request(
+            Opcode::ReadIndex,
+            ReadIn {
+                offset: 0,
+                size: 1 << 20,
+                ..Default::default()
+            }
+            .as_slice(),
+        );
+        assert_eq!(reply.error, -(libc::ENOSYS as i32));
     }
 
     #[test]
