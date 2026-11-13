@@ -228,11 +228,21 @@ diff --git a/fs/fuse/pvisor_meta.c b/fs/fuse/pvisor_meta.c
  	npages = budget >> PAGE_SHIFT;
  	pages = kvmalloc_array(npages, sizeof(*pages), GFP_KERNEL | __GFP_ZERO);
  	descs = kvmalloc_array(npages, sizeof(*descs), GFP_KERNEL);
-@@ -525,6 +530,7 @@
+@@ -525,6 +530,16 @@
  	if (res < 0) {
  		err = res;
- 		if (err == -ENOSYS) {
-+			WRITE_ONCE(fm->fc->pvisor_no_readindex, true);
++		/*
++		 * ENOSYS means the server has no directory image at all;
++		 * EOVERFLOW/EINVAL mean this particular directory cannot be
++		 * described by one (e.g. unrepresentable backing cookies).
++		 * Retrying a persistent error would loop forever on the same
++		 * offset: treat all three as a permanent per-directory
++		 * fallback; transient errors keep their retry semantics.
++		 */
+-		if (err == -ENOSYS) {
++		if (err == -ENOSYS || err == -EOVERFLOW || err == -EINVAL) {
++			if (err == -ENOSYS)
++				WRITE_ONCE(fm->fc->pvisor_no_readindex, true);
  			mutex_lock(&pd->lock);
  			pd->passthrough = true;
  			pvisor_clear(fm, pd);

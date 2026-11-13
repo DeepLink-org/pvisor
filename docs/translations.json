@@ -62,7 +62,7 @@
   "design/offload/disk-layout-and-schema.md": "8d86dea3b6410251e1ae2afffb6b6a056f645d2413fe5eb0754d477c6086aeb5",
   "design/offload/index.md": "f4920dd8e0a6a4b333b33bbad183afb7bfe0b01f4ecdb283beee68ea1648a278",
   "design/operations-events.md": "2385adfae42e70456e9b4a34fd8b99a679de40fc1a88b4021a59d40edf02792b",
-  "design/overlayfs.md": "8a337bd681bad9abc8bf6c02e84dda6674650e86b0469c58b474fbaee420c030",
+  "design/overlayfs.md": "57969acc959f9d24649afe807cde00f1d09ed011b70b1a042e29b41eb97aba46",
   "design/overlaynet.md": "5e01d0def9af5f26e0aa4107a2d9c6e237255a49ffade086c3f7dd13719d303e",
   "design/principles.md": "3d306f01c3d27fa3bd9ff65490b81553e6c56e960f82a5b63cb6dcb23e390a7d",
   "design/records-and-versions.md": "eabdd3505a76068ae676d669eb255ff87381972f702bfacd8c1af1ecfa4e8c65",

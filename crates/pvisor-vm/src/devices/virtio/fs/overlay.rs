@@ -10,7 +10,7 @@ use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Condvar, Mutex, RwLock};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, RwLock};
 use std::time::Duration;
 
 use pvisor_overlay_core::{
@@ -883,6 +883,44 @@ struct WriteOperation<'a> {
     _mutation: Option<std::sync::MutexGuard<'a, ()>>,
 }
 
+// Shard count for per-parent create-family admission. Small enough to stay
+// cache friendly, large enough that concurrent bulk creators (parallel
+// extractors, docker pull) rarely collide outside the same directory.
+const NAMESPACE_SHARDS: usize = 64;
+
+fn namespace_shard_index(parent: Option<&Path>) -> usize {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    std::hash::Hasher::write(
+        &mut hasher,
+        parent.unwrap_or_else(|| Path::new("/")).as_os_str().as_bytes(),
+    );
+    (std::hash::Hasher::finish(&hasher) as usize) % NAMESPACE_SHARDS
+}
+
+/// Either admission mode for the create family. The global variant keeps the
+/// historical exclusive semantics (also used whenever an experiment owns a
+/// single-lock contract); the sharded variant holds only the shared guard
+/// plus one parent-directory mutex.
+enum NamespaceOperation<'a> {
+    Global(WriteOperation<'a>),
+    Sharded(ShardedWriteOperation<'a>),
+}
+
+// The release-side invalidation must run while the shard is still held, so a
+// concurrent publication in another directory cannot install a listing that
+// survived this mutation.
+struct ShardedWriteOperation<'a> {
+    fs: &'a OverlayFs,
+    _read: std::sync::RwLockReadGuard<'a, ()>,
+    _shard: MutexGuard<'a, ()>,
+}
+
+impl Drop for ShardedWriteOperation<'_> {
+    fn drop(&mut self) {
+        self.fs.invalidate_directory_names();
+    }
+}
+
 const MAX_LOWER_DATA_OBJECTS: usize = 4096;
 
 /// No eviction: a guest may retain pages after the native FH is released.
@@ -942,18 +980,97 @@ impl DirectoryNames {
     }
 }
 
+/// Single-entry directory listing cache with the version used to keep the
+/// entry coherent while create-family mutations run under sharded admission.
+struct DirectoryNamesCache {
+    entry: Option<DirectoryNames>,
+    version: u64,
+}
+
+/// A device node recorded in the private `user.pvisor.virtual_node` attribute
+/// of a host-safe placeholder regular file, encoded `<c|b>:<major>:<minor>`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct VirtualNode {
+    block: bool,
+    major: u32,
+    minor: u32,
+}
+
+impl VirtualNode {
+    fn encode(self) -> String {
+        format!(
+            "{}:{}:{}",
+            if self.block { 'b' } else { 'c' },
+            self.major,
+            self.minor
+        )
+    }
+
+    fn decode(bytes: &[u8]) -> Option<Self> {
+        let mut parts = std::str::from_utf8(bytes).ok()?.split(':');
+        let block = match parts.next()? {
+            "c" => false,
+            "b" => true,
+            _ => return None,
+        };
+        let major = parts.next()?.parse().ok()?;
+        let minor = parts.next()?.parse().ok()?;
+        parts.next().is_none().then_some(Self {
+            block,
+            major,
+            minor,
+        })
+    }
+
+    fn mode_bits(self) -> u32 {
+        if self.block {
+            libc::S_IFBLK as u32
+        } else {
+            libc::S_IFCHR as u32
+        }
+    }
+
+    fn rdev(self) -> u64 {
+        // GNU makedev layout; libc does not expose the helper on musl.
+        let major = self.major as u64;
+        let minor = self.minor as u64;
+        (minor & 0xff) | ((major & 0xfff) << 8) | ((minor & !0xff) << 12) | ((major & !0xfff) << 32)
+    }
+}
+
+fn is_virtual_node_xattr(name: &CStr) -> bool {
+    name.to_bytes() == pvisor_overlay_core::VIRTUAL_NODE_XATTR.as_bytes()
+}
+
 pub struct OverlayFs {
     profile: pvisor_overlay_core::profile::Profile,
-    // Namespace and metadata remain serialized. Descriptor I/O admission
-    // uses the handle map and scoped fences without acquiring this guard.
+    // Structural namespace and metadata changes (rename, unlink, rmdir, link,
+    // setattr, snapshot/restore, destroy) remain serialized by the exclusive
+    // guard; the pure create family plus xattr writes admit through
+    // per-parent-directory shards while holding only the shared guard, so
+    // creations in disjoint directories overlap. Experiments with their own
+    // single-lock contracts fall back to the exclusive admission. Descriptor
+    // I/O admission uses the handle map and scoped fences without acquiring
+    // this guard.
     operation_lock: RwLock<()>,
+    // Shard mutexes keyed by parent directory path. Guard order is always
+    // operation_lock.read() -> path resolution -> shard mutex: paths only
+    // change under the exclusive guard, so a shard key stays stable while its
+    // admission is held.
+    namespace_shards: Box<[Mutex<()>]>,
     mutation_lock: Mutex<()>,
     prepared_copy_up_enabled: bool,
     logical_directory_cache_enabled: bool,
     stable_namespace_leases: HashMap<usize, backend::StableNamespaceLease>,
     logical_data_cache: bool,
     directory_names_cache_enabled: bool,
-    directory_names_cache: Mutex<Option<DirectoryNames>>,
+    // Entry plus a version under one mutex. Every mutation admission bumps
+    // and clears the entry; a sharded admission also bumps and clears at
+    // release. A publication may therefore overlap sharded mutations while
+    // holding only the shared guard: it captures the version, builds, and
+    // publishes only if the version is unchanged, so no cached listing ever
+    // survives past the release of a mutation that overlapped it.
+    directory_names_cache: Mutex<DirectoryNamesCache>,
     io_activity: Arc<IoActivity>,
     // Dropped before Core/layers. The worker owns only native object leases,
     // never guest Readers, descriptor chains, or RAM gate access.
@@ -1335,9 +1452,7 @@ impl OverlayFs {
             .map_err(|_| io::Error::from_raw_os_error(libc::EIO))?;
         // All upper namespace/type/permission changes take this lock. Clear
         // before attempting them, including operations which subsequently fail.
-        if self.directory_names_cache_enabled {
-            self.directory_names_cache.lock().unwrap().take();
-        }
+        self.invalidate_directory_names();
         let _ = self.drain_buffered_writes();
         let upper_namespace = self.core.upper_namespace_mutation();
         Ok(WriteOperation {
@@ -1345,6 +1460,103 @@ impl OverlayFs {
             _operation: operation,
             _mutation: None,
         })
+    }
+
+    // Bounded per-parent admission for the pure create family and xattr
+    // writes. Structural operations (rename, unlink, rmdir, link, setattr,
+    // create, snapshot/restore, destroy) keep the exclusive admission and
+    // therefore still exclude every sharded admission and every reader.
+    fn namespace_sharding_available(&self) -> bool {
+        // Experiments with their own single-lock contracts (prepared copy-up
+        // receipts, the Core absence-cache epoch, logical directory leases)
+        // and the guest-visible negative-entry cache all rely on the
+        // exclusive admission documented in this file and the Core README;
+        // keep that contract verbatim for them.
+        !self.prepared_copy_up_enabled
+            && !self.logical_directory_cache_enabled
+            && !self.negative_entry_cache
+            && !self.core.exclusive_upper_absence_cache_enabled()
+    }
+
+    fn lock_namespace_shard(&self, parent: Option<&Path>) -> io::Result<MutexGuard<'_, ()>> {
+        let index = namespace_shard_index(parent);
+        self.namespace_shards[index]
+            .lock()
+            .map_err(|_| io::Error::from_raw_os_error(libc::EIO))
+    }
+
+    fn invalidate_directory_names(&self) {
+        if self.directory_names_cache_enabled {
+            let mut cache = self
+                .directory_names_cache
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            cache.version += 1;
+            cache.entry = None;
+        }
+    }
+
+    /// Admission for a new name under `parent`, covering mkdir, mknod and
+    /// symlink. Returns the resolved child path together with the guard.
+    fn write_child_operation(
+        &self,
+        parent: u64,
+        name: &CStr,
+    ) -> io::Result<(NamespaceOperation<'_>, PathBuf)> {
+        if !self.namespace_sharding_available() {
+            let operation = self.write_operation()?;
+            let path = self.child(parent, name)?;
+            return Ok((NamespaceOperation::Global(operation), path));
+        }
+        let _wait = self.profile.span("operation_shard_lock_wait");
+        // Shared guard first: paths only change under the exclusive guard, so
+        // the resolved parent directory stays stable while we hold it.
+        let read = self
+            .operation_lock
+            .read()
+            .map_err(|_| io::Error::from_raw_os_error(libc::EIO))?;
+        let path = self.child(parent, name)?;
+        let _ = self.drain_buffered_writes();
+        let shard = self.lock_namespace_shard(path.parent())?;
+        self.invalidate_directory_names();
+        Ok((
+            NamespaceOperation::Sharded(ShardedWriteOperation {
+                fs: self,
+                _read: read,
+                _shard: shard,
+            }),
+            path,
+        ))
+    }
+
+    /// Admission for an xattr write on an existing inode, keyed by the
+    /// inode's parent directory.
+    fn write_inode_operation(
+        &self,
+        inode: u64,
+    ) -> io::Result<(NamespaceOperation<'_>, PathBuf)> {
+        if !self.namespace_sharding_available() {
+            let operation = self.write_operation()?;
+            let path = self.path(inode)?;
+            return Ok((NamespaceOperation::Global(operation), path));
+        }
+        let _wait = self.profile.span("operation_shard_lock_wait");
+        let read = self
+            .operation_lock
+            .read()
+            .map_err(|_| io::Error::from_raw_os_error(libc::EIO))?;
+        let path = self.path(inode)?;
+        let _ = self.drain_buffered_writes();
+        let shard = self.lock_namespace_shard(path.parent())?;
+        self.invalidate_directory_names();
+        Ok((
+            NamespaceOperation::Sharded(ShardedWriteOperation {
+                fs: self,
+                _read: read,
+                _shard: shard,
+            }),
+            path,
+        ))
     }
 
     // Caller holds the exclusive operation guard, so admission and handle
@@ -1563,13 +1775,19 @@ impl OverlayFs {
             virtual_metadata,
             profile,
             operation_lock: RwLock::new(()),
+            namespace_shards: (0..NAMESPACE_SHARDS)
+                .map(|_| Mutex::new(()))
+                .collect(),
             mutation_lock: Mutex::new(()),
             prepared_copy_up_enabled: false,
             logical_directory_cache_enabled: false,
             stable_namespace_leases: HashMap::new(),
             logical_data_cache: false,
             directory_names_cache_enabled: false,
-            directory_names_cache: Mutex::new(None),
+            directory_names_cache: Mutex::new(DirectoryNamesCache {
+                entry: None,
+                version: 0,
+            }),
             io_activity: Arc::new(IoActivity::default()),
             host_writeback: false,
             host_writeback_options: WriteBufferOptions::default(),
@@ -1618,6 +1836,34 @@ impl OverlayFs {
         }
         let inode = self.inode_alloc.next();
         nodes.insert_path(path, inode);
+        inode
+    }
+
+    /// Single-critical-section publication of a fresh creation: inode
+    /// allocation, the regular-file upper binding and the guest lookup
+    /// reference previously took the nodes lock three times in a row.
+    fn publish_created_inode(&self, path: &Path, attr: &bindings::stat64) -> u64 {
+        let mut nodes = self.nodes.lock().unwrap();
+        let inode = match nodes.by_path.get(path) {
+            Some(&inode) => inode,
+            None => {
+                let inode = self.inode_alloc.next();
+                nodes.insert_path(path.to_path_buf(), inode);
+                inode
+            }
+        };
+        if attr.st_mode & libc::S_IFMT == libc::S_IFREG {
+            if attr.st_nlink > 1 || nodes.objects_by_inode.contains_key(&inode) {
+                nodes.bind_object(inode, (0, attr.st_dev as _, attr.st_ino));
+            }
+            nodes.by_inode.insert(inode, path.to_path_buf());
+        }
+        if inode != fuse::ROOT_ID && !nodes.legacy_lookup_refs.contains(&inode) {
+            let count = nodes.lookup_refs.entry(inode).or_default();
+            *count = count
+                .checked_add(1)
+                .expect("guest lookup reference overflow");
+        }
         inode
     }
 
@@ -2164,13 +2410,9 @@ impl OverlayFs {
     fn created_entry(&self, path: PathBuf, mut entry: Entry) -> io::Result<Entry> {
         self.backing_attributes(&self.core.upper_path(&path), &mut entry.attr)?;
         entry.attr_flags &= !fuse::ATTR_SUBMOUNT;
-        let inode = self.allocate_inode(path.clone());
-        if entry.attr.st_mode & libc::S_IFMT == libc::S_IFREG {
-            self.bind_upper(&path, inode, &entry.attr);
-        }
+        let inode = self.publish_created_inode(&path, &entry.attr);
         entry.inode = inode;
         entry.attr.st_ino = inode as _;
-        self.acquire_guest_lookup(inode);
         Ok(entry)
     }
 
@@ -2212,6 +2454,18 @@ impl OverlayFs {
                     identity.mode
                 };
                 attr.st_mode = mode as _;
+            }
+        }
+        #[cfg(target_os = "linux")]
+        if remote.is_none() {
+            // Virtual device nodes are placeholder regular files; project the
+            // recorded type and numbers so the guest sees the device it
+            // created. One attribute read per reply, ENODATA fast path.
+            if let Some(node) = self.virtual_node(path) {
+                #[allow(clippy::unnecessary_cast)] // mode_t differs by platform
+                let mode = attr.st_mode as u32;
+                attr.st_mode = ((mode & !libc::S_IFMT) | node.mode_bits()) as _;
+                attr.st_rdev = node.rdev() as _;
             }
         }
         Ok(())
@@ -2300,10 +2554,18 @@ impl OverlayFs {
     }
 
     // The caller holds read_operation through handle publication. A writer
-    // cannot invalidate and then race a stale insertion into the cache.
+    // cannot invalidate and then race a stale insertion into the cache: the
+    // exclusive admission still excludes this publication, and a sharded
+    // create-family admission invalidates at both admission and release, so
+    // a publication that overlapped one cannot install its listing.
     fn directory_names(&self, path: &Path) -> io::Result<DirectoryNames> {
+        let mut publication_version = None;
         if self.directory_names_cache_enabled {
-            if let Some(cached) = self.directory_names_cache.lock().unwrap().as_ref() {
+            let cache = self
+                .directory_names_cache
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if let Some(cached) = cache.entry.as_ref() {
                 if cached.path == path {
                     self.profile.add("directory_names_cache_hits", 1);
                     return Ok(DirectoryNames {
@@ -2313,28 +2575,56 @@ impl OverlayFs {
                     });
                 }
             }
+            publication_version = Some(cache.version);
             self.profile.add("directory_names_cache_misses", 1);
         }
-        let (names, types): (Vec<_>, Vec<_>) = self
+        let (names, mut types): (Vec<Vec<u8>>, Vec<u32>) = self
             .core
             .directory_candidates(path)
             .map_err(linux_error)?
             .into_iter()
             .map(|(name, type_)| (name.as_bytes().to_vec(), type_))
             .unzip();
+        #[cfg(target_os = "linux")]
+        for (name, type_) in names.iter().zip(types.iter_mut()) {
+            // Virtual device placeholders are physical regular files; plain
+            // readdir reports their projected type from the private record.
+            if *type_ == libc::DT_REG as u32 {
+                if let Some(node) = self
+                    .virtual_node(&self.core.upper_path(&path.join(OsStr::from_bytes(name.as_slice()))))
+                {
+                    *type_ = if node.block {
+                        libc::DT_BLK as u32
+                    } else {
+                        libc::DT_CHR as u32
+                    };
+                }
+            }
+        }
         let snapshot = DirectoryNames {
             path: path.to_owned(),
             names: Arc::new(names),
             types: Arc::new(types),
         };
-        if self.directory_names_cache_enabled {
+        if let Some(expected) = publication_version {
             let bytes = snapshot.retained_bytes();
             if bytes <= MAX_DIRECTORY_NAMES_BYTES {
-                *self.directory_names_cache.lock().unwrap() = Some(DirectoryNames {
-                    path: snapshot.path.clone(),
-                    names: snapshot.names.clone(),
-                    types: snapshot.types.clone(),
-                });
+                let mut cache = self
+                    .directory_names_cache
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                if cache.version == expected {
+                    cache.entry = Some(DirectoryNames {
+                        path: snapshot.path.clone(),
+                        names: snapshot.names.clone(),
+                        types: snapshot.types.clone(),
+                    });
+                } else {
+                    // A create-family admission overlapped this build; the
+                    // snapshot may predate its host effects, so only the
+                    // uncached value goes out.
+                    self.profile.add("directory_names_cache_discarded", 1);
+                }
             } else {
                 self.profile.add("directory_names_cache_oversize", 1);
             }
@@ -2387,6 +2677,14 @@ impl OverlayFs {
         // OverlayCore reports host errno; passthrough already reports Linux
         // errno. Convert only at the core boundary, never the whole request.
         self.core.copy_up(path).map_err(linux_error)?;
+        self.writable_inner_settled(ctx, path)
+    }
+
+    /// Passthrough resolution for a path whose fence drained and copy-up
+    /// settled earlier in the same exclusive admission: only the inner inode
+    /// and the regular-file upper binding remain. Re-fencing and re-copying
+    /// would repeat identical host work for every metadata-only setattr.
+    fn writable_inner_settled(&self, ctx: Context, path: &Path) -> io::Result<u64> {
         let entry = self.inner_entry(Layer(0), path, ctx)?;
         if entry.attr.st_mode & libc::S_IFMT == libc::S_IFREG {
             let inode = self.nodes.lock().unwrap().by_path.get(path).copied();
@@ -2419,18 +2717,20 @@ impl OverlayFs {
     /// Create a guest overlayfs whiteout (char device 0,0) at `path` in the
     /// writable upper layer. Follows the MKNOD path so Core records the
     /// absence preimage and clears any outer `.wh.` marker that the preceding
-    /// rename left at the old name; the guest sees the same real char node it
+    /// rename left at the old name; the guest sees the same char node it
     /// would see on a native overlayfs upperdir.
     fn create_guest_whiteout(&self, ctx: Context, path: &Path) -> io::Result<Entry> {
         let (upper_parent, upper_name) = self.upper_parent(ctx, path)?;
-        let created = self.layers[0].mknod(
+        let created = self.create_virtual_node(
             ctx,
+            path,
             upper_parent,
             &upper_name,
-            backend::FileType::CharDevice.mode() | 0o600,
-            0,
-            0,
-            Extensions::default(),
+            VirtualNode {
+                block: false,
+                major: 0,
+                minor: 0,
+            },
         );
         if upper_parent != fuse::ROOT_ID {
             self.layers[0].forget(ctx, upper_parent, 1);
@@ -2438,6 +2738,62 @@ impl OverlayFs {
         let created = created?;
         self.layers[0].forget(ctx, created.inode, 1);
         self.created_entry(path.to_path_buf(), created)
+    }
+
+    /// Create the host-safe representation of a guest device node. The
+    /// `upper_parent`/`prepare_create` admission has already run; this only
+    /// replaces the physical `mknod` (which host security policies commonly
+    /// deny to sandbox processes for whiteout devices) with a placeholder
+    /// regular file carrying the private record. Guests stat and list device
+    /// nodes but never open them, so the projected placeholder preserves
+    /// every observable semantic.
+    fn create_virtual_node(
+        &self,
+        ctx: Context,
+        path: &Path,
+        upper_parent: u64,
+        upper_name: &CStr,
+        node: VirtualNode,
+    ) -> io::Result<Entry> {
+        let (created, handle, _) = self.layers[0].create(
+            ctx,
+            upper_parent,
+            upper_name,
+            backend::FileType::RegularFile.mode() | 0o600,
+            false,
+            (libc::O_WRONLY | libc::O_EXCL) as u32,
+            0,
+            Extensions::default(),
+        )?;
+        if let Some(handle) = handle {
+            self.layers[0].release(
+                ctx,
+                created.inode,
+                (libc::O_WRONLY | libc::O_EXCL) as u32,
+                handle,
+                false,
+                false,
+                None,
+            )?;
+        }
+        pvisor_overlay_core::sys::set_xattr(
+            &self.core.upper_path(path),
+            OsStr::new(pvisor_overlay_core::VIRTUAL_NODE_XATTR),
+            node.encode().as_bytes(),
+            0,
+        )
+        .map_err(linux_error)?;
+        Ok(created)
+    }
+
+    /// The virtual device recorded at `path`, if any.
+    fn virtual_node(&self, path: &Path) -> Option<VirtualNode> {
+        pvisor_overlay_core::sys::get_xattr(
+            path,
+            OsStr::new(pvisor_overlay_core::VIRTUAL_NODE_XATTR),
+        )
+        .ok()
+        .and_then(|bytes| VirtualNode::decode(&bytes))
     }
 
     fn allocate_handle(&self, handle: Handle) -> u64 {
@@ -3603,6 +3959,8 @@ impl FileSystem for OverlayFs {
         } else {
             None
         };
+        // prepare_metadata_change settled the copy-up under this exclusive
+        // admission; skip the repeated fence and copy_up of writable_inner.
         let requested = attr;
         #[cfg(target_os = "linux")]
         let mut native_valid = valid;
@@ -3653,7 +4011,7 @@ impl FileSystem for OverlayFs {
                 }
             }
         }
-        let inner = self.writable_inner(ctx, &path)?;
+        let inner = self.writable_inner_settled(ctx, &path)?;
         let result = self.layers[0].setattr(ctx, inner, native_attr, None, native_valid);
         if inner != fuse::ROOT_ID {
             self.layers[0].forget(ctx, inner, 1);
@@ -3707,7 +4065,10 @@ impl FileSystem for OverlayFs {
     }
 
     fn readlink(&self, ctx: Context, inode: u64) -> io::Result<Vec<u8>> {
-        let _operation = self.write_operation()?;
+        // Read-only view: the shared guard plus the drain in read_operation
+        // keeps completed writes visible without serializing against
+        // concurrent metadata mutations.
+        let _operation = self.read_operation()?;
         let path = self.path(inode)?;
         let (layer, inner) = self.observed_inner(ctx, &path)?;
         let result = self.layers[layer.0].readlink(ctx, inner);
@@ -3725,8 +4086,7 @@ impl FileSystem for OverlayFs {
         name: &CStr,
         extensions: Extensions,
     ) -> io::Result<Entry> {
-        let _operation = self.write_operation()?;
-        let path = self.child(parent, name)?;
+        let (_operation, path) = self.write_child_operation(parent, name)?;
         let (upper_parent, upper_name) = self.upper_parent(ctx, &path)?;
         let created = self.layers[0].symlink(ctx, linkname, upper_parent, &upper_name, extensions);
         if upper_parent != fuse::ROOT_ID {
@@ -3747,18 +4107,27 @@ impl FileSystem for OverlayFs {
         umask: u32,
         extensions: Extensions,
     ) -> io::Result<Entry> {
-        let _operation = self.write_operation()?;
-        let path = self.child(parent, name)?;
+        let (_operation, path) = self.write_child_operation(parent, name)?;
         let (upper_parent, upper_name) = self.upper_parent(ctx, &path)?;
-        let created = self.layers[0].mknod(
-            ctx,
-            upper_parent,
-            &upper_name,
-            mode,
-            rdev,
-            umask,
-            extensions,
-        );
+        // Guest whiteouts (char 0,0, written by docker overlay2 stores) become
+        // host-safe placeholder files; hosts commonly deny mknod of whiteout
+        // devices to sandbox processes. All other device numbers keep the
+        // real passthrough so opened devices behave natively.
+        let created = if mode & (libc::S_IFMT as u32) == (libc::S_IFCHR as u32) && rdev == 0 {
+            self.create_virtual_node(
+                ctx,
+                &path,
+                upper_parent,
+                &upper_name,
+                VirtualNode {
+                    block: false,
+                    major: 0,
+                    minor: 0,
+                },
+            )
+        } else {
+            self.layers[0].mknod(ctx, upper_parent, &upper_name, mode, rdev, umask, extensions)
+        };
         if upper_parent != fuse::ROOT_ID {
             self.layers[0].forget(ctx, upper_parent, 1);
         }
@@ -3776,8 +4145,7 @@ impl FileSystem for OverlayFs {
         umask: u32,
         extensions: Extensions,
     ) -> io::Result<Entry> {
-        let _operation = self.write_operation()?;
-        let path = self.child(parent, name)?;
+        let (_operation, path) = self.write_child_operation(parent, name)?;
         #[cfg(target_os = "linux")]
         let virtual_parent = if self.virtual_metadata {
             Some(self.entry(ctx, &self.path(parent)?, parent)?.attr)
@@ -4342,10 +4710,15 @@ impl FileSystem for OverlayFs {
         value: &[u8],
         flags: u32,
     ) -> io::Result<()> {
-        let _operation = self.write_operation()?;
+        let (_operation, path) = self.write_inode_operation(inode)?;
         if pvisor_overlay_core::is_stored_overlay_xattr(OsStr::from_bytes(name.to_bytes())) {
             // The stored overlay-control namespace is server-private; a direct
             // guest write could forge nested-overlay control state.
+            return Err(io::Error::from_raw_os_error(libc::EPERM));
+        }
+        if is_virtual_node_xattr(name) {
+            // The device-projection record is server-private; a direct guest
+            // write could forge device nodes the host forbids.
             return Err(io::Error::from_raw_os_error(libc::EPERM));
         }
         let stored = stored_overlay_xattr(name);
@@ -4359,7 +4732,6 @@ impl FileSystem for OverlayFs {
         }
         pvisor_overlay_core::validate_guest_xattr(OsStr::from_bytes(effective.to_bytes()))
             .map_err(linux_error)?;
-        let path = self.path(inode)?;
         let _io = self.fence_paths(&[&path]);
         self.core
             .prepare_metadata_change(&path)
@@ -4379,8 +4751,13 @@ impl FileSystem for OverlayFs {
         name: &CStr,
         size: u32,
     ) -> io::Result<GetxattrReply> {
-        let _operation = self.write_operation()?;
+        // Read-only view; the read_operation drain preserves the
+        // completed-write visibility invariant.
+        let _operation = self.read_operation()?;
         if pvisor_overlay_core::is_stored_overlay_xattr(OsStr::from_bytes(name.to_bytes())) {
+            return Err(super::super::linux_errno::enodata());
+        }
+        if is_virtual_node_xattr(name) {
             return Err(super::super::linux_errno::enodata());
         }
         let stored = stored_overlay_xattr(name);
@@ -4402,7 +4779,9 @@ impl FileSystem for OverlayFs {
     }
 
     fn listxattr(&self, ctx: Context, inode: u64, size: u32) -> io::Result<ListxattrReply> {
-        let _operation = self.write_operation()?;
+        // Read-only view; the read_operation drain preserves the
+        // completed-write visibility invariant.
+        let _operation = self.read_operation()?;
         let path = self.path(inode)?;
         let (layer, inner) = self.observed_inner(ctx, &path)?;
         let result = (|| {
@@ -4424,6 +4803,11 @@ impl FileSystem for OverlayFs {
                     let name = OsStr::from_bytes(name);
                     if self.virtual_metadata
                         && pvisor_overlay_core::is_private_metadata_xattr(name)
+                    {
+                        continue;
+                    }
+                    if name.as_encoded_bytes()
+                        == pvisor_overlay_core::VIRTUAL_NODE_XATTR.as_bytes()
                     {
                         continue;
                     }
@@ -4453,8 +4837,11 @@ impl FileSystem for OverlayFs {
     }
 
     fn removexattr(&self, ctx: Context, inode: u64, name: &CStr) -> io::Result<()> {
-        let _operation = self.write_operation()?;
+        let (_operation, path) = self.write_inode_operation(inode)?;
         if pvisor_overlay_core::is_stored_overlay_xattr(OsStr::from_bytes(name.to_bytes())) {
+            return Err(io::Error::from_raw_os_error(libc::EPERM));
+        }
+        if is_virtual_node_xattr(name) {
             return Err(io::Error::from_raw_os_error(libc::EPERM));
         }
         let stored = stored_overlay_xattr(name);
@@ -4468,7 +4855,6 @@ impl FileSystem for OverlayFs {
         }
         pvisor_overlay_core::validate_guest_xattr(OsStr::from_bytes(effective.to_bytes()))
             .map_err(linux_error)?;
-        let path = self.path(inode)?;
         let _io = self.fence_paths(&[&path]);
         self.core
             .prepare_metadata_change(&path)
@@ -4604,7 +4990,8 @@ impl FileSystem for OverlayFs {
                     DirEntry {
                         ino: inode,
                         offset: (index + 1) as u64,
-                        type_: Self::dtype(backing.entry.metadata.mode()),
+                        // The projected mode carries virtual device types.
+                        type_: Self::dtype(entry.attr.st_mode as u32),
                         name,
                     },
                     entry,
@@ -6016,7 +6403,7 @@ mod tests {
         let count = fs.nodes.lock().unwrap().by_inode.len();
         assert_eq!(count, 1, "OPENDIR must not acquire child lookup references");
         // Attributes are still obtained by READDIRPLUS, not this names cache.
-        assert!(fs.directory_names_cache.lock().unwrap().is_some());
+        assert!(fs.directory_names_cache.lock().unwrap().entry.is_some());
         fs.releasedir(ctx, fuse::ROOT_ID, 0, first.unwrap())
             .unwrap();
         fs.releasedir(ctx, fuse::ROOT_ID, 0, second.unwrap())
@@ -6045,9 +6432,9 @@ mod tests {
                     fs.directory_names(Path::new("")).unwrap().names
                 };
                 assert!(names.iter().any(|name| name == b"file"));
-                assert!(fs.directory_names_cache.lock().unwrap().is_some());
+                assert!(fs.directory_names_cache.lock().unwrap().entry.is_some());
                 let _write = fs.write_namespace_operation().unwrap();
-                assert!(fs.directory_names_cache.lock().unwrap().is_none());
+                assert!(fs.directory_names_cache.lock().unwrap().entry.is_none());
                 assert!(names.iter().any(|name| name == b"file"));
             }
         }
@@ -6067,7 +6454,7 @@ mod tests {
         let (old, _) = fs.opendir(ctx, fuse::ROOT_ID, 0).unwrap();
         fs.mkdir(ctx, fuse::ROOT_ID, c"new", 0o755, 0, Extensions::default())
             .unwrap();
-        assert!(fs.directory_names_cache.lock().unwrap().is_none());
+        assert!(fs.directory_names_cache.lock().unwrap().entry.is_none());
         let current = {
             let _guard = fs.read_operation().unwrap();
             fs.directory_names(Path::new("")).unwrap()
@@ -6082,7 +6469,7 @@ mod tests {
         }
         drop(handles);
         assert!(fs.unlink(ctx, fuse::ROOT_ID, c"missing").is_err());
-        assert!(fs.directory_names_cache.lock().unwrap().is_none());
+        assert!(fs.directory_names_cache.lock().unwrap().entry.is_none());
         fs.releasedir(ctx, fuse::ROOT_ID, 0, old.unwrap()).unwrap();
     }
 
@@ -6109,7 +6496,7 @@ mod tests {
         assert!(!Arc::ptr_eq(&initial, &changed));
         assert!(changed.iter().any(|name| name == b"child"));
         fs.rename(ctx, fuse::ROOT_ID, c"dir", fuse::ROOT_ID, c"moved", 0).unwrap();
-        assert!(fs.directory_names_cache.lock().unwrap().is_none());
+        assert!(fs.directory_names_cache.lock().unwrap().entry.is_none());
         {
             let _guard = fs.read_operation().unwrap();
             fs.directory_names(Path::new("moved")).unwrap();
@@ -6118,7 +6505,7 @@ mod tests {
             vec!["private/**".into()], vec![],
         ).unwrap();
         assert!(fs.unlink(ctx, dir, c"missing").is_err());
-        assert!(fs.directory_names_cache.lock().unwrap().is_none());
+        assert!(fs.directory_names_cache.lock().unwrap().entry.is_none());
     }
 
     #[cfg(target_os = "linux")]
@@ -6133,7 +6520,7 @@ mod tests {
             let _guard = fs.read_operation().unwrap();
             fs.directory_names(Path::new("")).unwrap();
         }
-        assert!(fs.directory_names_cache.lock().unwrap().is_none());
+        assert!(fs.directory_names_cache.lock().unwrap().entry.is_none());
         let snapshot = DirectoryNames {
             path: PathBuf::from("dir"),
             names: Arc::new(vec![vec![b'x'; MAX_DIRECTORY_NAMES_BYTES]]),
@@ -8460,6 +8847,250 @@ mod tests {
             std::fs::read(temp.path().join("lower/b")).unwrap(),
             b"second"
         );
+    }
+
+    #[test]
+    fn sharded_creations_in_disjoint_parents_overlap() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::create_dir(temp.path().join("lower")).unwrap();
+        let fs = parent_cache_fixture(temp.path());
+        fs.init(FsOptions::empty()).unwrap();
+        let ctx = root_context();
+        // Pick two directories that land on different shards deterministically.
+        let mut picked: Vec<&str> = Vec::new();
+        for candidate in [
+            "alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta", "theta",
+        ] {
+            if picked.is_empty() {
+                picked.push(candidate);
+                continue;
+            }
+            let different = namespace_shard_index(Some(Path::new(&format!(
+                "/{candidate}"
+            )))) != namespace_shard_index(Some(Path::new(&format!("/{}", picked[0]))));
+            if different {
+                picked.push(candidate);
+                break;
+            }
+        }
+        assert_eq!(picked.len(), 2, "expected two distinct-shard directories");
+        let first_name = CString::new(picked[0]).unwrap();
+        let second_name = CString::new(picked[1]).unwrap();
+        fs.mkdir(
+            ctx,
+            fuse::ROOT_ID,
+            first_name.as_c_str(),
+            0o755,
+            0,
+            Extensions::default(),
+        )
+        .unwrap();
+        fs.mkdir(
+            ctx,
+            fuse::ROOT_ID,
+            second_name.as_c_str(),
+            0o755,
+            0,
+            Extensions::default(),
+        )
+        .unwrap();
+        let first_dir = fs
+            .lookup(ctx, fuse::ROOT_ID, first_name.as_c_str())
+            .unwrap()
+            .inode;
+        let second_dir = fs
+            .lookup(ctx, fuse::ROOT_ID, second_name.as_c_str())
+            .unwrap()
+            .inode;
+
+        let (guard, _held) = fs.write_child_operation(first_dir, c"held").unwrap();
+        let fs_ref = &fs;
+        let (done, ready) = std::sync::mpsc::channel();
+        std::thread::scope(|scope| {
+            scope.spawn(move || {
+                done.send(fs_ref.mkdir(
+                    ctx,
+                    second_dir,
+                    c"other",
+                    0o755,
+                    0,
+                    Extensions::default(),
+                ))
+                .unwrap();
+            });
+            let result = ready.recv_timeout(Duration::from_secs(2));
+            drop(guard);
+            result
+                .expect("creation in a disjoint parent serialized behind a shard")
+                .unwrap();
+        });
+        assert!(
+            fs.lookup(ctx, second_dir, c"other").unwrap().attr.st_mode & libc::S_IFMT
+                == libc::S_IFDIR
+        );
+    }
+
+    #[test]
+    fn sharded_creations_in_the_same_parent_serialize() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::create_dir(temp.path().join("lower")).unwrap();
+        let fs = parent_cache_fixture(temp.path());
+        fs.init(FsOptions::empty()).unwrap();
+        let ctx = root_context();
+        fs.mkdir(ctx, fuse::ROOT_ID, c"dir", 0o755, 0, Extensions::default())
+            .unwrap();
+        let dir = fs.lookup(ctx, fuse::ROOT_ID, c"dir").unwrap().inode;
+
+        let guard = fs.write_child_operation(dir, c"held").unwrap().0;
+        let fs_ref = &fs;
+        let (done, ready) = std::sync::mpsc::channel();
+        std::thread::scope(|scope| {
+            scope.spawn(move || {
+                done.send(fs_ref.mkdir(ctx, dir, c"child", 0o755, 0, Extensions::default()))
+                    .unwrap();
+            });
+            let blocked = ready.recv_timeout(Duration::from_millis(150));
+            drop(guard);
+            assert!(
+                blocked.is_err(),
+                "same-parent creation did not serialize behind the shard"
+            );
+            ready
+                .recv_timeout(Duration::from_secs(2))
+                .expect("same-parent creation never completed after release")
+                .unwrap();
+        });
+    }
+
+    #[test]
+    fn sharded_admission_still_excludes_structural_mutations() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::create_dir(temp.path().join("lower")).unwrap();
+        let fs = parent_cache_fixture(temp.path());
+        fs.init(FsOptions::empty()).unwrap();
+        let ctx = root_context();
+        fs.mkdir(ctx, fuse::ROOT_ID, c"dir", 0o755, 0, Extensions::default())
+            .unwrap();
+        let dir = fs.lookup(ctx, fuse::ROOT_ID, c"dir").unwrap().inode;
+
+        // A sharded admission blocks the exclusive (structural) admission...
+        let guard = fs.write_child_operation(dir, c"held").unwrap().0;
+        let fs_ref = &fs;
+        let (done, ready) = std::sync::mpsc::channel();
+        std::thread::scope(|scope| {
+            scope.spawn(move || {
+                done.send(
+                    fs_ref.rename(ctx, fuse::ROOT_ID, c"dir", fuse::ROOT_ID, c"moved", 0),
+                )
+                .unwrap();
+            });
+            let blocked = ready.recv_timeout(Duration::from_millis(150));
+            drop(guard);
+            assert!(blocked.is_err(), "rename bypassed a sharded admission");
+            ready
+                .recv_timeout(Duration::from_secs(2))
+                .expect("rename never completed after release")
+                .unwrap();
+        });
+
+        // ...and the exclusive admission blocks every sharded admission.
+        let exclusive = fs.write_operation().unwrap();
+        let (done, ready) = std::sync::mpsc::channel();
+        std::thread::scope(|scope| {
+            scope.spawn(move || {
+                done.send(fs_ref.mkdir(ctx, dir, c"child", 0o755, 0, Extensions::default()))
+                    .unwrap();
+            });
+            let blocked = ready.recv_timeout(Duration::from_millis(150));
+            drop(exclusive);
+            assert!(
+                blocked.is_err(),
+                "sharded creation bypassed the exclusive admission"
+            );
+            ready
+                .recv_timeout(Duration::from_secs(2))
+                .expect("sharded creation never completed after release")
+                .unwrap();
+        });
+    }
+
+    #[test]
+    fn sharded_admission_falls_back_when_prepared_copy_up_is_enabled() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::create_dir(temp.path().join("lower")).unwrap();
+        let mut fs = parent_cache_fixture(temp.path());
+        fs.configure_prepared_copy_up(true);
+        fs.init(FsOptions::empty()).unwrap();
+        let ctx = root_context();
+        fs.mkdir(ctx, fuse::ROOT_ID, c"dir", 0o755, 0, Extensions::default())
+            .unwrap();
+        let dir = fs.lookup(ctx, fuse::ROOT_ID, c"dir").unwrap().inode;
+
+        // The child admission must have fallen back to the exclusive guard,
+        // so an unrelated exclusive admission cannot overtake it.
+        let guard = fs.write_child_operation(dir, c"held").unwrap().0;
+        let fs_ref = &fs;
+        let (done, ready) = std::sync::mpsc::channel();
+        std::thread::scope(|scope| {
+            scope.spawn(move || {
+                done.send(
+                    fs_ref.rename(ctx, fuse::ROOT_ID, c"dir", fuse::ROOT_ID, c"moved", 0),
+                )
+                .unwrap();
+            });
+            let blocked = ready.recv_timeout(Duration::from_millis(150));
+            drop(guard);
+            assert!(
+                blocked.is_err(),
+                "fallback admission did not hold the exclusive guard"
+            );
+            ready
+                .recv_timeout(Duration::from_secs(2))
+                .expect("rename never completed after release")
+                .unwrap();
+        });
+    }
+
+    #[test]
+    fn sharded_admission_releases_directory_names_at_drop() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::create_dir(temp.path().join("lower")).unwrap();
+        let mut fs = parent_cache_fixture(temp.path());
+        if fs.physical_lowers_immutable() {
+            fs.configure_directory_names_cache(true);
+        }
+        fs.init(FsOptions::empty()).unwrap();
+        let ctx = root_context();
+        fs.mkdir(ctx, fuse::ROOT_ID, c"dir", 0o755, 0, Extensions::default())
+            .unwrap();
+        let dir = fs.lookup(ctx, fuse::ROOT_ID, c"dir").unwrap().inode;
+
+        {
+            let (handle, _) = fs.opendir(ctx, dir, 0).unwrap();
+            fs.releasedir(ctx, dir, 0, handle.unwrap()).unwrap();
+        }
+        {
+            let guard = fs.write_child_operation(dir, c"held").unwrap().0;
+            if fs.directory_names_cache_enabled {
+                assert!(
+                    fs.directory_names_cache.lock().unwrap().entry.is_none(),
+                    "admission must invalidate the listing cache"
+                );
+            }
+            drop(guard);
+        }
+        if fs.directory_names_cache_enabled {
+            // The release-side invalidation keeps no listing from a mutation
+            // window even when the mutation itself never touched the host.
+            assert!(fs.directory_names_cache.lock().unwrap().entry.is_none());
+            let (handle, _) = fs.opendir(ctx, dir, 0).unwrap();
+            fs.releasedir(ctx, dir, 0, handle.unwrap()).unwrap();
+            let cached = fs.directory_names_cache.lock().unwrap();
+            assert!(
+                cached.entry.is_some(),
+                "a clean publication after the mutation must be cacheable"
+            );
+        }
     }
 
     #[test]
