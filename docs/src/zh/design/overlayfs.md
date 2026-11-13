@@ -96,7 +96,7 @@ Guest 页缓存未命中时，virtio-fs 将 FUSE READ 请求及响应缓冲区�
 
 virtio-fs 的 queue owner 负责描述符接收与 used-ring 发布。可重叠的大 READ（至少 64 KiB）和目录读取可交给有界 I/O worker；短元数据请求和需要串行的修改仍内联处理。默认 worker 上限取宿主可用 CPU 数且不超过 4，在途请求不超过 worker 数的两倍。
 
-只读操作可以持有共享 operation guard，copy-up、改名、写入与恢复等操作持有独占 guard。handle map 和目录缓存锁只用于取得稳定引用，实际 backing I/O 在这些表锁外执行；最后一个使用者离开后才释放原生 lookup 引用。这避免一条慢读取锁住整张 handle 表，同时阻止句柄在读取中途被释放。
+只读操作可以持有共享 operation guard，copy-up、改名、写入与恢复等操作持有独占 guard；纯创建族（mkdir/mknod/symlink）与 xattr 写入在共享 guard 下按**父目录分片**准入，不同父目录的创建可以重叠。结构化变更（rename、unlink、rmdir、link、setattr、create）与快照/恢复仍持独占 guard，因而排除一切分片准入；prepared-copy-up、独占 upper 缺失缓存、逻辑目录缓存或负项 entry 缓存启用时，分片自动退回独占准入，保持这些实验的单锁契约。目录名缓存的发布使用版本复核，与分片变更重叠的发布不落缓存。handle map 和目录缓存锁只用于取得稳定引用，实际 backing I/O 在这些表锁外执行；最后一个使用者离开后才释放原生 lookup 引用。这避免一条慢读取锁住整张 handle 表，同时阻止句柄在读取中途被释放。
 
 freeze/reset 停止接收、排空在途请求、发布完成并 join worker；文件系统快照等待 operation guard 释放。恢复后主动扫描 available ring。因此文件服务优化必须同时维持协议身份、RAM lease 和冻结合同，不能只比较 `read` 本身耗时。VM 侧顺序见[设备与一致性](vm-runtime.md#virtio)。
 
