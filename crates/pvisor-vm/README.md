@@ -946,6 +946,8 @@ Linux symlink 不能存储 user xattr，因此其 guest UID/GID 保存在卷内�
 不跟随链接，不修改 target 或宿主 symlink 所有权；非 root 变更仍执行 guest
 所有权检查。symlink 时间戳仍使用 native 属性，虚拟 chown 本身不推进 ctime；
 不宣称这一路径已提供完整 POSIX 时间戳语义。后端必须提供 inode birth time 和目录 xattr。
+birth time 查询与 passthrough 共用 Linux statx wire layout，并直接调用 syscall，
+不依赖 glibc 专有的 libc 绑定；GNU 和静态 musl 使用同一实现与布局测试。
 这个根目录名称是保留名：lookup/readdir 不暴露，所有 guest 命名空间写入均拒绝。
 已存在但无版本标记的目录、损坏记录或不支持的后端返回错误，不把失败假装成成功。
 目录初始化和元数据更新由根目录 flock 跨 VM 串行化；记录以 fsync + 原子替换提交。

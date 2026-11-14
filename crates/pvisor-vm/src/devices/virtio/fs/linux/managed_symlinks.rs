@@ -1,6 +1,7 @@
 //! Linux cannot store user xattrs on symlinks. Keep their guest owners in a
 //! reserved, guest-inaccessible directory in the managed volume instead.
 //! All access is relative to pinned directories; no guest link is followed.
+use super::super::statx::{LinuxStatx, STATX_BASIC_STATS, STATX_BTIME};
 use std::{
     ffi::{CStr, CString},
     fs::File,
@@ -115,13 +116,16 @@ impl Symlinks {
     }
 
     fn key(file: &File) -> io::Result<CString> {
-        let mut st = std::mem::MaybeUninit::<libc::statx>::zeroed();
+        let mut st = std::mem::MaybeUninit::<LinuxStatx>::zeroed();
+        // SAFETY: the pinned descriptor and Linux wire-layout output stay live.
+        // Avoid glibc-only statx bindings so static musl builds use the same ABI.
         if unsafe {
-            libc::statx(
+            libc::syscall(
+                libc::SYS_statx,
                 file.as_raw_fd(),
                 c"".as_ptr(),
                 libc::AT_EMPTY_PATH | libc::AT_SYMLINK_NOFOLLOW,
-                libc::STATX_BASIC_STATS | libc::STATX_BTIME,
+                STATX_BASIC_STATS | STATX_BTIME,
                 st.as_mut_ptr(),
             )
         } < 0
@@ -129,7 +133,7 @@ impl Symlinks {
             return Err(io::Error::last_os_error());
         }
         let st = unsafe { st.assume_init() };
-        if st.stx_mask & libc::STATX_BTIME == 0 {
+        if st.stx_mask & STATX_BTIME == 0 {
             return Err(io::Error::new(
                 io::ErrorKind::Unsupported,
                 "managed symlinks require inode birth times",
