@@ -128,6 +128,10 @@ pub struct Run {
     #[serde(default)]
     pub entrypoint: Option<String>,
     /// Return after launch readiness rather than attaching to completion.
+    /// Owners do not inherit frontend handles. An enclosing host Job that
+    /// prohibits breakaway still bounds the owner's and container's lifetime;
+    /// execution never bypasses that policy. Runner kill-on-close ownership
+    /// remains enforced in a nested Job.
     pub detach: bool,
     /// Remove instance files on completion, after foreground output is delivered.
     pub auto_remove: bool,

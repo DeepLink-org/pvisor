@@ -17,6 +17,11 @@ most 64 frames; a stalled consumer fails its own delivery and later frames are
 discarded by request ID instead of blocking unrelated callers or growing RAM.
 Workload stdout/stderr never include the boot
 console. Owner death closes a kill-on-close Windows Job containing the runner.
+Owner creation requests breakaway when the caller's Job permits it. If Windows
+denies breakaway and confirms Job membership, creation retries within that
+enclosing Job, still with no inherited frontend handles. Restrictive host Jobs
+(including CI runner Jobs) therefore bound the container's lifetime. The VM
+runner still enters its own nested kill-on-close Job before any guest execution.
 
 Supported: public linux/amd64 tar/gzip OCI images, foreground/detached runs,
 names, auto-remove, literal environment overrides/removals, cwd/user/entrypoint
