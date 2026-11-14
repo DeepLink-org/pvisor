@@ -1,0 +1,32 @@
+services:
+  init:
+    image: alpine:3.20
+    cpus: 1
+    mem_limit: 128m
+    command: [sh, -c, "mkdir -p /storage/database && chown 5984:5984 /storage/database"]
+    volumes: [documents:/storage]
+  couchdb:
+    image: couchdb:3.4.3
+    cpus: 1
+    mem_limit: 512m
+    entrypoint: [sh, -c]
+    command:
+      - cp /run/couchdb-case.ini /opt/couchdb/etc/local.d/single-node.ini && exec tini -- /docker-entrypoint.sh /opt/couchdb/bin/couchdb
+    environment:
+      COUCHDB_USER: composeadmin
+      COUCHDB_PASSWORD: ${CASE_ADMIN_PASSWORD:?required}
+      NODENAME: localhost
+    volumes:
+      - documents:/opt/couchdb/data
+      - "./couchdb.ini:/run/couchdb-case.ini:ro"
+    depends_on:
+      init: {condition: service_completed_successfully}
+  nginx:
+    image: nginx:1.28-alpine
+    cpus: 1
+    mem_limit: 128m
+    ports: ["127.0.0.1:${CASE_HTTP_PORT:?required}:80"]
+    volumes: ["./nginx-couchdb.conf:/etc/nginx/nginx.conf:ro"]
+    depends_on: [couchdb]
+volumes:
+  documents: {}

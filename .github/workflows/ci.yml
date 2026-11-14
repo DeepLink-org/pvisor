@@ -107,6 +107,8 @@ jobs:
       - run: mise run lint-py
       - run: mise run test-scripts
       - run: mise run test-py
+      - name: Test Compose acceptance runner contracts without VMs
+        run: mise run test-py -- discover -s examples/pvisor/08-compose-apps -p 'test_*.py' -v
 
   firmware:
     name: Firmware bundle and ABI / Linux
