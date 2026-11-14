@@ -411,6 +411,10 @@ applies to the real host root.
 
 ## Docker command profile (experimental)
 
+The full profile in this section applies to Linux and Apple Silicon macOS.
+Windows currently provides the separate native WHP subset
+documented under [Windows container commands](#windows-container-commands).
+
 `pvisor run` creates a container, optionally with Linux staged binds as described
 below; `spawn` retains its existing Session stage/review/apply semantics.
 Unknown command names and leading Session options default to `spawn`;
@@ -1377,13 +1381,78 @@ Output uses the VM console. Workload exit codes propagate; setup/runtime errors
 return 1, argument errors 2, and unauthenticated/abnormal guest termination 125.
 Windows builds use `cargo build --locked -p pvisor-cli --bin pvisor`; parser tests
 use `mise run test -- pvisor-cli -- --lib --bin pvisor`. Unix runtime dependencies
-are excluded, and other Windows commands are rejected.
+are excluded; Windows container commands use the native profile below.
 
 Full Unix installations also include `pvisor-tui` for interaction,
 `pvisor-replay` for replay and `pvisor-daemon` for automatic pools/shared services.
 Companion dispatch checks trusted adjacent executables. These components,
-Session/container workflows and Windows packaging remain unported. `whp_smoke.exe`
+Session workflows and Windows packaging remain unported. `whp_smoke.exe`
 is a test probe; embedded `pvisor-guest` runs inside Linux guests.
+
+### Windows container commands
+
+The native WHP profile supports `pull`, `images`, `rmi`, `run`, `ps`, `exec`,
+`logs`, `start`, `stop` and `rm`. It does not use Docker, WSL or a user-managed
+Linux VM. Enable Windows Hypervisor Platform and hardware virtualization, then
+place matching `libkrunfw.dll` and `pvisor-rootfs.bin.gz` beside `pvisor.exe`.
+
+```powershell
+pvisor run -d --name box --cpus 2 -m 512m -w /work alpine sleep 300
+pvisor exec -e MESSAGE=hello -w /work box sh -c 'echo "$MESSAGE" > /work/result'
+pvisor stop box
+pvisor start box
+pvisor exec box cat /work/result
+pvisor rm -f box
+pvisor rmi alpine
+```
+
+Run accepts `--name`, `-d`, `--rm`, `-i`, `-t`, `-e`, `--env-file`, `-w`, `-u`,
+`--entrypoint`, whole `--cpus` (1–64), and Docker byte/k/m/g memory sizes
+(128–65536 MiB). Exec accepts `-i`, `-t`, `-e`, `--env-file`, `-w` and `-u`;
+independent execs can run concurrently. Environment files precede explicit
+overrides and use the same literal parsing as Unix. A bare absent host variable
+removes the inherited image/launch value.
+
+Docker grouped spellings dispatch to the same operations: `container
+run/exec/ls/start/stop/rm/logs` and `image pull/ls/rm`. `ls` also accepts `list`
+(`container ls` also accepts `ps`), and `rm` also accepts `remove`.
+`--net` aliases `--network`; `bridge` is the default and `none` omits the NIC. `run --help`
+prints help; `run -h` is reserved/unsupported as on Unix, not a help shortcut.
+
+`ps -a/-q/--no-trunc` uses the same columns, command quoting, status strings and
+12-character default IDs as Unix, including quiet mode. Windows retains its
+additional `--json` projection. `logs -f` follows the selected owner generation,
+drains its final stdout/stderr through auto-removal, and ends when that owner
+exits or is replaced. Boot diagnostics and exec output remain separate.
+
+Stop accepts `-s/--signal` (Linux names or numbers) and `-t/--timeout`: default
+10 seconds, `-1` waits indefinitely without force-stop, other negative values
+fail during parsing. Without `-s`, the pinned image `StopSignal` applies,
+defaulting to TERM. Finite waits must fit the monotonic clock; there is no
+one-day limit. Batched start/stop/rm/rmi continue after individual errors and
+return 1 if any target fails, matching Unix.
+
+Start preserves private Linux filesystem writes and logs without pulling or
+reapplying the image. A new owner generation fences old attachments. Unknown
+or unconfirmed preparation cannot restart. `rmi -f` untags in-use images without
+deleting container data; blob garbage collection is not yet provided.
+
+Unix unit-test builds also compile and test the actual Windows argument parser.
+This checks command/option spelling and literal values, not native pipe I/O or
+WHP execution; those still require the Windows acceptance driver.
+
+The bridge reuses OverlayNet for DNS/IPv4 TCP egress and same-store peer traffic.
+It allocates retained addresses in `172.17.0.0/24`; `.1` is the virtual router.
+`run -i` and `exec -i` support binary piped stdin and explicit EOF. `-it` uses
+a real guest PTY with the initial console dimensions, UTF-8 and Ctrl+C bytes
+handled by the guest terminal. Console modes/code pages are restored on return;
+guest completion cancels an idle host stdin reader without another keystroke.
+Live terminal resizing is not supplied by this frontend.
+
+`-v`, `-p`, custom/host networks, build, Engine/Compose APIs, Sessions and their staged
+filesystem workflows are not implemented. These fail explicitly rather than
+silently falling back to host execution. See the
+[native profile contract](../pvisor-containers/README.md) for ownership and bounds.
 
 See the [platform matrix](../../docs/src/en/reference/platforms.md),
 [binary inventory and implementation comparison](../../docs/src/en/reference/platforms.md#binaries)

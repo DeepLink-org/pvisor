@@ -19,28 +19,44 @@ jobs:
   native:
     name: MSVC build and contracts
     runs-on: windows-2025
-    timeout-minutes: 30
+    timeout-minutes: 40
     defaults:
       run:
         shell: bash
     steps:
       - uses: actions/checkout@v4
+      - name: Create fresh native evidence directory
+        run: |
+          evidence="$RUNNER_TEMP/windows-native"
+          mkdir "$evidence"
+          echo "NATIVE_EVIDENCE=$evidence" >> "$GITHUB_ENV"
       - uses: ./.github/actions/setup-build-env
         with:
-          tools: rust github:nextest-rs/nextest
+          tools: rust python uv github:nextest-rs/nextest
           setup: none
       - run: mise exec -- rustup target add x86_64-unknown-linux-musl
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: windows-vm-msvc
-      - name: Build with and without the embedded guest supervisor
+      - name: Record native toolchain
         run: |
-          mise exec -- cargo build --locked -p pvisor-vm --lib --no-default-features
-          mise exec -- cargo build --locked -p pvisor-vm --lib --example whp_smoke
+          {
+            mise --version
+            mise exec -- rustc -Vv
+            mise exec -- cargo nextest --version
+            mise exec -- python --version
+          } 2>&1 | tee "$NATIVE_EVIDENCE/toolchain.log"
+      - name: Build VM without the embedded guest supervisor
+        run: mise exec -- cargo build --locked -p pvisor-vm --lib --no-default-features
+      - name: Build default VM and WHP probe
+        if: ${{ !cancelled() }}
+        run: mise exec -- cargo build --locked -p pvisor-vm --lib --example whp_smoke
       - name: Build Windows pvisor VM CLI
+        if: ${{ !cancelled() }}
         run: mise exec -- cargo build --locked -p pvisor-cli --bin pvisor
       # Publish before unit tests so WHP can run even when a contract test fails.
       - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
         with:
           name: windows-vm-runner
           path: |
@@ -49,13 +65,44 @@ jobs:
           if-no-files-found: error
           retention-days: 7
       - name: Test Windows CLI parser (no WHP required)
-        run: mise run test -- pvisor-cli -- --lib --bin pvisor
-      - name: Native unit tests and public contracts (no WHP required)
-        run: mise run test -- pvisor-core pvisor-guest pvisor-vm -- --lib --tests --no-fail-fast
+        if: ${{ !cancelled() }}
+        timeout-minutes: 10
+        run: mise run test -- pvisor-cli -- --lib --bin pvisor --profile windows-ci 2>&1 | tee "$NATIVE_EVIDENCE/cli.log"
+      - name: Test VM drivers and native ConPTY fixture (no WHP required)
+        if: ${{ !cancelled() }}
+        timeout-minutes: 5
+        run: mise run test-py -- tests/test_vm_cli_contract.py tests/test_windows_container_contract.py 2>&1 | tee "$NATIVE_EVIDENCE/drivers.log"
+      - name: Core and guest public contracts (no WHP required)
+        if: ${{ !cancelled() }}
+        timeout-minutes: 10
+        run: mise run test -- pvisor-core pvisor-guest -- --lib --tests --profile windows-ci 2>&1 | tee "$NATIVE_EVIDENCE/core-guest.log"
+      - name: Windows VM contracts with network and block devices
+        if: ${{ !cancelled() }}
+        timeout-minutes: 10
+        run: mise run test -- pvisor-vm -- --features net,blk --lib --tests --profile windows-ci 2>&1 | tee "$NATIVE_EVIDENCE/vm.log"
+      - name: Native container contracts (no WHP required)
+        if: ${{ !cancelled() }}
+        timeout-minutes: 10
+        run: mise run test -- pvisor-containers -- --lib --tests --profile windows-ci 2>&1 | tee "$NATIVE_EVIDENCE/containers.log"
+      - name: Shared network data plane and Windows packet transport (no WHP required)
+        if: ${{ !cancelled() }}
+        timeout-minutes: 10
+        run: mise run test -- pvisor-overlaynet -- --lib --profile windows-ci 2>&1 | tee "$NATIVE_EVIDENCE/network.log"
       - name: VM contracts without the embedded guest supervisor
-        run: mise run test -- pvisor-vm -- --no-default-features --lib --tests --no-fail-fast
+        if: ${{ !cancelled() }}
+        timeout-minutes: 10
+        run: mise run test -- pvisor-vm -- --no-default-features --lib --tests --profile windows-ci 2>&1 | tee "$NATIVE_EVIDENCE/vm-minimal.log"
       - name: API documentation
-        run: RUSTDOCFLAGS='-D warnings' mise exec -- cargo doc --locked -p pvisor-vm --no-deps
+        if: ${{ !cancelled() }}
+        run: RUSTDOCFLAGS='-D warnings' mise exec -- cargo doc --locked -p pvisor-vm -p pvisor-containers --no-deps 2>&1 | tee "$NATIVE_EVIDENCE/rustdoc.log"
+      - name: Upload native contract logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-native-contracts
+          path: ${{ env.NATIVE_EVIDENCE }}
+          if-no-files-found: error
+          retention-days: 7
 
   firmware:
     name: Build repository firmware for WHP
@@ -81,6 +128,8 @@ jobs:
           mise exec -- rustc --edition=2021 --target x86_64-unknown-linux-musl -C linker=rust-lld crates/pvisor-vm/src/probes/whp_guest.rs -o target/whp-firmware/whp-guest
       - name: Build common CLI guest workload
         run: mise exec -- rustc --edition=2021 --target x86_64-unknown-linux-musl -C linker=rust-lld tests/vm_guest.rs -o target/whp-firmware/vm-guest
+      - name: Build sparse Linux container root-disk template
+        run: python3 crates/pvisor-containers/tools/build_template.py target/whp-firmware/pvisor-rootfs.bin.gz
       - uses: actions/upload-artifact@v4
         with:
           name: windows-vm-firmware
@@ -88,19 +137,34 @@ jobs:
             target/whp-firmware/libkrunfw.dll
             target/whp-firmware/whp-guest
             target/whp-firmware/vm-guest
+            target/whp-firmware/pvisor-rootfs.bin.gz
           if-no-files-found: error
           retention-days: 7
 
   whp:
-    name: WHP boot, SMP, filesystem, lifecycle and exit
+    name: WHP / ${{ matrix.suite }}
     # Disposable hosted runner: PR code never executes on a persistent machine.
     # Keep this independent of contract-test failures; missing artifacts fail too.
     if: ${{ !cancelled() && needs.firmware.result == 'success' }}
     needs: [native, firmware]
     runs-on: windows-2025
-    timeout-minutes: 10
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        suite: [smoke, vm-cli, containers]
+    env:
+      PYTHONUTF8: "1"
+      # Exact linux/amd64 manifest used in the recorded native WHP acceptance.
+      PVISOR_WINDOWS_TEST_IMAGE: mirror.gcr.io/library/alpine@sha256:0f49f331d9212aff11b932863be4eb01cdf962969aa86dab7d1ee21ac6f5f52b
     steps:
       - uses: actions/checkout@v4
+      - name: Create fresh WHP evidence directory
+        shell: pwsh
+        run: |
+          $evidence = Join-Path $env:RUNNER_TEMP 'windows-whp-${{ matrix.suite }}'
+          New-Item -ItemType Directory -Path $evidence | Out-Null
+          "WHP_EVIDENCE=$evidence" | Add-Content $env:GITHUB_ENV
       - uses: actions/download-artifact@v4
         with:
           name: windows-vm-runner
@@ -113,35 +177,97 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          "ImageOS=$env:ImageOS ImageVersion=$env:ImageVersion" | Tee-Object whp-environment.log
+          $log = Join-Path $env:WHP_EVIDENCE 'environment.log'
+          "ImageOS=$env:ImageOS ImageVersion=$env:ImageVersion" | Tee-Object $log
+          "Commit=${{ github.sha }} Run=${{ github.run_id }} Attempt=${{ github.run_attempt }}" | Tee-Object -Append $log
+          Get-CimInstance Win32_OperatingSystem |
+            Format-List Caption, Version, OSArchitecture |
+            Out-String | Tee-Object -Append $log
           Get-CimInstance Win32_ComputerSystem |
             Format-List Manufacturer, Model, HypervisorPresent |
-            Out-String | Tee-Object -Append whp-environment.log
+            Out-String | Tee-Object -Append $log
+          $inputs = switch ('${{ matrix.suite }}') {
+            'smoke' { @('libkrunfw.dll', 'whp-guest', 'examples\whp_smoke.exe') }
+            'vm-cli' { @('libkrunfw.dll', 'vm-guest', 'pvisor.exe') }
+            'containers' { @('libkrunfw.dll', 'pvisor-rootfs.bin.gz', 'pvisor.exe') }
+          }
+          foreach ($file in $inputs) {
+            Get-FileHash (Join-Path "$PWD\whp-run" $file) -Algorithm SHA256 |
+              Format-List | Out-String | Tee-Object -Append $log
+          }
+          if ('${{ matrix.suite }}' -ne 'smoke') {
+            & .\whp-run\pvisor.exe --version
+            if ($LASTEXITCODE -ne 0) { throw "pvisor cannot start (check the MSVC runtime): $LASTEXITCODE" }
+          }
           $feature = Get-WindowsOptionalFeature -Online -FeatureName HypervisorPlatform
-          $feature | Format-List | Out-String | Tee-Object -Append whp-environment.log
+          $feature | Format-List | Out-String | Tee-Object -Append $log
           if ($feature.State -ne 'Enabled') {
             Enable-WindowsOptionalFeature -Online -FeatureName HypervisorPlatform -All -NoRestart |
-              Format-List | Out-String | Tee-Object -Append whp-environment.log
+              Format-List | Out-String | Tee-Object -Append $log
           }
           # Do not skip based on feature/CPU heuristics. The real VM run below
           # must establish whether WHP works on this image without a reboot.
       - name: Run actual Linux guests with bounded timeouts
+        if: matrix.suite == 'smoke'
+        timeout-minutes: 7
         shell: pwsh
         run: |
-          & .\whp-run\examples\whp_smoke.exe "$PWD\whp-run\libkrunfw.dll" "$PWD\whp-run\whp-guest" 2>&1 | Tee-Object whp-smoke.log
+          & .\whp-run\examples\whp_smoke.exe "$PWD\whp-run\libkrunfw.dll" "$PWD\whp-run\whp-guest" 2>&1 |
+            Tee-Object (Join-Path $env:WHP_EVIDENCE 'smoke.log')
           if ($LASTEXITCODE -ne 0) { throw "WHP smoke failed: $LASTEXITCODE" }
       - name: Common CLI VM workload (same suite as KVM and HVF)
+        if: matrix.suite == 'vm-cli'
+        timeout-minutes: 10
         shell: pwsh
         run: |
-          python tests/vm_cli_contract.py --binary whp-run/pvisor.exe --guest whp-run/vm-guest --firmware whp-run/libkrunfw.dll --output target/vm-cli-windows
+          python tests/vm_cli_contract.py --binary whp-run/pvisor.exe --guest whp-run/vm-guest --firmware whp-run/libkrunfw.dll --output "$env:WHP_EVIDENCE/vm-cli"
           if ($LASTEXITCODE -ne 0) { throw "Windows CLI VM contracts failed: $LASTEXITCODE" }
+      - name: Native containers, bridge networking and interactive terminals
+        if: matrix.suite == 'containers'
+        timeout-minutes: 12
+        shell: pwsh
+        run: |
+          foreach ($round in 1..2) {
+            python tests/windows_container_contract.py --binary whp-run/pvisor.exe --image "$env:PVISOR_WINDOWS_TEST_IMAGE" --output "$env:WHP_EVIDENCE/containers-$round"
+            if ($LASTEXITCODE -ne 0) { throw "Windows container contracts round $round failed: $LASTEXITCODE" }
+          }
+      - name: Record diagnostics and stop only this job's remaining runners
+        if: always()
+        shell: pwsh
+        timeout-minutes: 2
+        run: |
+          New-Item -ItemType Directory -Force -Path $env:WHP_EVIDENCE | Out-Null
+          $root = [IO.Path]::GetFullPath("$PWD\whp-run") + '\'
+          # A closed owner lease can precede final OS process removal briefly.
+          $deadline = [DateTime]::UtcNow.AddSeconds(5)
+          do {
+            $left = @(Get-CimInstance Win32_Process | Where-Object {
+              $_.ExecutablePath -and $_.ExecutablePath.StartsWith($root, [StringComparison]::OrdinalIgnoreCase)
+            })
+            if ($left.Count -eq 0) { break }
+            Start-Sleep -Milliseconds 100
+          } while ([DateTime]::UtcNow -lt $deadline)
+          ConvertTo-Json -InputObject @($left | Select-Object Name, ProcessId, ParentProcessId, ExecutablePath) -Depth 3 |
+            Set-Content "$env:WHP_EVIDENCE/remaining-processes.json"
+          Get-WinEvent -FilterHashtable @{ LogName = 'System'; ProviderName = 'Microsoft-Windows-Hyper-V-Hypervisor' } -MaxEvents 10 -ErrorAction SilentlyContinue |
+            Format-List TimeCreated, Id, Message | Out-String |
+            Set-Content "$env:WHP_EVIDENCE/hypervisor-events.log"
+          if ($left.Count -gt 0) {
+            $left | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+            throw "Acceptance left $($left.Count) runner processes; diagnostics saved and processes stopped"
+          }
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: windows-vm-whp-log
+          name: windows-vm-whp-${{ matrix.suite }}
           path: |
-            whp-smoke.log
-            whp-environment.log
-            target/vm-cli-windows
-          if-no-files-found: warn
+            ${{ env.WHP_EVIDENCE }}/*.log
+            ${{ env.WHP_EVIDENCE }}/*.json
+            ${{ env.WHP_EVIDENCE }}/vm-cli
+            ${{ env.WHP_EVIDENCE }}/containers-*/*.json
+            ${{ env.WHP_EVIDENCE }}/containers-*/*.stdout
+            ${{ env.WHP_EVIDENCE }}/containers-*/*.stderr
+            ${{ env.WHP_EVIDENCE }}/containers-*/*.conpty
+            ${{ env.WHP_EVIDENCE }}/containers-*/diagnostics
+          if-no-files-found: error
           retention-days: 7

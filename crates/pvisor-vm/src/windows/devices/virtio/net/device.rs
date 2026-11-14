@@ -74,6 +74,8 @@ pub enum VirtioNetBackend {
     Tap(String),
     #[cfg(windows)]
     NamedPipe(String),
+    #[cfg(windows)]
+    Stream(std::fs::File),
     Custom(Box<dyn NetBackend + Send>),
 }
 

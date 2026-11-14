@@ -12,6 +12,7 @@ mod control;
 mod files;
 mod process;
 mod reclaim;
+mod root_disk;
 mod shares;
 mod startup_profile;
 
@@ -166,7 +167,7 @@ fn wait_stdio_ports(
     }
 }
 
-fn initialize(stdio_ports: Option<[bool; 3]>) -> io::Result<()> {
+fn initialize_filesystems() -> io::Result<()> {
     let restricted = libc::MS_NODEV | libc::MS_NOEXEC | libc::MS_NOSUID | libc::MS_RELATIME;
     for (source, target, kind, flags) in [
         ("devtmpfs", "/dev", "devtmpfs", libc::MS_RELATIME),
@@ -194,6 +195,11 @@ fn initialize(stdio_ports: Option<[bool; 3]>) -> io::Result<()> {
     }
     let hostname = ensure_local_hostname()?;
     ensure_etc_hosts_at(Path::new("/etc/hosts"), &hostname)?;
+    Ok(())
+}
+
+fn initialize(stdio_ports: Option<[bool; 3]>) -> io::Result<()> {
+    initialize_filesystems()?;
     // PID 1 can already be a session leader, in which case setsid returns EPERM.
     if unsafe { libc::setsid() } < 0
         && io::Error::last_os_error().raw_os_error() != Some(libc::EPERM)
@@ -503,6 +509,11 @@ fn workload(config: &GuestConfig) -> io::Result<i32> {
     let mut startup = startup_profile::Span::start("guest.spawn", startup_profile_enabled(config));
     let processes = process::Processes::default();
     let listener = config.control.then(control::listener).transpose()?;
+    // Open and mask host-only serial devices before the first untrusted process.
+    let serial = config
+        .serial_control
+        .then(control::serial_ports)
+        .transpose()?;
     let process::Spawned {
         process,
         input,
@@ -543,6 +554,18 @@ fn workload(config: &GuestConfig) -> io::Result<i32> {
             process.id(),
             input,
         );
+    } else if let Some(ports) = serial {
+        if let Err(error) = control::start_serial(
+            ports,
+            config.clone(),
+            processes.clone(),
+            process.id(),
+            input,
+        ) {
+            let _ = processes.signal(process.id(), libc::SIGKILL);
+            let _ = processes.supervise(process);
+            return Err(error);
+        }
     } else if config
         .process
         .as_ref()
@@ -599,6 +622,10 @@ fn run() -> io::Result<i32> {
     config_span.complete();
     let mut startup = startup_profile::Span::start("guest.initialize", profiling);
     initialize(config.stdio_ports)?;
+    if let Some(root) = &config.root_disk {
+        root_disk::enter(root, config.network.as_ref())?;
+        initialize_filesystems()?;
+    }
     startup.complete();
     // Config I/O ends before initialization, but emit only after stderr is ready.
     drop(config_span);

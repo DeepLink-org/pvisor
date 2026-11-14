@@ -16,41 +16,15 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, ensure};
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
-use smoltcp::wire::{
-    ArpOperation, ArpPacket, EthernetFrame, EthernetProtocol, IpProtocol, Ipv4Packet,
-};
 use tokio::net::UnixDatagram;
 
 use crate::interception::InterceptionMetrics;
 use crate::vm::guest_mac;
 
-pub(crate) const FRAME_LIMIT: usize = 1514;
-const HEADER: usize = 36;
-const MAGIC: &[u8; 4] = b"PVN1";
+pub use crate::peer_protocol::PeerNetworkConfig;
+pub(crate) use crate::peer_protocol::{FRAME_LIMIT, member_address, reserved_frame};
+use crate::peer_protocol::{HEADER, MAGIC, frame_addresses, valid_frame};
 const CACHE_TTL: Duration = Duration::from_millis(250);
-
-/// Explicit membership in a same-host IPv4 packet network.
-///
-/// Membership grants bidirectional IPv4 TCP, UDP and ICMP to other members of
-/// this directory. IPv6, fragments, VLANs and general broadcast/multicast are
-/// unsupported and dropped. External traffic still uses the VM egress policy.
-/// The owning runtime must exclude this directory from every guest filesystem.
-#[derive(Debug, Clone)]
-pub struct PeerNetworkConfig {
-    /// Existing canonical absolute network directory, owned by the effective
-    /// UID with mode 0700. All members use the same directory; different
-    /// directories define isolated networks. No symlink aliases are accepted.
-    pub directory: PathBuf,
-    /// Unique usable guest host in gateway's IPv4 /24. The per-address lifetime
-    /// lease refuses duplicate live members and excludes gateway/boundaries.
-    pub address: Ipv4Addr,
-    /// Virtual router in the same private IPv4 /24. Neither router nor subnet
-    /// boundary addresses can be members. Native legacy links use 192.0.2.1.
-    pub gateway: Ipv4Addr,
-    /// Network-local DNS aliases, at most 16 names of up to 128 bytes. Empty
-    /// disables peer DNS for this member; external DNS remains synthetic.
-    pub aliases: Vec<String>,
-}
 
 /// Transport-independent membership identity, atomically published after bind.
 #[derive(Clone, Serialize, Deserialize)]
@@ -262,29 +236,7 @@ impl BoundPeer {
         config: &PeerNetworkConfig,
         instance: Option<String>,
     ) -> anyhow::Result<Self> {
-        ensure!(
-            member_address(config.address)
-                && member_address(config.gateway)
-                && config.address.octets()[..3] == config.gateway.octets()[..3]
-                && config.address != config.gateway
-                && (config.gateway.is_private() || config.gateway.octets()[..3] == [192, 0, 2]),
-            "peer address must be a non-gateway host in a private IPv4 /24 (or 192.0.2.0/24)"
-        );
-        ensure!(
-            config.aliases.len() <= 16
-                && config.aliases.iter().all(|name| !name.is_empty()
-                    && name.len() <= 128
-                    && name.split('.').all(|part| !part.is_empty()
-                        && part.len() <= 63
-                        && part
-                            .bytes()
-                            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_'))),
-            "invalid peer DNS alias"
-        );
-        ensure!(
-            config.directory.is_absolute() && config.directory.canonicalize()? == config.directory,
-            "peer directory must be canonical and absolute"
-        );
+        crate::peer_protocol::validate_config(config)?;
         private_directory(&config.directory, false)?;
         let slot = config
             .directory
@@ -609,100 +561,6 @@ impl PeerNetwork {
             generation = fresh;
         }
         packet[4..20] == generation
-    }
-}
-
-pub(crate) fn member_address(address: Ipv4Addr) -> bool {
-    let bytes = address.octets();
-    (1..=254).contains(&bytes[3])
-}
-
-/// Reserve the entire local subnet, except the router. Even unknown members,
-/// broadcast, invalid checksums or unsupported protocols must not escape.
-pub(crate) fn reserved_frame(frame: &[u8], gateway: Ipv4Addr) -> bool {
-    let Ok(ethernet) = EthernetFrame::new_checked(frame) else {
-        return true;
-    };
-    match ethernet.ethertype() {
-        EthernetProtocol::Ipv4 => Ipv4Packet::new_checked(ethernet.payload()).is_ok_and(|ip| {
-            ip.dst_addr().octets()[..3] == gateway.octets()[..3] && ip.dst_addr() != gateway
-        }),
-        EthernetProtocol::Arp => ArpPacket::new_checked(ethernet.payload())
-            .map(|arp| arp.target_protocol_addr() != gateway.octets())
-            .unwrap_or(true),
-        _ => true,
-    }
-}
-
-fn frame_addresses(frame: &[u8]) -> Option<(Ipv4Addr, Ipv4Addr)> {
-    let ethernet = EthernetFrame::new_checked(frame).ok()?;
-    match ethernet.ethertype() {
-        EthernetProtocol::Ipv4 => {
-            let ip = Ipv4Packet::new_checked(ethernet.payload()).ok()?;
-            Some((ip.src_addr(), ip.dst_addr()))
-        }
-        EthernetProtocol::Arp => {
-            let arp = ArpPacket::new_checked(ethernet.payload()).ok()?;
-            Some((
-                Ipv4Addr::from(<[u8; 4]>::try_from(arp.source_protocol_addr()).ok()?),
-                Ipv4Addr::from(<[u8; 4]>::try_from(arp.target_protocol_addr()).ok()?),
-            ))
-        }
-        _ => None,
-    }
-}
-
-fn valid_frame(frame: &[u8], source: Ipv4Addr, destination: Ipv4Addr) -> bool {
-    if frame.len() > FRAME_LIMIT
-        || source == destination
-        || !member_address(source)
-        || !member_address(destination)
-        || source.octets()[..3] != destination.octets()[..3]
-    {
-        return false;
-    }
-    let Ok(ethernet) = EthernetFrame::new_checked(frame) else {
-        return false;
-    };
-    if ethernet.src_addr().0 != guest_mac(source) {
-        return false;
-    }
-    match ethernet.ethertype() {
-        EthernetProtocol::Ipv4 => {
-            let Ok(ip) = Ipv4Packet::new_checked(ethernet.payload()) else {
-                return false;
-            };
-            ethernet.dst_addr().0 == guest_mac(destination)
-                && ip.verify_checksum()
-                && !ip.more_frags()
-                && ip.frag_offset() == 0
-                && matches!(
-                    ip.next_header(),
-                    IpProtocol::Tcp | IpProtocol::Udp | IpProtocol::Icmp
-                )
-        }
-        EthernetProtocol::Arp => {
-            let Ok(arp) = ArpPacket::new_checked(ethernet.payload()) else {
-                return false;
-            };
-            arp.hardware_type() == smoltcp::wire::ArpHardware::Ethernet
-                && arp.protocol_type() == EthernetProtocol::Ipv4
-                && arp.hardware_len() == 6
-                && arp.protocol_len() == 4
-                && arp.source_hardware_addr() == guest_mac(source)
-                && match arp.operation() {
-                    ArpOperation::Request => {
-                        ethernet.dst_addr().is_broadcast()
-                            || ethernet.dst_addr().0 == guest_mac(destination)
-                    }
-                    ArpOperation::Reply => {
-                        ethernet.dst_addr().0 == guest_mac(destination)
-                            && arp.target_hardware_addr() == guest_mac(destination)
-                    }
-                    _ => false,
-                }
-        }
-        _ => false,
     }
 }
 

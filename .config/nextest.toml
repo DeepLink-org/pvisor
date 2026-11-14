@@ -1,3 +1,10 @@
+[profile.windows-ci]
+# Preserve each test's own deadlines; this is a final watchdog for deadlocks.
+slow-timeout = { period = "60s", terminate-after = 3 }
+fail-fast = false
+status-level = "fail"
+final-status-level = "fail"
+
 # The real-time TCP recovery contract needs both guest stacks and backend threads.
 [[profile.default.overrides]]
 filter = 'package(=pvisor-overlaynet) & binary(=peer_network) & test(=tcp_guests::tcp_duplex_recovers_from_loss_duplication_and_reordering)'

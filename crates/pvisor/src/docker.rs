@@ -5,7 +5,9 @@
 #![deny(missing_docs)]
 use anyhow::{Context, bail, ensure};
 use fs2::FileExt;
-use pvisor_guest::control::{self, Reply, Request, read_frame, write_frame};
+use pvisor_guest::control::{
+    self, Reply, Request, parse_signal as signal, read_frame, write_frame,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
@@ -468,24 +470,6 @@ fn valid_name(name: &str) -> bool {
 
 fn uuid() -> String {
     uuid::Uuid::new_v4().simple().to_string()
-}
-
-fn signal(value: &str) -> anyhow::Result<i32> {
-    if let Ok(value) = value.parse::<i32>() {
-        ensure!((1..=64).contains(&value), "invalid signal");
-        return Ok(value);
-    }
-    Ok(match value.strip_prefix("SIG").unwrap_or(value) {
-        "TERM" | "" => 15,
-        "KILL" => 9,
-        "INT" => 2,
-        "QUIT" => 3,
-        "HUP" => 1,
-        "USR1" => 10,
-        "USR2" => 12,
-        "WINCH" => 28,
-        _ => bail!("unsupported image stop signal {value}"),
-    })
 }
 
 impl Store {

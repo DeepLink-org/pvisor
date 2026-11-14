@@ -132,6 +132,23 @@ not TLS termination or guest download execution. Disabled hooks retain forwardin
 
 ## Same-host peer packet networks
 
+`VmNetwork::start_with_io` runs the existing Ethernet/TCP/DNS data plane on a
+caller-owned asynchronous duplex stream. Its factory runs inside the network
+runtime, so Windows can adopt an IOCP byte pipe without a second packet engine.
+Adoption errors are returned before startup succeeds; drop cancels and joins
+the driver. Unix `start` retains its socket-pair convenience API and delegates
+to the same implementation.
+
+Windows peers use loopback UDP rather than Unix datagrams. The caller must
+supply a canonical, guest-excluded caller/SYSTEM-only directory with inherited
+private ACLs. Leased member records identify UDP endpoints and fresh 128-bit
+generations. Every received packet checks current source membership and both
+generation nonces; stale packets after address reuse are discarded. Frame
+validation and subnet policy are shared with Unix. Transmit discovery may be
+cached for 250 ms and may drop traffic during restart; it never authorizes
+delivery to an old receiver generation. Queue/socket budgets remain bounded.
+No UDP endpoint is exposed to guests or bound beyond host loopback.
+
 `VmNetworkConfig.peer_network` explicitly joins a private directory-backed
 network. The returned guest stream retains the same length-prefixed Ethernet
 contract. Peer-bound frames are forwarded before smoltcp, directly to the

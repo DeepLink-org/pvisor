@@ -3646,6 +3646,16 @@ fn create_explicit_ports(
                     port_io::term_fixed_size(0, 0),
                 )
             }
+            PortConfig::NamedOutputFile { name, path } => {
+                let file = std::fs::OpenOptions::new().create(true).append(true)
+                    .open(path).map_err(OpenConsoleFile)?;
+                PortDescription {
+                    name: name.into(),
+                    input: None,
+                    output: Some(port_io::output_file(file).map_err(OpenConsoleFile)?),
+                    terminal: None,
+                }
+            }
             PortConfig::NamedPipe { name, pipe_name } => {
                 let (input, output) = port_io::named_pipe(&pipe_name).map_err(OpenConsolePipe)?;
 

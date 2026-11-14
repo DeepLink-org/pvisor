@@ -5,7 +5,12 @@ work=$(mktemp -d)
 work=$(cd "$work" && pwd -P)
 trap 'echo "FAIL: $BASH_COMMAND" >&2; cat "$work/stdout" "$work/stderr" >&2 2>/dev/null || true' ERR
 trap 'rm -rf "$work"' EXIT
-test "$UV_PYTHON" == "$(mise where python)/bin/python3"
+case "$(uname -s)" in
+  MINGW*|MSYS*|CYGWIN*) python_binary="$(mise where python)/python.exe" ;;
+  *) python_binary="$(mise where python)/bin/python3" ;;
+esac
+test "$UV_PYTHON" == "$python_binary"
+uv run --no-project python -c 'import os, sys; assert os.path.samefile(sys.executable, os.environ["UV_PYTHON"])'
 # A fresh tool store must allow inspection before installation.
 MISE_DATA_DIR="$work/uninstalled-tools" mise -C "$MISE_PROJECT_ROOT" task fmt > "$work/task-info"
 grep -Fq 'Task: fmt' "$work/task-info"

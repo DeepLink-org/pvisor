@@ -1,7 +1,8 @@
 # 平台与执行器支持矩阵
 
-Linux x86_64 和 macOS Apple Silicon 提供完整 CLI 安装。Windows x86_64 目前只支持
-源码构建的 `pvisor vm-run`，还不能运行 Session、TUI、replay 或本地 Daemon。
+Linux x86_64 和 macOS Apple Silicon 提供完整 CLI 安装。Windows x86_64 支持
+源码构建的 `pvisor vm-run` 和实验性的原生 WHP 容器 profile，
+还不能运行 Session、TUI、replay 或本地 Daemon。
 
 一个 `pvisor.exe` 足够运行这个 VM 入口，但仍需 `libkrunfw.dll`、Linux rootfs 和
 其中的工作负载。CI 自动运行 Linux/KVM 和 Windows/WHP 的共同 VM 负载。
@@ -15,7 +16,7 @@ Linux/macOS 的完整 wheel 和 native archive 包含四个同版本、同目录
 
 | 程序与归属 | 何时使用 | Windows 状态 |
 | --- | --- | --- |
-| `pvisor` / `pvisor-cli` | 命令入口；自行启动普通 Session owner，`vm-run` 在当前进程执行 VM | 仅 `pvisor.exe` 的 `vm-run`、help/version |
+| `pvisor` / `pvisor-cli` | 命令入口；自行启动普通 Session owner，`vm-run` 在当前进程执行 VM | `pvisor.exe`：`vm-run` 和原生容器命令子集；不支持 Session |
 | `pvisor-tui` / `pvisor-cli` | `pvisor tui`、`spawn --tui/--ask`、交互 resume；TUI 启动同目录 `pvisor`，管理 PTY、终端和审查面板 | 未移植 |
 | `pvisor-replay` / `pvisor-cli` | `pvisor replay`；managed replay 再调用同目录 `pvisor`，沿用 Session/轨迹契约 | 未移植 |
 | `pvisor-daemon` / 独立 crate | `pvisor daemon`、cache/sandbox 服务；`--vm-memory-pool auto` 通过它发现或启动共享内存池 | 未移植 |
@@ -40,7 +41,7 @@ Linux payload，不需要安装宿主 `pvisor-guest.exe`。`whp_smoke.exe` 是 C
 | `vm-run` | KVM、可读写 `/dev/kvm`；Linux x86_64 guest | HVF、Hypervisor 签名；Linux aarch64 guest，不需要 macFUSE | WHP；启用功能并重启，嵌套 VM 需虚拟化透传；Linux x86_64 guest |
 | Host Session（`spawn`）、OverlayFS、review/apply/drop | 暂存需要 FUSE；sandbox 需要 user namespace 和 Landlock | 暂存需要 macFUSE 5.4.0+ FSKit；文件/网络控制使用 Seatbelt | 未移植 |
 | 原生 OCI Session（`container` / `--executor container`） | `crun`/`runc` 和匹配的静态 Linux 注入程序 | 不支持 | 不支持 |
-| Docker 风格 VM 容器及网络策略 | 有实现和独立契约 | 有实现，各能力需 HVF 验证 | 未移植 |
+| Docker 风格 VM 容器及网络策略 | 有实现和独立契约 | 有实现，各能力需 HVF 验证 | 实验性 WHP profile：镜像/生命周期、bridge/none 和 stdin/PTY；审查使用的 Win11 宿主两轮各 77 次原生命令验收通过 |
 | Linux host-root `stage`、`:stage` bind | Linux 专用路径 | 不支持 Linux host-root；staged bind 不推定与 Linux 等价 | 不支持 |
 | VM 快照、恢复、冷 RAM | 有 API 和测试，受 backing/profile 限制 | 有 API 和测试，受 HVF/backing 限制 | Unsupported；仅有暂停/继续 |
 | Gateway | 按所选执行器和配置启用 | 有宿主执行路径 | 此次 CLI 不包含 |
@@ -54,6 +55,42 @@ Linux arm64 有源码路径，需核对该宿主的构建/KVM 测试及匹配 ro
 安装后先运行 `pvisor --version`。Session 的有效控制查看 Run Bundle；`vm-run` 的
 结果通过退出码和宿主文件检查。
 
+Windows 容器要求将匹配的 `libkrunfw.dll` 和 `pvisor-rootfs.bin.gz` 放在程序旁。
+默认 `bridge` 复用 OverlayNet 的 IPv4 TCP/DNS 出网和同一 store 内的 guest 互联；
+`--network none` 不附加网卡。`run -i` 和 `exec -i` 提供 stdin，`-it` 增加真实
+guest PTY、初始尺寸、UTF-8 输入和终端 Ctrl+C。实时缩放、挂载、端口发布、
+自定义网络、build 和 Engine/Compose API 仍不支持。
+原生 `tests/windows_container_contract.py` 驱动覆盖这些流程；实现编译通过或
+在 Wine 下运行 Win32 单测，不能证明 WHP 网络/终端验收通过。审查使用的
+Win11/WHP 宿主已两次通过扩展的原生套件，包括控制台模式/代码页恢复及无遗留
+`pvisor.exe` 进程。这是本机验收，不是新一轮远端 CI 或小时级资源泄漏测试。
+
+### Windows 启动检查 {#windows-startup}
+
+当前 MSVC 构建的程序需要
+[x64 Microsoft Visual C++ Redistributable](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist)。
+如果连 `pvisor --version` 都以 `0xC0000135` 退出，说明 Windows 无法加载所需的
+DLL。检查运行库安装；CLI 导入了 `VCRUNTIME140.dll`。原生源码构建还需要
+MSVC C++ Build Tools 和 Windows SDK。
+
+WHP 要求二级地址转换（SLAT），即 AMD NPT 或 Intel EPT。嵌套宿主除了
+AMD-V/VT-x，还须向 Windows 暴露这项能力。仅开启宿主的 nested-paging
+选项不能证明 Windows guest 获得了 SLAT。如果启用 WHP 并重启后，VM 启动
+仍报 `HypervisorNotPresent`，在管理员 PowerShell 中检查功能和 hypervisor
+启动事件：
+
+```powershell
+Get-WindowsOptionalFeature -Online -FeatureName HypervisorPlatform
+Get-WinEvent -FilterHashtable @{
+    LogName = 'System'
+    ProviderName = 'Microsoft-Windows-Hyper-V-Hypervisor'
+} -MaxEvents 5 | Format-List TimeCreated, Id, Message
+```
+
+事件 59 报告缺少 SLAT 时，Windows hypervisor 未能启动。需要配置能够暴露
+SLAT 的外层 hypervisor，或使用具备相应硬件能力的 Windows 宿主。WHP 功能
+已启用且 `hypervisorlaunchtype Auto`，仍不足以证明 WHP 能运行 VM。
+
 ## 平台实现差异 {#implementation-parity}
 
 三平台共用 `vm-run` 的参数、GuestConfig 和认证退出协议。执行链为
@@ -62,9 +99,9 @@ virtio-fs → Rust PID 1 supervisor → Linux workload → token 认证退出`�
 
 | 实现层 | Linux | macOS | Windows |
 | --- | --- | --- | --- |
-| CLI 与进程 | 完整命令树、Session owner、信号和后代清理 | 相同 Session/companion 结构，终端与资源控制受 macOS 限制 | 最小命令树调用共享 `vm-run`；无 Session owner、控制 socket 或 Session 状态记录 |
+| CLI 与进程 | 完整命令树、Session owner、信号和后代清理 | 相同 Session/companion 结构，终端与资源控制受 macOS 限制 | `vm-run` 及容器 owner、绑定 generation 的 named pipe 和 runner Job；无 Session 状态 |
 | companion | 同目录发现、Unix uid/mode 检查、`exec` 派发 | 相同检查；解析 Homebrew 入口的真实安装目录 | 无 companion 派发；完整移植需定义 `.exe` 查找、ACL 信任及进程启动/退出传播 |
-| 终端 | PTY、终端前台归属和信号 | PTY、终端恢复；TUI 为独立程序 | 未接入 Windows 控制台/PTY 生命周期 |
+| 终端 | PTY、终端前台归属和信号 | PTY、终端恢复；TUI 为独立程序 | 容器 stdin/guest PTY、控制台模式恢复及可取消输入；已在审查使用的 Win11 宿主通过 ConPTY 检查 |
 | 共享服务 | Unix socket、同用户认证、锁和 readiness；sandbox 另需 cgroup/KVM | 使用 Unix IPC；支持缓存/池，sandbox API 不支持 | IPC、端点 ACL、锁、取消和服务回收尚未移植；连接远端 Linux API 不等于本地服务可用 |
 | VM 与文件系统 | KVM ioctl、Unix virtio-fs；完整运行时还有 overlay/network 配置 | HVF、Unix virtio-fs；受签名、页大小和宿主权限影响 | WHP 分区、APIC/PIT/TSC、Win32 waitable handle 和目录共享；Linux wire errno、标志位及 ABI 宽度需转换 |
 
@@ -131,12 +168,16 @@ HVF 实机用例已从托管 CI 移除；macOS 构建和常规测试继续运行
 | --- | --- | --- |
 | `ci.yml` / Rust Test / Linux / pvisor | 构建产品、x86_64 musl guest，检查 `/dev/kvm`，执行共同驱动 | `vm-cli-Linux` |
 | `ci.yml` / Rust Test / macOS / pvisor | 构建并签名产品，运行常规测试；不运行 HVF 实机负载 | 不生成 VM 运行制品 |
-| `windows-vm.yml` / native + firmware + whp | MSVC 构建 `pvisor --bin` 并测 parser；Linux 构建 DLL 和 x86_64 guest；Windows 执行相同驱动 | `windows-vm-whp-log` |
+| `windows-vm.yml` / native + firmware + whp | 独立原生分组检查；源码构建 DLL/guest/ext4 模板；WHP smoke、共同 VM 负载及两轮容器验收并行执行 | `windows-native-contracts`、`windows-vm-whp-smoke`、`windows-vm-whp-vm-cli`、`windows-vm-whp-containers` |
 
 Windows 原有 `whp_smoke` 继续检查 pause/resume、ready 回调失败清理和旧退出 ioctl
 拒绝。Windows CLI 构建使用 `cargo build --locked -p pvisor-cli --bin pvisor`，
 测试使用 `mise run test -- pvisor-cli -- --lib --bin pvisor`；现有 Unix 集成测试不在此选择中。
 CI 用例失败会使主 CI 失败；WHP 不可用或需要重启时也会失败。
+Windows nextest profile 增加 180 秒死锁保护，保留测试自身更短的期限。
+证据写在构建缓存之外，包含 runner 版本及输入哈希；容器诊断每个文件只保留
+最后最多 1 MiB，不上传原始磁盘或 blobs。清理错误或残留 runner 会使验收失败，
+清理只针对该 job 下载的可执行文件。
 
 手动运行前准备可执行的 `pvisor`、匹配架构的静态 guest 和固件；macOS 还需签名。
 

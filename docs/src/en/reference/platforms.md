@@ -1,7 +1,8 @@
 # Platforms and executor support
 
 Linux x86_64 and Apple Silicon macOS have full CLI installations. Windows x86_64
-currently supports source-built `pvisor vm-run`; Sessions, TUI, replay and the local
+supports source-built `pvisor vm-run` and an experimental native WHP container
+profile; Sessions, TUI, replay and the local
 Daemon are not ported.
 
 One `pvisor.exe` covers this VM entry point, with `libkrunfw.dll`, a Linux rootfs
@@ -18,7 +19,7 @@ resident Daemon. Other components are invoked by the features that use them.
 
 | Program and owner | Used for | Windows status |
 | --- | --- | --- |
-| `pvisor` / `pvisor-cli` | Command entry; self-launches ordinary Session owners; `vm-run` executes a VM in the current process | Only `pvisor.exe` with `vm-run`, help/version |
+| `pvisor` / `pvisor-cli` | Command entry; self-launches ordinary Session owners; `vm-run` executes a VM in the current process | `pvisor.exe`: `vm-run` and native container command subset; no Sessions |
 | `pvisor-tui` / `pvisor-cli` | `pvisor tui`, `spawn --tui/--ask`, interactive resume; launches adjacent `pvisor` and owns the PTY, terminal and review panels | Not ported |
 | `pvisor-replay` / `pvisor-cli` | `pvisor replay`; managed replay calls adjacent `pvisor` using Session/trajectory contracts | Not ported |
 | `pvisor-daemon` / separate crate | `pvisor daemon`, cache/sandbox services; `--vm-memory-pool auto` discovers or starts the shared pool through it | Not ported |
@@ -45,7 +46,7 @@ pool calls live in [automatic pool discovery](https://github.com/DeepLink-org/pv
 | `vm-run` | KVM, readable/writable `/dev/kvm`; Linux x86_64 guest | HVF, Hypervisor signing; Linux aarch64 guest, no macFUSE needed | WHP enabled followed by reboot; nested hosts must expose virtualization; Linux x86_64 guest |
 | Host Sessions (`spawn`), OverlayFS, review/apply/drop | FUSE for staging; user namespaces and Landlock for sandbox | macFUSE 5.4.0+ FSKit for staging; Seatbelt for file/network controls | Not ported |
 | Native OCI Sessions (`container` / `--executor container`) | `crun`/`runc` and a matching static Linux injected binary | Unsupported | Unsupported |
-| Docker-style VM containers and network policy | Implementation and separate contracts | Implementation; each capability needs HVF validation | Not ported |
+| Docker-style VM containers and network policy | Implementation and separate contracts | Implementation; each capability needs HVF validation | Experimental WHP profile: image/lifecycle, bridge/none and stdin/PTY; two 77-command native campaigns passed on the reviewed Win11 host |
 | Linux host-root `stage`, `:stage` binds | Linux-specific paths | No Linux host-root; staged-bind equivalence with Linux is unestablished | Unsupported |
 | VM snapshots, restore, cold RAM | APIs/tests with backing/profile restrictions | APIs/tests with HVF/backing restrictions | Unsupported; pause/resume only |
 | Gateway | Depends on executor and configuration | Host execution path exists | Excluded from this CLI |
@@ -60,6 +61,47 @@ has no current release support promise and is outside `vm-run`.
 After installation, run `pvisor --version`. Inspect effective Session controls in
 the Run Bundle; check `vm-run` results through exit status and host files.
 
+Windows containers require matching `libkrunfw.dll` and `pvisor-rootfs.bin.gz`
+beside the executable. Default `bridge` uses OverlayNet's IPv4 TCP/DNS egress
+and same-store guest peer traffic; `--network none` omits the NIC. `run -i` and
+`exec -i` supply stdin, while `-it` adds a guest PTY with initial dimensions,
+UTF-8 input and terminal Ctrl+C. Live resizing, mounts, published ports, custom
+networks, build and Engine/Compose APIs remain unsupported. The native
+`tests/windows_container_contract.py` driver covers these workflows; compiling
+the implementation or running Win32 tests under Wine does not establish WHP
+network/terminal acceptance. The reviewed Win11/WHP host passed the expanded
+native suite twice, including console mode/code-page restoration and no remaining
+`pvisor.exe` processes. This is local acceptance, not a new remote CI result or
+an hours-long resource-leak test.
+
+### Windows startup checks {#windows-startup}
+
+The current MSVC binaries require the
+[x64 Microsoft Visual C++ Redistributable](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist).
+If even `pvisor --version` exits with `0xC0000135`, Windows could not load a
+required DLL. Check the runtime installation; the CLI imports `VCRUNTIME140.dll`.
+Native source builds also need MSVC C++ Build Tools and a Windows SDK.
+
+WHP requires second-level address translation (SLAT): AMD NPT or Intel EPT.
+A nested host must expose this capability to Windows as well as AMD-V/VT-x.
+Enabling the host's nested-paging option alone does not establish that the
+Windows guest receives SLAT. If VM startup reports `HypervisorNotPresent`
+after enabling WHP and rebooting, inspect the feature and hypervisor startup
+events in an administrator PowerShell:
+
+```powershell
+Get-WindowsOptionalFeature -Online -FeatureName HypervisorPlatform
+Get-WinEvent -FilterHashtable @{
+    LogName = 'System'
+    ProviderName = 'Microsoft-Windows-Hyper-V-Hypervisor'
+} -MaxEvents 5 | Format-List TimeCreated, Id, Message
+```
+
+Event 59 reporting that SLAT is required means the Windows hypervisor could
+not start. Configure an outer hypervisor that exposes SLAT, or use a Windows
+host with the required hardware capabilities. An enabled WHP feature and
+`hypervisorlaunchtype Auto` alone do not establish that WHP can run a VM.
+
 ## Platform implementations {#implementation-parity}
 
 All three platforms share `vm-run` arguments, GuestConfig and authenticated exit
@@ -69,9 +111,9 @@ virtio-fs → Rust PID 1 supervisor → Linux workload → token-authenticated e
 
 | Layer | Linux | macOS | Windows |
 | --- | --- | --- | --- |
-| CLI/processes | Full command tree, Session owners, signals and descendant cleanup | Same Session/companion structure, with macOS terminal/resource limits | Minimal command tree calls shared `vm-run`; no Session owner, control socket or Session state records |
+| CLI/processes | Full command tree, Session owners, signals and descendant cleanup | Same Session/companion structure, with macOS terminal/resource limits | `vm-run` plus container owners, generation-bound named pipes and runner Jobs; no Session state |
 | Companions | Adjacent discovery, Unix uid/mode checks, `exec` dispatch | Same checks; resolves Homebrew entry to its real installation | No dispatch; a full port needs `.exe` lookup, ACL trust and process startup/exit propagation |
-| Terminal | PTY, foreground ownership and signals | PTY, terminal restoration; separate TUI | Windows console/PTY lifecycle is not integrated |
+| Terminal | PTY, foreground ownership and signals | PTY, terminal restoration; separate TUI | Container stdin/guest PTY, console mode restoration and cancellable input; ConPTY checked on the reviewed Win11 host |
 | Shared services | Unix sockets, same-user authentication, locks and readiness; sandbox also needs cgroup/KVM | Unix IPC; cache/pool supported, sandbox API unsupported | IPC, endpoint ACLs, locks, cancellation and service cleanup are not ported; reaching a remote Linux API does not supply a local service |
 | VM/filesystem | KVM ioctls, Unix virtio-fs; full runtime also has overlay/network configurations | HVF, Unix virtio-fs; signing, page-size and host-permission differences | WHP partitions, APIC/PIT/TSC, Win32 waitable handles and directory shares; Linux wire errno, flags and ABI widths require conversion |
 
@@ -151,7 +193,7 @@ continue; their results do not establish real HVF acceptance.
 | --- | --- | --- |
 | `ci.yml` / Rust Test / Linux / pvisor | Build product and x86_64 musl guest, check `/dev/kvm`, execute shared driver | `vm-cli-Linux` |
 | `ci.yml` / Rust Test / macOS / pvisor | Build/sign product and run conventional tests; no real HVF workload | No VM execution artifact |
-| `windows-vm.yml` / native + firmware + whp | MSVC builds `pvisor --bin` and tests parser; Linux builds DLL and x86_64 guest; Windows executes same driver | `windows-vm-whp-log` |
+| `windows-vm.yml` / native + firmware + whp | Independent native checks; source-built DLL/guest/ext4 template; parallel WHP smoke, shared VM workload and two container campaigns | `windows-native-contracts`, `windows-vm-whp-smoke`, `windows-vm-whp-vm-cli`, `windows-vm-whp-containers` |
 
 Existing Windows `whp_smoke` still checks pause/resume, rejected-ready-callback
 cleanup and legacy exit ioctl rejection. Windows CLI builds use
@@ -159,6 +201,11 @@ cleanup and legacy exit ioctl rejection. Windows CLI builds use
 `mise run test -- pvisor-cli -- --lib --bin pvisor`. Existing Unix integration
 tests are outside that selection. Failed cases fail main CI; unavailable
 WHP or a required reboot also fail.
+The Windows nextest profile adds a 180-second deadlock watchdog while preserving
+the tests' shorter deadlines. Evidence is written outside build caches, with
+runner versions and input hashes. Container diagnostics retain at most the last
+1 MiB per file and exclude raw disks/blobs. Cleanup errors or leftover runners
+fail acceptance; cleanup only targets this job's downloaded executables.
 
 Manual execution needs an executable `pvisor`, matching static guest and
 firmware; macOS also requires signing.

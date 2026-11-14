@@ -170,6 +170,7 @@ jobs:
             packages: >-
               pvisor-journal
               pvisor-guest
+              pvisor-containers
               pvisor-core
               pvisor-overlay-core
               pvisor-overlayfs
@@ -190,7 +191,7 @@ jobs:
             os: macos-latest
             shard: core
             packages: >-
-              pvisor-journal pvisor-guest pvisor-shim pvisor-core pvisor-gateway
+              pvisor-journal pvisor-guest pvisor-containers pvisor-shim pvisor-core pvisor-gateway
               pvisor-overlay-core pvisor-overlayfs pvisor-overlaynet pvisor-replay
             prepare_pvisor: false
           - platform: macOS
