@@ -168,6 +168,11 @@ fn serve(
             tty,
         } => {
             let mut config = config.clone();
+            // Transport/root construction belongs to PID 1's initial boot, not
+            // to a subsequent process launch. Exec receives its own explicit
+            // stdin/PTY ownership rather than inheriting the main attachment.
+            config.serial_control = false;
+            config.root_disk = None;
             config.argv = argv;
             if replace_env {
                 config.env = env;
@@ -383,10 +388,683 @@ pub(super) fn start(
     });
 }
 
+pub(super) fn serial_ports() -> io::Result<(std::fs::File, std::fs::File)> {
+    use pvisor_guest::control::{SERIAL_COMMAND_PORT, SERIAL_SIGNAL_PORT};
+    use std::{
+        fs,
+        path::Path,
+        time::{Duration, Instant},
+    };
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut paths = BTreeMap::new();
+    while paths.len() != 2 {
+        for entry in fs::read_dir("/sys/class/virtio-ports")? {
+            let entry = entry?;
+            if let Ok(name) = fs::read_to_string(entry.path().join("name"))
+                && [SERIAL_COMMAND_PORT, SERIAL_SIGNAL_PORT].contains(&name.trim())
+            {
+                paths.insert(
+                    name.trim().to_owned(),
+                    Path::new("/dev").join(entry.file_name()),
+                );
+            }
+        }
+        if paths.len() == 2 {
+            break;
+        }
+        if Instant::now() >= deadline {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "serial control ports did not appear",
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    let open = |name| -> io::Result<std::fs::File> {
+        let path = paths.get(name).unwrap();
+        let file = fs::OpenOptions::new().read(true).write(true).open(path)?;
+        // Preserve PID 1's descriptor, but never give workload root a path to
+        // steal host requests or forge replies. The launch contract also drops
+        // mknod/mount/ptrace/module capabilities and sysfs is remounted read-only.
+        super::mount_with_options("/dev/null", path, "", libc::MS_BIND, None)?;
+        Ok(file)
+    };
+    let command = open(SERIAL_COMMAND_PORT)?;
+    let signal = open(SERIAL_SIGNAL_PORT)?;
+    for path in ["/sys/fs/cgroup", "/sys"] {
+        super::mount_with_options(
+            "none",
+            Path::new(path),
+            "",
+            libc::MS_REMOUNT | libc::MS_RDONLY | libc::MS_NOSUID | libc::MS_NODEV | libc::MS_NOEXEC,
+            None,
+        )?;
+    }
+    Ok((command, signal))
+}
+
+/// Two independent, bounded multiplexed adapters. Explicit stdin EOF lets an
+/// exec continue; unexpected attachment loss cancels its process group.
+/// Signals never wait for the command port, and all launches use Processes.
+pub(super) fn start_serial(
+    mut ports: (std::fs::File, std::fs::File),
+    config: GuestConfig,
+    processes: Processes,
+    pid: u32,
+    input: Option<Box<dyn Write + Send>>,
+) -> io::Result<()> {
+    // This frame is emitted after process creation and before PID 1 can reap a
+    // fast workload. It is distinct from a later Ping and cannot race its exit.
+    write_frame(
+        &mut ports.0,
+        &pvisor_guest::control::SerialReply {
+            id: 0,
+            reply: Reply::Ready,
+        },
+    )?;
+    let input = Arc::new(Mutex::new(input));
+    for (port, signals) in [(ports.0, false), (ports.1, true)] {
+        let config = config.clone();
+        let processes = processes.clone();
+        let input = input.clone();
+        std::thread::spawn(move || {
+            let result = port.try_clone().and_then(|writer| {
+                serial_loop(port, writer, signals, config, processes, pid, input)
+            });
+            if let Err(error) = result {
+                eprintln!("serial control ended: {error}");
+            }
+        });
+    }
+    Ok(())
+}
+
+struct SerialInputRoute {
+    sender: std::sync::mpsc::SyncSender<StdinFrame>,
+    cancel: UnixStream,
+    eof: bool,
+}
+
+fn serial_loop(
+    mut serial: impl Read,
+    writer: impl Write + Send + 'static,
+    signals: bool,
+    config: GuestConfig,
+    processes: Processes,
+    pid: u32,
+    input: Input,
+) -> io::Result<()> {
+    use pvisor_guest::control::{SerialHostFrame, SerialInputAck, SerialReply, SerialRequest};
+    let trace = config
+        .env
+        .get("PVISOR_SERIAL_TRACE")
+        .is_some_and(|v| v == "1");
+    let writer = Arc::new(Mutex::new(writer));
+    let active = Arc::new(AtomicUsize::new(0));
+    let routes = Arc::new(Mutex::new(BTreeMap::<u64, SerialInputRoute>::new()));
+    struct CloseRoutes(Arc<Mutex<BTreeMap<u64, SerialInputRoute>>>);
+    impl Drop for CloseRoutes {
+        fn drop(&mut self) {
+            for (_, route) in std::mem::take(&mut *self.0.lock().unwrap()) {
+                let _ = route.cancel.shutdown(std::net::Shutdown::Both);
+            }
+        }
+    }
+    let _close = CloseRoutes(routes.clone());
+    let mut last = 0;
+    loop {
+        if trace {
+            eprintln!("serial control signal={signals}: awaiting request");
+        }
+        let SerialRequest { id, request } = match read_frame::<SerialHostFrame>(&mut serial)? {
+            SerialHostFrame::Request(request) => request,
+            SerialHostFrame::Cancel(cancel) => {
+                if let Some(route) = routes.lock().unwrap().get(&cancel.cancel_id) {
+                    let _ = route.cancel.shutdown(std::net::Shutdown::Both);
+                }
+                continue;
+            }
+            SerialHostFrame::Input(frame) => {
+                let mut routes = routes.lock().unwrap();
+                if let Some(route) = routes.get_mut(&frame.input_id) {
+                    let oversized =
+                        matches!(&frame.input, StdinFrame::Data { bytes } if bytes.len() > 16384);
+                    let eof = matches!(frame.input, StdinFrame::Eof {});
+                    if route.eof || oversized || route.sender.try_send(frame.input).is_err() {
+                        let _ = route.cancel.shutdown(std::net::Shutdown::Both);
+                        write_frame(
+                            &mut *writer.lock().unwrap(),
+                            &SerialReply {
+                                id: frame.input_id,
+                                reply: Reply::Failure {
+                                    errno: libc::EBUSY,
+                                    message: "stdin credit exceeded or input already closed".into(),
+                                },
+                            },
+                        )?;
+                    } else {
+                        route.eof = eof;
+                    }
+                } else {
+                    write_frame(
+                        &mut *writer.lock().unwrap(),
+                        &SerialInputAck {
+                            input_ack: frame.input_id,
+                        },
+                    )?;
+                }
+                continue;
+            }
+        };
+        if id == 0 || id <= last {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "serial request identity is stale",
+            ));
+        }
+        last = id;
+        if trace {
+            eprintln!("serial control signal={signals}: received request");
+        }
+        let exec = matches!(request, Request::Exec { .. } | Request::Start { .. });
+        let main_input = matches!(request, Request::Input {});
+        let allowed = matches!(request, Request::Ping {})
+            || (signals
+                && matches!(
+                    request,
+                    Request::Stop { .. } | Request::Signal { .. } | Request::Resize { .. }
+                ))
+            || (!signals && (exec || main_input));
+        if !allowed || active.load(Ordering::Acquire) >= control::SERIAL_MAX_REQUESTS {
+            write_frame(
+                &mut *writer.lock().unwrap(),
+                &SerialReply {
+                    id,
+                    reply: Reply::Failure {
+                        errno: if allowed { libc::EBUSY } else { libc::ENOTSUP },
+                        message: if allowed {
+                            "too many concurrent serial requests"
+                        } else {
+                            "unsupported serial operation"
+                        }
+                        .into(),
+                    },
+                },
+            )?;
+            continue;
+        }
+        let (mut client, mut server) = UnixStream::pair()?;
+        write_frame(&mut client, &request)?;
+        let input_worker = if exec || main_input {
+            let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+            routes.lock().unwrap().insert(
+                id,
+                SerialInputRoute {
+                    sender,
+                    cancel: client.try_clone()?,
+                    eof: false,
+                },
+            );
+            let writer = writer.clone();
+            let mut input_stream = client.try_clone()?;
+            Some(std::thread::spawn(move || {
+                while let Ok(frame) = receiver.recv() {
+                    let eof = matches!(frame, StdinFrame::Eof {});
+                    if write_frame(&mut input_stream, &frame).is_err() {
+                        break;
+                    }
+                    if write_frame(
+                        &mut *writer.lock().unwrap(),
+                        &SerialInputAck { input_ack: id },
+                    )
+                    .is_err()
+                    {
+                        break;
+                    }
+                    if eof {
+                        break;
+                    }
+                }
+            }))
+        } else {
+            None
+        };
+        let config = config.clone();
+        let processes = processes.clone();
+        let input = input.clone();
+        let routes = routes.clone();
+        let writer = writer.clone();
+        let active = active.clone();
+        active.fetch_add(1, Ordering::AcqRel);
+        std::thread::spawn(move || {
+            struct Admission(Arc<AtomicUsize>);
+            impl Drop for Admission {
+                fn drop(&mut self) {
+                    self.0.fetch_sub(1, Ordering::AcqRel);
+                }
+            }
+            let _admission = Admission(active);
+            let handler = std::thread::spawn(move || {
+                let result = server
+                    .try_clone()
+                    .and_then(|stream| serve(stream, &config, &processes, pid, &input));
+                if let Err(error) = result {
+                    let _ = write_frame(
+                        &mut server,
+                        &Reply::Failure {
+                            errno: error.raw_os_error().unwrap_or(libc::EIO),
+                            message: error.to_string(),
+                        },
+                    );
+                }
+            });
+            let result = (|| -> io::Result<()> {
+                let mut input_ready = false;
+                loop {
+                    let reply: Reply = read_frame(&mut client)?;
+                    let complete = matches!(reply, Reply::Failure { .. } | Reply::Exit { .. })
+                        || (!exec
+                            && matches!(reply, Reply::Ready)
+                            && (!main_input || std::mem::replace(&mut input_ready, true)));
+                    write_frame(&mut *writer.lock().unwrap(), &SerialReply { id, reply })?;
+                    if complete {
+                        break;
+                    }
+                }
+                Ok(())
+            })();
+            let _ = client.shutdown(std::net::Shutdown::Both);
+            routes.lock().unwrap().remove(&id);
+            if let Err(error) = result {
+                let _ = write_frame(
+                    &mut *writer.lock().unwrap(),
+                    &SerialReply {
+                        id,
+                        reply: Reply::Failure {
+                            errno: libc::EIO,
+                            message: error.to_string(),
+                        },
+                    },
+                );
+            }
+            let _ = handler.join();
+            if let Some(worker) = input_worker {
+                let _ = worker.join();
+            }
+        });
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::collections::BTreeMap;
+
+    #[test]
+    fn serial_request_id_replay_closes_the_connection_before_readmission() {
+        use pvisor_guest::control::{SerialReply, SerialRequest};
+        let (mut host, guest) = UnixStream::pair().unwrap();
+        host.set_read_timeout(Some(std::time::Duration::from_secs(5)))
+            .unwrap();
+        let worker = std::thread::spawn(move || {
+            serial_loop(
+                guest.try_clone().unwrap(),
+                guest,
+                false,
+                GuestConfig::default(),
+                Processes::default(),
+                0,
+                Arc::new(Mutex::new(None)),
+            )
+        });
+        write_frame(
+            &mut host,
+            &SerialRequest {
+                id: 1,
+                request: Request::Ping {},
+            },
+        )
+        .unwrap();
+        assert!(matches!(
+            read_frame::<SerialReply>(&mut host).unwrap(),
+            SerialReply {
+                id: 1,
+                reply: Reply::Ready
+            }
+        ));
+        write_frame(
+            &mut host,
+            &SerialRequest {
+                id: 1,
+                request: Request::Ping {},
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            worker.join().unwrap().unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
+    }
+
+    #[test]
+    fn serial_adapter_reuses_the_process_registry_and_keeps_signals_independent() {
+        let config = GuestConfig {
+            argv: vec!["/bin/sleep".into(), "30".into()],
+            cwd: "/".into(),
+            process: Some(pvisor_guest::ProcessConfig {
+                new_session: true,
+                stdin: pvisor_guest::StdinMode::Pipe,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let processes = Processes::default();
+        let spawned = processes.spawn(&config, false).unwrap();
+        let input = Arc::new(Mutex::new(spawned.input));
+        let main = spawned.process;
+        let pid = main.id();
+        let reaper = {
+            let processes = processes.clone();
+            std::thread::spawn(move || processes.supervise(main))
+        };
+        struct Cleanup(
+            Processes,
+            u32,
+            Option<std::thread::JoinHandle<io::Result<i32>>>,
+        );
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                let _ = self.0.signal(self.1, libc::SIGKILL);
+                if let Some(reaper) = self.2.take() {
+                    let _ = reaper.join();
+                }
+            }
+        }
+        let _cleanup = Cleanup(processes.clone(), pid, Some(reaper));
+        let (mut command, endpoint) = UnixStream::pair().unwrap();
+        command
+            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+            .unwrap();
+        let command_worker = {
+            let config = config.clone();
+            let processes = processes.clone();
+            let input = input.clone();
+            std::thread::spawn(move || {
+                serial_loop(
+                    endpoint.try_clone().unwrap(),
+                    endpoint,
+                    false,
+                    config,
+                    processes,
+                    pid,
+                    input,
+                )
+            })
+        };
+        let (mut signal, endpoint) = UnixStream::pair().unwrap();
+        signal
+            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+            .unwrap();
+        let signal_worker = std::thread::spawn(move || {
+            serial_loop(
+                endpoint.try_clone().unwrap(),
+                endpoint,
+                true,
+                config,
+                processes,
+                pid,
+                input,
+            )
+        });
+        use pvisor_guest::control::{SerialReply, SerialRequest};
+        write_frame(
+            &mut command,
+            &SerialRequest {
+                id: 1,
+                request: Request::Ping {},
+            },
+        )
+        .unwrap();
+        assert!(matches!(
+            read_frame::<SerialReply>(&mut command).unwrap(),
+            SerialReply {
+                id: 1,
+                reply: Reply::Ready
+            }
+        ));
+        write_frame(
+            &mut command,
+            &SerialRequest {
+                id: 2,
+                request: Request::Exec {
+                    argv: vec![
+                        "/bin/sh".into(),
+                        "-c".into(),
+                        "printf serial-output; sleep 30".into(),
+                    ],
+                    env: Default::default(),
+                    unset_env: Vec::new(),
+                    cwd: None,
+                    user: None,
+                    tty: None,
+                },
+            },
+        )
+        .unwrap();
+        assert!(matches!(
+            read_frame::<SerialReply>(&mut command).unwrap(),
+            SerialReply {
+                id: 2,
+                reply: Reply::Ready
+            }
+        ));
+        let output: SerialReply = read_frame(&mut command).unwrap();
+        assert!(
+            matches!(output, SerialReply { id: 2, reply: Reply::Output { stream: 1, ref bytes } } if bytes == b"serial-output")
+        );
+        // A second exec on the same port must finish while the first sleeps.
+        write_frame(
+            &mut command,
+            &SerialRequest {
+                id: 3,
+                request: Request::Exec {
+                    argv: vec!["/bin/echo".into(), "concurrent-output".into()],
+                    env: Default::default(),
+                    unset_env: Vec::new(),
+                    cwd: None,
+                    user: None,
+                    tty: None,
+                },
+            },
+        )
+        .unwrap();
+        let mut second = Vec::new();
+        loop {
+            match read_frame::<SerialReply>(&mut command).unwrap() {
+                SerialReply {
+                    id: 3,
+                    reply: Reply::Ready,
+                } => (),
+                SerialReply {
+                    id: 3,
+                    reply: Reply::Output { bytes, .. },
+                } => second.extend(bytes),
+                SerialReply {
+                    id: 3,
+                    reply: Reply::Exit { code: 0 },
+                } => break,
+                reply => panic!("unexpected concurrent reply: {reply:?}"),
+            }
+        }
+        assert_eq!(second, b"concurrent-output\n");
+        use pvisor_guest::control::{ExecLaunch, SerialGuestFrame, SerialInput};
+        write_frame(&mut command, &SerialRequest { id: 4, request: Request::Start {
+            launch: ExecLaunch {
+                argv: vec!["/bin/sh".into(), "-c".into(),
+                    "test -t 0 && test -t 1 && stty size; read line; printf 'terminal:%s' \"$line\"".into()],
+                env: Default::default(), replace_env: false, limits: Default::default(),
+                cwd: None, user: None, tty: Some([37, 91]),
+            },
+        }}).unwrap();
+        assert!(matches!(
+            read_frame::<SerialGuestFrame>(&mut command).unwrap(),
+            SerialGuestFrame::Reply(SerialReply {
+                id: 4,
+                reply: Reply::Started { .. }
+            })
+        ));
+        write_frame(
+            &mut command,
+            &SerialInput {
+                input_id: 4,
+                input: StdinFrame::Data {
+                    bytes: b"hello\n".to_vec(),
+                },
+            },
+        )
+        .unwrap();
+        let mut terminal = Vec::new();
+        let (mut ack, mut exited) = (false, false);
+        while !ack || !exited {
+            match read_frame::<SerialGuestFrame>(&mut command).unwrap() {
+                SerialGuestFrame::InputAck(a) if a.input_ack == 4 => ack = true,
+                SerialGuestFrame::Reply(SerialReply {
+                    id: 4,
+                    reply: Reply::Output { bytes, .. },
+                }) => terminal.extend(bytes),
+                SerialGuestFrame::Reply(SerialReply {
+                    id: 4,
+                    reply: Reply::Exit { code: 0 },
+                }) => exited = true,
+                frame => panic!("unexpected PTY frame: {frame:?}"),
+            }
+        }
+        let terminal = String::from_utf8(terminal).unwrap();
+        assert!(
+            terminal.contains("37 91") && terminal.contains("terminal:hello"),
+            "{terminal:?}"
+        );
+        // Main input uses the very same adapter, including explicit EOF.
+        write_frame(
+            &mut command,
+            &SerialRequest {
+                id: 5,
+                request: Request::Input {},
+            },
+        )
+        .unwrap();
+        assert!(matches!(
+            read_frame::<SerialGuestFrame>(&mut command).unwrap(),
+            SerialGuestFrame::Reply(SerialReply {
+                id: 5,
+                reply: Reply::Ready
+            })
+        ));
+        write_frame(
+            &mut command,
+            &SerialInput {
+                input_id: 5,
+                input: StdinFrame::Eof {},
+            },
+        )
+        .unwrap();
+        let (mut ack, mut closed) = (false, false);
+        while !ack || !closed {
+            match read_frame::<SerialGuestFrame>(&mut command).unwrap() {
+                SerialGuestFrame::InputAck(a) if a.input_ack == 5 => ack = true,
+                SerialGuestFrame::Reply(SerialReply {
+                    id: 5,
+                    reply: Reply::Ready,
+                }) => closed = true,
+                frame => panic!("unexpected main-input frame: {frame:?}"),
+            }
+        }
+        write_frame(
+            &mut command,
+            &SerialRequest {
+                id: 6,
+                request: Request::Start {
+                    launch: ExecLaunch {
+                        argv: vec!["/bin/sleep".into(), "30".into()],
+                        env: Default::default(),
+                        replace_env: false,
+                        limits: Default::default(),
+                        cwd: None,
+                        user: None,
+                        tty: Some([24, 80]),
+                    },
+                },
+            },
+        )
+        .unwrap();
+        assert!(matches!(
+            read_frame::<SerialGuestFrame>(&mut command).unwrap(),
+            SerialGuestFrame::Reply(SerialReply {
+                id: 6,
+                reply: Reply::Started { .. }
+            })
+        ));
+        write_frame(
+            &mut command,
+            &SerialInput {
+                input_id: 6,
+                input: StdinFrame::Data { bytes: vec![3] },
+            },
+        )
+        .unwrap();
+        let (mut ack, mut interrupted) = (false, false);
+        while !ack || !interrupted {
+            match read_frame::<SerialGuestFrame>(&mut command).unwrap() {
+                SerialGuestFrame::InputAck(a) if a.input_ack == 6 => ack = true,
+                SerialGuestFrame::Reply(SerialReply {
+                    id: 6,
+                    reply: Reply::Output { .. },
+                }) => (),
+                SerialGuestFrame::Reply(SerialReply {
+                    id: 6,
+                    reply: Reply::Exit { code: 130 },
+                }) => interrupted = true,
+                frame => panic!("unexpected interrupt frame: {frame:?}"),
+            }
+        }
+        write_frame(
+            &mut signal,
+            &SerialRequest {
+                id: 1,
+                request: Request::Stop {
+                    signal: libc::SIGTERM,
+                },
+            },
+        )
+        .unwrap();
+        assert!(matches!(
+            read_frame::<SerialReply>(&mut signal).unwrap(),
+            SerialReply {
+                id: 1,
+                reply: Reply::Ready
+            }
+        ));
+        loop {
+            match read_frame::<SerialReply>(&mut command).unwrap() {
+                SerialReply {
+                    id: 2,
+                    reply: Reply::Exit { code },
+                } => {
+                    assert_ne!(code, 0);
+                    break;
+                }
+                SerialReply {
+                    id: 2,
+                    reply: Reply::Output { .. },
+                } => (),
+                reply => panic!("unexpected reply: {reply:?}"),
+            }
+        }
+        command.shutdown(std::net::Shutdown::Both).unwrap();
+        signal.shutdown(std::net::Shutdown::Both).unwrap();
+        assert!(command_worker.join().unwrap().is_err());
+        assert!(signal_worker.join().unwrap().is_err());
+    }
 
     #[test]
     #[ignore = "requires Linux and preload/glibc fixtures; see guest README"]

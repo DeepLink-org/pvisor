@@ -80,6 +80,11 @@ checksum = "sha256:22625deaf5757e7c266cf1a096c9151a06b598b1e14632a2ec9993d58ec5f
 url = "https://github.com/astral-sh/python-build-standalone/releases/download/20260211/cpython-3.12.12+20260211-aarch64-apple-darwin-install_only_stripped.tar.gz"
 provenance = "github-attestations"
 
+[tools.python."platforms.windows-x64"]
+checksum = "sha256:93bf8e8c05ede0077b197a29c99ebdaf253497f27190097494265150b4e70ba8"
+url = "https://github.com/astral-sh/python-build-standalone/releases/download/20260211/cpython-3.12.12+20260211-x86_64-pc-windows-msvc-install_only_stripped.tar.gz"
+provenance = "github-attestations"
+
 [[tools.ruff]]
 version = "0.17.2"
 backend = "aqua:astral-sh/ruff"
@@ -121,6 +126,12 @@ provenance = "github-attestations"
 checksum = "sha256:d8f59c38e8c4168ee468d423cd63184be12fa6995a4283d41ee1a14d003c9453"
 url = "https://github.com/astral-sh/uv/releases/download/0.11.19/uv-aarch64-apple-darwin.tar.gz"
 url_api = "https://api.github.com/repos/astral-sh/uv/releases/assets/437685424"
+provenance = "github-attestations"
+
+[tools.uv."platforms.windows-x64"]
+checksum = "sha256:1665fc8e37b5d70a134820d6d7891747471a2ac8bc940ee7af0b69fd03b28d61"
+url = "https://github.com/astral-sh/uv/releases/download/0.11.19/uv-x86_64-pc-windows-msvc.zip"
+url_api = "https://api.github.com/repos/astral-sh/uv/releases/assets/437685517"
 provenance = "github-attestations"
 
 [[tools.zig]]

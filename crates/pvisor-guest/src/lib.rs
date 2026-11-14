@@ -10,6 +10,37 @@ use std::process::Command;
 
 pub const CONFIG_PATH: &str = "/.pvisor-guest.json";
 
+/// A verified OCI layer read through the bootstrap's read-only `pvisor-layers`
+/// share. Paths have Linux syntax and must be immediate SHA-256-named children
+/// of `/.pvisor-layers`. The guest verifies compressed bytes before extraction.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ImageLayer {
+    /// Lowercase SHA-256 hex digest, without a prefix.
+    pub sha256: String,
+    /// OCI media type: an uncompressed tar or gzip layer.
+    pub media_type: String,
+}
+
+/// Private Linux filesystem backing for one controlled workload. The caller
+/// attaches an already formatted ext4 raw disk; no host filesystem tree is used
+/// for image paths, symlinks, ownership or permissions. Layers are applied in
+/// order on first boot, inside a chroot without proc/dev/sys mounted. The
+/// supervisor then installs pseudo-filesystems and launches the normal process
+/// supervisor. Extraction errors abort launch and may leave a partial disk;
+/// callers must not publish that disk as a prepared image.
+/// With GuestConfig.network, each entry installs a resolver for that virtual
+/// gateway, replacing image resolver files/symlinks but rejecting directories.
+/// Without networking, image resolver files remain unchanged.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RootDisk {
+    /// Linux block path, `/dev/vda` through `/dev/vdz`.
+    pub device: String,
+    /// Verified first-boot layers; empty reopens an existing filesystem.
+    pub layers: Vec<ImageLayer>,
+}
+
 // Launch paths belong to the Linux guest, not the host validating the message.
 fn guest_absolute(path: &Path) -> bool {
     path.as_os_str().as_encoded_bytes().starts_with(b"/")
@@ -92,6 +123,17 @@ pub struct GuestConfig {
     /// Enable the host-only vsock command adapter; false starts no listener.
     #[serde(default)]
     pub control: bool,
+    /// Host-only virtio-console control adapter. Uses the same
+    /// request/reply protocol and process registry as vsock, with independent
+    /// command and signal ports so stop cannot queue behind a long exec.
+    /// Requires explicit safe capability bounds, owned pipe/closed stdin and a new session;
+    /// privileged device creation, ptrace and mount/driver administration are
+    /// rejected. Device paths are masked before any workload is started.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub serial_control: bool,
+    /// Optional ext4-backed Linux workload root, separate from bootstrap shares.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root_disk: Option<RootDisk>,
 }
 
 /// Process setup shared by the initial workload and subsequent exec requests.
@@ -311,7 +353,7 @@ impl GuestConfig {
                 return Err(invalid("guest PTY requires dimensions and a new session"));
             }
         }
-        if self.control
+        if (self.control || self.serial_control)
             && !self
                 .process
                 .as_ref()
@@ -320,6 +362,40 @@ impl GuestConfig {
             return Err(invalid(
                 "guest control requires a separate workload session",
             ));
+        }
+        if self.serial_control {
+            let safe = self.process.as_ref().is_some_and(|p| {
+                matches!(p.stdin, StdinMode::Closed | StdinMode::Pipe)
+                    && p.capabilities.as_ref().is_some_and(|caps| {
+                        !caps.iter().any(|c| [2, 16, 17, 19, 21, 27].contains(c))
+                    })
+            });
+            if self.control || !safe {
+                return Err(invalid(
+                    "serial control requires explicit stdin ownership, restricted capabilities and no vsock adapter",
+                ));
+            }
+        }
+        if let Some(root) = &self.root_disk
+            && (root.device.len() != 8
+                || !root.device.starts_with("/dev/vd")
+                || !root.device.as_bytes()[7].is_ascii_lowercase()
+                || root.layers.len() > 128
+                || root.layers.iter().any(|l| {
+                    l.sha256.len() != 64
+                        || !l
+                            .sha256
+                            .bytes()
+                            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+                        || !matches!(
+                            l.media_type.as_str(),
+                            "application/vnd.oci.image.layer.v1.tar"
+                                | "application/vnd.oci.image.layer.v1.tar+gzip"
+                                | "application/vnd.docker.image.rootfs.diff.tar.gzip"
+                        )
+                }))
+        {
+            return Err(invalid("invalid root disk or OCI layer"));
         }
         for mount in &self.mounts {
             if mount.source_file && mount.initialize {

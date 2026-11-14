@@ -24,7 +24,14 @@ pub(crate) fn process_rx(
 
     let mut input = input.lock().unwrap();
     loop {
-        let head = pop_head_blocking(&mut queue, mem, &interrupt);
+        let Some(head) = pop_head_blocking(
+            &mut queue,
+            mem,
+            &|| interrupt.signal_used_queue(),
+            &stop,
+        ) else {
+            return;
+        };
 
         let head_index = head.index;
         let mut bytes_read = 0;
@@ -70,17 +77,54 @@ pub(crate) fn process_rx(
 fn pop_head_blocking<'mem>(
     queue: &mut Queue,
     mem: &'mem GuestMemoryMmap,
-    interrupt: &InterruptTransport,
-) -> DescriptorChain<'mem> {
+    notify: &impl Fn(),
+    stop: &AtomicBool,
+) -> Option<DescriptorChain<'mem>> {
     loop {
+        if stop.load(Ordering::Acquire) {
+            return None;
+        }
         match queue.pop(mem) {
-            Some(descriptor) => break descriptor,
+            Some(descriptor) => return Some(descriptor),
             None => {
-                interrupt.signal_used_queue();
+                notify();
+                // shutdown sets stop before unparking. Check both before the
+                // pop and before parking so an empty queue cannot retain join.
+                if stop.load(Ordering::Acquire) {
+                    return None;
+                }
                 thread::park();
                 log::trace!("rx unparked, queue len {}", queue.len(mem))
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::{sync::mpsc, time::Duration};
+    use vm_memory::GuestAddress;
+
+    #[test]
+    fn shutdown_wakes_an_empty_descriptor_queue() {
+        let stop = Arc::new(AtomicBool::new(false));
+        let worker_stop = stop.clone();
+        let (waiting, ready) = mpsc::channel();
+        let (finished, done) = mpsc::channel();
+        let worker = thread::spawn(move || {
+            let mem = GuestMemoryMmap::from_ranges(&[(GuestAddress(0), 65536)]).unwrap();
+            let mut queue = Queue::new(8);
+            let head = pop_head_blocking(&mut queue, &mem, &|| {
+                let _ = waiting.send(());
+            }, &worker_stop);
+            finished.send(head.is_none()).unwrap();
+        });
+        ready.recv_timeout(Duration::from_secs(5)).unwrap();
+        stop.store(true, Ordering::Release);
+        worker.thread().unpark();
+        assert!(done.recv_timeout(Duration::from_secs(5)).unwrap());
+        worker.join().unwrap();
     }
 }
 

@@ -9,7 +9,8 @@ virtio-fs/console/vsock、网络和 RAM/快照能力；具体限制见各平台�
 不提供 `gpu`、`snd`、`input` 或 `virgl_resource_map2` feature；
 不支持的公开操作返回 `Unsupported`。
 
-`blk`、`tee`、`amd-sev`、`tdx`、`aws-nitro`、`efi` 是内部可选实现，
+`blk` 用于 Windows 原生容器的独占 ext4 磁盘。
+`tee`、`amd-sev`、`tdx`、`aws-nitro`、`efi` 是内部可选实现，
 不属于已验收的产品 profile。
 
 ## Unix FS 环境设置
@@ -53,8 +54,10 @@ Unix 后端继续使用原有实现；入口始终是 `pvisor_vm::api`。
 | 虚拟文件 | 根目录层级的只读字节、一次性启动配置、当前 pVisor Rust supervisor；嵌套路径返回 Unsupported |
 | 生命周期 | ready 回调前暂停，显式 pause/resume；失败清理先停止并回收 vCPU、设备和 PIT 线程，再释放 WHP 分区 |
 | 退出 | 与 Unix 相同的 root/PID 1 token 协议；旧退出/删除根目录 ioctl 被拒绝，缺少认证结果或 vCPU 异常退出 125 |
-| 控制台 | 输出到 runner stdout；guest 配置使用 `stdio_ports: Some([false; 3])`，不等待命名 task stdio 端口 |
-| 未支持 | Overlay/managed filesystem、DAX、快照/恢复、冷 RAM、idle handoff、网络/vsock、自定义 guest command、task stdio FD；配置返回 Unsupported 且不破坏已有附件 |
+| 控制台 | 默认输出到 runner stdout；也可配置命名输出文件或本地双向命名管道；空 RX 队列在 shutdown 时检查停止标志，不依赖 guest 再提交描述符 |
+| 原始块盘 | `blk` feature 下可附加独占、扇区对齐的普通文件，按附件顺序映射为 `/dev/vda` 等；不是快照或共享块设备 |
+| 网络 | `net` feature 下接收独占的 overlapped 双向 byte pipe；与 Unix 共用 4-byte 大端长度加 Ethernet 帧协议，guest 使用静态 IPv4；网络策略与连接由调用方拥有 |
+| 未支持 | Overlay/managed filesystem、DAX、快照/恢复、冷 RAM、idle handoff、vsock、DHCP、自定义 guest command、task stdio FD；配置返回 Unsupported 且不破坏已有附件 |
 
 Windows 文件模式与 uid/gid 为合成的 Linux 元数据；宿主 ACL 仍生效，POSIX
 chmod/chown 不提供完整语义。共享树由调用方管理，不要允许其他不可信宿主进程
@@ -89,17 +92,30 @@ Windows 上的 C 交叉编译器。固件从本仓库 `fw/` 在 Linux 构建，�
 [windows-vm.yml](../../.github/workflows/windows-vm.yml) 由主 CI 在每次 PR/push
 调用，使用 `windows-2025` 做 MSVC 编译、Core/guest 单测、原生 Win32/文件系统
 单测、默认与无 `init-blob` 两种配置的 VM 公共契约和 rustdoc 检查。
+默认 VM 契约显式启用 `net,blk`，不依赖与 containers 合并构建时的 feature
+叠加。原生分组检查在其他分组失败后仍执行，失败不会被标为成功；nextest
+`windows-ci` profile 提供 180 秒单测死锁保护，不修改测试自身的更短期限。
+分组输出保留于 `windows-native-contracts` 制品。
 Windows 原生检查失败会使主 CI 门禁失败，不再依赖单独 workflow 的路径过滤。
 真实 WHP 验收同样随 PR/push 自动运行，也可手动启动整个 workflow，
 不需要仓库变量或自托管 runner。
 
-Linux 托管 runner 构建本仓库固件 DLL 和静态 Linux probe，Windows 原生构建
-上传 `whp_smoke.exe`，独立的临时 `windows-2025` runner 下载同次运行的制品。
+Linux 托管 runner 每次构建本仓库固件 DLL、静态 Linux probe 和 ext4 模板，
+Windows 原生构建上传 `whp_smoke.exe` 与 `pvisor.exe`。三个独立的临时
+`windows-2025` runner 并行执行 smoke、共同 CLI VM 负载及两轮容器验收；
+任一组失败不取消其他组。容器组涵盖默认网络、peer TCP、管道 stdin、
+ConPTY、Ctrl+C、退出与控制台恢复。
 测试记录镜像版本、hypervisor 状态和 HypervisorPlatform 功能状态，必要时
 尝试启用功能（不重启），然后实际启动 guest。托管镜像能否提供所需 WHP
 能力由运行结果确认；缺少能力、需要重启、固件错误、错误结果和超时均不会
 被当作通过或静默跳过。即使原生契约测试失败，也继续尝试已有制品的 WHP 验收。
 固件构建失败时下游作业跳过，但 Windows workflow 和主 CI 仍失败。
+证据写入未缓存的 `RUNNER_TEMP`，记录运行镜像与输入哈希，上传为
+`windows-vm-whp-smoke`、`windows-vm-whp-vm-cli` 和
+`windows-vm-whp-containers`。容器失败只复制每个诊断文件最后最多 1 MiB，
+标明原始大小与偏移，不上传 4 GiB root disk 或镜像 blobs。
+收尾记录 hypervisor 事件及残留进程；只终止该 job 的制品目录下的进程，
+发现残留仍使验收失败。
 
 这里的门禁不是完整产品的 Windows 支持声明。上层 `pvisor` 仍依赖 Unix/FUSE
 运行时，不能以 VM crate 的通过替代 executor、CLI、OverlayFS、网络或

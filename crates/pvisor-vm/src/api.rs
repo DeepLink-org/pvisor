@@ -15,7 +15,8 @@
 //! granted virtualization permissions or that a sandbox was installed.
 //! Windows x86-64 uses WHP with the default or no-default-features profile.
 //! It implements boot, ordinary directory shares, root-level synthetic files and
-//! vCPU pause/resume. Overlay, DAX, snapshots, cold RAM, vsock, Ethernet attachment,
+//! vCPU pause/resume, and Ethernet byte-pipe attachment with the `net` feature.
+//! Overlay, DAX, snapshots, cold RAM, vsock,
 //! custom guest commands and task-stdio descriptors currently return Unsupported.
 //! Console output uses the runner's stdout; use the guest launch configuration
 //! with `stdio_ports: Some([false; 3])`. Windows filesystem permissions are
@@ -128,10 +129,10 @@ pub struct NetworkOptions {
 }
 
 /// Owned framed Ethernet transport. Unix streams convert through `From` on Unix.
-/// A Windows `File` can transfer ownership into this type, but Windows Ethernet
-/// attachment currently returns Unsupported. Rejected attachments drop the
-/// supplied transport and preserve the current configuration. Successful Unix
-/// attachments retain it until teardown; framing uses four-byte big-endian lengths.
+/// A Windows `File` transfers an exclusively owned overlapped duplex byte pipe
+/// (not a message pipe or regular file). Rejected attachments drop the supplied
+/// transport and preserve the current configuration. Successful attachments
+/// retain it until teardown; framing uses four-byte big-endian lengths.
 pub struct NetworkStream {
     pub(crate) inner: crate::transport::Stream,
 }
@@ -211,6 +212,33 @@ pub trait VmConfiguration: Sized {
     /// Configure a custom init's command; requires implicit init to be disabled.
     /// Validate atomically before replacing the previous command.
     fn guest_command(&mut self, command: GuestCommand) -> io::Result<()>;
+    /// Attach a caller-owned raw disk, returning its zero-based virtio block index
+    /// (`0` is `/dev/vda`). The absolute UTF-8 path must name a nonempty regular
+    /// file whose length is a multiple of 512. The caller must exclusively manage
+    /// writable images until VM termination. The VMM owns its opened image and
+    /// worker through teardown; this does not select a boot root or format a disk.
+    /// Currently supported on Windows/WHP with the `blk` feature; other profiles
+    /// return Unsupported. Validation failure leaves previous attachments intact;
+    /// opening/backend failures can also occur at attachment or VM startup.
+    fn raw_disk(&mut self, path: PathBuf, read_only: bool) -> io::Result<usize>;
+    /// Append guest bytes from one named virtio-console port to a caller-owned
+    /// host file. Name must be nonempty, NUL-free, unique and at most 64 bytes;
+    /// path must be absolute UTF-8. Parent creation and exclusive directory
+    /// ownership belong to the caller. The file is opened in append mode at
+    /// startup and retained by the device; it is never truncated.
+    /// Windows/WHP supports this operation; other profiles return Unsupported.
+    /// Validation failure preserves existing ports. Startup failures may create
+    /// an empty output file but never remove existing output.
+    fn console_file(&mut self, name: String, path: PathBuf) -> io::Result<()>;
+    /// Attach one named duplex virtio-console port to an existing Windows named
+    /// pipe server (`\\.\pipe\NAME`). The caller must create and retain the
+    /// same-user server before VM startup. Port names follow `console_file`'s
+    /// validation and uniqueness rules. Connection occurs during startup with
+    /// the backend's bounded connection wait; device teardown cancels pending I/O.
+    /// Windows/WHP supports this operation; other profiles return Unsupported.
+    /// Rejection preserves existing attachments. Pipe errors fail VM startup,
+    /// never fall back to a host terminal or network endpoint.
+    fn console_pipe(&mut self, name: String, path: PathBuf) -> io::Result<()>;
     /// Attach an ordinary writable passthrough directory. `shm_size` must be
     /// zero; nonzero windows return Unsupported before changing configuration.
     /// Entry/attribute validity is zero so reopened files observe other host/VM
@@ -302,9 +330,13 @@ pub trait VmConfiguration: Sized {
         one_shot: bool,
     ) -> io::Result<()>;
     /// Transfer a connected, framed Ethernet stream to the VM with this MAC.
-    /// Backend startup enables nonblocking I/O while preserving other status
+    /// Unix backend startup enables nonblocking I/O while preserving other status
     /// flags; clones share those flags and must not reset them. Socket setup
     /// failure aborts startup rather than running a blocking device worker.
+    /// Windows requires an exclusively owned overlapped duplex byte pipe and a
+    /// nonzero unicast MAC; the net feature must be enabled. Framing is a
+    /// four-byte big-endian length followed by Ethernet bytes on both platforms.
+    /// Rejected attachments preserve the builder; the supplied stream is consumed.
     fn network(&mut self, stream: impl Into<NetworkStream>, mac: [u8; 6]) -> io::Result<()>;
     /// Route the task-stdio console ports (`krun-stdin`/`krun-stdout`/
     /// `krun-stderr` plus the unnamed console) to these descriptors instead
@@ -320,7 +352,8 @@ pub trait VmConfiguration: Sized {
     fn task_stdio(&mut self, stdin: i32, stdout: i32, stderr: i32) -> io::Result<()>;
     /// Transfer the framed Ethernet stream and explicit guest-init options.
     /// Has network() ownership/nonblocking requirements; unavailable networking
-    /// returns Unsupported, and no implicit TSI path is installed.
+    /// returns Unsupported, and no implicit TSI path is installed. Windows
+    /// supports static guest configuration only; guest_dhcp returns Unsupported.
     fn network_with_options(
         &mut self,
         stream: impl Into<NetworkStream>,

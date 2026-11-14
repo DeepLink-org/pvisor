@@ -61,6 +61,9 @@ VM entry still terminates dependent runners; it is not automatic recovery.
 Container logs remain cumulative across restarts, while startup errors include
 only the current generation's stderr (up to 32 KiB), not earlier workload or
 pool-loss diagnostics.
+Container stop-signal names/numbers use `pvisor-guest::control::parse_signal`,
+shared with the Windows frontend; host signal numbering does not select the
+Linux guest signal.
 Session commands use `pvisor`; `pvisor-daemon` owns cache and sandbox services and its optional
 pool. Replay is a
 Session frontend, not a runtime dependency. Cross-node placement and distributed scheduling

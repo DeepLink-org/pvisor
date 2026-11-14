@@ -164,6 +164,34 @@ are cleaned up when their leader exits, including exec groups.
 
 ## Optional control adapter
 
+The Windows container profile uses two host-only virtio-console ports rather
+than vsock. `SerialRequest`/`SerialReply` wrap the ordinary supervisor protocol in
+monotonically increasing, nonzero request IDs. Responses may interleave; each
+request still uses the same process launcher and PID-1 reaper. At most 32
+operations execute on a port at once. Input frames carry the owning request ID;
+one 16 KiB chunk per request is allowed until its credit is returned. EOF and
+cancellation are separate, so a frontend disconnect cancels its exec while
+intentional EOF permits continued execution. Main input and execs use the same
+existing stdin/PTY adapter; the independent signal port admits stop, tracked
+signals and resize. An id-zero Ready receipt confirms workload creation before
+PID 1 reaps it, including immediate exits. Invalid or
+reused IDs close the port, and unsupported/busy requests return explicit errors.
+Host and embedded supervisor must be upgraded together.
+
+`GuestConfig.root_disk` builds an OCI filesystem on a private ext4 block device.
+Digest verification and extraction happen inside Linux, before mounting its
+pseudo-filesystems; NTFS is not used to approximate image permissions or links.
+A retained, successfully prepared container may relaunch with an empty layer
+list to reuse the disk without reapplying the image. The host owns preparation
+receipts and generation fencing; guest root is never authority to select a host
+disk or claim a different container. When static networking is configured, disk
+entry installs `/etc/resolv.conf` for its virtual gateway after extraction and
+on retained starts. Image resolver symlinks are replaced without following them;
+directory destinations fail launch. Offline disk entry leaves image DNS files
+unchanged. Other rootfs profiles keep their caller-provided resolver policy.
+Serial devices are opened before launch,
+masked from workload paths and protected by the launch capability bounding set.
+
 `GuestConfig.control` enables a vsock listener on port 1025; omission starts no
 listener. The adapter accepts only host-CID peers. Bounded
 frames support ping, main stdin attachment, process-group signals, exec and
@@ -174,6 +202,9 @@ PTY and supports initial dimensions; tracked native execs support live resizing 
 
 Both host and guest use `control`'s shared protocol definitions. Raw vsock
 accept is required: `UnixListener::accept` rejects AF_VSOCK peer addresses.
+`control::parse_signal` is the common host-independent parser for OCI stop
+signals and explicit container stop overrides on Unix and Windows. Signal
+numbers always refer to Linux guest signals, never host Win32 process signals.
 Protocol tests reject oversized and unknown-field frames; real VM tests remain
 necessary for terminal, mount, networking and process-lifecycle behavior.
 TCP tunnel completion and errors shut down companion transport operations and

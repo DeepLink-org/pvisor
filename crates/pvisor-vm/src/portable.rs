@@ -277,6 +277,15 @@ impl VmConfiguration for VmBuilder {
     fn guest_command(&mut self, command: GuestCommand) -> io::Result<()> {
         self.inner.guest_command(command)
     }
+    fn raw_disk(&mut self, _: PathBuf, _: bool) -> io::Result<usize> {
+        Err(unsupported("raw disk attachment"))
+    }
+    fn console_file(&mut self, _: String, _: PathBuf) -> io::Result<()> {
+        Err(unsupported("named console file"))
+    }
+    fn console_pipe(&mut self, _: String, _: PathBuf) -> io::Result<()> {
+        Err(unsupported("named console pipe"))
+    }
     fn vsock_port(&mut self, guest_port: u32, host_path: PathBuf, listen: bool) -> io::Result<()> {
         self.inner.vsock_port(guest_port, host_path, listen)
     }

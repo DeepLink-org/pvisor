@@ -2768,6 +2768,7 @@ dependencies = [
  "libc",
  "proptest",
  "pvisor",
+ "pvisor-containers",
  "pvisor-core",
  "pvisor-gateway",
  "pvisor-guest",
@@ -2788,6 +2789,29 @@ dependencies = [
  "tracing",
  "uuid",
  "vm-memory",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "pvisor-containers"
+version = "0.3.2"
+dependencies = [
+ "anyhow",
+ "dirs",
+ "flate2",
+ "fs2",
+ "pvisor-guest",
+ "pvisor-overlaynet",
+ "pvisor-vm",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "syn 2.0.117",
+ "tempfile",
+ "tokio",
+ "uuid",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2867,9 +2891,12 @@ dependencies = [
 name = "pvisor-guest"
 version = "0.3.2"
 dependencies = [
+ "flate2",
  "libc",
  "serde",
  "serde_json",
+ "sha2 0.11.0",
+ "tar",
  "tempfile",
 ]
 
@@ -2946,6 +2973,7 @@ dependencies = [
  "serde",
  "serde_json",
  "smoltcp",
+ "socket2",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
@@ -3035,6 +3063,7 @@ dependencies = [
  "syn 2.0.117",
  "tdx",
  "tempfile",
+ "tokio",
  "toml",
  "tracing",
  "virtio-bindings",

@@ -46,9 +46,13 @@ uuid = { workspace = true, features = ["v4"] }
 pvisor-vm = { workspace = true, features = ["net"] }
 
 [target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_System_Console", "Win32_Storage_FileSystem", "Win32_System_IO", "Win32_System_Threading"] }
 pvisor-vm.workspace = true
+pvisor-containers.workspace = true
 
 [dev-dependencies]
+tempfile.workspace = true
+pvisor-containers.workspace = true
 
 proptest.workspace = true
 serde_yaml.workspace = true

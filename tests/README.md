@@ -126,3 +126,32 @@ Linux CI writes evidence under `RUNNER_TEMP`,
 outside the cached Cargo target directory. Restored build caches must not supply
 a previous run's evidence directory. See [platform support](../docs/src/en/reference/platforms.md)
 and [the review record](PLATFORM_REVIEW.md).
+
+`windows_container_contract.py` additionally exercises the native Windows/WHP
+image lifecycle with real Alpine: pull/untag, foreground/detached runs, literal
+environment files, cwd/user/resources, independent concurrent execs, stop during
+exec, grouped aliases, ps columns/ID truncation, followed logs, explicit stop
+signals/infinite grace, batch-error continuation, and start preserving private
+writes after image untagging. It also requires default-bridge DNS/TCP egress,
+real peer TCP delivery, explicit offline networking, binary piped stdin/EOF,
+idle-input cancellation, and ConPTY-driven `run -it`/`exec -it` with dimensions,
+UTF-8 input, Ctrl+C, guest exit status and console mode/code-page restoration.
+`windows_pty.py` is the bounded native
+ConPTY fixture, not an emulator or parser-only substitute. The driver requires a
+new `--output` directory and matching firmware/root-disk template beside the
+binary. Unavailable WHP, timeouts and failed assertions fail the campaign; this
+is a hardware acceptance driver, not part of ordinary unit tests or a benchmark.
+CI runs it twice against the same built binary with separate fresh stores.
+Failure evidence includes allowlisted instance records and boot/workload logs,
+bounded to the last 1 MiB per file with sizes/offsets recorded. Raw ext4 disks and
+image blobs are excluded from uploads. Cleanup failures cannot produce a PASS.
+`test_windows_container_contract.py` checks these evidence/oracle rules without
+a VM, and on native Windows exercises the ConPTY bootstrap and exit propagation.
+
+The Windows workflow keeps native check groups independent after failures and
+uses the `windows-ci` nextest profile's 180-second deadlock watchdog. Smoke,
+common VM workload and container acceptance run on separate disposable WHP
+runners with `fail-fast: false`; unavailable WHP remains a failure. Evidence
+lives in uncached `RUNNER_TEMP`. Each runner records artifact hashes/hypervisor
+events, fails on leftover runner processes and stops only executables under its
+own downloaded artifact directory.

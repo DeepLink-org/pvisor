@@ -8,6 +8,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+#[cfg(unix)]
 use std::os::unix::net::UnixStream as StdUnixStream;
 use std::sync::Arc;
 use std::thread;
@@ -25,8 +26,10 @@ use smoltcp::wire::{
     EthernetProtocol, HardwareAddress, IpAddress, IpCidr, IpEndpoint, IpProtocol, Ipv4Address,
     Ipv4Packet, Ipv4Repr, TcpControl, TcpPacket, TcpRepr,
 };
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::{TcpStream, UnixStream};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::net::TcpStream;
+#[cfg(unix)]
+use tokio::net::UnixStream;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc, oneshot};
 use tokio::task::JoinHandle;
 
@@ -140,7 +143,29 @@ pub struct VmNetwork {
 }
 
 impl VmNetwork {
+    #[cfg(unix)]
     pub fn start(config: VmNetworkConfig) -> anyhow::Result<(Self, StdUnixStream)> {
+        let (backend, guest) = StdUnixStream::pair().context("create VM network socket pair")?;
+        backend
+            .set_nonblocking(true)
+            .context("make VM network backend nonblocking")?;
+        let network = Self::start_with_io(config, move || UnixStream::from_std(backend))?;
+        Ok((network, guest))
+    }
+
+    /// Start the same Ethernet/TCP/DNS data plane on a caller-owned duplex
+    /// transport. The constructor runs inside the network's Tokio runtime,
+    /// allowing IOCP pipe adoption on Windows. Frames use a four-byte big-endian
+    /// length followed by Ethernet bytes. Startup validates membership and
+    /// adopts the transport before returning; drop cancels and joins the driver.
+    /// The caller must exclusively own the local endpoint and keep host network
+    /// authority outside guest shares. Ordinary egress and peer policy are
+    /// identical to the Unix socket constructor; no transport fallback occurs.
+    pub fn start_with_io<T, F>(config: VmNetworkConfig, make_stream: F) -> anyhow::Result<Self>
+    where
+        T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+        F: FnOnce() -> io::Result<T> + Send + 'static,
+    {
         anyhow::ensure!(
             config.max_flows > 0,
             "VM network max_flows must be non-zero"
@@ -156,37 +181,43 @@ impl VmNetwork {
                 BoundPeer::bind(peer, config.context.execution_id.clone())
             })
             .transpose()?;
-        let (backend, guest) = StdUnixStream::pair().context("create VM network socket pair")?;
-        backend
-            .set_nonblocking(true)
-            .context("make VM network backend nonblocking")?;
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
+        let (started, ready) = std::sync::mpsc::sync_channel(1);
         let metrics = config.metrics.clone();
         let thread_metrics = metrics.clone();
         let thread = thread::Builder::new()
             .name("pvisor-smoltcp".into())
             .spawn(move || {
-                let runtime = tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                    .context("build VM network runtime")?;
-                runtime.block_on(run_backend(
-                    backend,
-                    config,
-                    thread_metrics,
-                    shutdown_rx,
-                    peer,
-                ))
+                let result = (|| {
+                    let runtime = tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()
+                        .context("build VM network runtime")?;
+                    runtime.block_on(async {
+                        let stream = make_stream().context("adopt VM network transport")?;
+                        let peer = peer.map(|p| p.adopt(thread_metrics.clone())).transpose()?;
+                        let _ = started.send(Ok::<_, String>(()));
+                        run_backend(stream, config, thread_metrics, shutdown_rx, peer).await
+                    })
+                })();
+                if let Err(error) = &result {
+                    let _ = started.send(Err(format!("{error:#}")));
+                }
+                result
             })
             .context("spawn VM network backend")?;
-        Ok((
-            Self {
+        match ready.recv().context("VM network startup disconnected")? {
+            Ok(()) => Ok(Self {
                 shutdown: Some(shutdown_tx),
                 thread: Some(thread),
                 metrics,
-            },
-            guest,
-        ))
+            }),
+            Err(error) => {
+                let _ = shutdown_tx.send(());
+                let _ = thread.join();
+                Err(anyhow::anyhow!(error))
+            }
+        }
     }
 
     pub fn shutdown(mut self) -> anyhow::Result<InterceptionSnapshot> {
@@ -280,21 +311,19 @@ enum FlowEvent {
     },
 }
 
-async fn run_backend(
-    backend: StdUnixStream,
+async fn run_backend<T: AsyncRead + AsyncWrite + Unpin>(
+    stream: T,
     config: VmNetworkConfig,
     metrics: InterceptionMetrics,
     mut shutdown: oneshot::Receiver<()>,
-    peer: Option<BoundPeer>,
+    mut peer: Option<PeerNetwork>,
 ) -> anyhow::Result<()> {
     let guest_address = config
         .peer_network
         .as_ref()
         .map_or(GUEST_IPV4, |peer| peer.address);
     let router = router_address(&config);
-    let mut peer = peer.map(|peer| peer.adopt(metrics.clone())).transpose()?;
-    let stream = UnixStream::from_std(backend).context("adopt VM network stream")?;
-    let (mut reader, mut writer) = stream.into_split();
+    let (mut reader, mut writer) = tokio::io::split(stream);
     let mut frame_reader = FrameReader::default();
     let mut frame_device = FrameDevice::default();
     let clock = std::time::Instant::now();
@@ -1320,10 +1349,7 @@ struct FrameReader {
 }
 
 impl FrameReader {
-    async fn read_more(
-        &mut self,
-        reader: &mut tokio::net::unix::OwnedReadHalf,
-    ) -> io::Result<usize> {
+    async fn read_more(&mut self, reader: &mut (impl AsyncRead + Unpin)) -> io::Result<usize> {
         if self.offset > 0 && self.offset == self.bytes.len() {
             self.bytes.clear();
             self.offset = 0;
@@ -1360,7 +1386,7 @@ impl FrameReader {
 }
 
 async fn write_frames(
-    writer: &mut tokio::net::unix::OwnedWriteHalf,
+    writer: &mut (impl AsyncWrite + Unpin),
     frames: &VecDeque<Vec<u8>>,
 ) -> io::Result<usize> {
     let count = frames.len().min(FRAME_BATCH);
@@ -1439,6 +1465,45 @@ impl TxToken for FrameTxToken<'_> {
 }
 
 #[cfg(test)]
+mod transport_tests {
+    use super::*;
+    use crate::{BandwidthRegistry, NetworkConfig, NetworkMode, NetworkPolicy};
+
+    fn config() -> VmNetworkConfig {
+        let policy = NetworkPolicy::compile(&NetworkConfig {
+            mode: NetworkMode::NoNetwork,
+            ..Default::default()
+        })
+        .unwrap();
+        VmNetworkConfig::new(
+            EgressRuntime::with_bandwidth_registry(
+                policy,
+                Arc::new(pvisor_core::PolicyControlController),
+                BandwidthRegistry::default(),
+            ),
+            EgressContext::default(),
+        )
+    }
+
+    #[test]
+    fn transport_adoption_errors_are_synchronous_and_an_idle_driver_can_shutdown() {
+        let error = VmNetwork::start_with_io::<tokio::io::DuplexStream, _>(config(), || {
+            Err(io::Error::other("transport adoption fixture"))
+        })
+        .err()
+        .expect("adoption must fail");
+        assert!(format!("{error:#}").contains("transport adoption fixture"));
+        let (host, _idle_guest) = tokio::io::duplex(4096);
+        let network = VmNetwork::start_with_io(config(), move || {
+            assert!(tokio::runtime::Handle::try_current().is_ok());
+            Ok(host)
+        })
+        .unwrap();
+        network.shutdown().unwrap();
+    }
+}
+
+#[cfg(all(test, unix))]
 mod tests {
 
     #[test]

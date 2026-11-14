@@ -264,45 +264,11 @@ pub(super) struct Exec {
     invocation: Vec<String>,
 }
 
+pub(super) use crate::container_args::environment;
+use crate::container_args::{PsRow, batch, ps_header, ps_row};
+
 pub(super) fn memory(value: &str) -> Result<u32, String> {
     docker::parse_memory_limit(value).map_err(|error| error.to_string())
-}
-
-pub(super) fn environment(
-    values: &[String],
-    files: &[PathBuf],
-) -> anyhow::Result<(BTreeMap<String, String>, Vec<String>)> {
-    let mut env = BTreeMap::new();
-    let mut unset = std::collections::BTreeSet::new();
-    let mut entries = Vec::new();
-    for file in files {
-        for line in std::fs::read_to_string(file)?.lines() {
-            let line = line.trim_start();
-            if !line.is_empty() && !line.starts_with('#') {
-                entries.push(line.to_owned());
-            }
-        }
-    }
-    entries.extend_from_slice(values);
-    for entry in entries {
-        let (key, value) = match entry.split_once('=') {
-            Some((key, value)) => (key, Some(value.to_owned())),
-            None => (entry.as_str(), std::env::var(&entry).ok()),
-        };
-        ensure!(
-            !key.is_empty() && !key.contains('\0'),
-            "invalid environment name"
-        );
-        if let Some(value) = value {
-            ensure!(!value.contains('\0'), "environment contains NUL");
-            env.insert(key.into(), value);
-            unset.remove(key);
-        } else {
-            env.remove(key);
-            unset.insert(key.to_owned());
-        }
-    }
-    Ok((env, unset.into_iter().collect()))
 }
 
 fn volume(value: &str, store: &Store) -> anyhow::Result<docker::Mount> {
@@ -451,39 +417,30 @@ pub(super) fn run(command: DockerCommand) -> anyhow::Result<i32> {
             });
         }
         DockerCommand::Ps(args) => {
-            if !args.quiet {
-                println!("CONTAINER ID\tIMAGE\tCOMMAND\tSTATUS\tPORTS\tNAMES");
-            }
+            let mut output = io::stdout().lock();
+            ps_header(&mut output, args.quiet)?;
             for instance in store.instances(args.all)? {
-                let id = if args.no_trunc {
-                    &instance.id
-                } else {
-                    &instance.id[..12]
-                };
-                if args.quiet {
-                    println!("{id}");
-                } else {
-                    let status = if instance.state == "exited" {
-                        format!("Exited ({})", instance.exit_code.unwrap_or(125))
-                    } else if instance.state == "running" {
-                        "Up".into()
-                    } else {
-                        instance.state.clone()
-                    };
-                    let ports = instance
-                        .config
-                        .ports
-                        .iter()
-                        .map(|p| format!("{}:{}->{}/tcp", p.address, p.host, p.guest))
-                        .collect::<Vec<_>>()
-                        .join(", ");
-                    println!(
-                        "{id}\t{}\t{:?}\t{status}\t{ports}\t{}",
-                        instance.image.reference,
-                        instance.argv.join(" "),
-                        instance.name
-                    );
-                }
+                let ports = instance
+                    .config
+                    .ports
+                    .iter()
+                    .map(|p| format!("{}:{}->{}/tcp", p.address, p.host, p.guest))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                ps_row(
+                    &mut output,
+                    PsRow {
+                        id: &instance.id,
+                        image: &instance.image.reference,
+                        command: &instance.argv,
+                        state: &instance.state,
+                        exit_code: instance.exit_code,
+                        ports: &ports,
+                        name: &instance.name,
+                    },
+                    args.quiet,
+                    args.no_trunc,
+                )?;
             }
         }
         DockerCommand::Run(args) => {
@@ -789,20 +746,6 @@ impl Drop for Terminal {
             }
         }
     }
-}
-
-fn batch(
-    values: &[String],
-    mut action: impl FnMut(&str) -> anyhow::Result<()>,
-) -> anyhow::Result<i32> {
-    let mut code = 0;
-    for value in values {
-        if let Err(error) = action(value) {
-            eprintln!("Error: {error:#}");
-            code = 1;
-        }
-    }
-    Ok(code)
 }
 
 fn split_tag(reference: &str) -> (&str, &str) {

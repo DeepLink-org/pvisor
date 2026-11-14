@@ -722,7 +722,7 @@ impl BlockWorker {
             let _ = self.write_windows_raw_status_at_offset(request, status);
         }
 
-        let len = if status == VIRTIO_BLK_S_OK.try_into().unwrap() {
+        let len = if status == VIRTIO_BLK_S_OK as u8 {
             used_len
         } else {
             0
@@ -746,7 +746,7 @@ impl BlockWorker {
             }
         }
 
-        status == VIRTIO_BLK_S_OK.try_into().unwrap()
+        status == VIRTIO_BLK_S_OK as u8
     }
 
     #[cfg(windows)]
