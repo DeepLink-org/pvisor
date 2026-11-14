@@ -2389,3 +2389,17 @@ Physical-pool candidate retirement uses serialized cleanup passes with at most
 256 candidates under the shared pool lock per batch. Live page and statistics
 requests can run between batches; the five-second RPC deadline is unchanged.
 Actual shared references remain pinned until peer-exit proof, as before.
+
+### Physical-pool publication backpressure candidate
+
+Duplicate-page publication is optional: when the shared owner lock is busy,
+return a complete rejection before changing slots or references. The caller
+keeps the original page and the existing session remains valid. Required
+restore/release operations and the five-second absolute RPC deadline are
+unchanged. Transport failure still terminates a dependent runner.
+
+Slow publication/owner-lock diagnostics and RPC error opcode/byte counters
+identify contention without logging page contents. This is a targeted candidate
+for pressure qualification, not evidence that the 80-VM deadline failure is
+resolved. A protocol test holds the owner lock and checks that rejection leaves
+an existing shared reference restorable and releasable.

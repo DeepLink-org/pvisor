@@ -16,7 +16,7 @@ use std::{
     io::{self, Read, Write},
     os::fd::AsRawFd,
     os::unix::net::UnixStream,
-    sync::{Arc, Mutex, Weak},
+    sync::{Arc, Mutex, TryLockError, Weak},
     time::{Duration, Instant},
 };
 
@@ -238,7 +238,25 @@ impl Owner {
                 .map(Reference::Compressed),
             #[cfg(any(target_os = "linux", target_os = "macos"))]
             Self::Shared(pool) => {
-                let mut pool = pool.lock().map_err(|_| io::Error::other("pool poisoned"))?;
+                // Duplicate publication is optional: on contention keep the VM's
+                // original page instead of queueing another scan behind the owner.
+                // No reference or slot has been created when this rejection returns.
+                let mut pool = if duplicate {
+                    match pool.try_lock() {
+                        Ok(guard) => guard,
+                        Err(TryLockError::WouldBlock) => {
+                            return Err(io::Error::new(
+                                io::ErrorKind::WouldBlock,
+                                "shared pool busy; retain original page",
+                            ));
+                        }
+                        Err(TryLockError::Poisoned(_)) => {
+                            return Err(io::Error::other("pool poisoned"));
+                        }
+                    }
+                } else {
+                    pool.lock().map_err(|_| io::Error::other("pool poisoned"))?
+                };
                 (if duplicate {
                     pool.intern_duplicate(bytes, session)
                 } else {
@@ -258,7 +276,7 @@ impl Owner {
         match self {
             #[cfg(target_os = "linux")]
             Self::Sealed(pool) => {
-                let mut pool = pool.lock().map_err(|_| io::Error::other("pool poisoned"))?;
+                let mut pool = timed_pool_lock(pool, "collect")?;
                 if let Some(id) = id {
                     pool.collect_one(id);
                 } else {
@@ -267,7 +285,7 @@ impl Owner {
                 Ok(())
             }
             Self::Compressed(pool) => {
-                let mut pool = pool.lock().map_err(|_| io::Error::other("pool poisoned"))?;
+                let mut pool = timed_pool_lock(pool, "collect")?;
                 if let Some(id) = id {
                     pool.collect_one(id);
                 } else {
@@ -277,7 +295,7 @@ impl Owner {
             }
             #[cfg(any(target_os = "linux", target_os = "macos"))]
             Self::Shared(pool) => {
-                let mut pool = pool.lock().map_err(|_| io::Error::other("pool poisoned"))?;
+                let mut pool = timed_pool_lock(pool, "collect")?;
                 if let Some(id) = id {
                     pool.collect_one(id)
                 } else {
@@ -294,16 +312,61 @@ impl Owner {
                 .map_err(|_| io::Error::other("pool poisoned"))?
                 .stats()),
             Self::Compressed(pool) => {
-                let pool = pool.lock().map_err(|_| io::Error::other("pool poisoned"))?;
+                let pool = timed_pool_lock(pool, "stats")?;
                 Ok((pool.encoded_bytes() as u64, pool.object_count() as u64))
             }
             #[cfg(any(target_os = "linux", target_os = "macos"))]
             Self::Shared(pool) => {
-                let pool = pool.lock().map_err(|_| io::Error::other("pool poisoned"))?;
+                let pool = timed_pool_lock(pool, "stats")?;
                 Ok((pool.payload_bytes() as u64, pool.object_count() as u64))
             }
         }
     }
+}
+// Log only slow owner critical sections; no page data is emitted.
+struct TimedPoolGuard<'a, T> {
+    guard: Option<std::sync::MutexGuard<'a, T>>,
+    waiting: Duration,
+    acquired: Instant,
+    operation: &'static str,
+}
+impl<T> std::ops::Deref for TimedPoolGuard<'_, T> {
+    type Target = T;
+    fn deref(&self) -> &T {
+        self.guard.as_ref().unwrap()
+    }
+}
+impl<T> std::ops::DerefMut for TimedPoolGuard<'_, T> {
+    fn deref_mut(&mut self) -> &mut T {
+        self.guard.as_mut().unwrap()
+    }
+}
+impl<T> Drop for TimedPoolGuard<'_, T> {
+    fn drop(&mut self) {
+        let held = self.acquired.elapsed();
+        drop(self.guard.take());
+        if self.waiting + held >= Duration::from_millis(50) {
+            eprintln!(
+                "pvisor-pool-lock op={} wait_us={} held_us={}",
+                self.operation,
+                self.waiting.as_micros(),
+                held.as_micros()
+            );
+        }
+    }
+}
+fn timed_pool_lock<'a, T>(
+    pool: &'a Mutex<T>,
+    operation: &'static str,
+) -> io::Result<TimedPoolGuard<'a, T>> {
+    let start = Instant::now();
+    let guard = pool.lock().map_err(|_| io::Error::other("pool poisoned"))?;
+    Ok(TimedPoolGuard {
+        guard: Some(guard),
+        waiting: start.elapsed(),
+        acquired: Instant::now(),
+        operation,
+    })
 }
 fn serve_inner(mut stream: UnixStream, pool: Owner, max_references: usize) -> io::Result<()> {
     #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -348,7 +411,16 @@ fn serve_inner(mut stream: UnixStream, pool: Owner, max_references: usize) -> io
                         reject(&mut stream, "publication mode unsupported by this pool")?;
                         continue;
                     }
+                    let processing = Instant::now();
                     let interned = pool.intern(&bytes, operation[0] == PUT_DUPLICATE, session);
+                    if processing.elapsed() >= Duration::from_millis(50) {
+                        eprintln!(
+                            "pvisor-pool-slow-publication session={session:?} op={} processing_us={} accepted={}",
+                            operation[0],
+                            processing.elapsed().as_micros(),
+                            interned.is_ok()
+                        );
+                    }
                     let object = match interned {
                         Ok(object) => object,
                         Err(error) => {
@@ -531,13 +603,24 @@ pub struct PoolClient {
 struct DeadlineStream<'a> {
     stream: &'a mut UnixStream,
     deadline: Instant,
+    started: Instant,
+    operation: Option<u8>,
+    sent: usize,
+    received: usize,
 }
 impl<'a> DeadlineStream<'a> {
     fn new(stream: &'a mut UnixStream, timeout: Duration) -> io::Result<Self> {
         let deadline = Instant::now()
             .checked_add(timeout)
             .ok_or_else(|| invalid("pool timeout overflow"))?;
-        Ok(Self { stream, deadline })
+        Ok(Self {
+            stream,
+            deadline,
+            started: Instant::now(),
+            operation: None,
+            sent: 0,
+            received: 0,
+        })
     }
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     fn receive_mapping_fd(&mut self) -> io::Result<std::os::fd::OwnedFd> {
@@ -651,12 +734,19 @@ impl<'a> DeadlineStream<'a> {
 }
 impl Read for DeadlineStream<'_> {
     fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
-        self.io(libc::POLLIN, |stream| stream.read(bytes))
+        let count = self.io(libc::POLLIN, |stream| stream.read(bytes))?;
+        self.received += count;
+        Ok(count)
     }
 }
 impl Write for DeadlineStream<'_> {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        self.io(libc::POLLOUT, |stream| stream.write(bytes))
+        if self.operation.is_none() {
+            self.operation = bytes.first().copied();
+        }
+        let count = self.io(libc::POLLOUT, |stream| stream.write(bytes))?;
+        self.sent += count;
+        Ok(count)
     }
     fn flush(&mut self) -> io::Result<()> {
         self.stream.flush()
@@ -693,9 +783,15 @@ impl PoolClient {
             .as_mut()
             .ok_or_else(|| io::Error::other("pool session has failed"))?;
         let result = DeadlineStream::new(stream, self.timeout).and_then(|mut deadline| {
-            let result = call(&mut deadline)?;
-            deadline.remaining()?;
-            Ok(result)
+            let result = call(&mut deadline).and_then(|result| {
+                deadline.remaining()?;
+                Ok(result)
+            });
+            if let Err(error) = &result {
+                eprintln!("pvisor-pool-rpc-error pid={} op={:?} elapsed_us={} sent_bytes={} received_bytes={} error={error}",
+                    std::process::id(), deadline.operation, deadline.started.elapsed().as_micros(), deadline.sent, deadline.received);
+            }
+            result
         });
         match result {
             Ok(result) => result,
@@ -888,6 +984,41 @@ impl PoolClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn busy_duplicate_rejects_without_poisoning_existing_reference() {
+        let pool = Arc::new(Mutex::new(
+            super::super::shared::SharedPool::new(4 * super::super::shared::PAGE, 4).unwrap(),
+        ));
+        let (socket, server) = UnixStream::pair().unwrap();
+        let owner = pool.clone();
+        let thread = std::thread::spawn(move || serve_shared(server, owner, 8));
+        let mut client = PoolClient::new(socket, Duration::from_secs(1)).unwrap();
+        client.enable_shared_mapping().unwrap();
+        let page = vec![7; super::super::shared::PAGE];
+        let reference = client.put(&page).unwrap();
+        let guard = pool.lock().unwrap();
+        // Holding the lock on this same thread means a blocking server would
+        // hit the client deadline. A complete rejection must return instead.
+        let error = match client.put_duplicate(&page) {
+            Err(error) => error,
+            Ok(_) => panic!("busy publication unexpectedly accepted"),
+        };
+        assert_eq!(error.kind(), io::ErrorKind::WouldBlock);
+        assert!(error.to_string().contains("shared pool busy"));
+        drop(guard);
+        let mut restored = vec![0; page.len()];
+        client.restore(&reference, &mut restored).unwrap();
+        assert_eq!(restored, page);
+        let second = client.put_duplicate(&page).unwrap();
+        client.release(second).unwrap();
+        client.release(reference).unwrap();
+        assert_eq!(client.stats().unwrap().session_references, 0);
+        drop(client);
+        thread.join().unwrap().unwrap();
+        assert_eq!(pool.lock().unwrap().object_count(), 0);
+    }
+
     #[test]
     fn cached_session_counts_distinguish_local_aliases_from_other_connections() {
         let pool = Arc::new(Mutex::new(CompressedPool::new(65536, 4)));
