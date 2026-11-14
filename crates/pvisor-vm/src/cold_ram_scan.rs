@@ -64,8 +64,6 @@ pub(super) struct Scanner {
     pub(super) unstable: u64,
     ready: VecDeque<usize>,
     bootstrap_until: Option<Instant>,
-    productive_until: Option<Instant>,
-    progress: bool,
     work_delay: Duration,
 }
 
@@ -117,8 +115,6 @@ impl Scanner {
             unstable: 0,
             ready: VecDeque::new(),
             bootstrap_until: None,
-            productive_until: None,
-            progress: false,
             work_delay: Duration::ZERO,
         }
     }
@@ -129,8 +125,8 @@ impl Scanner {
 
     pub(super) fn delay(&self) -> Duration {
         let now = Instant::now();
-        let active = self.active_at(now);
-        let floor = if self.round_complete() && !active {
+        let floor = if self.round_complete() && self.ready.is_empty() && !self.bootstrapping_at(now)
+        {
             REJECT_RETRY
         } else {
             Duration::from_millis(1)
@@ -138,22 +134,21 @@ impl Scanner {
         floor.max(self.work_delay)
     }
 
-    fn active_at(&self, now: Instant) -> bool {
-        !self.ready.is_empty()
-            || self.bootstrap_until.is_some_and(|until| now < until)
-            || self.productive_until.is_some_and(|until| now < until)
+    fn bootstrapping_at(&self, now: Instant) -> bool {
+        self.bootstrap_until.is_some_and(|until| now < until)
     }
 
     /// Conservative worker wall-time duty cycle, not a host CPU percentage:
-    /// at most one busy interval per equal rest in discovery/productive mode,
-    /// and nine rest intervals in steady exploration. I/O wait counts as work.
+    /// bootstrap permits one busy interval per equal rest; every later batch
+    /// rests for nine work intervals, including productive or hinted batches.
+    /// Hints and merges prioritize candidates, never renew the global budget.
+    /// I/O wait counts as work.
     pub(super) fn finished_batch(&mut self, work: Duration) {
-        let now = Instant::now();
-        if self.progress {
-            self.productive_until = Some(now + REJECT_RETRY);
-            self.progress = false;
-        }
-        self.work_delay = work.saturating_mul(if self.active_at(now) { 1 } else { 9 });
+        self.work_delay = work.saturating_mul(if self.bootstrapping_at(Instant::now()) {
+            1
+        } else {
+            9
+        });
     }
 
     pub(super) fn ready(&mut self, page: usize) {
@@ -336,7 +331,6 @@ impl Scanner {
     pub(super) fn merged(&mut self, page: usize) {
         self.region_mut(page).merged += 1;
         self.merges += 1;
-        self.progress = true;
     }
 
     pub(super) fn cow(&mut self, page: usize) {
@@ -424,6 +418,41 @@ mod tests {
             Duration::from_millis(36),
             "hints bypass the quiet-round floor, not duty-cycle rest"
         );
+    }
+
+    #[test]
+    fn ongoing_merges_and_ready_hints_cannot_renew_the_bootstrap_budget() {
+        for page_bytes in [4096, 16384] {
+            let mut scanner =
+                Scanner::new(std::iter::once(0..REGION_BYTES / page_bytes), page_bytes, 7);
+            scanner.sampled(0);
+            // Advance past the one-shot window without sleeping or depending
+            // on the host's scheduling speed.
+            let expired = Instant::now() - Duration::from_secs(1);
+            scanner.bootstrap_until = Some(expired);
+            let work = Duration::from_millis(4);
+            let mut total_rest = Duration::ZERO;
+            for page in 0..128 {
+                scanner.sampled(page);
+                scanner.merged(page);
+                scanner.ready(page);
+                scanner.finished_batch(work);
+                assert_eq!(scanner.bootstrap_until, Some(expired));
+                assert_eq!(scanner.delay(), work * 9);
+                total_rest += scanner.delay();
+            }
+            assert_eq!(total_rest, work * 128 * 9);
+            assert_eq!(scanner.merges, 128, "productive feedback remains intact");
+            assert_eq!(scanner.ready.len(), 128, "hints are retained, not disabled");
+            while scanner.next(512).is_some() {}
+            assert_eq!(
+                scanner.delay(),
+                work * 9,
+                "queued hints bypass only the quiet-round floor"
+            );
+            scanner.ready.clear();
+            assert_eq!(scanner.delay(), REJECT_RETRY);
+        }
     }
 
     #[test]
