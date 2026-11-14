@@ -322,3 +322,24 @@ fn managed_catalog_collision_and_corruption_fail_closed() {
     assert!(fs.lookup(ctx, fuse::ROOT_ID, c"link").is_err());
     assert_eq!(outside.as_file().metadata().unwrap().len(), 0);
 }
+
+#[test]
+fn managed_legacy_symlink_records_keep_their_native_mode() {
+    let root = tempfile::tempdir().unwrap();
+    let fs = mount(root.path());
+    let ctx = root_context();
+    fs.symlink(ctx, c"missing", fuse::ROOT_ID, c"link", Default::default())
+        .unwrap();
+    let directory = root.path().join(".pvisor-managed");
+    let record = std::fs::read_dir(&directory)
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    std::fs::write(record, b"123:456").unwrap();
+    let second = mount(root.path());
+    let link = second.lookup(ctx, fuse::ROOT_ID, c"link").unwrap();
+    assert_eq!(owner(&link), (123, 456));
+    assert_eq!(link.attr.st_mode, libc::S_IFLNK | 0o777);
+}

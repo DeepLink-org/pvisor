@@ -8,9 +8,7 @@ use std::{
 
 pub(super) const KEY: &std::ffi::CStr = c"user.containers.override_stat";
 
-#[path = "managed_symlinks.rs"]
-mod symlinks;
-pub(super) use symlinks::{DIRECTORY, Symlinks};
+pub(super) use super::inode_metadata::DIRECTORY;
 
 fn path(file: &File) -> CString {
     CString::new(format!("/proc/self/fd/{}", file.as_raw_fd())).unwrap()

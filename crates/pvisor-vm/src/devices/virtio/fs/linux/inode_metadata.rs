@@ -1,7 +1,7 @@
-//! Linux cannot store user xattrs on symlinks. Keep their guest owners in a
-//! reserved, guest-inaccessible directory in the managed volume instead.
+//! Guest identities for native inodes that cannot portably store user xattrs.
+//! Callers reserve and hide the catalog directory from their guest namespace.
 //! All access is relative to pinned directories; no guest link is followed.
-use super::super::statx::{LinuxStatx, STATX_BASIC_STATS, STATX_BTIME};
+use super::statx::{LinuxStatx, STATX_BASIC_STATS, STATX_BTIME};
 use std::{
     ffi::{CStr, CString},
     fs::File,
@@ -10,15 +10,17 @@ use std::{
         fd::{AsRawFd, FromRawFd},
         unix::fs::MetadataExt,
     },
-    path::PathBuf,
+    path::{Path, PathBuf},
 };
 
-pub(in super::super) const DIRECTORY: &CStr = c".pvisor-managed";
+pub(super) const DIRECTORY: &CStr = c".pvisor-managed";
+// Preserve the marker used by existing managed-volume symlink catalogs.
 const MARKER: &CStr = c"user.pvisor.managed_symlinks";
 const VERSION: &[u8] = b"1";
 
-pub(in super::super) struct Symlinks {
+pub(in crate::devices::virtio::fs) struct Catalog {
     root: File,
+    name: &'static CStr,
 }
 
 fn open_at(parent: &File, name: &CStr, flags: i32) -> io::Result<File> {
@@ -38,15 +40,15 @@ fn open_at(parent: &File, name: &CStr, flags: i32) -> io::Result<File> {
 }
 
 fn invalid() -> io::Error {
-    io::Error::new(
-        io::ErrorKind::InvalidData,
-        "invalid managed symlink metadata",
-    )
+    io::Error::new(io::ErrorKind::InvalidData, "invalid private inode metadata")
 }
 
-impl Symlinks {
-    pub(in super::super) fn new(root: &str) -> io::Result<Self> {
-        let root = CString::new(root).map_err(|_| invalid())?;
+impl Catalog {
+    pub(in crate::devices::virtio::fs) fn new(
+        root: &Path,
+        name: &'static CStr,
+    ) -> io::Result<Self> {
+        let root = CString::new(root.as_os_str().as_encoded_bytes()).map_err(|_| invalid())?;
         let fd = unsafe {
             libc::open(
                 root.as_ptr(),
@@ -58,8 +60,9 @@ impl Symlinks {
         }
         let this = Self {
             root: unsafe { File::from_raw_fd(fd) },
+            name,
         };
-        let _guard = super::lock(&this.root)?;
+        let _guard = super::managed::lock(&this.root)?;
         this.directory(false)?;
         Ok(this)
     }
@@ -67,16 +70,16 @@ impl Symlinks {
     // The root flock serializes directory initialization and read/modify/write
     // across VMs. A pre-existing unmarked name is a collision, never adopted.
     fn directory(&self, create: bool) -> io::Result<Option<File>> {
-        let directory = match open_at(&self.root, DIRECTORY, libc::O_RDONLY | libc::O_DIRECTORY) {
+        let directory = match open_at(&self.root, self.name, libc::O_RDONLY | libc::O_DIRECTORY) {
             Ok(file) => file,
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
                 if !create {
                     return Ok(None);
                 }
-                if unsafe { libc::mkdirat(self.root.as_raw_fd(), DIRECTORY.as_ptr(), 0o700) } < 0 {
+                if unsafe { libc::mkdirat(self.root.as_raw_fd(), self.name.as_ptr(), 0o700) } < 0 {
                     return Err(io::Error::last_os_error());
                 }
-                let file = open_at(&self.root, DIRECTORY, libc::O_RDONLY | libc::O_DIRECTORY)?;
+                let file = open_at(&self.root, self.name, libc::O_RDONLY | libc::O_DIRECTORY)?;
                 if unsafe {
                     libc::fsetxattr(
                         file.as_raw_fd(),
@@ -136,10 +139,13 @@ impl Symlinks {
         if st.stx_mask & STATX_BTIME == 0 {
             return Err(io::Error::new(
                 io::ErrorKind::Unsupported,
-                "managed symlinks require inode birth times",
+                "private inode metadata requires inode birth times",
             ));
         }
-        if u32::from(st.stx_mode) & libc::S_IFMT != libc::S_IFLNK {
+        if !matches!(
+            u32::from(st.stx_mode) & libc::S_IFMT,
+            libc::S_IFLNK | libc::S_IFSOCK
+        ) {
             return Err(invalid());
         }
         // Birth time survives chmod/chown/rename/hardlinks and disambiguates
@@ -155,12 +161,14 @@ impl Symlinks {
         .unwrap())
     }
 
-    fn read(directory: &File, key: &CStr, mut attr: libc::stat64) -> io::Result<libc::stat64> {
-        attr.st_uid = 0;
-        attr.st_gid = 0;
+    fn read(
+        directory: &File,
+        key: &CStr,
+        mut attr: libc::stat64,
+    ) -> io::Result<Option<libc::stat64>> {
         let file = match open_at(directory, key, libc::O_RDONLY | libc::O_NONBLOCK) {
             Ok(file) => file,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(attr),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
             Err(error) => return Err(error),
         };
         let st = file.metadata()?;
@@ -174,16 +182,41 @@ impl Symlinks {
         }
         let mut text = String::new();
         file.take(65).read_to_string(&mut text)?;
-        let (uid, gid) = text.split_once(':').ok_or_else(invalid)?;
-        attr.st_uid = uid.parse().map_err(|_| invalid())?;
-        attr.st_gid = gid.parse().map_err(|_| invalid())?;
-        Ok(attr)
+        let mut fields = text.split(':');
+        attr.st_uid = fields
+            .next()
+            .ok_or_else(invalid)?
+            .parse()
+            .map_err(|_| invalid())?;
+        attr.st_gid = fields
+            .next()
+            .ok_or_else(invalid)?
+            .parse()
+            .map_err(|_| invalid())?;
+        // Old symlink records contain only UID:GID; keep their native mode.
+        if let Some(mode) = fields.next() {
+            let mode = u32::from_str_radix(mode, 8).map_err(|_| invalid())?;
+            if mode & libc::S_IFMT != attr.st_mode & libc::S_IFMT
+                || mode & !(libc::S_IFMT | 0o7777) != 0
+            {
+                return Err(invalid());
+            }
+            attr.st_mode = mode;
+        }
+        if fields.next().is_some() {
+            return Err(invalid());
+        }
+        Ok(Some(attr))
     }
 
     fn write(directory: &File, key: &CStr, attr: &libc::stat64) -> io::Result<()> {
         let path = PathBuf::from(format!("/proc/self/fd/{}", directory.as_raw_fd()));
         let mut temporary = tempfile::NamedTempFile::new_in(&path)?;
-        write!(temporary, "{}:{}", attr.st_uid, attr.st_gid)?;
+        write!(
+            temporary,
+            "{}:{}:0{:o}",
+            attr.st_uid, attr.st_gid, attr.st_mode
+        )?;
         temporary.as_file().sync_all()?;
         temporary
             .persist(path.join(key.to_str().map_err(|_| invalid())?))
@@ -191,32 +224,30 @@ impl Symlinks {
         directory.sync_all()
     }
 
-    pub(in super::super) fn attributes(
+    pub(in crate::devices::virtio::fs) fn attributes(
         &self,
         file: &File,
-        mut attr: libc::stat64,
-    ) -> io::Result<libc::stat64> {
-        let _guard = super::lock(&self.root)?;
+        attr: libc::stat64,
+    ) -> io::Result<Option<libc::stat64>> {
+        let _guard = super::managed::lock(&self.root)?;
         let Some(directory) = self.directory(false)? else {
-            attr.st_uid = 0;
-            attr.st_gid = 0;
-            return Ok(attr);
+            return Ok(None);
         };
         Self::read(&directory, &Self::key(file)?, attr)
     }
 
     // The closure runs under the same volume lock as the write, so concurrent
     // UID-only and GID-only updates cannot lose each other's fields.
-    pub(in super::super) fn update(
+    pub(in crate::devices::virtio::fs) fn update(
         &self,
         file: &File,
         attr: libc::stat64,
         change: impl FnOnce(&mut libc::stat64) -> io::Result<()>,
     ) -> io::Result<libc::stat64> {
-        let _guard = super::lock(&self.root)?;
+        let _guard = super::managed::lock(&self.root)?;
         let directory = self.directory(true)?.ok_or_else(invalid)?;
         let key = Self::key(file)?;
-        let mut attr = Self::read(&directory, &key, attr)?;
+        let mut attr = Self::read(&directory, &key, attr)?.unwrap_or(attr);
         change(&mut attr)?;
         Self::write(&directory, &key, &attr)?;
         Ok(attr)

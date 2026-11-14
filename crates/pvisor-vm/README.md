@@ -948,6 +948,13 @@ Linux symlink 不能存储 user xattr，因此其 guest UID/GID 保存在卷内�
 不宣称这一路径已提供完整 POSIX 时间戳语义。后端必须提供 inode birth time 和目录 xattr。
 birth time 查询与 passthrough 共用 Linux statx wire layout，并直接调用 syscall，
 不依赖 glibc 专有的 libc 绑定；GNU 和静态 musl 使用同一实现与布局测试。
+目录内记录兼容原有的 UID:GID 编码，新记录同时保留 mode。这个私有 inode
+catalog 也用于 Linux 私有 rootfs 的 Unix socket：较旧宿主内核不允许 socket
+上的 `user.*` xattr，因此 socket 保持原生类型和宿主 owner/0600，guest 身份及
+权限存放在 upper 的 `.wh..pvisor-socket-metadata` 控制目录。该目录使用 Core
+已有的保留 whiteout 命名空间，guest lookup、创建和目录遍历不能访问它。
+socket 记录以 device/inode/birth time 标识，重命名、硬链接和重开保留；
+历史无引用记录同样保留至私有 backing 删除，不假装已实现独立 GC。
 这个根目录名称是保留名：lookup/readdir 不暴露，所有 guest 命名空间写入均拒绝。
 已存在但无版本标记的目录、损坏记录或不支持的后端返回错误，不把失败假装成成功。
 目录初始化和元数据更新由根目录 flock 跨 VM 串行化；记录以 fsync + 原子替换提交。

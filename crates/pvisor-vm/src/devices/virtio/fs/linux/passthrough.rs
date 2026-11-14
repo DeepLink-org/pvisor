@@ -13,6 +13,7 @@ use std::io;
 use std::mem::{self, MaybeUninit, size_of};
 use std::os::unix::fs::MetadataExt;
 use std::os::unix::io::{AsRawFd, FromRawFd, RawFd};
+use std::path::Path;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
@@ -559,7 +560,7 @@ pub struct PassthroughFs {
     my_gid: Option<libc::gid_t>,
     cap_fowner: bool,
 
-    symlinks: Option<managed::Symlinks>,
+    symlinks: Option<super::inode_metadata::Catalog>,
     cfg: Config,
 }
 
@@ -1055,7 +1056,12 @@ impl PassthroughFs {
             cap_fowner,
             symlinks: cfg
                 .managed
-                .then(|| managed::Symlinks::new(&cfg.root_dir))
+                .then(|| {
+                    super::inode_metadata::Catalog::new(
+                        Path::new(&cfg.root_dir),
+                        managed::DIRECTORY,
+                    )
+                })
                 .transpose()?,
             cfg,
         })
@@ -1384,7 +1390,10 @@ impl PassthroughFs {
     fn managed_attributes(&self, file: &File, native: libc::stat64) -> io::Result<libc::stat64> {
         if let Some(symlinks) = &self.symlinks {
             if native.st_mode & libc::S_IFMT == libc::S_IFLNK {
-                symlinks.attributes(file, native)
+                let mut native = native;
+                native.st_uid = 0;
+                native.st_gid = 0;
+                Ok(symlinks.attributes(file, native)?.unwrap_or(native))
             } else {
                 managed::attributes(file, native)
             }
@@ -2067,8 +2076,10 @@ impl FileSystem for PassthroughFs {
             .ok_or_else(ebadf)?;
 
         if self.cfg.managed {
-            let native = stat(&inode_data.file)?;
+            let mut native = stat(&inode_data.file)?;
             if native.st_mode & libc::S_IFMT == libc::S_IFLNK {
+                native.st_uid = 0;
+                native.st_gid = 0;
                 if valid.intersects(SetattrValid::MODE | SetattrValid::SIZE) {
                     return Err(io::Error::from_raw_os_error(libc::EOPNOTSUPP));
                 }
