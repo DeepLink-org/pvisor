@@ -79,6 +79,25 @@ def fixture():
 
 
 class CurveEvidenceTests(unittest.TestCase):
+    def test_readonly_validation_alias_is_not_counted_as_shared_guest_ram(self):
+        with tempfile.TemporaryDirectory() as directory:
+            proc = Path(directory)
+            (proc / "smaps").write_text(
+                "1000-2000 rw-p 00000000 00:01 1 /memfd:pvisor-shared-ram (deleted)\n"
+                "KSM: 0 kB\nVmFlags: rd wr mr mw me ac\n"
+                "10000-30000 r--s 00000000 00:01 1 /memfd:pvisor-shared-ram (deleted)\n"
+                "KSM: 0 kB\nVmFlags: rd mr me ms\n"
+                "40000-41000 rw-p 00000000 00:00 0\n"
+                "KSM: 4 kB\nVmFlags: rd wr mg\n"
+            )
+            observed = subject.mapping_evidence(proc)
+            self.assertEqual(observed["pool_mapping_bytes"], 4096)
+            self.assertEqual(observed["pool_vmas"], 1)
+            self.assertEqual(observed["pool_verification_bytes"], 128 * 1024)
+            self.assertEqual(observed["pool_verification_vmas"], 1)
+            self.assertEqual(observed["mergeable_bytes"], 4096)
+            self.assertEqual(observed["ksm_bytes"], 4096)
+
     def test_complete_cohort_has_58_distinct_full_oracle_checks(self):
         raw, cfg = fixture()
         self.assertEqual(len(raw["checks"]), 58)
@@ -194,6 +213,51 @@ class CurveEvidenceTests(unittest.TestCase):
                     bad["phases"][-1]["guest_pids"].pop()
                 with self.assertRaises(ValueError):
                     subject.validate_worker(bad, cfg)
+
+    def test_ksm_off_profile_preserves_all_integrity_and_resource_gates(self):
+        raw, cfg = fixture()
+        cfg.update(schema=subject.KSM_OFF_SCHEMA, arm="pvisor-physical")
+        raw["kernel_before"]["files"]["run"] = "0"
+        raw["kernel_after"]["files"]["run"] = "0"
+        raw["post_write_origin_ns"] = 63 * 10**9
+        for boundary in subject.POST_WRITE_BOUNDARIES:
+            phase = copy.deepcopy(raw["phases"][10])
+            phase.update(name=f"post-write-{boundary}", monotonic_ns=(63 + boundary) * 10**9)
+            raw["phases"].append(phase)
+        raw["after"]["monotonic_ns"] = 94 * 10**9
+        for phase in [raw["before"], *raw["phases"], raw["after"]]:
+            phase.update(cgroup="/sys/fs/cgroup/owned-unit", ksm=raw["kernel_before"])
+            phase["counters"].update({"pids.max": "256", "pids.events": "max 0\n"})
+            for process in phase["processes"]:
+                process.update(cpu_affinity=[0, 1, 2, 3], cgroup="0::/owned-unit\n")
+        subject.validate_worker(raw, cfg)
+        for failure in ("checks", "window", "pids", "oom", "swap", "affinity", "ksm", "arm"):
+            with self.subTest(failure=failure):
+                bad, condition = copy.deepcopy((raw, cfg))
+                if failure == "checks":
+                    bad["checks"].pop()
+                elif failure == "window":
+                    bad["phases"][-1]["monotonic_ns"] -= 1
+                elif failure == "pids":
+                    bad["phases"][0]["counters"]["pids.max"] = "512"
+                elif failure == "oom":
+                    bad["phases"][0]["counters"]["memory.events"] = "oom 1\n"
+                elif failure == "swap":
+                    bad["phases"][0]["counters"]["memory.swap.current"] = "4096"
+                elif failure == "affinity":
+                    bad["phases"][0]["processes"][0]["cpu_affinity"] = [0]
+                elif failure == "ksm":
+                    bad["kernel_after"]["files"]["run"] = "1"
+                elif failure == "arm":
+                    condition["arm"] = "pvisor-ksm"
+                with self.assertRaises(ValueError):
+                    subject.validate_worker(bad, condition)
+
+    def test_default_profile_still_requires_default_ksm(self):
+        raw, cfg = fixture()
+        raw["kernel_before"]["files"]["run"] = "0"
+        with self.assertRaisesRegex(ValueError, "default-parameter KSM"):
+            subject.require_kernel_policy(raw["kernel_before"], cfg)
 
 
 @unittest.skipUnless(

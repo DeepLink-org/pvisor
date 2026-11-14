@@ -10,6 +10,7 @@ from pool_compare import (
     ARMS,
     CURRENT_SCHEMA,
     PATTERNS,
+    V4_SCHEMAS,
     digest,
     validate_observation,
     validate_worker,
@@ -166,7 +167,7 @@ def audit(root, *, formal=False, arms=None):
         validate_observation(
             memory,
             json.loads((folder / "guard.json").read_text()),
-            tasks_max=256 if cfg.get("schema") == CURRENT_SCHEMA else 128,
+            tasks_max=256 if cfg.get("schema") in V4_SCHEMAS else 128,
         )
         if not pss or any("error" in p for p in pss):
             raise ValueError("missing PSS curve")
