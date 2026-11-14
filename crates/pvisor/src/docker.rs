@@ -23,6 +23,11 @@ pub use crate::image::oci::PullProgress;
 
 /// VM-isolated Dockerfile builds and OCI image publication.
 pub mod build;
+/// Validated, image-based Compose projects and project-scoped lifecycle.
+pub mod compose;
+mod file_bind;
+/// Owner-supervised, generation-scoped container health checks.
+pub mod health;
 mod images;
 mod staging;
 pub use staging::StagedMount;
@@ -55,6 +60,53 @@ fn require_native_platform(platform: &str) -> anyhow::Result<()> {
         "cannot run {platform} on a {native} VM: cross-architecture emulation is not implemented; --platform selects an image, not a CPU emulator"
     );
     Ok(())
+}
+
+/// Parse an integer Docker memory size in bytes or binary k/m/g units, optionally
+/// followed by `b` (case-insensitive). Round up to MiB; reject overflow and
+/// budgets below 16 MiB. This is guest RAM, not a host cgroup quota.
+pub fn parse_memory_limit(value: &str) -> anyhow::Result<u32> {
+    let split = value
+        .find(|c: char| !c.is_ascii_digit())
+        .unwrap_or(value.len());
+    let number: u64 = value[..split].parse().context("invalid memory size")?;
+    let scale = match value[split..].to_ascii_lowercase().as_str() {
+        "" | "b" => 1,
+        "k" | "kb" => 1024,
+        "m" | "mb" => 1024 * 1024,
+        "g" | "gb" => 1024 * 1024 * 1024,
+        _ => bail!("unsupported memory suffix"),
+    };
+    let bytes = number.checked_mul(scale).context("memory size overflow")?;
+    let mib = bytes.div_ceil(1024 * 1024);
+    ensure!(mib >= 16, "guest memory must be at least 16 MiB");
+    u32::try_from(mib).context("memory size overflow")
+}
+
+/// Parse short TCP publishing syntax: GUEST, HOST:GUEST or IPv4:HOST:GUEST,
+/// optionally suffixed `/tcp`. Omitted address is 0.0.0.0; empty/omitted/zero
+/// host port requests an ephemeral port. Reject non-TCP protocols, ranges,
+/// IPv6 and guest port zero. Parsing opens no listener.
+pub fn parse_port_mapping(value: &str) -> anyhow::Result<Port> {
+    let value = value.strip_suffix("/tcp").unwrap_or(value);
+    ensure!(
+        !value.contains('/'),
+        "only TCP port publishing is supported"
+    );
+    let parts: Vec<_> = value.split(':').collect();
+    let (address, host, guest) = match parts.as_slice() {
+        [guest] => ("0.0.0.0", "0", *guest),
+        [host, guest] => ("0.0.0.0", if host.is_empty() { "0" } else { host }, *guest),
+        [address, host, guest] => (*address, if host.is_empty() { "0" } else { host }, *guest),
+        _ => bail!("invalid port mapping"),
+    };
+    let guest = guest.parse()?;
+    ensure!(guest != 0, "guest port must be nonzero");
+    Ok(Port {
+        address: address.parse()?,
+        host: host.parse()?,
+        guest,
+    })
 }
 
 /// Persistent image identity and launch defaults. Published records require a
@@ -184,7 +236,9 @@ impl ImageRoot {
 /// One independently mounted host directory; sources are resolved at creation.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Mount {
-    /// Existing canonical host directory, or a managed volume directory.
+    /// Existing canonical host directory, managed volume directory, or ordinary
+    /// bind file. File binds require link permission on the store's filesystem;
+    /// each launch pins the current file inode without exposing its parent.
     pub source: PathBuf,
     /// Absolute guest destination, excluding guest system/control directories.
     pub target: PathBuf,
@@ -310,6 +364,10 @@ pub struct Instance<Backing = CachedImage> {
     pub exit_code: Option<i32>,
     /// Creation time in Unix milliseconds.
     pub created_ms: u64,
+    /// Compose ownership, absent for ordinary containers and older records.
+    /// Names alone never grant Compose permission to stop or remove a container.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compose: Option<compose::Membership>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -763,8 +821,27 @@ impl Store {
     /// `pull_with_progress`; no owner or VM is started by this operation.
     pub fn create_with_progress(
         &self,
+        config: Create,
+        progress: &mut dyn FnMut(PullProgress),
+    ) -> anyhow::Result<Instance> {
+        self.create_member(config, progress, None)
+    }
+
+    fn create_member(
+        &self,
+        config: Create,
+        progress: &mut dyn FnMut(PullProgress),
+        membership: Option<compose::Membership>,
+    ) -> anyhow::Result<Instance> {
+        self.create_pinned_member(config, progress, membership, None)
+    }
+
+    fn create_pinned_member(
+        &self,
         mut config: Create,
         progress: &mut dyn FnMut(PullProgress),
+        membership: Option<compose::Membership>,
+        pinned: Option<Image>,
     ) -> anyhow::Result<Instance> {
         staging::validate_mounts(&mut config)?;
         if let Some(platform) = &config.platform {
@@ -830,7 +907,9 @@ impl Store {
                 "--ip requires a user-defined network"
             );
         }
-        let image = if let Some(image) = self.local_image(&config.image)? {
+        let image = if let Some(image) = pinned {
+            image
+        } else if let Some(image) = self.local_image(&config.image)? {
             image
         } else {
             self.pull_with_progress(&config.image, progress)?
@@ -862,9 +941,16 @@ impl Store {
         ensure!(cwd.is_absolute(), "working directory must be absolute");
         for mount in &config.mounts {
             ensure!(
-                mount.source.is_absolute() && mount.source.is_dir(),
-                "mount source must be an existing absolute directory"
+                mount.source.is_absolute()
+                    && (mount.source.is_dir()
+                        || mount.volume.is_none() && !mount.staged && mount.source.is_file()),
+                "mount source must be an existing absolute directory or ordinary file"
             );
+            if mount.source.is_file() {
+                // Probe the same pinning operation used at VM launch before
+                // publishing a candidate or stopping an old Compose service.
+                let _pin = file_bind::Share::new(&self.root, &mount.source)?;
+            }
             validate_target(&mount.target)?;
             ensure!(
                 !(mount.volume.is_some()
@@ -921,6 +1007,22 @@ impl Store {
             );
         }
         let _guard = self.lock()?;
+        // Volume removal uses this same lock. A mount resolved before admission
+        // must not publish a stale reference after a concurrent down -v.
+        for mount in &config.mounts {
+            if let Some(volume) = &mount.volume {
+                let name = volume.strip_prefix("anonymous:").unwrap_or(volume);
+                ensure!(
+                    valid_name(name) && mount.source == self.root.join("volumes").join(name),
+                    "invalid managed volume binding"
+                );
+                let metadata = fs::symlink_metadata(&mount.source)?;
+                ensure!(
+                    metadata.is_dir() && metadata.uid() == unsafe { libc::geteuid() },
+                    "managed volume disappeared or changed before container admission"
+                );
+            }
+        }
         let id = format!("{}{}", uuid(), uuid());
         let name = config
             .name
@@ -930,7 +1032,14 @@ impl Store {
             !self.all()?.iter().any(|i| i.name == name),
             "container name already in use: {name}"
         );
-        self.assign_network(&mut config, &name)?;
+        self.assign_network(
+            &mut config,
+            &name,
+            membership
+                .as_ref()
+                .filter(|m| m.replaces.is_none())
+                .map(|m| m.service.as_str()),
+        )?;
         let directory = self.directory(&id);
         private_directory(&directory)?;
         for path in ["upper", "work"] {
@@ -986,6 +1095,7 @@ impl Store {
             started_ms: 0,
             exit_code: None,
             created_ms: crate::unix_now_ms(),
+            compose: membership,
         };
         self.save(&instance)?;
         Ok(instance)
@@ -1018,6 +1128,13 @@ impl Store {
         {
             let _guard = self.lock()?;
             instance = self.resolve(selector)?;
+            ensure!(
+                instance
+                    .compose
+                    .as_ref()
+                    .is_none_or(|member| member.replaces.is_none()),
+                "pending Compose replacements cannot be started directly; retry compose up or use compose down"
+            );
             staging::validate_mounts(&mut instance.config)?;
             require_native_platform(&instance.image.platform)?;
             self.validate_network_attachment(&instance)?;
@@ -1267,6 +1384,22 @@ impl Store {
         stdout: &mut impl Write,
         stderr: &mut impl Write,
     ) -> anyhow::Result<i32> {
+        self.logs_until(selector, follow, stdout, stderr, &|| false)
+    }
+
+    /// Stream logs as in [`Self::logs`], checking cancellation before each drain
+    /// and at most every 20 ms while idle. Cancellation returns zero without
+    /// stopping the container or claiming its exit status. Writers can block;
+    /// the callback does not interrupt an in-progress write. Errors may follow
+    /// partial output. Useful for cancelling sibling service log readers.
+    pub fn logs_until(
+        &self,
+        selector: &str,
+        follow: bool,
+        stdout: &mut impl Write,
+        stderr: &mut impl Write,
+        cancelled: &dyn Fn() -> bool,
+    ) -> anyhow::Result<i32> {
         let instance = self.resolve(selector)?;
         let directory = self.directory(&instance.id);
         let mut out = OpenOptions::new()
@@ -1284,6 +1417,9 @@ impl Store {
             .mode(0o600)
             .open(directory.join("stderr.log"))?;
         loop {
+            if cancelled() {
+                return Ok(0);
+            }
             io::copy(&mut out, stdout)?;
             io::copy(&mut err, stderr)?;
             stdout.flush()?;
@@ -1647,6 +1783,7 @@ fn run_owner_generation(store: &Store, instance: &mut Instance) -> anyhow::Resul
         // Close and join listeners before committing completion/releasing the
         // owner lease. Stop must not acknowledge while a listener is still live.
         let mut publications = PublishedListeners::start(listeners, &endpoint)?;
+        let mut health = None;
         loop {
             publications.check()?;
             if let Some(status) = child.try_wait()? {
@@ -1660,6 +1797,9 @@ fn run_owner_generation(store: &Store, instance: &mut Instance) -> anyhow::Resul
                 );
                 return Ok(status.code().unwrap_or(128 + status.signal().unwrap_or(9)));
             }
+            if let Some(health) = &mut health {
+                health::Monitor::check(health)?;
+            }
             if instance.state == "starting"
                 && endpoint.exists()
                 && let Ok(Reply::Ready) = store.request(instance, &Request::Ping {})
@@ -1671,6 +1811,18 @@ fn run_owner_generation(store: &Store, instance: &mut Instance) -> anyhow::Resul
                     directory.join(format!("ready-{}", instance.generation)),
                     b"ready",
                 )?;
+                drop(_guard);
+                if let Some(check) = instance
+                    .compose
+                    .as_ref()
+                    .and_then(|member| member.healthcheck.clone())
+                {
+                    health = Some(health::Monitor::start(
+                        store.clone(),
+                        instance.clone(),
+                        check,
+                    )?);
+                }
             }
             let force = directory.join("force-stop.json");
             if force.is_file()
@@ -1909,6 +2061,8 @@ fn run_vm<Backing>(
             )
         })
         .transpose()?;
+    // Pins must outlive the VMM and its filesystem workers.
+    let mut file_shares = Vec::new();
     let mut vm = VmBuilder::new(instance.config.cpus, instance.config.memory_mib)?;
     if VmPlatform::embedded_kernel().is_none() {
         vm.set_firmware_path(VmPlatform::resolve_firmware_path(None)?)?;
@@ -2000,6 +2154,13 @@ fn run_vm<Backing>(
     };
     for (index, mount) in instance.config.mounts.iter().enumerate() {
         let tag = format!("pvisor-volume-{index}");
+        let source_file = mount.volume.is_none() && !mount.staged && mount.source.is_file();
+        let source = if source_file {
+            file_shares.push(file_bind::Share::new(&directory, &mount.source)?);
+            file_shares.last().unwrap().path()
+        } else {
+            &mount.source
+        };
         if mount.staged {
             staging::attach(
                 &mut vm,
@@ -2011,17 +2172,18 @@ fn run_vm<Backing>(
                 &tag,
             )?;
         } else if mount.volume.is_some() && cfg!(target_os = "linux") {
-            vm.managed_filesystem(&tag, &mount.source, mount.read_only)?;
+            vm.managed_filesystem(&tag, source, mount.read_only)?;
         } else if mount.read_only {
-            vm.read_only_filesystem(&tag, &mount.source)?;
+            vm.read_only_filesystem(&tag, source)?;
         } else {
-            vm.filesystem(&tag, &mount.source, 0)?;
+            vm.filesystem(&tag, source, 0)?;
         }
         guest.mounts.push(pvisor_guest::Mount {
             tag,
             target: mount.target.clone(),
             read_only: mount.read_only,
             initialize: mount.volume.is_some(),
+            source_file,
         });
     }
     let _network = if instance.config.network {

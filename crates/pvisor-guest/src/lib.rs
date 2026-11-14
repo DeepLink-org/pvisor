@@ -162,6 +162,11 @@ pub struct Mount {
     /// Populate an empty share from its image destination before mounting it.
     /// Only directories, regular files and symlinks are supported.
     pub initialize: bool,
+    /// Mount only the share's fixed `file` entry onto a regular-file target.
+    /// The host must expose only that admitted inode, not its parent directory.
+    /// Incompatible with volume initialization; defaults to directory mounting.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub source_file: bool,
 }
 
 /// A daemon the supervisor starts alongside the workload. Sidecars are
@@ -317,6 +322,9 @@ impl GuestConfig {
             ));
         }
         for mount in &self.mounts {
+            if mount.source_file && mount.initialize {
+                return Err(invalid("file shares cannot initialize managed volumes"));
+            }
             if !guest_mount_target(&mount.target) {
                 return Err(invalid("invalid guest mount target"));
             }
@@ -512,7 +520,13 @@ mod tests {
             target: "/data".into(),
             read_only: true,
             initialize: false,
+            source_file: false,
         });
+        assert!(config.command().is_ok());
+        config.mounts[0].source_file = true;
+        config.mounts[0].initialize = true;
+        assert!(config.command().is_err());
+        config.mounts[0].initialize = false;
         assert!(config.command().is_ok());
         for path in ["/", "relative", "/data/../proc", "/bad\0path"] {
             config.mounts[0].target = path.into();

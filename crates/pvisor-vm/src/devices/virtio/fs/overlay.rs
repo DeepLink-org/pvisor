@@ -3749,16 +3749,61 @@ impl FileSystem for OverlayFs {
     ) -> io::Result<Entry> {
         let _operation = self.write_operation()?;
         let path = self.child(parent, name)?;
+        #[cfg(target_os = "linux")]
+        let virtual_parent = if self.virtual_metadata
+            && matches!(mode & libc::S_IFMT, libc::S_IFREG | libc::S_IFSOCK)
+        {
+            Some(self.entry(ctx, &self.path(parent)?, parent)?.attr)
+        } else {
+            None
+        };
+        #[cfg(target_os = "linux")]
+        let (native_ctx, native_mode, native_umask) = if virtual_parent.is_some() {
+            // Like CREATE/MKDIR, unprivileged node types keep native backing
+            // accessible to its host owner, with guest identity stored below.
+            // FIFO/device nodes retain the original checks: Linux does not
+            // support our user-xattr identity record on those native types.
+            (self.private_create_context(ctx), (mode & libc::S_IFMT) | 0o600, 0)
+        } else {
+            (ctx, mode, umask)
+        };
+        #[cfg(target_os = "macos")]
+        let (native_ctx, native_mode, native_umask) = (ctx, mode, umask);
         let (upper_parent, upper_name) = self.upper_parent(ctx, &path)?;
         let created = self.layers[0].mknod(
-            ctx,
+            native_ctx,
             upper_parent,
             &upper_name,
-            mode,
+            native_mode,
             rdev,
-            umask,
+            native_umask,
             extensions,
         );
+        #[cfg(target_os = "linux")]
+        let created = created.and_then(|created| {
+            if let Some(parent_attr) = virtual_parent {
+                let gid = if parent_attr.st_mode & libc::S_ISGID != 0 {
+                    parent_attr.st_gid
+                } else {
+                    ctx.gid
+                };
+                let guest_mode = (created.attr.st_mode & libc::S_IFMT) | (mode & !umask & 0o7777);
+                let identity = format!("{}:{gid}:0{guest_mode:o}", ctx.uid);
+                if let Err(error) = pvisor_overlay_core::sys::set_xattr(
+                    &self.core.upper_path(&path),
+                    OsStr::new("user.containers.override_stat"),
+                    identity.as_bytes(),
+                    0,
+                ) {
+                    // No guest lookup has been published. Do not leave a
+                    // host-owned node behind after essential metadata failed.
+                    let _ = self.layers[0].unlink(native_ctx, upper_parent, &upper_name);
+                    self.layers[0].forget(ctx, created.inode, 1);
+                    return Err(linux_error(error));
+                }
+            }
+            Ok(created)
+        });
         if upper_parent != fuse::ROOT_ID {
             self.layers[0].forget(ctx, upper_parent, 1);
         }
@@ -5010,6 +5055,42 @@ mod tests {
                 std::fs::Permissions::from_mode(0o700),
             )
             .unwrap();
+        }
+
+        #[test]
+        fn private_mknod_preserves_guest_identity_without_host_setid() {
+            use std::os::unix::fs::{FileTypeExt, MetadataExt};
+            let (temp, fs, root) = fixture(Some(b"0:4242:042777"));
+            assert!(fs.virtual_metadata);
+            let guest = Context { uid: 70, gid: 70, pid: 123 };
+            for (name, kind) in [(c"socket", libc::S_IFSOCK), (c"regular", libc::S_IFREG)] {
+                let created = fs.mknod(guest, fuse::ROOT_ID, name, kind | 0o666, 0, 0o027,
+                                       Extensions::default()).unwrap();
+                assert_eq!(created.attr.st_uid, 70);
+                assert_eq!(created.attr.st_gid, 4242, "inherit the guest parent's setgid group");
+                assert_eq!(created.attr.st_mode, kind | 0o640);
+                let path = temp.path().join("upper").join(OsStr::from_bytes(name.to_bytes()));
+                let native = std::fs::symlink_metadata(&path).unwrap();
+                assert_eq!(native.uid(), unsafe { libc::geteuid() });
+                assert_eq!(native.mode() & 0o7777, 0o600);
+                assert_eq!(native.file_type().is_socket(), kind == libc::S_IFSOCK);
+                let observed = fs.getattr(guest, created.inode, None).unwrap().0;
+                assert_eq!(observed.st_uid, 70);
+                assert_eq!(observed.st_gid, 4242);
+                assert_eq!(observed.st_mode, kind | 0o640);
+                let stranger = Context { uid: 71, gid: 71, ..guest };
+                assert_eq!(fs.access(stranger, created.inode, libc::W_OK as u32)
+                           .unwrap_err().raw_os_error(), Some(libc::EACCES));
+                fs.forget(guest, created.inode, 1);
+            }
+            drop(fs);
+            let reopened = parent_cache_fixture(temp.path());
+            for (name, kind) in [(c"socket", libc::S_IFSOCK), (c"regular", libc::S_IFREG)] {
+                let entry = reopened.lookup(root, fuse::ROOT_ID, name).unwrap();
+                assert_eq!(entry.attr.st_uid, 70);
+                assert_eq!(entry.attr.st_gid, 4242);
+                assert_eq!(entry.attr.st_mode, kind | 0o640);
+            }
         }
 
         fn truncate_detached(replace: bool) {

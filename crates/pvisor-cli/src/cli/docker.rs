@@ -11,6 +11,7 @@ use std::time::Duration;
 
 mod build;
 mod builder;
+mod compose;
 mod network;
 mod progress;
 
@@ -36,6 +37,8 @@ pub(super) enum DockerCommand {
     Build(build::Build),
     /// Manage local build cache.
     Builder(builder::BuilderArgs),
+    /// Manage image-based Compose projects without a Docker daemon.
+    Compose(compose::ComposeArgs),
     /// Create and run a new container in its own VM.
     #[command(disable_help_flag = true)]
     Run(Box<Run>),
@@ -262,23 +265,7 @@ pub(super) struct Exec {
 }
 
 pub(super) fn memory(value: &str) -> Result<u32, String> {
-    let split = value
-        .find(|c: char| !c.is_ascii_digit())
-        .unwrap_or(value.len());
-    let number: u64 = value[..split].parse().map_err(|_| "invalid memory size")?;
-    let scale = match value[split..].to_ascii_lowercase().as_str() {
-        "" | "b" => 1,
-        "k" | "kb" => 1024,
-        "m" | "mb" => 1024 * 1024,
-        "g" | "gb" => 1024 * 1024 * 1024,
-        _ => return Err("unsupported memory suffix".into()),
-    };
-    let bytes = number.checked_mul(scale).ok_or("memory size overflow")?;
-    let mib = bytes.div_ceil(1024 * 1024);
-    if mib < 16 {
-        return Err("guest memory must be at least 16 MiB".into());
-    }
-    u32::try_from(mib).map_err(|_| "memory size overflow".into())
+    docker::parse_memory_limit(value).map_err(|error| error.to_string())
 }
 
 pub(super) fn environment(
@@ -350,7 +337,7 @@ fn volume(value: &str, store: &Store) -> anyhow::Result<docker::Mount> {
         Some(source) if source.starts_with('/') || source.starts_with('.') => {
             let path = PathBuf::from(source)
                 .canonicalize()
-                .context("bind source must be an existing directory")?;
+                .context("bind source must be an existing directory or ordinary file")?;
             (path, None)
         }
         Some(name) => (store.volume(name)?, Some(name.into())),
@@ -369,25 +356,7 @@ fn volume(value: &str, store: &Store) -> anyhow::Result<docker::Mount> {
 }
 
 fn port(value: &str) -> anyhow::Result<docker::Port> {
-    let value = value.strip_suffix("/tcp").unwrap_or(value);
-    ensure!(
-        !value.contains('/'),
-        "only TCP port publishing is supported"
-    );
-    let parts: Vec<_> = value.split(':').collect();
-    let (address, host, guest) = match parts.as_slice() {
-        [guest] => ("0.0.0.0", "0", *guest),
-        [host, guest] => ("0.0.0.0", if host.is_empty() { "0" } else { host }, *guest),
-        [address, host, guest] => (*address, if host.is_empty() { "0" } else { host }, *guest),
-        _ => bail!("invalid port mapping"),
-    };
-    let guest = guest.parse()?;
-    ensure!(guest != 0, "guest port must be nonzero");
-    Ok(docker::Port {
-        address: address.parse()?,
-        host: host.parse()?,
-        guest,
-    })
+    docker::parse_port_mapping(value)
 }
 
 pub(super) fn run(command: DockerCommand) -> anyhow::Result<i32> {
@@ -419,10 +388,14 @@ pub(super) fn run(command: DockerCommand) -> anyhow::Result<i32> {
     if let DockerCommand::Builder(args) = command {
         return builder::run(args);
     }
+    if let DockerCommand::Compose(args) = command {
+        return compose::run(args);
+    }
     let store = Store::discover()?;
     match command {
         DockerCommand::Build(_)
         | DockerCommand::Builder(_)
+        | DockerCommand::Compose(_)
         | DockerCommand::Network(_)
         | DockerCommand::Container { .. }
         | DockerCommand::Image { .. } => {

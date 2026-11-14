@@ -62,7 +62,9 @@ pvisor run --rm alpine:3.20 echo hello
 预期输出 `hello`。命令在独立 Linux VM 中执行，退出后删除该容器。首次使用会下载镜像。
 [Docker 上手教程](https://deeplink-org.github.io/pvisor/zh/start/first-run/#docker-style)
 包含保持沙箱运行、执行后续命令、检查状态和清理的步骤。
-当前提供实验性的 Docker 兼容命令子集，不支持 Docker Engine API 或 Compose。
+当前提供实验性的 Docker 兼容命令子集，包括基于镜像的
+[`pvisor compose`](crates/pvisor-cli/README.md#compose-command-profile-experimental)；
+不提供 Docker Engine API，也不支持完整的 Compose 规范。
 
 #### Agent style stagebox
 

@@ -22,6 +22,9 @@ pub struct Network {
     pub builtin: bool,
     /// Creation time in Unix milliseconds; not a monotonic clock.
     pub created_ms: u64,
+    /// Owning Compose project; ordinary and built-in networks have no owner.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compose_project: Option<String>,
 }
 
 /// Request to create one private IPv4 /24 network.
@@ -169,6 +172,7 @@ impl Store {
                         gateway: Some(Ipv4Addr::new(172, 17, 0, 1)),
                         builtin: true,
                         created_ms: crate::unix_now_ms(),
+                        compose_project: None,
                     },
                     Network {
                         id: format!("{}{}", uuid(), uuid()),
@@ -177,6 +181,7 @@ impl Store {
                         gateway: None,
                         builtin: true,
                         created_ms: crate::unix_now_ms(),
+                        compose_project: None,
                     },
                 ])?;
             }
@@ -216,6 +221,14 @@ impl Store {
     /// reserved names and unsupported IPAM fail without publishing a definition.
     /// Socket transport starts only when an attached container starts.
     pub fn create_network(&self, request: NetworkCreate) -> anyhow::Result<Network> {
+        self.create_project_network(request, None)
+    }
+
+    pub(super) fn create_project_network(
+        &self,
+        request: NetworkCreate,
+        project: Option<&str>,
+    ) -> anyhow::Result<Network> {
         ensure!(
             valid_name(&request.name)
                 && !["bridge", "none", "host"].contains(&request.name.as_str()),
@@ -256,6 +269,7 @@ impl Store {
             gateway: Some(gateway),
             builtin: false,
             created_ms: crate::unix_now_ms(),
+            compose_project: project.map(str::to_owned),
         };
         networks.push(network.clone());
         self.save_networks(networks)?;
@@ -301,7 +315,22 @@ impl Store {
 
     // Called while the container catalog lock is held. Existing containers keep
     // their address until removal; failed creation publishes no reservation.
-    pub(super) fn assign_network(&self, config: &mut Create, name: &str) -> anyhow::Result<()> {
+    pub(super) fn assign_network(
+        &self,
+        config: &mut Create,
+        name: &str,
+        service: Option<&str>,
+    ) -> anyhow::Result<()> {
+        self.assign_network_excluding(config, name, service, &[])
+    }
+
+    pub(super) fn assign_network_excluding(
+        &self,
+        config: &mut Create,
+        name: &str,
+        service: Option<&str>,
+        excluded: &[&str],
+    ) -> anyhow::Result<()> {
         let Some(selector) = config.network_name.as_deref() else {
             return Ok(());
         };
@@ -322,17 +351,26 @@ impl Store {
             !network.builtin || config.ipv4_address.is_none(),
             "--ip requires a user-defined network"
         );
-        let existing = self.all()?;
+        let existing: Vec<_> = self
+            .all()?
+            .into_iter()
+            .filter(|instance| !excluded.contains(&instance.id.as_str()))
+            .collect();
+        let mut aliases = vec![name.to_owned()];
+        if let Some(service) = service
+            && !service.eq_ignore_ascii_case(name)
+        {
+            aliases.push(service.to_owned());
+        }
         ensure!(
             network.builtin
                 || !existing
                     .iter()
                     .filter_map(|instance| instance.config.peers.as_ref())
                     .any(|peer| peer.network == key(&network)
-                        && peer
-                            .aliases
+                        && peer.aliases.iter().any(|alias| aliases
                             .iter()
-                            .any(|alias| alias.eq_ignore_ascii_case(name))),
+                            .any(|new| alias.eq_ignore_ascii_case(new)))),
             "container DNS name already allocated on network"
         );
         let taken: std::collections::BTreeSet<_> = existing
@@ -359,11 +397,7 @@ impl Store {
             network: key(&network).into(),
             address,
             gateway: network.gateway.context("missing gateway")?,
-            aliases: if network.builtin {
-                vec![]
-            } else {
-                vec![name.into()]
-            },
+            aliases: if network.builtin { vec![] } else { aliases },
         };
         peers.validate()?;
         config.peers = Some(peers);
@@ -476,7 +510,7 @@ mod tests {
         }))
         .unwrap();
         let _guard = store.lock().unwrap();
-        store.assign_network(&mut cfg, "one").unwrap();
+        store.assign_network(&mut cfg, "one", None).unwrap();
         let peer = cfg.peers.unwrap();
         assert_eq!(peer.address, "172.17.0.2".parse::<Ipv4Addr>().unwrap());
         assert!(peer.aliases.is_empty());
@@ -485,7 +519,7 @@ mod tests {
             ipv4_address: Some("172.17.0.11".parse().unwrap()),
             ..cfg
         };
-        assert!(store.assign_network(&mut cfg, "two").is_err());
+        assert!(store.assign_network(&mut cfg, "two", None).is_err());
         drop(_guard);
         store
             .create_network(create("dev", Some("192.168.50.0/24")))
@@ -493,7 +527,7 @@ mod tests {
         cfg.network_name = Some("dev".into());
         cfg.ipv4_address = Some("192.168.50.11".parse().unwrap());
         let _guard = store.lock().unwrap();
-        store.assign_network(&mut cfg, "web").unwrap();
+        store.assign_network(&mut cfg, "web", None).unwrap();
         let peer = cfg.peers.as_ref().unwrap();
         assert_eq!(peer.aliases, vec!["web"]);
         assert_eq!(peer.gateway, "192.168.50.1".parse::<Ipv4Addr>().unwrap());
