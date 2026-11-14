@@ -315,6 +315,7 @@ struct Pager<S: ColdRamStore> {
     shared_scan: Option<scan::Scanner>,
     read_hints: Option<Arc<ReadHints>>,
     file_hint_candidates: u64,
+    // Compressed candidate walk, or the independent physical-reference walk.
     cursor: usize,
     restored: u64,
     discarded: u64,
@@ -704,6 +705,54 @@ impl<S: ColdRamStore> Pager<S> {
                 self.snapshot_buffers.push(vec![0; 4096]);
             }
         }
+    }
+
+    /// Retire only proven Linux COW authority, independently of discovery yield
+    /// and cooldown. This is the same present-anonymous proof used before put.
+    /// Never read guest bytes, fault sparse RAM, or alter a mapping here.
+    fn retire_cow_references(&mut self) -> io::Result<Vec<S::Object>> {
+        let mut retired = Vec::new();
+        if !self.share_resident || self.pages.is_empty() {
+            return Ok(retired);
+        }
+        let started = Instant::now();
+        let limit = self.pages.len().min(16 * 1024 * 1024 / 4096);
+        self.cursor %= self.pages.len();
+        let mut visited = 0;
+        while visited < limit && (visited == 0 || started.elapsed() < scan::WORK_BUDGET) {
+            let first = self.cursor;
+            let mapping = self
+                .pages
+                .regions
+                .partition_point(|(start, _)| *start <= first)
+                - 1;
+            let mapping_end = self
+                .pages
+                .regions
+                .get(mapping + 1)
+                .map_or(self.pages.len(), |(start, _)| *start);
+            let end = (first + 512).min(mapping_end).min(first + limit - visited);
+            if self.pages[first..end]
+                .iter()
+                .any(|page| page.cold.is_some())
+            {
+                let flags = self.pages.page_bitmap(self.pagemap.as_ref(), first..end)?;
+                for (index, bits) in (first..end).zip(flags) {
+                    // A missing file PTE can still refault from its old slot.
+                    // Only a complete native page with a present anonymous PTE
+                    // no longer depends on the pool's bytes.
+                    if bits == PAGE_PRESENT && self.pages.range(index).len == 4096 {
+                        if let Some(object) = self.pages[index].cold.take() {
+                            self.shared_scan.as_mut().unwrap().cow(index);
+                            retired.push(*object);
+                        }
+                    }
+                }
+            }
+            visited += end - first;
+            self.cursor = if end == self.pages.len() { 0 } else { end };
+        }
+        Ok(retired)
     }
 
     /// The caller has stopped CPUs and drained device leases. Balloon keeps the
@@ -1360,18 +1409,28 @@ pub(crate) fn start<S: ColdRamStore + 'static>(
     let worker_stop = stop.clone();
     let worker = std::thread::Builder::new().name("pvisor-cold-pager".into()).spawn(move || {
         let pool = worker_pager.lock().unwrap().store.clone();
+        let mut next_scan = Instant::now();
+        let mut next_references = next_scan + scan::REJECT_RETRY;
         loop {
             let ready = pool.lock().unwrap_or_else(|_| fatal("store poisoned")).take_ready();
             worker_pager.lock().unwrap_or_else(|_| fatal("pager poisoned")).accept_ready(ready);
-            // A full adaptive scan round always yields, even when every region
-            // is productive. Empty/sparse rounds cannot spin at the 1 ms pace.
-            let delay = worker_pager.lock().unwrap_or_else(|_| fatal("pager poisoned"))
-                .shared_scan.as_ref().map_or(scan::REJECT_RETRY, scan::Scanner::delay);
-            std::thread::sleep(delay);
+            // Separate absolute deadlines: a maintenance-only wake must neither
+            // bypass discovery rest nor postpone discovery by renewing its wait.
+            let wake = if options.share_resident { next_scan.min(next_references) } else { next_scan };
+            std::thread::sleep(wake.saturating_duration_since(Instant::now()));
             let started = Instant::now();
             // Empty scans still need to observe VM teardown without a barrier.
             if handle.vmm.upgrade().is_none() {
                 break;
+            }
+            if options.share_resident && started >= next_references {
+                let retired = worker_pager.lock().unwrap_or_else(|_| fatal("pager poisoned"))
+                    .retire_cow_references().unwrap_or_else(|error| fatal(error));
+                // Fault recovery owns pager before store. Never reverse that
+                // order, including for maintenance with no discovery candidates.
+                pool.lock().unwrap_or_else(|_| fatal("store poisoned"))
+                    .release_batch(retired).unwrap_or_else(|error| fatal(error));
+                next_references = Instant::now() + scan::REJECT_RETRY;
             }
             if let Some(reports) = &free_reports {
                 if let Some(report) = reports.pending() {
@@ -1385,11 +1444,17 @@ pub(crate) fn start<S: ColdRamStore + 'static>(
                                 .release_batch(objects).unwrap_or_else(|error| fatal(error));
                             reports.complete(&report).unwrap_or_else(|error| fatal(error));
                         }
-                        Ok(None) => continue,
+                        Ok(None) => {
+                            next_scan = next_scan.max(Instant::now() + scan::REJECT_RETRY);
+                            continue;
+                        },
                         Err(error) if error == "VMM has stopped" => break,
                         Err(error) => fatal(error),
                     }
                 }
+            }
+            if Instant::now() < next_scan {
+                continue;
             }
             let mut candidates = worker_pager.lock().unwrap_or_else(|_| fatal("pager poisoned")).candidates();
             worker_pager.lock().unwrap_or_else(|_| fatal("pager poisoned")).prepare_snapshot_buffers(candidates.len());
@@ -1410,6 +1475,8 @@ pub(crate) fn start<S: ColdRamStore + 'static>(
                     if let Some(scanner) = &mut state.shared_scan {
                         scanner.finished_batch(started.elapsed());
                     }
+                    next_scan = Instant::now() + state.shared_scan.as_ref()
+                        .map_or(scan::REJECT_RETRY, scan::Scanner::delay);
                     continue;
                 },
                 Err(error) if error == "VMM has stopped" => break,
@@ -1473,6 +1540,8 @@ pub(crate) fn start<S: ColdRamStore + 'static>(
             if let Some(scanner) = &mut pager.shared_scan {
                 scanner.finished_batch(started.elapsed());
             }
+            next_scan = Instant::now() + pager.shared_scan.as_ref()
+                .map_or(scan::REJECT_RETRY, scan::Scanner::delay);
         }
         worker_pager.lock().unwrap_or_else(|_| fatal("pager poisoned")).shutdown().unwrap_or_else(|error| fatal(error));
         worker_stop.store(true, Ordering::Release);
@@ -1916,6 +1985,100 @@ mod tests {
         assert_eq!(pager.restore_count, 0);
         pager.shutdown().unwrap();
     }
+    #[test]
+    fn reference_maintenance_releases_cow_without_sampling_or_waking_file_pages() {
+        let mut pager = shared_pager();
+        let batch = pager.sample_candidates(&[0, 1]);
+        for snapshot in &batch.0 {
+            let object = pager.store.lock().unwrap().put(&snapshot.bytes).unwrap();
+            pager.commit(snapshot, object).unwrap();
+        }
+        drop(batch);
+        let mut bytes = [0; 8192];
+        pager
+            .memory
+            .read_slice(&mut bytes, GuestAddress(0))
+            .unwrap();
+        pager.memory.write_slice(&[0x72], GuestAddress(0)).unwrap();
+        let cold_file = pager.pages.range(1);
+        assert_eq!(
+            unsafe {
+                libc::madvise(
+                    cold_file.start as *mut libc::c_void,
+                    4096,
+                    libc::MADV_DONTNEED,
+                )
+            },
+            0
+        );
+        assert_eq!(pager.page_flags(cold_file).unwrap(), 0);
+        let cooldown = deadline(Instant::now() + scan::INVALIDATED_RETRY);
+        pager.pages[0].eligible_at = cooldown;
+        let before = PENDING.load(Ordering::SeqCst);
+        let retired = pager.retire_cow_references().unwrap();
+        assert_eq!(retired.len(), 1);
+        assert!(pager.pages[0].cold.is_none());
+        assert!(pager.pages[1].cold.is_some());
+        assert_eq!(pager.pages[0].eligible_at, cooldown);
+        assert_eq!(pager.page_flags(cold_file).unwrap(), 0);
+        assert_eq!(PENDING.load(Ordering::SeqCst), before);
+        assert_eq!(pager.store.lock().unwrap().releases, 0);
+        assert_eq!(pager.shared_scan.as_ref().unwrap().cow_breaks, 1);
+        assert!(pager.retire_cow_references().unwrap().is_empty());
+        assert_eq!(pager.shared_scan.as_ref().unwrap().cow_breaks, 1);
+        pager.store.lock().unwrap().release_batch(retired).unwrap();
+        assert_eq!(pager.store.lock().unwrap().releases, 1);
+        pager
+            .memory
+            .read_slice(&mut bytes, GuestAddress(0))
+            .unwrap();
+        assert_eq!(bytes[0], 0x72);
+        assert_eq!(bytes[4096], 0x5a);
+        assert!(pager.file_page(cold_file).unwrap());
+    }
+
+    #[test]
+    fn reference_maintenance_keeps_authority_when_metadata_cannot_be_read() {
+        let mut pager = shared_pager();
+        let snapshot = Snapshot {
+            index: 0,
+            bytes: vec![0x5a; 4096],
+        };
+        let object = pager.store.lock().unwrap().put(&snapshot.bytes).unwrap();
+        pager.commit(&snapshot, object).unwrap();
+        pager.pagemap = Some(tempfile::tempfile().unwrap());
+        assert!(pager.retire_cow_references().is_err());
+        assert!(pager.pages[0].cold.is_some());
+        assert_eq!(pager.store.lock().unwrap().releases, 0);
+        assert_eq!(pager.memory.read_obj::<u8>(GuestAddress(0)).unwrap(), 0x5a);
+    }
+
+    #[test]
+    fn reference_maintenance_bounds_metadata_work_without_faulting_sparse_ram() {
+        let mut pager = shared_pager();
+        pager.memory =
+            GuestMemoryMmap::from_ranges(&[(GuestAddress(0), 32 * 1024 * 1024)]).unwrap();
+        pager.pages = host_sorted_pages(
+            &ranges(&pager.memory, u64::MAX).unwrap(),
+            Instant::now(),
+            4096,
+        );
+        pager.shared_scan = Some(pager.pages.shared_scanner(7));
+        // No pins means no pagemap reads, even with an unreadable metadata file.
+        pager.pagemap = Some(tempfile::tempfile().unwrap());
+        assert!(!fully_resident(pager.pages.range(0)).unwrap());
+        assert!(pager.retire_cow_references().unwrap().is_empty());
+        assert!(pager.cursor > 0 && pager.cursor <= 16 * 1024 * 1024 / 4096);
+        assert!(!fully_resident(pager.pages.range(0)).unwrap());
+        let cursor = pager.cursor;
+        pager.share_resident = false;
+        assert!(pager.retire_cow_references().unwrap().is_empty());
+        assert_eq!(
+            pager.cursor, cursor,
+            "compressed mode has no shared-reference walk"
+        );
+    }
+
     #[test]
     fn shared_residency_bitmap_preserves_sparse_pages() {
         let mut pager = shared_pager();

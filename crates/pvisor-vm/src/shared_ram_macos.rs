@@ -156,6 +156,9 @@ fn run<S: ColdRamStore>(handle: VmmHandle, mut store: S, metrics: bool) {
             range
         });
     let mut scanner = scan::Scanner::new(mappings, bytes, rand::random());
+    // Mach COW still requires barrier-protected shadow detachment. Do not
+    // throttle its ownership cleanup behind optional discovery rung budgets.
+    scanner.disable_rung_budgets();
     let mut scratch = vec![0; bytes];
     let mut rejections = 0u64;
     let mut mapped = 0u64;

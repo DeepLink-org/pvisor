@@ -10,7 +10,9 @@
 //! every page before repeating, without a page-sized permutation allocation.
 //! After bootstrap, full low-yield regions group four exploration quotas into
 //! one of four rounds. A full region is covered per 32 rounds on both 4 and
-//! 16 KiB hosts.
+//! 16 KiB hosts. Independent rung work/rest budgets prevent rich regions from
+//! accelerating poor ones. As in UKSM, promotion subtracts the COW penalty;
+//! unlike the kernel, work attribution here uses conservative wall time.
 use std::{
     collections::VecDeque,
     ops::Range,
@@ -22,6 +24,10 @@ const REGION_BYTES: usize = 2 * 1024 * 1024;
 const QUOTA_BYTES: [usize; 4] = [64 * 1024, 256 * 1024, 1024 * 1024, REGION_BYTES];
 const VISIT_BYTES: usize = 256 * 1024;
 const PROBE_BYTES: usize = 16 * 1024 * 1024;
+// Local work/rest targets, not measured host CPU percentages. The bottom
+// rung explores cheaply; richer rungs receive progressively more effort.
+const RUNG_WORK_PER_MILLE: [u32; 4] = [2, 25, 50, 100];
+const MAX_RUNG_REST: Duration = Duration::from_secs(1);
 pub(super) const BATCH_BYTES: usize = 1024 * 1024;
 pub(super) const WORK_BUDGET: Duration = Duration::from_millis(8);
 pub(super) const REJECT_RETRY: Duration = Duration::from_millis(250);
@@ -46,6 +52,14 @@ struct Region {
     quiet_left: u8,
 }
 
+#[derive(Default)]
+struct Rung {
+    next_at: Option<Instant>,
+    probes: u32,
+    samples: u32,
+    inspected: Duration,
+}
+
 pub(super) struct Visit {
     /// Full contiguous region for one bounded residency query.
     pub(super) region: Range<usize>,
@@ -65,6 +79,8 @@ pub(super) struct Scanner {
     ready: VecDeque<usize>,
     bootstrap_until: Option<Instant>,
     work_delay: Duration,
+    rungs: [Rung; 4],
+    rung_budgets: bool,
 }
 
 impl Scanner {
@@ -116,6 +132,18 @@ impl Scanner {
             ready: VecDeque::new(),
             bootstrap_until: None,
             work_delay: Duration::ZERO,
+            rungs: std::array::from_fn(|_| Rung::default()),
+            rung_budgets: true,
+        }
+    }
+
+    /// HVF must detach COW shadow mappings before releasing pins. Until that
+    /// backend has independent ownership maintenance, retain its batch pacing.
+    #[cfg(any(target_os = "macos", test))]
+    pub(super) fn disable_rung_budgets(&mut self) {
+        self.rung_budgets = false;
+        for rung in &mut self.rungs {
+            rung.next_at = None;
         }
     }
 
@@ -131,11 +159,40 @@ impl Scanner {
         } else {
             Duration::from_millis(1)
         };
-        floor.max(self.work_delay)
+        let mut needed = [false; 4];
+        for region in &self.regions {
+            if self.round_complete() || region.remaining != 0 {
+                needed[region.level] = true;
+            }
+        }
+        for &page in &self.ready {
+            needed[self.regions[self.region_index(page)].level] = true;
+        }
+        let rung_wait = if self.bootstrapping_at(now) || !self.rung_budgets {
+            Duration::ZERO
+        } else {
+            self.rungs
+                .iter()
+                .zip(needed)
+                .filter(|(_, needed)| *needed)
+                .map(|(rung, _)| {
+                    rung.next_at
+                        .map_or(Duration::ZERO, |next| next.saturating_duration_since(now))
+                })
+                .min()
+                .unwrap_or_default()
+        };
+        floor.max(self.work_delay).max(rung_wait)
     }
 
     fn bootstrapping_at(&self, now: Instant) -> bool {
         self.bootstrap_until.is_some_and(|until| now < until)
+    }
+
+    fn rung_due(&self, level: usize, now: Instant) -> bool {
+        !self.rung_budgets
+            || self.bootstrapping_at(now)
+            || self.rungs[level].next_at.is_none_or(|next| now >= next)
     }
 
     /// Conservative worker wall-time duty cycle, not a host CPU percentage:
@@ -144,11 +201,40 @@ impl Scanner {
     /// Hints and merges prioritize candidates, never renew the global budget.
     /// I/O wait counts as work.
     pub(super) fn finished_batch(&mut self, work: Duration) {
-        self.work_delay = work.saturating_mul(if self.bootstrapping_at(Instant::now()) {
-            1
-        } else {
-            9
-        });
+        let now = Instant::now();
+        let bootstrap = self.bootstrapping_at(now);
+        self.work_delay = work.saturating_mul(if bootstrap { 1 } else { 9 });
+        let inspected: Duration = self.rungs.iter().map(|rung| rung.inspected).sum();
+        let extra = work.saturating_sub(inspected);
+        let samples: u32 = self.rungs.iter().map(|rung| rung.samples).sum();
+        let probes: u32 = self.rungs.iter().map(|rung| rung.probes).sum();
+        for (level, rung) in self.rungs.iter_mut().enumerate() {
+            // Residency queries are timed at their own rung. Attribute capture,
+            // publication and barrier overhead by sampled-page count; without
+            // samples, use probes. This is a conservative wall-time estimate,
+            // not the kernel's task_sched_runtime or per-rung CPU accounting.
+            let (weight, total) = if samples != 0 {
+                (rung.samples, samples)
+            } else {
+                (rung.probes, probes)
+            };
+            let cost = rung.inspected
+                + if total != 0 {
+                    (extra / total).saturating_mul(weight)
+                } else {
+                    Duration::ZERO
+                };
+            if self.rung_budgets && !bootstrap && !cost.is_zero() {
+                let share = RUNG_WORK_PER_MILLE[level];
+                let rest = cost.saturating_mul(1000 - share) / share;
+                // Bound each rung's advisory pause for responsiveness. The
+                // independent whole-batch 9:1 rest above remains mandatory.
+                rung.next_at = Some(now + rest.min(MAX_RUNG_REST));
+            }
+            rung.probes = 0;
+            rung.samples = 0;
+            rung.inspected = Duration::ZERO;
+        }
     }
 
     pub(super) fn ready(&mut self, page: usize) {
@@ -166,7 +252,8 @@ impl Scanner {
 
     /// Backends inspect only the selected visit and append at most one result
     /// per index. Empty/sparse visits consume quota too. Even an expired soft
-    /// budget permits one visit, so foreground hints cannot starve exploration.
+    /// budget permits one due background visit; a rung awaiting credit retains
+    /// its quota and hints. Foreground hints cannot starve due exploration.
     pub(super) fn select<T, E>(
         &mut self,
         limit: usize,
@@ -177,13 +264,20 @@ impl Scanner {
         let mut visited = 0;
         let probe_limit = PROBE_BYTES / self.page_bytes;
         // Hints never consume more than half a batch or replace background
-        // quota. Even after an expired hint budget one background visit remains.
+        // quota. Even after an expired hint budget one due background visit remains.
         let mut hint_budget = self.ready.len().min(limit / 2);
-        while hint_budget != 0 {
+        let mut hints_checked = self.ready.len();
+        while hint_budget != 0 && hints_checked != 0 {
             if started.elapsed() >= WORK_BUDGET {
                 break;
             }
+            hints_checked -= 1;
             let page = self.ready.pop_front().unwrap();
+            let level = self.regions[self.region_index(page)].level;
+            if !self.rung_due(level, started) {
+                self.ready.push_back(page);
+                continue;
+            }
             let region = self.region_mut(page).pages.clone();
             let mut pages = vec![page];
             self.ready.retain(|page| {
@@ -197,19 +291,28 @@ impl Scanner {
             hint_budget -= pages.len();
             self.probes += pages.len() as u64;
             visited += pages.len();
+            self.rungs[level].probes += pages.len() as u32;
+            let inspect_started = Instant::now();
             inspect(Visit { region, pages }, &mut selected)?;
+            self.rungs[level].inspected += inspect_started.elapsed();
         }
         let mut background_visits = 0;
         while selected.len() < limit
             && visited < probe_limit
             && (background_visits == 0 || started.elapsed() < WORK_BUDGET)
         {
-            let Some(visit) = self.next((limit - selected.len()).min(probe_limit - visited)) else {
+            let Some(visit) = self.next_at(
+                (limit - selected.len()).min(probe_limit - visited),
+                Some(started),
+            ) else {
                 break;
             };
+            let level = self.regions[self.region_index(visit.region.start)].level;
             visited += visit.pages.len();
             background_visits += 1;
+            let inspect_started = Instant::now();
             inspect(visit, &mut selected)?;
+            self.rungs[level].inspected += inspect_started.elapsed();
             debug_assert!(selected.len() <= limit);
         }
         Ok(selected)
@@ -232,7 +335,7 @@ impl Scanner {
                 // evidence that this region lacks duplicates.
                 region.level
             } else if informative >= (QUOTA_BYTES[0] / self.page_bytes / 2) as u32
-                && region.merged * 10 >= informative
+                && region.merged.saturating_sub(region.churn) * 10 >= informative
             {
                 (region.level + 1).min(QUOTA_BYTES.len() - 1)
             } else {
@@ -269,15 +372,22 @@ impl Scanner {
 
     /// Round-robin bounded visits prevent a rich region from starving another
     /// region. Even absent/cooling/already-shared pages consume probe quota.
+    #[cfg(test)]
     pub(super) fn next(&mut self, limit: usize) -> Option<Visit> {
+        self.next_at(limit, None)
+    }
+
+    fn next_at(&mut self, limit: usize, now: Option<Instant>) -> Option<Visit> {
         if self.round_complete() || limit == 0 {
             return None;
         }
-        loop {
+        let due: [bool; 4] =
+            std::array::from_fn(|level| now.is_none_or(|now| self.rung_due(level, now)));
+        for _ in 0..self.regions.len() {
             let index = self.cursor;
             self.cursor = (index + 1) % self.regions.len();
             let region = &mut self.regions[index];
-            if region.remaining == 0 {
+            if region.remaining == 0 || !due[region.level] {
                 continue;
             }
             let count = region
@@ -296,28 +406,37 @@ impl Scanner {
                 self.unfinished -= 1;
             }
             self.probes += count as u64;
+            self.rungs[region.level].probes += count as u32;
             return Some(Visit {
                 region: region.pages.clone(),
                 pages,
             });
         }
+        None
     }
 
-    fn region_mut(&mut self, page: usize) -> &mut Region {
+    fn region_index(&self, page: usize) -> usize {
         let index = self
             .regions
             .partition_point(|region| region.pages.start <= page)
             - 1;
-        let region = &mut self.regions[index];
-        debug_assert!(region.pages.contains(&page));
-        region
+        debug_assert!(self.regions[index].pages.contains(&page));
+        index
+    }
+
+    fn region_mut(&mut self, page: usize) -> &mut Region {
+        let index = self.region_index(page);
+        &mut self.regions[index]
     }
 
     pub(super) fn sampled(&mut self, page: usize) {
         if self.bootstrap_until.is_none() {
             self.bootstrap_until = Some(Instant::now() + Duration::from_secs(2));
         }
-        self.region_mut(page).sampled += 1;
+        let region = self.region_mut(page);
+        region.sampled += 1;
+        let level = region.level;
+        self.rungs[level].samples += 1;
     }
 
     pub(super) fn observed(&mut self, page: usize) {
@@ -409,6 +528,11 @@ mod tests {
         scanner.bootstrap_until = Some(Instant::now() - Duration::from_secs(1));
         scanner.begin_round();
         scanner.finished_batch(Duration::from_millis(4));
+        assert_eq!(scanner.work_delay, Duration::from_millis(36));
+        assert!(scanner.delay() >= scanner.work_delay);
+        // Advance the rung credit without sleeping. The old whole-batch and
+        // quiet-round floors must still apply after that credit is available.
+        scanner.rungs[0].next_at = None;
         assert_eq!(scanner.delay(), Duration::from_millis(36));
         while scanner.next(512).is_some() {}
         assert_eq!(scanner.delay(), REJECT_RETRY);
@@ -438,13 +562,15 @@ mod tests {
                 scanner.ready(page);
                 scanner.finished_batch(work);
                 assert_eq!(scanner.bootstrap_until, Some(expired));
-                assert_eq!(scanner.delay(), work * 9);
-                total_rest += scanner.delay();
+                assert_eq!(scanner.work_delay, work * 9);
+                assert!(scanner.delay() >= work * 9);
+                total_rest += scanner.work_delay;
             }
             assert_eq!(total_rest, work * 128 * 9);
             assert_eq!(scanner.merges, 128, "productive feedback remains intact");
             assert_eq!(scanner.ready.len(), 128, "hints are retained, not disabled");
             while scanner.next(512).is_some() {}
+            scanner.rungs[0].next_at = None;
             assert_eq!(
                 scanner.delay(),
                 work * 9,
@@ -452,6 +578,123 @@ mod tests {
             );
             scanner.ready.clear();
             assert_eq!(scanner.delay(), REJECT_RETRY);
+        }
+    }
+
+    #[test]
+    fn rung_rest_is_independent_and_never_relaxes_the_whole_batch_budget() {
+        for bytes in [4096, 16384] {
+            let mut scanner = Scanner::new(std::iter::once(0..REGION_BYTES / bytes), bytes, 1);
+            for rung in &mut scanner.rungs {
+                rung.inspected = Duration::from_millis(1);
+            }
+            scanner.finished_batch(Duration::from_millis(4));
+            let fastest = scanner.rungs[3].next_at.unwrap();
+            for (rung, extra_ms) in scanner.rungs.iter().zip([490, 30, 10, 0]) {
+                assert_eq!(
+                    rung.next_at.unwrap().duration_since(fastest),
+                    Duration::from_millis(extra_ms)
+                );
+                assert_eq!(rung.probes, 0);
+                assert_eq!(rung.samples, 0);
+                assert!(rung.inspected.is_zero());
+            }
+            assert_eq!(scanner.work_delay, Duration::from_millis(36));
+            scanner.rungs[0].inspected = Duration::from_secs(2);
+            scanner.finished_batch(Duration::from_secs(2));
+            assert_eq!(scanner.work_delay, Duration::from_secs(18));
+            assert!(
+                scanner.delay() >= Duration::from_secs(18),
+                "the one-second per-rung pause bound must not bypass global rest"
+            );
+        }
+    }
+
+    #[test]
+    fn rich_work_and_ready_hints_do_not_spend_a_poor_rungs_budget() {
+        for bytes in [4096, 16384] {
+            let pages = REGION_BYTES / bytes;
+            let mut scanner = Scanner::new(std::iter::once(0..2 * pages), bytes, 9);
+            scanner.regions[1].level = 3;
+            scanner.rungs[0].inspected = Duration::from_millis(1);
+            scanner.rungs[3].inspected = Duration::from_millis(1);
+            scanner.finished_batch(Duration::from_millis(2));
+            let poor_due = scanner.rungs[0].next_at.unwrap();
+            let rich_due = scanner.rungs[3].next_at.unwrap();
+            let remaining = scanner.regions[0].remaining;
+            scanner.ready(0);
+            let rich = scanner
+                .select(64, rich_due, |visit, out| {
+                    out.extend(visit.pages);
+                    Ok::<_, ()>(())
+                })
+                .unwrap();
+            assert!(!rich.is_empty());
+            assert!(rich.iter().all(|page| *page >= pages));
+            assert_eq!(scanner.regions[0].remaining, remaining);
+            assert!(scanner.ready.contains(&0), "budgeted hints remain pending");
+            assert_eq!(scanner.rungs[0].next_at, Some(poor_due));
+            let background = scanner
+                .select(64, poor_due, |visit, out| {
+                    out.extend(visit.pages);
+                    Ok::<_, ()>(())
+                })
+                .unwrap();
+            assert!(background.iter().any(|page| *page < pages));
+            assert!(!scanner.ready.contains(&0));
+            assert!(
+                scanner.round_complete(),
+                "deferred quota must eventually run"
+            );
+        }
+    }
+
+    #[test]
+    fn backends_without_reference_maintenance_retain_the_batch_budget() {
+        let mut scanner = Scanner::new(std::iter::once(0..128), 16384, 9);
+        scanner.rungs[0].inspected = Duration::from_millis(1);
+        scanner.finished_batch(Duration::from_millis(1));
+        assert!(scanner.rungs[0].next_at.is_some());
+        scanner.disable_rung_budgets();
+        assert!(scanner.rungs.iter().all(|rung| rung.next_at.is_none()));
+        assert_eq!(scanner.delay(), Duration::from_millis(9));
+        let selected = scanner
+            .select(64, Instant::now(), |visit, out| {
+                out.extend(visit.pages);
+                Ok::<_, ()>(())
+            })
+            .unwrap();
+        assert!(!selected.is_empty());
+        scanner.finished_batch(Duration::from_millis(1));
+        assert!(scanner.rungs.iter().all(|rung| rung.next_at.is_none()));
+        assert_eq!(scanner.work_delay, Duration::from_millis(9));
+    }
+
+    #[test]
+    fn promotion_uses_net_merges_after_cow_penalty() {
+        for bytes in [4096, 16384] {
+            let pages = REGION_BYTES / bytes;
+            let count = 640 * 1024 / bytes;
+            let mut scanner = Scanner::new(std::iter::once(0..pages), bytes, 3);
+            for churn in [true, false] {
+                scanner.regions[0].remaining = count;
+                while let Some(visit) = scanner.next(pages) {
+                    for page in visit.pages {
+                        scanner.sampled(page);
+                    }
+                }
+                for _ in 0..count / 8 {
+                    scanner.merged(0);
+                }
+                if churn {
+                    for _ in 0..count / 20 {
+                        scanner.cow(0);
+                    }
+                }
+                // 12.5% gross merging with 40% COW is only 7.5% net yield.
+                scanner.begin_round();
+                assert_eq!(scanner.regions[0].level, usize::from(!churn));
+            }
         }
     }
 
