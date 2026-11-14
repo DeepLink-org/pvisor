@@ -1056,12 +1056,38 @@ pub trait ColdRamStore: Send {
     /// Publish verified immutable bytes and acquire exactly one reference.
     /// WouldBlock guarantees no reference was acquired; other errors may be uncertain.
     fn put(&mut self, bytes: &[u8]) -> io::Result<Self::Object>;
+    /// Publish an ordered batch of immutable snapshots outside any VM barrier.
+    /// The caller supplies at most 256 blocks and 4 MiB in total; empty input
+    /// returns an empty result without side effects. Success returns exactly
+    /// one result per input. Only `Published` acquires one reference; other
+    /// dispositions acquire nothing. Element errors follow `put` semantics.
+    /// An outer error is a fatal batch/session failure: acquired references may
+    /// be uncertain, no snapshots may be committed, and the runner must stop.
+    /// Implementations may batch discovery or invoke `put` in order. Borrowed
+    /// bytes are stable only during this call; no pointers may be retained.
+    fn put_batch(
+        &mut self,
+        blocks: &[ColdRamSample<'_>],
+    ) -> io::Result<Vec<io::Result<ColdRamDisposition<Self::Object>>>>;
     /// Restore and verify the entire referenced block into the exact output
     /// buffer before returning success. Partial/error bytes must not be used as restored RAM.
     fn restore(&mut self, object: &Self::Object, output: &mut [u8]) -> io::Result<()>;
     /// Consume one session reference after all dependent mappings are removed.
     /// The caller must reconcile uncertain errors rather than assuming release succeeded.
     fn release(&mut self, object: Self::Object) -> io::Result<()>;
+    /// Consume references only after all dependent mappings have been removed.
+    /// Empty input has no effects. Implementations may split into bounded
+    /// exchanges; on failure earlier releases may have completed, and remaining
+    /// ownership may be uncertain. Never retry consumed references or reuse
+    /// their slots without the store's lifetime proof.
+    fn release_batch(&mut self, objects: Vec<Self::Object>) -> io::Result<()>;
+    /// Drain at most 256 advisory page handles learned by previous store calls,
+    /// without I/O. Handles belong only to this fixed-topology pager/session.
+    /// Hints may be stale or dropped; ignore unknown handles and always capture
+    /// fresh bytes under the VM barrier before publication. They grant no
+    /// authority over RAM, mappings or existing references. Stores without
+    /// cross-session discovery return an empty vector.
+    fn take_ready(&mut self) -> Vec<u64>;
     /// Return current storage/reference accounting, or an error for an unhealthy
     /// session; concurrent cross-session counts may be approximate.
     fn stats(&mut self) -> io::Result<ColdRamPoolStats>;
@@ -1071,6 +1097,32 @@ pub trait ColdRamStore: Send {
     /// Mappings and references must stay in that process: inheriting mappings
     /// across fork or transferring their authority to another process is unsupported.
     fn shared_mapping(&self, object: &Self::Object) -> Option<SharedRamMapping>;
+}
+
+/// Stable bytes and an opaque scheduling handle, borrowed for one publication.
+/// A handle is not a host/guest address and must never be dereferenced by stores.
+pub struct ColdRamSample<'a> {
+    /// Nonzero page identity scoped to this store session and fixed RAM topology.
+    /// Zero opts out of ready hints. Reusing a session for another VM/topology
+    /// is unsupported; the session lifetime fences hints from previous VMs.
+    pub page: u64,
+    /// Complete immutable snapshot, valid only during the call. Stores must
+    /// validate their block geometry and must not retain the borrowed pointer.
+    pub bytes: &'a [u8],
+}
+
+/// Admission feedback, not evidence that a VM mapping was replaced.
+pub enum ColdRamDisposition<O> {
+    /// One acquired reference. The VM must still recheck live and backing bytes.
+    Published(O),
+    /// First observation retained as a hint; no duplicate is established yet.
+    Observed,
+    /// A repeat observation still has no cross-session match.
+    Unmatched,
+    /// Payload/reference capacity prevented admission, not poor region yield.
+    Limited,
+    /// Healthy non-capacity rejection, such as an incompressible local block.
+    Rejected,
 }
 
 /// Pinned read-only pool-file region supplied for private shared-page mappings.

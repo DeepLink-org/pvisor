@@ -12,6 +12,7 @@
 //! one of four rounds. A full region is covered per 32 rounds on both 4 and
 //! 16 KiB hosts.
 use std::{
+    collections::VecDeque,
     ops::Range,
     time::{Duration, Instant},
 };
@@ -36,6 +37,8 @@ struct Region {
     stride: usize,
     remaining: usize,
     sampled: u32,
+    observed: u32,
+    limited: u32,
     merged: u32,
     churn: u32,
     level: usize,
@@ -59,6 +62,11 @@ pub(super) struct Scanner {
     pub(super) merges: u64,
     pub(super) cow_breaks: u64,
     pub(super) unstable: u64,
+    ready: VecDeque<usize>,
+    bootstrap_until: Option<Instant>,
+    productive_until: Option<Instant>,
+    progress: bool,
+    work_delay: Duration,
 }
 
 impl Scanner {
@@ -87,6 +95,8 @@ impl Scanner {
                     stride,
                     remaining: (QUOTA_BYTES[0] / page_bytes).min(len),
                     sampled: 0,
+                    observed: 0,
+                    limited: 0,
                     merged: 0,
                     churn: 0,
                     level: 0,
@@ -105,6 +115,11 @@ impl Scanner {
             merges: 0,
             cow_breaks: 0,
             unstable: 0,
+            ready: VecDeque::new(),
+            bootstrap_until: None,
+            productive_until: None,
+            progress: false,
+            work_delay: Duration::ZERO,
         }
     }
 
@@ -113,10 +128,44 @@ impl Scanner {
     }
 
     pub(super) fn delay(&self) -> Duration {
-        if self.round_complete() {
+        let now = Instant::now();
+        let active = self.active_at(now);
+        let floor = if self.round_complete() && !active {
             REJECT_RETRY
         } else {
             Duration::from_millis(1)
+        };
+        floor.max(self.work_delay)
+    }
+
+    fn active_at(&self, now: Instant) -> bool {
+        !self.ready.is_empty()
+            || self.bootstrap_until.is_some_and(|until| now < until)
+            || self.productive_until.is_some_and(|until| now < until)
+    }
+
+    /// Conservative worker wall-time duty cycle, not a host CPU percentage:
+    /// at most one busy interval per equal rest in discovery/productive mode,
+    /// and nine rest intervals in steady exploration. I/O wait counts as work.
+    pub(super) fn finished_batch(&mut self, work: Duration) {
+        let now = Instant::now();
+        if self.progress {
+            self.productive_until = Some(now + REJECT_RETRY);
+            self.progress = false;
+        }
+        self.work_delay = work.saturating_mul(if self.active_at(now) { 1 } else { 9 });
+    }
+
+    pub(super) fn ready(&mut self, page: usize) {
+        let index = self
+            .regions
+            .partition_point(|region| region.pages.start <= page);
+        if index != 0
+            && self.regions[index - 1].pages.contains(&page)
+            && self.ready.len() < 256
+            && !self.ready.contains(&page)
+        {
+            self.ready.push_back(page);
         }
     }
 
@@ -132,14 +181,39 @@ impl Scanner {
         let mut selected = Vec::new();
         let mut visited = 0;
         let probe_limit = PROBE_BYTES / self.page_bytes;
+        // Hints never consume more than half a batch or replace background
+        // quota. Even after an expired hint budget one background visit remains.
+        let mut hint_budget = self.ready.len().min(limit / 2);
+        while hint_budget != 0 {
+            if started.elapsed() >= WORK_BUDGET {
+                break;
+            }
+            let page = self.ready.pop_front().unwrap();
+            let region = self.region_mut(page).pages.clone();
+            let mut pages = vec![page];
+            self.ready.retain(|page| {
+                if pages.len() < hint_budget && region.contains(page) {
+                    pages.push(*page);
+                    false
+                } else {
+                    true
+                }
+            });
+            hint_budget -= pages.len();
+            self.probes += pages.len() as u64;
+            visited += pages.len();
+            inspect(Visit { region, pages }, &mut selected)?;
+        }
+        let mut background_visits = 0;
         while selected.len() < limit
             && visited < probe_limit
-            && (visited == 0 || started.elapsed() < WORK_BUDGET)
+            && (background_visits == 0 || started.elapsed() < WORK_BUDGET)
         {
             let Some(visit) = self.next((limit - selected.len()).min(probe_limit - visited)) else {
                 break;
             };
             visited += visit.pages.len();
+            background_visits += 1;
             inspect(visit, &mut selected)?;
             debug_assert!(selected.len() <= limit);
         }
@@ -153,10 +227,17 @@ impl Scanner {
             return;
         }
         for region in &mut self.regions {
+            let informative = region
+                .sampled
+                .saturating_sub(region.observed + region.limited);
             region.level = if region.churn > 0 && region.churn * 2 >= region.merged {
                 0
-            } else if region.sampled >= (QUOTA_BYTES[0] / self.page_bytes / 2) as u32
-                && region.merged * 10 >= region.sampled
+            } else if informative == 0 && region.sampled != 0 {
+                // Waiting for another session or storage capacity is not
+                // evidence that this region lacks duplicates.
+                region.level
+            } else if informative >= (QUOTA_BYTES[0] / self.page_bytes / 2) as u32
+                && region.merged * 10 >= informative
             {
                 (region.level + 1).min(QUOTA_BYTES.len() - 1)
             } else {
@@ -179,6 +260,8 @@ impl Scanner {
                     (QUOTA_BYTES[region.level] / self.page_bytes).min(region.pages.len());
             }
             region.sampled = 0;
+            region.observed = 0;
+            region.limited = 0;
             region.merged = 0;
             region.churn = 0;
         }
@@ -236,12 +319,24 @@ impl Scanner {
     }
 
     pub(super) fn sampled(&mut self, page: usize) {
+        if self.bootstrap_until.is_none() {
+            self.bootstrap_until = Some(Instant::now() + Duration::from_secs(2));
+        }
         self.region_mut(page).sampled += 1;
+    }
+
+    pub(super) fn observed(&mut self, page: usize) {
+        self.region_mut(page).observed += 1;
+    }
+
+    pub(super) fn limited(&mut self, page: usize) {
+        self.region_mut(page).limited += 1;
     }
 
     pub(super) fn merged(&mut self, page: usize) {
         self.region_mut(page).merged += 1;
         self.merges += 1;
+        self.progress = true;
     }
 
     pub(super) fn cow(&mut self, page: usize) {
@@ -304,6 +399,107 @@ fn gcd(mut a: usize, mut b: usize) -> usize {
 mod tests {
     use super::*;
     use std::collections::BTreeSet;
+
+    #[test]
+    fn bootstrap_and_steady_work_have_explicit_rest_budgets() {
+        let mut scanner = Scanner::new(std::iter::once(0..512), 4096, 1);
+        scanner.sampled(0);
+        scanner.finished_batch(Duration::from_millis(4));
+        assert_eq!(scanner.delay(), Duration::from_millis(4));
+        while scanner.next(512).is_some() {}
+        assert_eq!(
+            scanner.delay(),
+            Duration::from_millis(4),
+            "bootstrap must not wait 250 ms per round"
+        );
+        scanner.bootstrap_until = Some(Instant::now() - Duration::from_secs(1));
+        scanner.begin_round();
+        scanner.finished_batch(Duration::from_millis(4));
+        assert_eq!(scanner.delay(), Duration::from_millis(36));
+        while scanner.next(512).is_some() {}
+        assert_eq!(scanner.delay(), REJECT_RETRY);
+        scanner.ready(17);
+        assert_eq!(
+            scanner.delay(),
+            Duration::from_millis(36),
+            "hints bypass the quiet-round floor, not duty-cycle rest"
+        );
+    }
+
+    #[test]
+    fn observation_and_capacity_feedback_do_not_penalize_region_yield() {
+        let mut scanner = Scanner::new(std::iter::once(0..512), 4096, 2);
+        while let Some(visit) = scanner.next(512) {
+            for page in visit.pages {
+                scanner.sampled(page);
+                scanner.merged(page);
+            }
+        }
+        scanner.begin_round();
+        assert_eq!(scanner.levels(), [0, 1, 0, 0]);
+        while let Some(visit) = scanner.next(512) {
+            for page in visit.pages {
+                scanner.sampled(page);
+                scanner.observed(page);
+            }
+        }
+        scanner.begin_round();
+        assert_eq!(scanner.levels(), [0, 1, 0, 0]);
+        while let Some(visit) = scanner.next(512) {
+            for page in visit.pages {
+                scanner.sampled(page);
+                scanner.limited(page);
+            }
+        }
+        scanner.begin_round();
+        assert_eq!(scanner.levels(), [0, 1, 0, 0]);
+        while let Some(visit) = scanner.next(512) {
+            for page in visit.pages {
+                scanner.sampled(page);
+            }
+        }
+        scanner.begin_round();
+        assert_eq!(
+            scanner.levels(),
+            [1, 0, 0, 0],
+            "real unmatched observations still reduce priority"
+        );
+    }
+
+    #[test]
+    fn bounded_ready_hints_preserve_background_exploration() {
+        let mut scanner = Scanner::new(std::iter::once(0..1024), 4096, 3);
+        scanner.ready(usize::MAX);
+        for page in 512..1024 {
+            scanner.ready(page);
+            scanner.ready(page);
+        }
+        assert_eq!(scanner.ready.len(), 256);
+        let selected = scanner
+            .select(64, Instant::now(), |visit, output| {
+                output.extend(visit.pages);
+                Ok::<_, ()>(())
+            })
+            .unwrap();
+        assert_eq!(selected.len(), 64);
+        assert_eq!(scanner.ready.len(), 224);
+        assert!(
+            selected.iter().any(|page| *page < 512),
+            "hints must not consume the background budget"
+        );
+        scanner.begin_round();
+        let before = scanner.probes;
+        let _ = scanner
+            .select(64, Instant::now() - WORK_BUDGET * 2, |visit, output| {
+                output.extend(visit.pages);
+                Ok::<_, ()>(())
+            })
+            .unwrap();
+        assert!(
+            scanner.probes > before,
+            "expired hints must not starve exploration"
+        );
+    }
 
     #[test]
     fn poor_regions_eventually_visit_every_page_including_non_power_of_two_tails() {

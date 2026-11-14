@@ -347,6 +347,27 @@ THP 的内核直接保持基页；驻留页、完整字节与稀疏输出断言�
 
 冷 RAM pager 的状态机、采样/发布窗口、回收线程及 CPU/设备缺页恢复也在本 crate 内。`ColdRamStore` 是宿主存储适配契约：pVisor 负责实例本地 store 或受支持平台的 pool 授权、传输和诊断目录，VM 指针与映射状态不越过边界。`ColdRamOptions`、`ColdRamControl` 在所有平台都存在；不支持的后端返回明确错误，重复启动同一 VM 的 pager 会被拒绝。
 
+`ColdRamStore::put_batch` 在屏障外发布一批稳定副本，按输入顺序返回逐项结果；
+输入为 `ColdRamSample`，包含稳定副本与会话内非地址页编号；
+单批至多 256 项、总计 4 MiB，空批无副作用。只有 `Published` 取得一个引用，
+`Observed`、`Unmatched`、`Limited`、`Rejected` 均不取得引用或授权替换 RAM；
+整批错误或结果数量不符是 runner 必须终止的协议错误。
+Linux pager 和 HVF 物理页 worker 使用该契约，物理模式仍分别限于每批
+256 个 4 KiB 页或 64 个 16 KiB 页。本地及 sealed 压缩 store 保留逐块编码语义。
+批量发现、hash 与传输由 store 负责，不把 VM 地址导出给 daemon，也不跳过
+屏障内的最终字节复核。HVF 无新对象且无旧 pin 的拒绝项不进入提交屏障。
+`release_batch` 只接收已经解除映射依赖的引用，错误可能发生在部分分块完成后；
+不得重试已经消费的句柄。`take_ready` 不做 I/O，只取走之前 store 调用接收的
+最多 256 个提示。页编号只在固定拓扑的单个 VM/store 会话内有效，不是宿主或
+guest 地址；忽略未知编号，旧提示也必须重新捕获、发布和复核，不能沿用旧快照。
+
+Linux 对同一个 `Arc<File>` 所有者缓存只读权限、大小封印和文件长度，并持有
+一个只读校验映射；替换 owner 必须重新验证，不能以可复用的裸 FD 数字作为键。
+每页仍检查对齐、范围以及完整 backing/live 字节，不在提交屏障中重复 pread/fcntl。
+只读校验映射不代表 guest RAM 已共享，其页表/PSS 成本必须纳入整组核算。
+物理页快照缓冲在活跃批次间复用，Linux 在进入屏障前准备，最多保留一批 1 MiB；
+空批会释放缓存，压缩模式不额外持有这份物理页 scratch。
+
 Linux x86_64 支持实验性的 runtime-owned userfaultfd pager，由默认关闭的 `VmSettings.cold_ram_compression` / `--vm-cold-ram-compression` 自动启动，使用 pVisor 的 `LocalColdRamStore`，不是 FUSE `vm.ram_compression`。`ColdRamControl::start_cold_pager` 使用相同 API；Linux 的缺页与静止窗口由 runtime 内部持有，外部 `install_ram_fault_handler`、`with_ram_quiesced`、`experimental_ram_residency` 及 `FrozenMemory::experimental_ram_blocks` 返回不支持。编译能力不代表权限：必须具备 syscall 或 `/dev/userfaultfd` 的内核缺页授权，缺少授权时启动失败，不回退或修改全局 sysctl。
 
 pager 仅接受 4 KiB 宿主页上的普通私有匿名可写 RAM；严格匹配身份与拓扑后排除 builder 授权的不可变 raw 固件，拒绝未知 raw、文件/COW、shared 和 hugetlb RAM，排除设备窗口。`tee`、`aws-nitro` 构建及已有 device prepare/dedup advice 被拒绝。实例本地及 daemon sealed 压缩使用 64 KiB 块，Linux daemon 物理池使用独立的 4 KiB 页；压缩模式每批最多暂存 4 MiB；两次 CPU 停驻/设备 lease 排空窗口分别捕获与复核，编码发布期间 guest 继续运行。持有校验对象后才 discard；refault 校验长度、checksum 与完整 `UFFD_COPY` 后唤醒访问。UFFD 压缩的 balloon 空闲页报告仍确认但不 discard；物理共享模式的协同回收见下文。此策略是驱逐/refault 探测，不是真正的读访问热度检测器，也不是普通 pause。
@@ -408,8 +429,11 @@ macOS 16 KiB 页对应 4/16/64/128 页，初始最低级。至少采样 32 KiB
 区域所有页；这不保留逐页随机排列数组。按区域轮转，每次最多取 256 KiB
 （Linux 64 页、macOS 16 页），单批最多考察 16 MiB 的页索引
 （4096/1024 个），选择阶段保留 8 ms 软时间预算；即使 hint 阶段因调度暂停耗尽预算，
-也至少访问一个有界后台区域，避免整轮跳过后台扫描。完整轮次之间
-至少休息 250 ms。低优先级区域的实际发现延迟仍取决于 RAM 大小、冷却期
+也至少访问一个有界后台区域，避免整轮跳过后台扫描。首次实际采样后的两秒
+以及持续有合并收益/ready hint 的阶段，不强制每轮等待 250 ms，但每批至少
+休息与工作墙钟相同的时间；稳态探索至少休息工作墙钟的九倍，安静完整轮次
+仍至少休息 250 ms。等待 I/O 也计入工作，不能将此解释为宿主 CPU 百分比保证。
+低优先级区域的实际发现延迟仍取决于 RAM 大小、冷却期
 和 VM/IPC 调度；这些参数是当前策略常量，不是实测 CPU 百分比保证。
 512 MiB RAM 额外区域元数据不超过 32 KiB，不改变既有逐页状态大小。
 
@@ -418,8 +442,11 @@ macOS 16 KiB 页对应 4/16/64/128 页，初始最低级。至少采样 32 KiB
 任意连续 32 轮覆盖该区域所有页，
 首次探索、高收益区域和不足 2 MiB 的尾部保留原节奏。这样减少整区域
 元数据查询而不延长完整遍历的轮次上界；不是按无限指数退避跳过低收益区域。
-来自文件提示的成功反馈可直接提升区域并取消等待。上述轮次仍受实际
-工作耗时和 250 ms 休息影响，不等于固定墙钟 SLA。
+来自文件提示的成功反馈可直接提升区域并取消等待。首次观察和容量拒绝不再
+降低区域收益评价；真正未匹配的重访仍降低优先级。daemon ready hint 最多占
+半批，并按区域合并查询，后台仍保留探索机会；提示可提前结束短期观察冷却，
+剩余冷却超过 250 ms 的页不会提前解除冷却。上述轮次受实际工作耗时与退避影响，
+不是固定墙钟 SLA。
 
 这份 Rust 策略独立实现区域调度，没有移植 UKSM 内核补丁或 APH 部分页哈希。
 完整内容哈希、字节比较、两阶段发布及 COW 所有权契约继续决定能否合并。

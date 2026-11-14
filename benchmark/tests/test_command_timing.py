@@ -231,6 +231,20 @@ class RegistryTests(unittest.TestCase):
                 )
                 self.assertTrue(path.with_suffix(".py").is_file())
                 continue
+            if row["status"] == "explicit-python-paired-version-regression":
+                self.assertEqual(row["benchmark_id"], "B-MEMORY-SCALE")
+                self.assertEqual(row["role"], "engineering A/B")
+                self.assertEqual(row["entry"], "memory/version_compare.json")
+                self.assertEqual(
+                    table,
+                    {
+                        "version-pairs": "$ python3 @REPO@/benchmark/memory/version_compare.py "
+                        "--artifacts @ARTIFACTS@ --output @OUTPUT@ "
+                        "--preflight-report @PREFLIGHT_REPORT@ --rounds 5"
+                    },
+                )
+                self.assertTrue(path.with_suffix(".py").is_file())
+                continue
             if row["status"] == "explicit-python-paired-library-curves":
                 self.assertEqual(row["benchmark_id"], "B-MEMORY-SCALE")
                 self.assertEqual(row["role"], "engineering A/B")

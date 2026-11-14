@@ -308,6 +308,19 @@ impl pvisor_vm::api::ColdRamStore for LocalColdRamStore {
         })
     }
 
+    fn put_batch(
+        &mut self,
+        blocks: &[pvisor_vm::api::ColdRamSample<'_>],
+    ) -> io::Result<Vec<io::Result<pvisor_vm::api::ColdRamDisposition<Self::Object>>>> {
+        Ok(blocks
+            .iter()
+            .map(|sample| {
+                self.put(sample.bytes)
+                    .map(pvisor_vm::api::ColdRamDisposition::Published)
+            })
+            .collect())
+    }
+
     fn restore(&mut self, object: &Self::Object, output: &mut [u8]) -> io::Result<()> {
         self.check_owner(object)?;
         object.content.restore(output)
@@ -320,6 +333,20 @@ impl pvisor_vm::api::ColdRamStore for LocalColdRamStore {
         self.references -= 1;
         self.pool.collect_one(id);
         Ok(())
+    }
+
+    fn release_batch(&mut self, objects: Vec<Self::Object>) -> io::Result<()> {
+        for object in &objects {
+            self.check_owner(object)?;
+        }
+        for object in objects {
+            self.release(object)?;
+        }
+        Ok(())
+    }
+
+    fn take_ready(&mut self) -> Vec<u64> {
+        Vec::new()
     }
 
     fn stats(&mut self) -> io::Result<pvisor_vm::api::ColdRamPoolStats> {

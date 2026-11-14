@@ -51,7 +51,20 @@ PATTERNS = ("repeated", "random-shared", "random-unique")
 BOUNDARIES = (0, 1, 2, 5, 10, 20, 40, 60)
 POST_WRITE_BOUNDARIES = (1, 2, 5, 10, 20, 30)
 CURRENT_SCHEMA = "pvisor-pool-curve-condition/v4"
-WRITE_SCHEMAS = ("pvisor-pool-curve-condition/v3", CURRENT_SCHEMA)
+KSM_OFF_SCHEMA = "pvisor-pool-curve-condition/v4-ksm-off"
+V4_SCHEMAS = (CURRENT_SCHEMA, KSM_OFF_SCHEMA)
+WRITE_SCHEMAS = ("pvisor-pool-curve-condition/v3", *V4_SCHEMAS)
+
+
+def require_kernel_policy(state, cfg):
+    """The disabled-KSM diagnostic is distinct from the default-KSM campaign."""
+    if cfg.get("schema") == KSM_OFF_SCHEMA:
+        if cfg["arm"] not in ("pvisor-off", "pvisor-physical"):
+            raise ValueError("KSM-off diagnostic supports only off/physical arms")
+        if state["files"].get("run") != "0":
+            raise ValueError("KSM-off diagnostic requires the scanner to stay disabled")
+    else:
+        require_default_ksm(state)
 
 
 def harness_paths():
@@ -111,6 +124,7 @@ def verify_harness(files):
 
 def mapping_evidence(proc):
     mergeable, pooled, count, ksm_bytes, header, size = 0, 0, 0, 0, "", 0
+    verification_bytes, verification_vmas = 0, 0
     with (proc / "smaps").open() as stream:
         for line in stream:
             if line.startswith("VmFlags:") and "mg" in line.split()[1:]:
@@ -122,10 +136,21 @@ def mapping_evidence(proc):
                 low, high = (int(x, 16) for x in line.split()[0].split("-"))
                 size = high - low
                 if "memfd:pvisor-shared-ram" in header:
-                    pooled += size
-                    count += 1
+                    if line.split()[1] == "rw-p":
+                        pooled += size
+                        count += 1
+                    else:
+                        # A read-only validation/owner alias is not guest RAM.
+                        # Its PSS and kernel costs still enter whole-group accounting.
+                        verification_bytes += size
+                        verification_vmas += 1
     return dict(
-        mergeable_bytes=mergeable, pool_mapping_bytes=pooled, pool_vmas=count, ksm_bytes=ksm_bytes
+        mergeable_bytes=mergeable,
+        pool_mapping_bytes=pooled,
+        pool_vmas=count,
+        pool_verification_bytes=verification_bytes,
+        pool_verification_vmas=verification_vmas,
+        ksm_bytes=ksm_bytes,
     )
 
 
@@ -255,7 +280,7 @@ def internal(path):
         ):
             raise ValueError("whole-group budget was not installed")
         state = kernel_state()
-        require_default_ksm(state)
+        require_kernel_policy(state, cfg)
         result["kernel_before"] = state
         if cfg["arm"] == "docker-rootless":
             from docker_support import Engine
@@ -347,8 +372,6 @@ def internal(path):
                     str(inputs / "root"),
                     "--worker",
                     str(inputs / "worker"),
-                    "--firmware",
-                    str(inputs / "firmware"),
                     "--stage",
                     str(root / f"vm{identity}"),
                     "--mode",
@@ -358,6 +381,11 @@ def internal(path):
                     "--instance",
                     str(identity),
                 ]
+                command += (
+                    ["--embedded-fw"]
+                    if cfg.get("embedded_fw")
+                    else ["--firmware", str(inputs / "firmware")]
+                )
                 if socket:
                     command += ["--pool-socket", str(socket)]
             error = (root / f"vm{identity}.stderr").open("wb")
@@ -467,7 +495,7 @@ def internal(path):
         result["after"] = snapshot(root, "after", [], group=group)
         after = kernel_state()
         result["kernel_after"] = after
-        require_default_ksm(after)
+        require_kernel_policy(after, cfg)
         for phase in result["phases"]:
             events = values(phase["counters"]["memory.events"])
             if any(events.get(n, 0) for n in ("oom", "oom_kill", "max")):
@@ -549,9 +577,9 @@ def validate_worker(raw, cfg):
             or int(quota) != 4 * int(period)
         ):
             raise ValueError("phase escaped resource budget")
-        if cfg.get("schema") == CURRENT_SCHEMA and c.get("pids.max", "").strip() != "256":
+        if cfg.get("schema") in V4_SCHEMAS and c.get("pids.max", "").strip() != "256":
             raise ValueError("phase escaped current task budget")
-        if cfg.get("schema") == CURRENT_SCHEMA and values(c["pids.events"]).get("max", 0):
+        if cfg.get("schema") in V4_SCHEMAS and values(c["pids.events"]).get("max", 0):
             raise ValueError("task budget exhausted during condition")
         if any(values(c["memory.events"]).get(n, 0) for n in ("oom", "oom_kill", "max")) or int(
             c["memory.swap.current"]
@@ -575,7 +603,7 @@ def validate_worker(raw, cfg):
             if process["pss_bytes"] != values(process["smaps_rollup"])["Pss"] * 1024:
                 raise ValueError("PSS evidence mismatch")
         if cfg.get("schema") in ("pvisor-pool-curve-condition/v2", *WRITE_SCHEMAS):
-            require_default_ksm(phase["ksm"])
+            require_kernel_policy(phase["ksm"], cfg)
             if any(phase["ksm"]["files"][n] != raw["kernel_before"]["files"][n] for n in TUNABLES):
                 raise ValueError("KSM changed during observation")
             expected_group = phase["cgroup"].removeprefix("/sys/fs/cgroup")
@@ -602,7 +630,7 @@ def validate_worker(raw, cfg):
     ) != 4:
         raise ValueError("native reaping incomplete")
     for state in (raw["kernel_before"], raw["kernel_after"]):
-        require_default_ksm(state)
+        require_kernel_policy(state, cfg)
     if any(raw["kernel_before"]["files"][n] != raw["kernel_after"]["files"][n] for n in TUNABLES):
         raise ValueError("KSM configuration changed")
     for phase in phases:
@@ -655,7 +683,17 @@ def pss_observer(unit, stop, root):
 
 
 def execution(
-    inputs, root, arm, pattern, hashes, harness, *, library_variant=None, docker_inputs=None
+    inputs,
+    root,
+    arm,
+    pattern,
+    hashes,
+    harness,
+    *,
+    library_variant=None,
+    docker_inputs=None,
+    without_ksm=False,
+    embedded_fw=False,
 ):
     root.mkdir()
     row = dict(arm=arm, pattern=pattern, status="failed")
@@ -672,7 +710,7 @@ def execution(
         row["error"] = "quiet admission failed"
         return row
     cfg = dict(
-        schema=CURRENT_SCHEMA,
+        schema=KSM_OFF_SCHEMA if without_ksm else CURRENT_SCHEMA,
         root=str(root),
         inputs=str(inputs),
         arm=arm,
@@ -680,6 +718,8 @@ def execution(
         hashes=hashes,
         harness_files=harness,
     )
+    if embedded_fw:
+        cfg["embedded_fw"] = True
     if library_variant is not None:
         from library_protocol import details
 
@@ -809,6 +849,16 @@ def main():
     p.add_argument("--samples", type=int, default=5)
     p.add_argument("--arms", default=",".join(ARMS))
     p.add_argument("--patterns", default=",".join(PATTERNS))
+    p.add_argument(
+        "--without-ksm",
+        action="store_true",
+        help="separate off/physical preflight only; require KSM to remain disabled",
+    )
+    p.add_argument(
+        "--embedded-fw",
+        action="store_true",
+        help="use prepared build-embedded FW instead of a runtime library",
+    )
     a = p.parse_args()
     if a.internal:
         return internal(a.internal)
@@ -819,6 +869,8 @@ def main():
         p.error("invalid arm selection")
     if len(patterns) != len(set(patterns)) or not set(patterns) <= set(PATTERNS):
         p.error("invalid pattern selection")
+    if a.without_ksm and (not a.preflight or not set(arms) <= {"pvisor-off", "pvisor-physical"}):
+        p.error("without-ksm requires an independent off/physical preflight")
     if not a.preflight and (
         a.samples < 5 or set(arms) != set(ARMS) or set(patterns) != set(PATTERNS)
     ):
@@ -853,8 +905,13 @@ def main():
         print(destination)
         return 0
     output.mkdir()
-    require_default_ksm(kernel_state())
+    require_kernel_policy(
+        kernel_state(),
+        dict(schema=KSM_OFF_SCHEMA if a.without_ksm else CURRENT_SCHEMA, arm=arms[0]),
+    )
     receipt = json.loads((inputs / "receipt.json").read_text())
+    if bool(receipt.get("embedded_fw")) != a.embedded_fw:
+        raise ValueError("prepared firmware mode does not match the requested mode")
 
     def verify():
         return all(digest(inputs / n) == h for n, h in receipt["hashes"].items())
@@ -878,7 +935,7 @@ def main():
     report = dict(
         benchmark_id="B-MEMORY-SCALE",
         role="engineering A/B",
-        primary_baseline="firecracker",
+        primary_baseline="pvisor-off" if a.without_ksm else "firecracker",
         preflight=a.preflight,
         samples=1 if a.preflight else a.samples,
         arms=arms,
@@ -897,6 +954,10 @@ def main():
             "scanner can run during sequential VM startup",
         ],
     )
+    if a.without_ksm:
+        report["caveats"].append(
+            "independent KSM-disabled diagnostic subset; no KSM/Firecracker or formal ranking"
+        )
     if docker_inputs:
         from docker_support import verify_inputs as verify_docker_inputs
 
@@ -924,6 +985,8 @@ def main():
                 hashes[pattern],
                 harness,
                 docker_inputs=docker_inputs,
+                without_ksm=a.without_ksm,
+                embedded_fw=a.embedded_fw,
             )
             row["round"] = r
             report["executions"].append(row)

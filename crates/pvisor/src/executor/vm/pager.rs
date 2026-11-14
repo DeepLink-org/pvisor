@@ -252,11 +252,23 @@ impl pvisor_vm::api::ColdRamStore for PoolClient {
     fn put(&mut self, bytes: &[u8]) -> io::Result<Self::Object> {
         PoolClient::put_duplicate(self, bytes)
     }
+    fn put_batch(
+        &mut self,
+        blocks: &[pvisor_vm::api::ColdRamSample<'_>],
+    ) -> io::Result<Vec<io::Result<pvisor_vm::api::ColdRamDisposition<Self::Object>>>> {
+        PoolClient::publish_pages(self, blocks)
+    }
     fn restore(&mut self, object: &Self::Object, output: &mut [u8]) -> io::Result<()> {
         PoolClient::restore(self, object, output)
     }
     fn release(&mut self, object: Self::Object) -> io::Result<()> {
         PoolClient::release(self, object)
+    }
+    fn release_batch(&mut self, objects: Vec<Self::Object>) -> io::Result<()> {
+        PoolClient::release_objects(self, objects)
+    }
+    fn take_ready(&mut self) -> Vec<u64> {
+        PoolClient::take_ready(self)
     }
     fn stats(&mut self) -> io::Result<pvisor_vm::api::ColdRamPoolStats> {
         let stats = PoolClient::stats(self)?;

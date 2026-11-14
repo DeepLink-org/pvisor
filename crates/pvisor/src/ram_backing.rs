@@ -14,6 +14,8 @@ pub mod sealed;
 /// Linux daemon-owned physical pages, mapped privately by VMs for kernel COW.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub mod shared;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+mod shared_index;
 pub use image::{ImageId, RamLayout, RamRegion, SnapshotChain};
 
 use serde::{Deserialize, Serialize};

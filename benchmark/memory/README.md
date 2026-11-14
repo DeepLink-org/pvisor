@@ -193,6 +193,13 @@ and sampling work inside the group; external monitor and global ksmd are outside
 Compression also changes granularity and restore path, so this matrix alone does
 not isolate codec CPU. Physical mode never compresses payloads.
 
+Mapping evidence counts only writable private pool VMAs as guest COW mappings.
+Read-only validation/owner aliases are reported separately as
+`pool_verification_bytes` and `pool_verification_vmas`; their complete PSS and
+kernel costs still enter group totals. A reserved verification view does not
+prove any guest page was merged. Historical frozen reports keep their original
+fields and interpretation; new comparisons must use the same observer on both arms.
+
 Inputs must be frozen under a NEW `.data/` directory: `probe` is the release
 `pool_memory_case` example, `daemon` is `pvisor-daemon`, `firecracker` is stock,
 `kernel` is its reference ELF, `firmware` is libkrunfw, and `worker` is the static
@@ -284,6 +291,19 @@ comparison. `mise run test-py -- discover -s benchmark/memory -p test_pool_compa
 checks missing integrity acknowledgements, wrong digests, budget/swap failures,
 short scan windows, incomplete ownership and unexpected stock-Firecracker advice.
 
+An independent `--preflight --without-ksm --arms pvisor-off,pvisor-physical`
+subset is available when the administrator has left KSM disabled. It requires
+`run=0` throughout and uses the distinct `v4-ksm-off` condition schema. All four
+VMs, 64 MiB payloads, 60-second idle/30-second post-write windows, 58 integrity
+checks, budgets, placement and interference gates remain required. It cannot
+supply a formal cohort or a KSM/Firecracker comparison. No sysfs value is changed.
+`--embedded-fw` selects the probe's build-embedded kernel instead of a runtime
+library; independently frozen inputs must declare `embedded_fw: true` in their
+receipt and retain the exact kernel bytes, load/entry metadata and source/build
+provenance. Do not substitute a dummy firmware file or an installed old probe
+for a current-source embedded-FW build. Different firmware and host kernels
+remain separate from historical documentation measurements.
+
 `plot_pool.py` audits complete N=1 diagnostic cohorts. Historical cohorts with
 retired conditions require an explicit `--arms` selection of supported conditions.
 This produces a separate
@@ -314,6 +334,39 @@ work; process counters have clock-tick resolution. The external observers remain
 outside this accounting. Whole-condition kernel peak and sampled idle peak are
 separate metrics. Formal analysis also rechecks all input/build/source receipts,
 frozen supporting harnesses and the hashes of monitor, PSS and guard observations.
+
+## Strict UKSM version regression A/B
+
+`version_compare.py` implements the separate
+[matched-version plan](UKSM_VERSION_AB_PLAN.md), not the seven-arm product
+comparison. Supply a prepared artifact directory with `preparation.json`,
+matched `A/inputs` and `B/inputs` receipts, source archives/manifests and guest
+supervisor bytes. The preparation must use the same source/build path,
+toolchain, FW, helper and workload; A changes only the common test entry,
+not its implementation. The supplied bytes are verified before each condition.
+
+```sh
+python3 benchmark/memory/version_compare.py --artifacts MATCHED_ARTIFACTS \
+  --output .data/uv-p0 --preflight --prepare
+# Execute the returned .input.json with semspec bench, then:
+python3 benchmark/memory/version_compare.py --artifacts MATCHED_ARTIFACTS \
+  --preflight-report COMPLETE_PREFLIGHT \
+  --output .data/uv-f0 --rounds 5 --prepare
+python3 benchmark/memory/version_compare.py --analyze COMPLETE_FORMAL
+```
+
+Preflight includes both off and physical modes for each version and content.
+The main matrix uses at least five adjacent randomized AB/BA physical pairs per
+content. It reuses the full KSM-disabled condition protocol, but has its own
+`pvisor-uksm-version-ab/v1` report and complete-matrix audit. All ordinary
+integrity, resource, placement, quiet-host and cleanup gates remain mandatory.
+Historical, incomplete and busy-host reports cannot be promoted into this
+experiment. Use NEW short workspace-owned `.data/` directories for long or
+background runs; turn-scoped scratch must not be their only evidence location.
+Archive completed runs under the owning benchmark's `.data/`, preserving raw
+bytes and hashes. Analysis reports paired differences/intervals and censored
+crossing brackets; an interval crossing zero is inconclusive, not proof of
+non-regression. An automatic non-inferiority PASS requires predeclared margins.
 
 ## Published curves and archived history
 
