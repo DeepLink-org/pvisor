@@ -344,6 +344,65 @@ fn run<S: ColdRamStore>(handle: VmmHandle, mut store: S, metrics: bool) {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn sampling_reuses_native_page_buffers_and_respects_cooldown() {
+        use std::sync::Arc;
+        use vm_memory::{Bytes, GuestAddress};
+
+        let page = unsafe { libc::sysconf(libc::_SC_PAGESIZE) } as usize;
+        let memory = crate::vmm::ram::map(
+            &[(GuestAddress(0x200000), page * 2)],
+            &[],
+            Arc::new(tempfile::tempfile().unwrap()),
+        )
+        .unwrap();
+        memory
+            .write_slice(&vec![0x53; page * 2], GuestAddress(0x200000))
+            .unwrap();
+        // This mapping has no vCPUs or device users; the test owns all writes.
+        let mut pages: Vec<super::Page<()>> = crate::vmm::ram::blocks(&memory, page)
+            .unwrap()
+            .into_iter()
+            .map(|block| super::Page {
+                block: crate::api::RamBlock { inner: block },
+                pinned: None,
+                cow_observed: false,
+                detached: false,
+                eligible_at: 0,
+            })
+            .collect();
+        let mut scanner = crate::cold_ram_scan::Scanner::new(std::iter::once(0..2), page, 7);
+        let mut buffers = vec![vec![0; page], vec![0; page]];
+        let mut allocations: Vec<_> = buffers.iter().map(|buffer| buffer.as_ptr()).collect();
+        allocations.sort_unstable();
+        for value in [0x53, 0xa5] {
+            memory
+                .write_slice(&vec![value; page * 2], GuestAddress(0x200000))
+                .unwrap();
+            scanner.begin_round();
+            let samples = super::sample(&mut pages, &mut scanner, page, &mut buffers).unwrap();
+            assert_eq!(samples.len(), 2);
+            assert!(buffers.is_empty());
+            for (_, bytes) in samples {
+                assert_eq!(bytes, vec![value; page]);
+                buffers.push(bytes);
+            }
+            let mut reused: Vec<_> = buffers.iter().map(|buffer| buffer.as_ptr()).collect();
+            reused.sort_unstable();
+            assert_eq!(reused, allocations, "sampling must reuse both allocations");
+        }
+        for entry in &mut pages {
+            entry.eligible_at = crate::cold_ram_scan::deadline(
+                std::time::Instant::now() + std::time::Duration::from_secs(30),
+            );
+        }
+        scanner.begin_round();
+        assert!(super::sample(&mut pages, &mut scanner, page, &mut buffers)
+            .unwrap()
+            .is_empty());
+        assert_eq!(buffers.len(), 2, "cooling pages must not consume buffers");
+    }
+
+    #[test]
     #[ignore = "requires a signed HVF test binary"]
     fn hvf_live_remap_preserves_cpu_device_cow_and_instruction_reads() {
         use crate::hvf::{bindings::*, HvfVcpu, HvfVm};
@@ -433,8 +492,9 @@ mod tests {
             })
             .collect();
         let mut scanner = crate::cold_ram_scan::Scanner::new(std::iter::once(0..2), page, 7);
+        let mut buffers = Vec::new();
         assert!(
-            super::sample(&mut pages, &mut scanner, page)
+            super::sample(&mut pages, &mut scanner, page, &mut buffers)
                 .unwrap()
                 .is_empty(),
             "the adaptive scanner must skip unchanged shared mappings"
@@ -473,7 +533,7 @@ mod tests {
         );
         assert_eq!(read(0x200000), 0xa1);
         scanner.begin_round();
-        let samples = super::sample(&mut pages, &mut scanner, page).unwrap();
+        let samples = super::sample(&mut pages, &mut scanner, page, &mut buffers).unwrap();
         assert_eq!(samples.len(), 2, "CPU and device COW must both be sampled");
         assert_eq!(scanner.cow_breaks, 2);
         for (index, bytes) in samples {
@@ -483,7 +543,7 @@ mod tests {
             );
         }
         scanner.begin_round();
-        super::sample(&mut pages, &mut scanner, page).unwrap();
+        super::sample(&mut pages, &mut scanner, page, &mut buffers).unwrap();
         assert_eq!(
             scanner.cow_breaks, 2,
             "a retained old pin must not count the same COW twice"
@@ -492,7 +552,7 @@ mod tests {
             std::time::Instant::now() + std::time::Duration::from_secs(30),
         );
         scanner.begin_round();
-        let samples = super::sample(&mut pages, &mut scanner, page).unwrap();
+        let samples = super::sample(&mut pages, &mut scanner, page, &mut buffers).unwrap();
         assert_eq!(
             samples.iter().map(|(index, _)| *index).collect::<Vec<_>>(),
             [1],
