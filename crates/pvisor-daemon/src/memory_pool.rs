@@ -56,6 +56,13 @@ pub struct PoolConfig {
     pub max_objects: usize,
     pub max_connections: usize,
     pub max_references: usize,
+    /// Disposable physical-page fingerprints; independent of payload slots.
+    /// Zero disables observation retention; existing fast buckets remain usable.
+    #[serde(default = "default_max_candidates")]
+    pub max_candidates: usize,
+}
+fn default_max_candidates() -> usize {
+    pvisor::ram_backing::shared::DEFAULT_MAX_CANDIDATES
 }
 impl Default for PoolConfig {
     fn default() -> Self {
@@ -69,6 +76,7 @@ impl Default for PoolConfig {
             max_objects: 32768,
             max_connections: 32,
             max_references: 32768,
+            max_candidates: default_max_candidates(),
         }
     }
 }
@@ -235,7 +243,13 @@ pub fn run(directory: &Path) -> Result<()> {
     let physical = config.mode == PoolMode::PhysicalPages
         || (cfg!(target_os = "linux") && config.mode == PoolMode::Physical);
     let pool = physical
-        .then(|| SharedPool::new(config.max_bytes, config.max_objects))
+        .then(|| {
+            SharedPool::with_candidate_limit(
+                config.max_bytes,
+                config.max_objects,
+                config.max_candidates,
+            )
+        })
         .transpose()?
         .map(|pool| Arc::new(Mutex::new(pool)));
     #[cfg(target_os = "linux")]
@@ -288,4 +302,26 @@ pub fn run(directory: &Path) -> Result<()> {
         });
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod config_tests {
+    use super::*;
+
+    #[test]
+    fn legacy_configs_get_an_independent_fingerprint_budget() {
+        let config: PoolConfig = serde_json::from_value(serde_json::json!({
+            "max_bytes": 4096,
+            "max_objects": 1,
+            "max_connections": 1,
+            "max_references": 1
+        }))
+        .unwrap();
+        assert_eq!(config.max_candidates, default_max_candidates());
+        let mut value = serde_json::to_value(&config).unwrap();
+        value["max_candidates"] = 0.into();
+        let disabled: PoolConfig = serde_json::from_value(value).unwrap();
+        assert_eq!(disabled.max_candidates, 0);
+        assert_eq!(disabled.max_objects, 1);
+    }
 }

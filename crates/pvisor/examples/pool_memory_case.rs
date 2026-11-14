@@ -10,7 +10,7 @@ mod native {
     };
     use pvisor_vm::api::{
         ColdRamControl, ColdRamOptions, OverlayConfig, PermissionSemantics, RamDedupControl,
-        VmBuilder, VmConfiguration, VmRuntime,
+        RuntimeSupport, VmBuilder, VmConfiguration, VmPlatform, VmRuntime,
     };
     use std::{os::unix::net::UnixStream, path::PathBuf, time::Duration};
 
@@ -27,8 +27,11 @@ mod native {
     struct Args {
         #[arg(long)]
         rootfs: PathBuf,
-        #[arg(long)]
-        firmware: PathBuf,
+        #[arg(long, required_unless_present = "embedded_fw")]
+        firmware: Option<PathBuf>,
+        /// Use the build-embedded kernel; never resolve or load a firmware file.
+        #[arg(long, conflicts_with = "firmware")]
+        embedded_fw: bool,
         #[arg(long)]
         worker: PathBuf,
         #[arg(long)]
@@ -77,7 +80,14 @@ mod native {
         std::fs::create_dir(&upper)?;
         std::fs::create_dir(&work)?;
         let mut vm = VmBuilder::new(1, 256)?;
-        vm.set_firmware_path(a.firmware.canonicalize()?)?;
+        if a.embedded_fw {
+            ensure!(
+                VmPlatform::embedded_kernel().is_some(),
+                "binary has no embedded FW"
+            );
+        } else if let Some(firmware) = &a.firmware {
+            vm.set_firmware_path(firmware.canonicalize()?)?;
+        }
         vm.overlay(
             "/dev/root",
             OverlayConfig {

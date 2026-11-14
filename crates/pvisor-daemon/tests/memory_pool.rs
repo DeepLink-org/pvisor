@@ -763,6 +763,7 @@ fn daemon_pool_shares_objects_and_survives_owner_reopen_without_replacement() {
         max_objects: 16,
         max_connections: 8,
         max_references: 16,
+        max_candidates: 64,
     };
     fs::write(
         directory.join("config.json"),
@@ -903,6 +904,7 @@ fn compressed_pool() -> (
         max_objects: 2,
         max_connections: 8,
         max_references: 2,
+        max_candidates: 8,
     })
 }
 
@@ -1009,6 +1011,7 @@ fn macos_compressed_pool_shares_bounds_and_fails_closed_after_service_loss() {
         max_objects: 1,
         max_connections: 8,
         max_references: 2,
+        max_candidates: 4,
     };
     let (state, mut service, socket, config) = pool_service(config);
     let connect = || {

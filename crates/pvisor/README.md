@@ -58,6 +58,48 @@ RAM pool before constructing the VMM, then transfer that same owned session to
 the pager. A dead or invalid pool rejects startup without booting a guest,
 reconnecting, deleting its socket or replacing pool ownership. Pool loss after
 VM entry still terminates dependent runners; it is not automatic recovery.
+Physical pools negotiate batch hash discovery before VM entry. The pager sends
+up to 256 XXH3-128 fingerprints per query; unique pages send no payload, existing
+slots acquire session references and undergo full-byte validation, and only
+cross-session candidates needing materialization or fast-hash collisions upload
+their page snapshots. Discovery uses unseeded XXH3-128 with a 16-byte
+little-endian wire encoding; SHA-256 remains the shared object's content identity.
+Unique probes and byte-equal existing-slot hits no longer hash pages with SHA-256.
+Different intact bytes are a discovery miss: release the unused pin, then resolve
+the full content. Corrupt backing and malformed replies still fail closed.
+Hashing and pool IPC run outside CPU/device barriers; live RAM is rechecked by
+`pvisor-vm` before any mapping replacement. Disposable fingerprints have their
+own budget, separate from pinned payload slots. A secondary ordered index has
+one fast-key/strong-ID entry per live slot; ambiguous buckets use content-based
+fallback, so collisions cannot permanently hide a live object. Discovery protocol
+v3 adds an opaque 64-bit, session-scoped page handle beside each fingerprint and
+bounded length-delimited replies. Arrays are read as frames, not per field;
+materialization and release use batches of at most 256 pages/references. Invalid
+release chunks consume nothing; transport failure can leave prior chunks applied.
+V1/V2 physical services fail negotiation before VM entry: drain dependent VMs
+before upgrading both owners and clients.
+
+First observations, unmatched revisits and capacity rejection are distinct
+scheduler feedback. A cross-session match may enqueue one best-effort ready hint
+for its first observer; each session retains at most 256 hints. Hints grant no
+references and contain no VM addresses. The fixed VM/store session fences their
+lifetime; stale hints require fresh capture and live-byte validation.
+The scanner gives its first two seconds of actual sampling a discovery window
+and keeps productive work responsive, with equal worker wall-time rest.
+Steady exploration rests for nine times the preceding batch work and yields at
+least 250 ms between quiet complete rounds. These are conservative duty-cycle
+rules, not host CPU percentage or latency guarantees.
+
+Clients cache the negotiated backing length. Linux additionally retains one
+validated read-only backing view under the exact File owner, removing per-page
+metadata queries and pread from commit while retaining bounds and full-byte
+checks. Its address-space/PTE costs still count as overhead. Snapshot buffers are
+reused only across active batches, at most 1 MiB per physical worker, and dropped
+on empty work. Direct process-memory reads, shared sampling IPC buffers and
+daemon-wide scan scheduling are not enabled.
+The `pool_memory_case` engineering helper accepts `--embedded-fw` instead of
+`--firmware FILE` for build-embedded kernels. It verifies the kernel is present
+before boot; it never substitutes the host kernel or downloads firmware.
 Container logs remain cumulative across restarts, while startup errors include
 only the current generation's stderr (up to 32 KiB), not earlier workload or
 pool-loss diagnostics.

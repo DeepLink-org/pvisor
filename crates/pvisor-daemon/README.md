@@ -1114,17 +1114,66 @@ example state above, SOCKET is `/tmp/pvisor-pool/memory-pool/pool.sock` (the JSO
 record includes its canonical macOS `/private/tmp` spelling). No OpenSandbox
 bootstrap, API key, KVM or cgroup is required for this macOS path.
 
-On Linux, physical sharing remains the default. The VM scans resident 4 KiB pages and publishes
-immutable content-addressed pages into a bounded daemon memfd. Only candidates observed in different VM sessions enter the pool; candidates
-hold hashes without retaining page payloads. Equal bytes reuse one slot. After CPU/device quiescence and a live-byte recheck, the VM maps that
-slot privately: reads retain the shared physical page, while writes use kernel
-COW. This path does not require userfaultfd and does not compress unique pages.
-Local cold-RAM compression remains a separate userfaultfd mode.
+On Linux, physical sharing remains the default. The VM scans resident 4 KiB pages
+and publishes immutable content-addressed pages into a bounded daemon memfd.
+New candidates need cross-session fast-hash observations or an existing matching
+fast-hash bucket; these are hints and collisions can admit distinct slots within
+the same budgets. Candidates hold hashes without retaining page payloads. Only
+equal complete bytes reuse one slot. After CPU/device quiescence and a live-byte
+recheck, the VM maps that slot privately: reads retain the shared physical page,
+while writes use kernel COW. This path does not require userfaultfd and does not
+compress unique pages. Local cold-RAM compression remains a separate userfaultfd mode.
+
+Physical clients now negotiate versioned hash-first discovery before VM entry.
+Protocol v3 carries up to 256 unseeded XXH3-128 fingerprints, encoded as 16-byte
+little-endian values, plus opaque session-local page handles, without payloads.
+SHA-256 still identifies stored
+objects and verifies restores; unique probes and byte-equal existing-slot hits
+do not compute SHA-256. The daemon distinguishes unique observations, candidates needing materialization,
+pinned existing slots (with their strong identities) and reference-budget rejection.
+Materialization and fast-hash collision fallback send full snapshots through
+the existing socket backend. An intact different object releases its speculative
+pin before fallback; a corrupt slot or malformed reply still fails closed.
+Every returned slot is full-byte checked by the client, and live RAM is checked again under the VM
+CPU/device barrier; a fingerprint never authorizes a mapping by itself.
+Replies have bounded lengths and are received as complete frames before parsing.
+Materialization and release also use bounded batches; independent per-item
+admission/reference budgets remain in force. A release chunk validates all tokens
+before consuming any; earlier chunks may have completed if a later one fails.
+Old physical services, including discovery v1/v2, fail negotiation; drain
+dependent VMs and start a compatible service rather than replacing a live pool.
+
+The disposable fingerprint index is an in-memory hash table with bounded FIFO
+retirement, not a persistent RAM database. Private `config.json` accepts
+`max_candidates` independently of payload slots (default 131,072; omitted legacy
+values receive that default). Zero disables observation retention, not existing-slot
+lookup or its collision fallback. Candidate eviction never releases a pinned shared object.
+The strong SHA-256 object index remains authoritative for storage. A secondary
+ordered index stores one `(XXH3-128, SHA-256)` entry per live slot and removes it
+when that slot is collected. A bucket with multiple strong identities requests
+content-based publication instead of repeatedly choosing one colliding object.
+This index is bounded by existing slot capacity, not by observation count.
+An observation may retain one opaque page handle for its first session, never a
+VM address or page payload. A cross-session match issues at most one ready hint
+for that retained observation; each connected session has a 256-entry queue,
+dropped on disconnect. Hints are best-effort, acquire no slot/reference and may
+be stale; clients always resample and revalidate before committing. Pending hints
+ride ordinary discovery/statistics replies, without a callback socket or
+unsolicited stream frames. The store/VM session lifetime fences their fixed RAM
+topology; a session cannot be reused for another VM.
+Changing a live state's configuration remains unsupported. Payload/object and
+per-connection reference defaults are unchanged: this step does not raise VMA
+limits, enable direct process-memory access or centralize VM scan scheduling.
 
 The physical pager uses UKSM-inspired region scheduling: productive regions
 receive larger scan quotas, COW/unstable regions lose priority, and every region
 retains exploration work. Residency queries cover only selected regions. See
 [the scanner contract](../../docs/src/en/design/memory-optimization/deduplication.md#adaptive-scan).
+First observations and capacity rejection no longer count as poor region yield.
+The first two seconds of actual sampling and productive/hinted work use a
+worker wall-time rest ratio of at least 1:1; steady exploration uses 9:1, with
+quiet complete rounds still yielding at least 250 ms. There is no extra scan
+thread or CPU-percentage guarantee; publication and commit costs remain charged.
 
 Select `--memory-pool --memory-pool-mode compressed` for the Linux sealed
 compressed pool instead. Equal decoded 64 KiB blocks share an object across VM

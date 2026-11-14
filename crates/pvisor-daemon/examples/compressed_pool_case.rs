@@ -140,6 +140,7 @@ print('daemon-pool-guest-ok', index, flush=True)
             max_objects: 4096,
             max_connections: 8,
             max_references: 8192,
+            max_candidates: 16384,
         };
         fs::write(directory.join("config.json"), serde_json::to_vec(&config)?)?;
         let log = fs::File::create(root.join("pool.log"))?;

@@ -1,6 +1,9 @@
 //! Native-page merging. Every slot stays pinned until its mapping is replaced;
 //! publication and reclamation never hold the CPU/device barrier.
-use crate::api::{ColdRamControl, ColdRamStore, FrozenMemory, RamAccess, RamBlock, VmmHandle};
+use crate::api::{
+    ColdRamControl, ColdRamDisposition, ColdRamSample, ColdRamStore, FrozenMemory, RamAccess,
+    RamBlock, VmmHandle,
+};
 use crate::cold_ram_scan::{self as scan, deadline, quiesce_nonempty};
 use std::{io, sync::atomic::Ordering, time::Instant};
 
@@ -22,11 +25,7 @@ pub(crate) fn start<S: ColdRamStore + 'static>(
     store: S,
     metrics: bool,
 ) -> io::Result<()> {
-    if cfg!(any(
-        feature = "tee",
-        feature = "aws-nitro",
-        feature = "efi"
-    )) {
+    if cfg!(any(feature = "tee", feature = "aws-nitro", feature = "efi")) {
         return Err(io::Error::new(
             io::ErrorKind::Unsupported,
             "HVF physical sharing requires plain CPU/device RAM",
@@ -70,6 +69,7 @@ fn sample<O>(
     pages: &mut [Page<O>],
     scanner: &mut scan::Scanner,
     bytes: usize,
+    buffers: &mut Vec<Vec<u8>>,
 ) -> Result<Vec<(usize, Vec<u8>)>, String> {
     let started = Instant::now();
     let candidates = scanner.select(scan::BATCH_BYTES / bytes, started, |visit, samples| {
@@ -92,7 +92,8 @@ fn sample<O>(
             {
                 continue;
             }
-            let mut data = vec![0; bytes];
+            let mut data = buffers.pop().unwrap_or_default();
+            data.resize(bytes, 0);
             unsafe {
                 page.block.snapshot(&mut data).map_err(|e| e.to_string())?;
             }
@@ -100,6 +101,9 @@ fn sample<O>(
         }
         Ok::<_, String>(())
     })?;
+    let mut candidates = candidates;
+    candidates.sort_unstable_by_key(|(index, _)| *index);
+    candidates.dedup_by_key(|(index, _)| *index);
     for (index, _) in &candidates {
         scanner.sampled(*index);
         let page = &mut pages[*index];
@@ -156,8 +160,25 @@ fn run<S: ColdRamStore>(handle: VmmHandle, mut store: S, metrics: bool) {
     let mut rejections = 0u64;
     let mut mapped = 0u64;
     let mut privatized = 0u64;
+    let mut buffers = Vec::new();
     loop {
+        let now = deadline(Instant::now());
+        for hint in store.take_ready() {
+            if let Some(index) = hint
+                .checked_sub(1)
+                .and_then(|page| usize::try_from(page).ok())
+                .filter(|&index| index < pages.len())
+            {
+                if pages[index].eligible_at
+                    <= now.saturating_add(scan::REJECT_RETRY.as_millis() as u64)
+                {
+                    pages[index].eligible_at = now;
+                }
+                scanner.ready(index);
+            }
+        }
         std::thread::sleep(scanner.delay());
+        let batch_started = Instant::now();
         if handle.vmm.upgrade().is_none() {
             return;
         }
@@ -165,7 +186,9 @@ fn run<S: ColdRamStore>(handle: VmmHandle, mut store: S, metrics: bool) {
         let candidates = if scanner.round_complete() {
             Vec::new()
         } else {
-            match handle.with_ram_quiesced(|_| sample(&mut pages, &mut scanner, bytes)) {
+            match handle
+                .with_ram_quiesced(|_| sample(&mut pages, &mut scanner, bytes, &mut buffers))
+            {
                 Ok(Some(candidates)) => candidates,
                 Ok(None) => {
                     std::thread::sleep(scan::REJECT_RETRY);
@@ -175,22 +198,51 @@ fn run<S: ColdRamStore>(handle: VmmHandle, mut store: S, metrics: bool) {
                 Err(error) => fatal(error),
             }
         };
+        let had_samples = !candidates.is_empty();
         let mut published = Vec::with_capacity(candidates.len());
-        for (index, data) in candidates {
-            let object = match store.put(&data) {
-                Ok(object) => {
+        let blocks: Vec<_> = candidates
+            .iter()
+            .map(|(index, data)| ColdRamSample {
+                page: *index as u64 + 1,
+                bytes: data,
+            })
+            .collect();
+        let results = store.put_batch(&blocks).unwrap_or_else(|e| fatal(e));
+        if results.len() != candidates.len() {
+            fatal("physical RAM batch result count mismatch");
+        }
+        for ((index, data), result) in candidates.into_iter().zip(results) {
+            let object = match result {
+                Ok(ColdRamDisposition::Published(object)) => {
                     let mapping = store
                         .shared_mapping(&object)
                         .unwrap_or_else(|| fatal("store omitted pinned mapping"));
                     Some((object, mapping))
                 }
-                Err(_) => {
+                other => {
                     rejections += 1;
-                    pages[index].eligible_at = deadline(Instant::now() + scan::REJECT_RETRY);
+                    let retry = match other {
+                        Ok(ColdRamDisposition::Observed) => {
+                            scanner.observed(index);
+                            scan::REJECT_RETRY
+                        }
+                        Ok(ColdRamDisposition::Limited) => {
+                            scanner.limited(index);
+                            std::time::Duration::from_secs(1)
+                        }
+                        _ => scan::REJECT_RETRY,
+                    };
+                    pages[index].eligible_at = deadline(Instant::now() + retry);
                     None
                 }
             };
-            published.push((index, data, object));
+            // An unpinned rejected page has no commit action. COW pins still
+            // need a barrier to detach their source shadow before release.
+            if object.is_some() || pages[index].pinned.is_some() {
+                published.push((index, data, object));
+            } else if buffers.len() < scan::BATCH_BYTES / bytes {
+                buffers.push(data);
+            }
         }
         let mut unused = Vec::new();
         let mut detached = Vec::new();
@@ -254,14 +306,15 @@ fn run<S: ColdRamStore>(handle: VmmHandle, mut store: S, metrics: bool) {
             Err(error) if error == "VMM has stopped" => return,
             Err(error) => fatal(error),
         }
-        for (_, _, object) in published {
+        for (_, data, object) in published {
             if let Some((object, _)) = object {
                 unused.push(object);
             }
+            if buffers.len() < scan::BATCH_BYTES / bytes {
+                buffers.push(data);
+            }
         }
-        for object in unused {
-            store.release(object).unwrap_or_else(|e| fatal(e));
-        }
+        store.release_batch(unused).unwrap_or_else(|e| fatal(e));
         for block in detached {
             unsafe {
                 block.reclaim_file().unwrap_or_else(|e| fatal(e));
@@ -269,6 +322,10 @@ fn run<S: ColdRamStore>(handle: VmmHandle, mut store: S, metrics: bool) {
         }
         // Also proves transport health after a complete capacity rejection.
         let stats = store.stats().unwrap_or_else(|e| fatal(e));
+        if !had_samples {
+            buffers.clear();
+        }
+        scanner.finished_batch(batch_started.elapsed());
         if metrics {
             let shared = pages.iter().filter(|page| page.pinned.is_some()).count() * bytes;
             eprintln!(
@@ -289,7 +346,7 @@ mod tests {
     #[test]
     #[ignore = "requires a signed HVF test binary"]
     fn hvf_live_remap_preserves_cpu_device_cow_and_instruction_reads() {
-        use crate::hvf::{HvfVcpu, HvfVm, bindings::*};
+        use crate::hvf::{bindings::*, HvfVcpu, HvfVm};
         use std::{fs::File, io::Write, os::unix::fs::FileExt, sync::Arc};
         use vm_memory::{Bytes, GuestAddress, GuestMemory, GuestMemoryMmap};
         let page = unsafe { libc::sysconf(libc::_SC_PAGESIZE) } as usize;
