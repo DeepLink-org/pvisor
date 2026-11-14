@@ -522,6 +522,16 @@ clock conversion 或 wake latch，不能自动卸载，也不证明 Linux runque
 
 ## Overlay protocol correctness
 
+On Linux private/virtual-metadata overlays, MKNOD for ordinary files and Unix
+socket nodes uses the same host-owner backing policy as CREATE/MKDIR. It records
+the guest creator, parent setgid inheritance, type and masked mode in the existing
+private identity xattr; guest lookup/access/chmod continue to see that identity,
+including after reopening the overlay. Native socket nodes stay real socket
+nodes, not regular-file stand-ins. Essential metadata failures fail creation
+and attempt to remove the unpublished node. FIFO and character/block-device
+creation retain their existing native credential/capability checks; no host
+setuid privilege or additional guest capability is granted by this rule.
+
 Guest READ/READDIR/READDIRPLUS reply descriptors shorter than the 16-byte FUSE
 header return a transport error without invoking the filesystem or panicking.
 SETATTR validates a selected mode against the supported 16-bit range before
@@ -927,8 +937,29 @@ TEE/Nitro 返回 `Unsupported`。目录必须存在、绝对且可表达为 UTF-
 目录 0700；guest VFS 按虚拟属性检查权限。元数据更新通过 inode flock
 跨 VM 串行化。guest 的 xattr 操作不能读取、覆盖或删除该内部属性。损坏属性、
 不支持 xattr 的后端和写入失败均返回错误；失败的创建可能保留已创建的宿主 inode。
-普通 `filesystem` 的本机权限和 chown 行为不变。符号链接和特殊文件仅能表示
-guest root 所有权，非 root 创建或所有权变更返回明确的不支持错误。
+普通 `filesystem` 的本机权限和 chown 行为不变。特殊文件仍仅能表示 guest root
+所有权，非 root 创建或所有权变更返回明确的不支持错误。
+
+Linux symlink 不能存储 user xattr，因此其 guest UID/GID 保存在卷内私有的
+`.pvisor-managed` 目录，以 native device/inode/birth-time 标识，跨重命名、硬链接
+和 VM 重开保留。新建链接总是初始化所有权，不能继承已删除 inode 的旧记录。
+不跟随链接，不修改 target 或宿主 symlink 所有权；非 root 变更仍执行 guest
+所有权检查。symlink 时间戳仍使用 native 属性，虚拟 chown 本身不推进 ctime；
+不宣称这一路径已提供完整 POSIX 时间戳语义。后端必须提供 inode birth time 和目录 xattr。
+birth time 查询与 passthrough 共用 Linux statx wire layout，并直接调用 syscall，
+不依赖 glibc 专有的 libc 绑定；GNU 和静态 musl 使用同一实现与布局测试。
+目录内记录兼容原有的 UID:GID 编码，新记录同时保留 mode。这个私有 inode
+catalog 也用于 Linux 私有 rootfs 的 Unix socket：较旧宿主内核不允许 socket
+上的 `user.*` xattr，因此 socket 保持原生类型和宿主 owner/0600，guest 身份及
+权限存放在 upper 的 `.wh..pvisor-socket-metadata` 控制目录。该目录使用 Core
+已有的保留 whiteout 命名空间，guest lookup、创建和目录遍历不能访问它。
+socket 记录以 device/inode/birth time 标识，重命名、硬链接和重开保留；
+历史无引用记录同样保留至私有 backing 删除，不假装已实现独立 GC。
+这个根目录名称是保留名：lookup/readdir 不暴露，所有 guest 命名空间写入均拒绝。
+已存在但无版本标记的目录、损坏记录或不支持的后端返回错误，不把失败假装成成功。
+目录初始化和元数据更新由根目录 flock 跨 VM 串行化；记录以 fsync + 原子替换提交。
+删除 symlink 后保留其记录直到卷删除，以支持仍被 pin 的 inode；目前没有独立 GC，
+大量创建/删除链接会积累元数据。宿主直接编辑这些私有目录不在支持契约内。
 
 此接口仅支持 Linux，其他平台及 TEE/Nitro 返回 Unsupported。不能用于 DAX、
 snapshot/restore profile；正反调用顺序均拒绝组合，设备 capture/restore 也拒绝。

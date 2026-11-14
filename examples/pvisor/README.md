@@ -45,3 +45,12 @@ mise run examples -- 03-network-isolation
 [07-vm-task](07-vm-task) 以调用脚本和 CLI 适配函数执行 `qutebrowser-667` SWE 工具片段，
 自动准备任务镜像、应用候选补丁，并收集两次原始工具调用的反馈与执行记录。需要安装 pVisor、Linux/KVM 及节点权限；
 真实框架集成待补充。不需要源码编译。独立运行，不加入 `mise run examples` 场景集合。
+
+## 真实应用 Compose 部署
+
+[08-compose-apps](08-compose-apps) 用公开的 WordPress/MariaDB、
+Gitea/PostgreSQL、Nginx/Grafana、Nextcloud、MinIO、SeaweedFS、Celery/Flower、
+CouchDB、RabbitMQ 和 Prometheus/Grafana 镜像执行 HTTP/API、WebDAV、S3、
+后台队列、文档/消息/指标与持久化验收。
+原始上游配置校验和针对 pVisor 子集改编的部署分别记录，失败不会静默跳过。
+需要 Linux/KVM、CLI/固件和镜像仓库网络；独立运行，不加入默认示例集合。

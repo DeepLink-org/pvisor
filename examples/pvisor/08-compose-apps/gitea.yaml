@@ -1,0 +1,54 @@
+services:
+  db:
+    image: postgres:16-alpine
+    cpus: 1
+    mem_limit: 512m
+    entrypoint:
+      - /bin/sh
+      - -ec
+      - |
+        if [ "${CASE_DB_SOCKET_DIR:-}" = /dev/shm ] && [ ! -L /var/run/postgresql ]; then
+          rmdir /var/run/postgresql
+          ln -s /dev/shm /var/run/postgresql
+        fi
+        exec docker-entrypoint.sh "$$@"
+      - --
+    command: [postgres, -c, "unix_socket_directories=${CASE_DB_SOCKET_DIR:-/var/run/postgresql}"]
+    environment:
+      PGHOST: ${CASE_DB_SOCKET_DIR:-/var/run/postgresql}
+      POSTGRES_DB: gitea
+      POSTGRES_USER: gitea
+      POSTGRES_PASSWORD: ${CASE_DB_PASSWORD:?required}
+    volumes: [database:/var/lib/postgresql/data]
+    healthcheck:
+      test: [CMD, pg_isready, -U, gitea, -d, gitea]
+      interval: 1s
+      timeout: 5s
+      retries: 60
+      start_period: 30s
+      start_interval: 1s
+  gitea:
+    image: gitea/gitea:1.24.7-rootless
+    cpus: 1
+    mem_limit: 512m
+    environment:
+      GITEA__database__DB_TYPE: postgres
+      GITEA__database__HOST: db:5432
+      GITEA__database__NAME: gitea
+      GITEA__database__USER: gitea
+      GITEA__database__PASSWD: ${CASE_DB_PASSWORD:?required}
+      GITEA__security__INSTALL_LOCK: "true"
+      GITEA__server__ROOT_URL: http://127.0.0.1:${CASE_HTTP_PORT:?required}/
+      GITEA__server__DISABLE_SSH: "true"
+      GITEA__service__DISABLE_REGISTRATION: "false"
+      GITEA__service__REGISTER_EMAIL_CONFIRM: "false"
+      GITEA__service__REGISTER_MANUAL_CONFIRM: "false"
+      GITEA__mailer__ENABLED: "false"
+    ports: ["127.0.0.1:${CASE_HTTP_PORT:?required}:3000"]
+    volumes: [repositories:/var/lib/gitea, configuration:/etc/gitea]
+    depends_on:
+      db: {condition: service_healthy}
+volumes:
+  database: {}
+  repositories: {}
+  configuration: {}

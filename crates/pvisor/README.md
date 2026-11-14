@@ -1128,6 +1128,56 @@ records used by the top-level container commands. The CLI owns Docker argument p
 and terminal adapters. This profile does not convert ordinary Sessions or alter
 `spawn`, native Session staging, capture or existing daemon APIs. Linux containers
 can opt into generation-scoped staged binds through the extension below.
+`docker::compose::Project` owns the bounded, image-based Compose loader and
+project lifecycle. The frontend only parses arguments and renders output.
+Project mutations serialize with a private per-project lease; the normal
+catalog and container generation locks remain authoritative. Membership and
+resolved-configuration hashes are published with container records; ordinary
+containers and legacy records have no membership. Project default networks
+likewise record ownership. Names alone never authorize adoption or cleanup.
+User-defined network allocation reserves both container and service DNS names
+atomically. Local Compose build definitions feed the existing isolated builder;
+build-only services use project/service tags.
+The builder stages completed OCI sources on the build workspace's filesystem
+before streaming into the selected pool, allowing an image store on another
+filesystem without cross-device rootfs renames.
+Changed runtime configuration or local image IDs trigger selective replacement. All replacement candidates are
+admitted before stopping old members; pending ownership prevents direct starts
+and lets retry complete interrupted promotion. Named volumes and inherited image
+anonymous mounts survive recreation; container writable uppers do not. Partial
+multi-service failure retains resources rather than attempting rollback.
+The private `compose-volumes.json` catalog records project/key ownership and
+source device/inode identity under
+the container catalog lock. Default down retains volumes; explicit down -v
+only selects current file declarations with matching ownership, refuses foreign
+references and never deletes undeclared historical or external volumes.
+`--remove-orphans` does not enlarge named-volume deletion scope. Resolved Compose
+configuration escapes literal dollars on export to avoid repeated interpolation
+when loaded again. YAML mapping fragments resolve before interpolation and strict
+field validation, retaining explicit-key and merge-sequence precedence.
+Compose resolves command/entrypoint null, empty and argument-list overrides
+against the pinned image at admission, then passes the complete argv through the
+existing Create override path; ordinary `run` semantics are unchanged. Empty
+effective executables fail before project network/volume creation.
+Container
+admission rechecks managed mount sources under the same lock, preventing a
+volume resolved before concurrent deletion from publishing a stale reference.
+Compose owner health checks retain generation-fenced private observations and
+execute tracked guest processes with timeout/cancellation cleanup. CLI readiness
+waits consume those observations rather than spawning probe-only frontends.
+Short dependencies and `service_started` only order process startup; a process
+that has already exited does not block its dependent. Health and successful
+completion conditions still gate downstream start on current observations.
+`--wait` separately checks running/healthy/completed readiness. Health state alone
+never restarts or stops a workload. Compose `start` reports an already-observed
+nonzero exit as failure, without waiting for later workload exits.
+Single-file binds use private single-inode hard-link projections, not parent
+directory shares or file copies. They require link permission and the store's
+filesystem; read-only VMM adapters deny guest mutation even after remount.
+Their internal empty mountpoint directories can be reused across cold launches
+of the same container; symlinks, files and nonempty directories fail bootstrap.
+See the [Compose command profile](../pvisor-cli/README.md#compose-command-profile-experimental)
+for supported fields, naming, environment resolution, orphan handling and limits.
 `Store::pull_with_progress` and `create_with_progress` emit synchronous OCI
 preparation observations for frontend rendering; existing `pull`/`create` callers
 remain silent. Download counts use received compressed bytes, and layer readiness

@@ -234,14 +234,21 @@ pub trait VmConfiguration: Sized {
     /// excludes host authority and external writers for the attachment lifetime.
     /// Multiple VMs may share the directory with caller-synchronized mutations;
     /// reopened files observe changes with zero attribute/entry validity.
-    /// Guest UID/GID/mode are stored in private inode xattrs; native backing
-    /// remains owned and accessible by the host account. Guest VFS permissions
+    /// Guest UID/GID/mode are stored in private inode xattrs; symlink UID/GID
+    /// use an in-volume catalog keyed by native inode identity and birth time.
+    /// The root name `.pvisor-managed` is reserved and inaccessible to guests.
+    /// Native backing remains owned and accessible by the host account. Guest VFS permissions
     /// and host-enforced `read_only` still apply.
     /// Unannotated inodes initially represent guest UID/GID zero with native
     /// mode bits; initialize imported data's guest owners before non-root use.
     /// Internal metadata xattrs cannot
-    /// be read or changed through guest xattr operations. Unmapped symlink and
-    /// special-file ownership changes return explicit unsupported errors.
+    /// be read or changed through guest xattr operations. Symlink metadata never
+    /// follows or changes the link target. Special-file ownership changes still
+    /// return explicit unsupported errors except for the existing root identity.
+    /// Symlink metadata requires backing inode birth times and directory xattrs;
+    /// a pre-existing unmarked reserved name or corrupt catalog fails closed.
+    /// Unlinked symlink records are retained until the volume is discarded.
+    /// Symlink timestamps remain native; virtual chown alone does not advance ctime.
     /// Requires an absolute existing owned nonsymlink directory and a nonempty
     /// unique tag. Unsupported backing xattrs fail on metadata access/mutation;
     /// failed mutations can retain a newly created owned backing inode.

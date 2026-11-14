@@ -520,7 +520,7 @@ platform; pulling the same tag for another platform replaces that reference,
 while existing containers keep their pinned images.
 
 The registered commands are `run`, `build`, `pull`, `images`, `rmi`, `exec`,
-`ps`, `start`, `stop`, `rm`, `logs`, `network` and `builder`. Docker's grouped
+`ps`, `start`, `stop`, `rm`, `logs`, `network`, `builder` and `compose`. Docker's grouped
 spellings are also accepted: `container run/exec/ls/start/stop/rm/logs` and
 `image build/pull/ls/rm`; `ls` accepts `list` (`container ls` also accepts `ps`)
 and `rm` accepts `remove`. These dispatch to the same implementations and retain
@@ -535,7 +535,7 @@ still inspects a Session filesystem, not Docker container/image metadata;
 Compatibility is limited to the options
 listed in `pvisor COMMAND --help`; unsupported commands/options fail
 rather than being silently ignored. This is not complete Docker CLI or
-Docker Engine API compatibility. There is no Compose, Docker socket,
+Docker Engine API compatibility. Compose has the bounded profile below; there is no Docker socket,
 Docker credential-helper integration or cross-architecture emulation.
 
 `stop -t/--timeout` accepts nonnegative seconds (default 10); `-1` waits
@@ -577,6 +577,275 @@ mutation requests in the host adapter as well as in the guest mount. `stop`/`sta
 the upper, `rm -v` also drops anonymous volumes, and named volumes survive.
 There is not yet a volume-management CLI or image-blob garbage collector;
 `rmi` removes local references while retaining shared pool objects and legacy OCI data.
+
+### Compose command profile (experimental)
+
+`pvisor compose` reads an image-based Compose file and runs one VM per service.
+It is a native frontend, not a wrapper around Docker Compose, and requires no
+Docker binary, socket or daemon. Use `pvisor compose`, not `docker compose`.
+
+Save this as `compose.yaml`:
+
+```yaml
+name: demo
+services:
+  web:
+    image: python:3.12-alpine
+    command: ["python", "-m", "http.server", "8000"]
+    ports: ["127.0.0.1:8000:8000"]
+    depends_on: [cache]
+  cache:
+    image: redis:7
+```
+
+```bash
+pvisor compose config -q
+pvisor compose pull
+pvisor compose up -d
+pvisor compose ps
+pvisor compose logs -f web
+pvisor compose exec -T web python -c 'print("hello")'
+pvisor compose stop
+pvisor compose start
+pvisor compose down
+```
+
+The service name (`cache` above) and container name are DNS aliases on the
+project's private `<project>_default` network. Services must listen on their
+guest network interface rather than only loopback to accept peer traffic.
+`depends_on` short lists select dependencies for `up` and order process startup.
+Like `service_started`, they do not require the dependency to remain running
+after it starts; a fast-exiting task does not block downstream startup.
+Long mappings additionally support `condition: service_started`,
+`service_healthy`, and `service_completed_successfully`. Health dependencies
+require an effective check; successful completion jobs are not rerun by unchanged
+`up` (explicit `start` can rerun them). Failed health/completion conditions and
+startup errors block downstream startup; already-started services are not rolled back.
+
+Place `-f FILE` and `-p/--project-name NAME` **before the subcommand**. One file
+is supported. Omission searches the current directory and parents, preferring
+`compose.yaml`, `compose.yml`, `docker-compose.yaml`, then `docker-compose.yml`
+in each directory. Project naming uses `-p`, `COMPOSE_PROJECT_NAME`, top-level
+`name`, then the normalized file-directory basename. Names in the same Docker
+store identify the same project, even from different directories. Project names
+are at most 48 lowercase ASCII letters/digits/`-_`, starting with a letter/digit.
+Service and container names must be single DNS-style labels of at most 63 bytes
+(underscores accepted); service names must be lowercase.
+
+Supported service fields:
+
+- At least one of `image` or local `build`; optional native `platform`, `container_name`, `working_dir`,
+  `user`, whole-number `cpus` and `mem_limit` (same VM budgets as `run`).
+- `command` as an argument list or shell-word string. Strings are split but not
+  executed by a shell; request `["sh", "-c", "..."]` explicitly for shell syntax.
+  Omitted/null commands inherit image CMD unless a non-null entrypoint is set.
+  Empty strings/lists explicitly clear CMD. `entrypoint` accepts an argument list
+  or shell-word string, including executable flags; omitted/null inherits image
+  ENTRYPOINT, while an empty string/list clears it. Any non-null entrypoint also
+  discards image CMD. Explicit command arguments are appended to the selected
+  entrypoint, preserving empty arguments. An empty effective executable fails
+  admission before project network/volume creation; `config` cannot validate
+  image-dependent executables without preparing the image.
+- `environment` as a map or `NAME=VALUE` list; bare names/null forward project
+  environment values or explicitly unset the image variable when absent.
+  Empty strings remain empty. `environment` overrides service `env_file`
+  entries; `env_file` accepts one path or a list.
+- Short TCP `ports` and existing directory/ordinary-file binds
+  `./source:/guest/path[:ro|rw]` or `/absolute/source:/guest/path[:ro|rw]`.
+  Bind paths and service env files are relative to the Compose file directory.
+  Writable binds change host files directly, not through stage/review/apply.
+  File binds pin only the selected inode in a private single-entry share and
+  mount that file at the guest target, never its host parent/siblings. They need
+  hard-link permission and the same filesystem as the private container store;
+  cross-filesystem sources and special files fail explicitly, without copying
+  data as a fallback. In-place host writes remain visible on reopen; replacing
+  the host pathname retains the old inode until a new launch. Read-only file
+  shares enforce write denial in the host adapter as well as the guest mount.
+  `stop`/`start` retains the container's writable upper and remounts its file
+  shares; empty internal mountpoint directories are reused, but symlinks,
+  ordinary files and nonempty directories at those mountpoints abort startup.
+- Named mounts such as `data:/var/lib/app[:ro|rw]`, declared in top-level
+  `volumes`. A definition may be empty/null, set `name`, declare `external: true`,
+  or explicitly select `driver: local`. Other drivers/options are rejected.
+  Default owned names are `<project>_<key>`; external names default to the key
+  and must already exist in the pVisor store. Ordinary same-named directories
+  are not adopted: explicitly mark an existing volume external to use it.
+- Short/conditional `depends_on`, `stdin_open`, `tty`, and `healthcheck`.
+
+Health checks support `test` as `["CMD", ...]`, `["CMD-SHELL", "..."]`, a shell
+string, or `["NONE"]`; `disable: true` disables an image default. Omitted fields
+inherit the image's OCI Healthcheck, including its CMD-SHELL shell selection.
+Timing fields are `interval`, `timeout`, `start_period`, `start_interval` and
+`retries`. Durations accept compound/fractional ns/us/ms/s/m/h values, round up
+to milliseconds and are bounded to one day; intervals/timeouts/retries must be
+positive. Defaults are 30 s interval/timeout, three retries, no grace and 5 s
+start interval. Checks started during grace do not count as failures, even if
+they complete later; a success ends grace.
+The container owner keeps checking after the frontend exits. Health never
+restarts/stops a workload by itself. Timed-out tracked guest process groups are
+killed; transport cleanup can add a bounded wait.
+If cancellation cannot be acknowledged, the owner terminates the VM rather than
+leaving an unowned probe; ordinary unsuccessful checks do not stop the service.
+Private, generation-bound health records retain at most 4096 bytes of check
+output and can contain secrets.
+`compose ps` shows current health; stopped/no-check services are not healthy.
+
+Local builds accept `build: ./context` or a mapping with `context` (default `.`),
+`dockerfile` (relative to the context), `args` (map/list), `target`, and
+`network: default|none`. Contexts resolve relative to the Compose file.
+Image-only services are skipped by `compose build`. Build-only services receive
+the tag `<project>-<service>:latest`; `image` overrides that tag when provided.
+
+```bash
+pvisor compose build
+pvisor compose build --no-cache --pull app
+pvisor compose up -d --build app
+pvisor compose up -d --no-build
+```
+
+`up` builds missing local images when a build section exists; `--build` always
+invokes the builder, and `--no-build` never builds. This bounded profile is
+local-first even when both `image` and `build` are present, rather than trying
+the remote service tag before building. Image-only missing references are
+pulled normally; `compose pull` skips services without an explicit image.
+Changing source files alone does not refresh a cached service image: use
+`compose build` or `up --build`. RUNs retain the existing VM-isolated builder,
+cache, context admission and Dockerfile limits. Each build RUN uses 2 vCPUs,
+512 MiB and a 300-second timeout, independently of service VM budgets.
+Build arguments are persisted in local cache records and must not contain secrets.
+
+Shell variables override the file directory's `.env` for interpolation.
+Supported expressions are `$NAME`, `${NAME}`, `${NAME:-default}`,
+`${NAME-default}`, `${NAME:?required}`, `${NAME?required}`, and `$$` for a
+literal dollar sign. Missing plain variables become empty. Nested/alternative
+expressions are rejected. Env files use one `NAME=VALUE` per line, optional
+`export`, single-quoted literals, JSON-style double-quoted escapes, or unquoted
+values with optional ` # comment`; multiline values and quoted trailing comments
+are unsupported. Dollars not beginning a variable, such as `$5`, `$!` or a
+trailing `$`, remain literal. Resolved `config` output escapes literal dollars
+as `$$` in all string values, including commands, environment, build arguments
+and paths, so exporting and reloading does not expand them again. Output can
+contain secrets; `config -q`
+validates without printing values, and `config --services` lists service keys.
+Configuration validation never opens the Docker store or launches a Session.
+
+`up` requires `-d` or `--wait` (which implies detached mode). `--wait` waits for
+selected services to be running/healthy, or required completion jobs to exit 0.
+`--wait-timeout SECONDS` bounds readiness/dependency waits after preparation
+(default 60 s); VM startup and transport operations retain their own bounds.
+`--no-deps` skips dependency selection and conditions. It reuses unchanged containers and replaces only
+selected services whose resolved runtime configuration or local image ID changed.
+`--force-recreate` replaces every selected member; `--no-recreate` keeps existing
+members even after changes. These flags conflict. `up -t/--timeout` controls
+replacement stop grace (default 10 seconds). `--no-deps` omits dependencies.
+`up SERVICE...` otherwise includes dependencies; `pull`, `start`, `stop`,
+`logs`, and `ps` select only the named services, or all services when omitted.
+`start` reports an already-observed nonzero exit as failure, including failed
+guest initialization. A successfully completed task may return `exited` with
+code 0. It does not wait for subsequent workload exits; use `up --wait` for
+readiness rather than treating `start` as a liveness monitor.
+`ps -a` includes stopped containers and `-q` prints full IDs. `logs -f` follows
+selected services concurrently, prefixing output by service; streams are not
+timestamp-merged. `exec` defaults to interactive TTY; use `-T` for scripts and
+`--interactive=false` to close stdin. Guest exec exit status is preserved.
+`stop` and `down` accept `-t/--timeout SECONDS` (default 10).
+
+Project mutations use a private per-project lock and persisted ownership, not
+container-name prefixes. `down` removes only project members and the owned
+default network, never same-named ordinary resources or host bind sources.
+Removed service definitions remain orphans until `down --remove-orphans`.
+Images and managed volumes are retained by ordinary `down`. Explicit `down -v`
+also deletes owned named volumes declared in the current file and container
+anonymous volumes. Undeclared historical volumes, external volumes and host bind
+sources are never deleted; `--remove-orphans` does not expand named-volume scope.
+Current declarations must match recorded project/key ownership; existing
+unowned or foreign-owned directories are refused rather than deleted. Any
+remaining container reference, including a stopped
+ordinary container, blocks named-volume deletion. Ownership publication failure
+can leave an unowned directory; retry never automatically adopts or deletes it.
+Owned-volume records bind the source device/inode; replacing a volume directory
+or substituting a symlink refuses reuse/deletion instead of trusting its name.
+
+Replacement builds/pulls and candidate admission finish before old services are
+stopped. Replacements retain named volumes and inherited image anonymous mounts,
+but discard old container writable uppers. Candidates persist as unstarted
+pending records; direct `start` refuses them. Retry discards pending candidates
+while the old record exists, or completes promotion if old removal already
+committed. Failed multi-service operations are not rolled back: inspect
+`ps -a`/`logs` (ordinary `pvisor ps -a` also shows pending records), retry
+`up -d`, or clean up with `down`. Startup failure after replacement does not
+restore the old writable upper. An attached foreign/orphan container blocks
+network deletion.
+
+Unknown fields/options fail instead of being ignored, except `x-*` extension
+fields and obsolete top-level `version`. YAML anchors, aliases and `<<` mapping
+merges are resolved before interpolation and field validation. Explicit keys win;
+in merge sequences earlier mappings win over later ones. Merges are shallow
+(use a separate anchor for a nested mapping such as `environment`). This is not
+multiple-file Compose merging, `extends`, or support for custom YAML tags.
+Explicit anonymous mount syntax,
+remote/inline build contexts, build secrets/SSH/cache mounts, nonlocal volume
+drivers/options, custom/external/multiple networks, long-form ports/mounts,
+dependency `restart`/`required` options, restart policies, profiles, scaling, multiple-file merging,
+secrets/config objects, staged binds and attached `up` are not implemented.
+VM/platform and networking limits are the same as `run`.
+
+Validation: `mise run test -- pvisor-cli -- -E 'binary(compose_cli)'`
+checks frontend contracts without a VM. Runtime project ownership/configuration
+tests run with `mise run test -- pvisor -- -E 'test(docker::compose)'`.
+
+The real Redis + migration + Python HTTP acceptance boots independent VMs and
+checks conditional startup, service DNS, published HTTP, read-only/rw file binds,
+live host-file updates, persistent health failure/recovery, timed-out probe
+cleanup, generation fencing, data retention and failed-migration admission:
+
+```bash
+PVISOR_DOCKER_TEST_IMAGE=alpine:3.20 \
+PVISOR_TEST_LIBRARY_DIR=/absolute/firmware/directory \
+mise run test -- pvisor-cli -- \
+  -E 'binary(docker_cli) & test(compose_native_health_dependencies_and_file_binds)' \
+  --run-ignored only --success-output final
+```
+
+It pulls `python:3.12-alpine` and `redis:7-alpine` by default; use
+`PVISOR_COMPOSE_TEST_PYTHON` / `PVISOR_COMPOSE_TEST_REDIS` to select pinned native
+references. The success report includes actual manifest digests.
+`PVISOR_COMPOSE_ACCEPTANCE_REPORT` optionally writes that JSON to an existing
+parent directory. Platform/firmware failures fail this gate, never silently skip.
+
+The additional `compose_native_command_overrides_and_yaml_fragments` test builds
+an image with multi-argument ENTRYPOINT and CMD, boots seven services from YAML
+fragments, and checks actual guest argv output for inheritance, empty overrides,
+replacement, literal dollars and empty arguments. Run all native Compose gates
+with the same environment and `-E 'binary(docker_cli) & test(compose_native_)'`.
+`compose_native_file_bind_restart_and_started_dependencies` also checks short
+and long `service_started` dependencies with fast-completing jobs, repeated
+same-container file-bind restarts, retained writable uppers, read-only/rw
+enforcement after restart, and nonzero `start` status for a conflicting internal
+mountpoint.
+
+Additional native edge cases live in `tests/common/compose_edge_cases.rs`:
+
+| Case | Assertions |
+| --- | --- |
+| `compose_native_nonroot_unix_socket_and_boot_hostname_survive_restart` | Rootfs AF_UNIX bind/health as UID 65534, socket identity/umask and cross-user denial, unique non-loopback boot hostname, generated-hosts refresh across restart |
+| `compose_native_nonroot_atomic_file_replacement_and_missing_source_recovery` | UID 65534 health/exec identity, cwd/env, ro/rw authority, old inode after atomic host replacement, new inode on restart, deleted-source failure and retry without replacing the container |
+| `compose_native_failed_completion_job_recovers_without_rerunning_success` | Exit 17 blocks the dependent, fixing input retries the same job container, successful jobs are reused across repeated up and dependent restart |
+| `compose_native_unhealthy_dependency_recovers_and_no_recreate_keeps_effective_health` | Health failure blocks startup without killing the dependency, owner observes recovery, no-recreate keeps actual health/env rather than applying desired-only changes |
+| `compose_native_concurrent_up_and_failed_replacement_preserve_old_members` | Concurrent frontend convergence, candidate admission before old-member teardown, failed admission retains old generations/uppers, retry cleans pending candidates and selectively replaces members |
+
+They use isolated temporary container stores and the same native fixture/firmware
+environment as the gates above. Run just these cases with
+`mise run test -- pvisor-cli -- -E 'binary(docker_cli) & test(compose_edge_cases::)' --run-ignored only --success-output final --no-fail-fast`.
+They are assertions of the intended contracts, not expected-failure exceptions;
+a failure should retain its diagnostic and be investigated rather than skipped.
+
+Real WordPress/MariaDB, Gitea/PostgreSQL and Nginx/Grafana HTTP/API and
+down/up persistence checks are available separately in
+[`examples/pvisor/08-compose-apps`](../../examples/pvisor/08-compose-apps/README.md).
+Their default socket paths are tested without the historical tmpfs workaround;
+original upstream Compose compatibility and adapted deployment outcomes remain
+separate in the recorded results.
 
 ### Staged container binds (Linux only)
 

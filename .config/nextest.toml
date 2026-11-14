@@ -3,6 +3,14 @@
 filter = 'package(=pvisor-overlaynet) & binary(=peer_network) & test(=tcp_guests::tcp_duplex_recovers_from_loss_duplication_and_reordering)'
 threads-required = "num-test-threads"
 
+# These test process-output backpressure and draining a full durable FIFO, not
+# contention with unrelated tests. Concurrent execs/fsyncs on hosted macOS can
+# consume the existing one-second probe or ten-second drain budget. Reserve all
+# slots without changing production deadlines, queue capacity, or assertions.
+[[profile.default.overrides]]
+filter = 'package(=pvisor-gateway) & (test(=injection::process::tests::large_output_does_not_deadlock_on_a_pipe) | test(=engine::tests::scheduling::one_bounded_fifo_reports_overload_and_shutdown_drains_accepted_tail))'
+threads-required = "num-test-threads"
+
 # This test bounds resolver readiness and cancellation to five seconds each.
 # On macOS, concurrent first execs of copied Mach-O frontends can remain in
 # _dyld_start longer than the readiness budget, before the resolver is invoked.

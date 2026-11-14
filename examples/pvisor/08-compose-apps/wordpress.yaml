@@ -1,0 +1,35 @@
+services:
+  db:
+    image: mariadb:11.4
+    cpus: 1
+    mem_limit: 512m
+    command: [mariadbd, "--socket=${CASE_DB_SOCKET_DIR:-/run/mysqld}/mysqld.sock"]
+    environment:
+      MARIADB_ROOT_PASSWORD: ${CASE_DB_ROOT_PASSWORD:?required}
+      MARIADB_DATABASE: wordpress
+      MARIADB_USER: wordpress
+      MARIADB_PASSWORD: ${CASE_DB_PASSWORD:?required}
+    volumes: [database:/var/lib/mysql]
+    healthcheck:
+      test: [CMD, healthcheck.sh, --connect, --innodb_initialized]
+      interval: 1s
+      timeout: 5s
+      retries: 60
+      start_period: 30s
+      start_interval: 1s
+  wordpress:
+    image: wordpress:6.8.3-php8.3-apache
+    cpus: 1
+    mem_limit: 512m
+    environment:
+      WORDPRESS_DB_HOST: db:3306
+      WORDPRESS_DB_NAME: wordpress
+      WORDPRESS_DB_USER: wordpress
+      WORDPRESS_DB_PASSWORD: ${CASE_DB_PASSWORD:?required}
+    ports: ["127.0.0.1:${CASE_HTTP_PORT:?required}:80"]
+    volumes: [site:/var/www/html]
+    depends_on:
+      db: {condition: service_healthy}
+volumes:
+  database: {}
+  site: {}

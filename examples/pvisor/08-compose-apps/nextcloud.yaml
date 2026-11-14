@@ -1,0 +1,55 @@
+services:
+  db:
+    image: postgres:16-alpine
+    cpus: 1
+    mem_limit: 512m
+    environment:
+      POSTGRES_DB: nextcloud
+      POSTGRES_USER: nextcloud
+      POSTGRES_PASSWORD: ${CASE_DB_PASSWORD:?required}
+    volumes: [database:/var/lib/postgresql/data]
+    healthcheck:
+      test: [CMD, pg_isready, -U, nextcloud, -d, nextcloud]
+      interval: 1s
+      timeout: 5s
+      retries: 60
+      start_period: 30s
+      start_interval: 1s
+  redis:
+    image: redis:7-alpine
+    cpus: 1
+    mem_limit: 128m
+    command: [redis-server, --requirepass, "${CASE_DB_PASSWORD:?required}"]
+    environment:
+      REDISCLI_AUTH: ${CASE_DB_PASSWORD:?required}
+    volumes: [redis-data:/data]
+    healthcheck:
+      test: [CMD, redis-cli, ping]
+      interval: 1s
+      timeout: 5s
+      retries: 30
+  nextcloud:
+    image: nextcloud:31.0.10-apache
+    cpus: 2
+    mem_limit: 1g
+    environment:
+      POSTGRES_HOST: db
+      POSTGRES_DB: nextcloud
+      POSTGRES_USER: nextcloud
+      POSTGRES_PASSWORD: ${CASE_DB_PASSWORD:?required}
+      REDIS_HOST: redis
+      REDIS_HOST_PASSWORD: ${CASE_DB_PASSWORD:?required}
+      NEXTCLOUD_ADMIN_USER: composeadmin
+      NEXTCLOUD_ADMIN_PASSWORD: ${CASE_ADMIN_PASSWORD:?required}
+      NEXTCLOUD_TRUSTED_DOMAINS: "127.0.0.1 localhost"
+      OVERWRITEHOST: "127.0.0.1:${CASE_HTTP_PORT:?required}"
+      OVERWRITEPROTOCOL: http
+    ports: ["127.0.0.1:${CASE_HTTP_PORT:?required}:80"]
+    volumes: [files:/var/www/html]
+    depends_on:
+      db: {condition: service_healthy}
+      redis: {condition: service_healthy}
+volumes:
+  database: {}
+  files: {}
+  redis-data: {}

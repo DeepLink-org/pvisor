@@ -3,8 +3,13 @@ use std::{
     fs,
     path::{Path, PathBuf},
     process::{Command, Output, Stdio},
-    time::Duration,
+    time::{Duration, Instant},
 };
+
+#[path = "common/compose_acceptance.rs"]
+mod compose_acceptance;
+#[path = "common/compose_edge_cases.rs"]
+mod compose_edge_cases;
 
 fn command(home: &Path) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_pvisor"));
@@ -104,7 +109,7 @@ fn docker_help_and_empty_queries_are_inert_and_reject_unsupported_commands() {
     for args in [
         vec!["build", "--privileged", "."],
         vec!["run", "--privileged", "image"],
-        vec!["compose", "up"],
+        vec!["compose", "up", "--privileged"],
     ] {
         assert!(!command(&home).args(args).output().unwrap().status.success());
     }
@@ -394,6 +399,292 @@ impl Drop for Native {
             .args(["rm", "-f", "native-test"])
             .output();
     }
+}
+
+#[test]
+#[ignore = "requires native virtualization, local sockets and PVISOR_DOCKER_TEST_IMAGE or PVISOR_DOCKER_TEST_ROOTFS"]
+fn compose_native_command_overrides_and_yaml_fragments() {
+    let native = Native::new();
+    let directory = native.home.parent().unwrap();
+    let context = directory.join("argv-context");
+    fs::create_dir(&context).unwrap();
+    fs::write(
+        context.join("Dockerfile"),
+        r#"FROM fixture:latest
+ENTRYPOINT ["sh", "-c", "printf 'zero=<%s> count=%s\\n' \"$0\" \"$#\"; for arg; do printf '<%s>\\n' \"$arg\"; done; sleep 300", "image-entry"]
+CMD ["image-cmd"]
+"#,
+    ).unwrap();
+    native.call(
+        &[
+            "build",
+            "-t",
+            "argv-fixture:latest",
+            context.to_str().unwrap(),
+        ],
+        None,
+        0,
+    );
+    let file = directory.join("argv-compose.yaml");
+    fs::write(&file, r#"
+name: compose-argv
+x-base: &base
+  image: argv-fixture:latest
+  cpus: 1
+  mem_limit: 128m
+x-entry: &entry
+  - sh
+  - -c
+  - 'printf "zero=<%s> count=%s\n" "$$0" "$$#"; for arg; do printf "<%s>\n" "$$arg"; done; sleep 300'
+  - override-entry
+services:
+  inherited:
+    <<: *base
+    entrypoint: null
+    command: null
+  empty-list:
+    <<: *base
+    command: []
+  empty-string:
+    <<: *base
+    command: ''
+  replaced:
+    <<: *base
+    entrypoint: *entry
+    command: null
+  arguments:
+    <<: *base
+    entrypoint: *entry
+    command: ['two words', '', '$$HOME']
+  cleared-list:
+    <<: *base
+    entrypoint: []
+    command: [sh, -c, 'echo direct-list; sleep 300']
+  cleared-string:
+    <<: *base
+    entrypoint: ''
+    command: [sh, -c, 'echo direct-string; sleep 300']
+"#).unwrap();
+    let store = pvisor::docker::Store::open(native.home.clone()).unwrap();
+    struct Cleanup(pvisor::docker::Store);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            for instance in self.0.instances(true).unwrap_or_default() {
+                if instance
+                    .compose
+                    .as_ref()
+                    .is_some_and(|member| member.project == "compose-argv")
+                {
+                    let _ = self.0.stop(&instance.id, Duration::ZERO, None);
+                    let _ = self.0.remove(&instance.id, false);
+                }
+            }
+        }
+    }
+    let _cleanup = Cleanup(store.clone());
+    let compose = |args: &[&str]| {
+        let mut command = vec!["compose", "-f", file.to_str().unwrap()];
+        command.extend_from_slice(args);
+        native.call(&command, None, 0)
+    };
+    compose(&["up", "--wait"]);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    for (service, expected) in [
+        ("inherited", "zero=<image-entry> count=1\n<image-cmd>\n"),
+        ("empty-list", "zero=<image-entry> count=0\n"),
+        ("empty-string", "zero=<image-entry> count=0\n"),
+        ("replaced", "zero=<override-entry> count=0\n"),
+        (
+            "arguments",
+            "zero=<override-entry> count=3\n<two words>\n<>\n<$HOME>\n",
+        ),
+        ("cleared-list", "direct-list\n"),
+        ("cleared-string", "direct-string\n"),
+    ] {
+        let name = format!("compose-argv-{service}-1");
+        loop {
+            let output = native.call(&["logs", &name], None, 0);
+            if output.stdout == expected.as_bytes() {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "{service}: {output:?}, wanted {expected:?}"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+    let identities: Vec<_> = store
+        .instances(true)
+        .unwrap()
+        .into_iter()
+        .map(|instance| (instance.id, instance.generation))
+        .collect();
+    compose(&["up", "--wait"]);
+    for (id, generation) in identities {
+        assert_eq!(store.resolve(&id).unwrap().generation, generation);
+    }
+    compose(&["down", "-t", "0"]);
+    assert!(store.instances(true).unwrap().is_empty());
+}
+
+#[test]
+#[ignore = "requires native virtualization, local sockets and PVISOR_DOCKER_TEST_IMAGE or PVISOR_DOCKER_TEST_ROOTFS"]
+fn compose_native_vm_project_lifecycle_preserves_identity_and_exec_status() {
+    let native = Native::new();
+    let directory = native.home.parent().unwrap();
+    let file = directory.join("compose.yaml");
+    let context = directory.join("compose-context");
+    fs::create_dir(&context).unwrap();
+    fs::write(context.join("Dockerfile"), "FROM fixture:latest\n").unwrap();
+    fs::write(
+        &file,
+        r#"
+name: compose-native
+services:
+  first:
+    image: fixture:latest
+    cpus: 1
+    mem_limit: 128m
+    command: [sh, -c, "echo first-ready; sleep 300"]
+  second:
+    build: ./compose-context
+    cpus: 1
+    mem_limit: 128m
+    depends_on: [first]
+    environment:
+      COMPOSE_MESSAGE: hello-compose
+    volumes: [data:/data]
+    command: [sh, -c, "echo second-ready; sleep 300"]
+volumes:
+  data: {}
+"#,
+    )
+    .unwrap();
+    let store = pvisor::docker::Store::open(native.home.clone()).unwrap();
+    struct Cleanup(pvisor::docker::Store);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            for instance in self.0.instances(true).unwrap_or_default() {
+                if instance
+                    .compose
+                    .as_ref()
+                    .is_some_and(|member| member.project == "compose-native")
+                {
+                    let _ = self.0.stop(&instance.id, Duration::ZERO, None);
+                    let _ = self.0.remove(&instance.id, false);
+                }
+            }
+        }
+    }
+    let _cleanup = Cleanup(store.clone());
+    let compose = |args: &[&str], expected| {
+        let mut command = vec!["compose", "-f", file.to_str().unwrap()];
+        command.extend_from_slice(args);
+        native.call(&command, None, expected)
+    };
+    compose(&["up", "-d", "second"], 0);
+    let initial = store.instances(true).unwrap();
+    assert_eq!(initial.len(), 2);
+    assert!(initial.iter().all(|instance| instance.state == "running"));
+    let first = store.resolve("compose-native-first-1").unwrap();
+    let second = store.resolve("compose-native-second-1").unwrap();
+    assert!(first.created_ms <= second.created_ms);
+    assert!(
+        second
+            .config
+            .peers
+            .as_ref()
+            .unwrap()
+            .aliases
+            .contains(&"second".into())
+    );
+    compose(&["up", "-d"], 0);
+    assert_eq!(
+        store.resolve(&second.id).unwrap().generation,
+        second.generation
+    );
+    let output = compose(
+        &[
+            "exec",
+            "-T",
+            "--interactive=false",
+            "second",
+            "sh",
+            "-c",
+            "echo \"$COMPOSE_MESSAGE\"; echo kept > /compose-kept; echo persistent > /data/keep; exit 23",
+        ],
+        23,
+    );
+    assert_eq!(output.stdout, b"hello-compose\n");
+    let logs = compose(&["logs"], 0);
+    assert!(String::from_utf8_lossy(&logs.stdout).contains("first | first-ready"));
+    assert!(String::from_utf8_lossy(&logs.stdout).contains("second | second-ready"));
+    compose(&["stop", "-t", "0"], 0);
+    compose(&["start"], 0);
+    assert_eq!(
+        store.resolve("compose-native-second-1").unwrap().id,
+        second.id
+    );
+    let output = compose(
+        &[
+            "exec",
+            "-T",
+            "--interactive=false",
+            "second",
+            "cat",
+            "/compose-kept",
+        ],
+        0,
+    );
+    assert_eq!(output.stdout, b"kept\n");
+    fs::write(
+        &file,
+        fs::read_to_string(&file)
+            .unwrap()
+            .replace("hello-compose", "updated-compose"),
+    )
+    .unwrap();
+    compose(&["up", "-d", "--no-recreate", "second"], 0);
+    assert_eq!(
+        store.resolve("compose-native-second-1").unwrap().id,
+        second.id
+    );
+    compose(&["up", "-d", "--build", "second"], 0);
+    let replaced = store.resolve("compose-native-second-1").unwrap();
+    assert_ne!(replaced.id, second.id);
+    assert_eq!(
+        store.resolve("compose-native-first-1").unwrap().id,
+        first.id
+    );
+    let output = compose(
+        &[
+            "exec",
+            "-T",
+            "--interactive=false",
+            "second",
+            "sh",
+            "-c",
+            "echo \"$COMPOSE_MESSAGE\"; cat /data/keep; test ! -e /compose-kept",
+        ],
+        0,
+    );
+    assert_eq!(output.stdout, b"updated-compose\npersistent\n");
+    let data = replaced
+        .config
+        .mounts
+        .iter()
+        .find(|mount| mount.target == Path::new("/data"))
+        .unwrap()
+        .source
+        .clone();
+    compose(&["down", "-t", "0"], 0);
+    assert!(data.is_dir());
+    compose(&["down", "-v"], 0);
+    assert!(!data.exists());
+    compose(&["down"], 0);
+    assert!(store.instances(true).unwrap().is_empty());
+    assert_eq!(store.networks().unwrap().len(), 2);
 }
 
 #[test]

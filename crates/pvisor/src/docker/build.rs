@@ -644,6 +644,7 @@ impl Stage {
             started_ms: 0,
             exit_code: None,
             created_ms: crate::unix_now_ms(),
+            compose: None,
         };
         store.save(&instance)?;
         let stage = Self {
@@ -1051,15 +1052,23 @@ fn export_layout(layout: &Path, output: &Path) -> anyhow::Result<()> {
 }
 fn publish(store: &Store, built: &Built, tags: &[String]) -> anyhow::Result<Image> {
     // Move the finished tree into the existing publisher's confined OCI source
-    // layout. Only metadata and pooled contents survive this temporary owner.
-    let staging = store.images.staging()?;
+    // layout on the build's own filesystem. The image pool may be elsewhere;
+    // publishing streams into it and must not require a cross-device rename.
+    // Only metadata and pooled contents survive this temporary owner.
+    let staging = tempfile::Builder::new().prefix("publish-").tempdir_in(
+        built
+            .layout
+            .parent()
+            .context("build layout has no workspace")?,
+    )?;
     let source = crate::image::oci::ImageStore::new(Some(staging.path().into()))?;
     let image = built.image.clone();
     let rootfs = staging
         .path()
         .join("rootfs-v3/sha256")
         .join(&image.digest[7..]);
-    fs::rename(built.image.cache.temporary_root()?, &rootfs)?;
+    fs::rename(built.image.cache.temporary_root()?, &rootfs)
+        .context("move completed build rootfs into publication staging")?;
     let manifests = staging.path().join("metadata/manifests-v1");
     fs::create_dir_all(&manifests)?;
     fs::copy(
