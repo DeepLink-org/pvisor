@@ -353,18 +353,7 @@ impl Owner {
                 // original page instead of queueing another scan behind the owner.
                 // No reference or slot has been created when this rejection returns.
                 let mut pool = if duplicate {
-                    match pool.try_lock() {
-                        Ok(guard) => guard,
-                        Err(TryLockError::WouldBlock) => {
-                            return Err(io::Error::new(
-                                io::ErrorKind::WouldBlock,
-                                "shared pool busy; retain original page",
-                            ));
-                        }
-                        Err(TryLockError::Poisoned(_)) => {
-                            return Err(io::Error::other("pool poisoned"));
-                        }
-                    }
+                    optional_pool_lock(pool)?
                 } else {
                     pool.lock().map_err(|_| io::Error::other("pool poisoned"))?
                 };
@@ -434,6 +423,19 @@ impl Owner {
         }
     }
 }
+
+// Optional discovery/publication must not wait behind another owner operation.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn optional_pool_lock<T>(pool: &Mutex<T>) -> io::Result<std::sync::MutexGuard<'_, T>> {
+    pool.try_lock().map_err(|error| match error {
+        TryLockError::WouldBlock => io::Error::new(
+            io::ErrorKind::WouldBlock,
+            "shared pool busy; retain original page",
+        ),
+        TryLockError::Poisoned(_) => io::Error::other("pool poisoned"),
+    })
+}
+
 // Log only slow owner critical sections; no page data is emitted.
 struct TimedPoolGuard<'a, T> {
     guard: Option<std::sync::MutexGuard<'a, T>>,
@@ -597,9 +599,17 @@ fn serve_inner(mut stream: UnixStream, pool: Owner, max_references: usize) -> io
                     let mut reply = Vec::new();
                     reply.extend_from_slice(&(count as u32).to_le_bytes());
                     {
-                        let mut owner = owner
-                            .lock()
-                            .map_err(|_| io::Error::other("pool poisoned"))?;
+                        let mut owner = match optional_pool_lock(owner) {
+                            Ok(owner) => owner,
+                            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                                // No observations or references were acquired.
+                                reply.resize(4 + count, 3);
+                                append_ready(&mut reply, Vec::new());
+                                write_batch_reply(&mut stream, &reply)?;
+                                continue;
+                            }
+                            Err(error) => return Err(error),
+                        };
                         for item in fingerprints.as_chunks::<24>().0 {
                             let id = item[..16].try_into().unwrap();
                             let page = u64::from_le_bytes(item[16..].try_into().unwrap());
@@ -629,11 +639,15 @@ fn serve_inner(mut stream: UnixStream, pool: Owner, max_references: usize) -> io
                     // Neither socket I/O nor client validation holds the pool lock.
                     write_batch_reply(&mut stream, &reply)?;
                 }
+                #[cfg(any(target_os = "linux", target_os = "macos"))]
                 PUT_BATCH => {
                     let count = read_u32(&mut stream)? as usize;
-                    if count == 0 || count > DISCOVERY_BATCH || !pool.is_shared() {
+                    if count == 0 || count > DISCOVERY_BATCH {
                         return Err(invalid("invalid physical materialization batch"));
                     }
+                    let Owner::Shared(owner) = &pool else {
+                        return Err(invalid("invalid physical materialization batch"));
+                    };
                     let mut bytes = vec![0; count * super::shared::PAGE];
                     stream.read_exact(&mut bytes)?;
                     let mut reply = Vec::new();
@@ -644,7 +658,17 @@ fn serve_inner(mut stream: UnixStream, pool: Owner, max_references: usize) -> io
                             continue;
                         }
                         // One page per lock acquisition preserves session fairness.
-                        match pool.intern(page, true, session) {
+                        let interned = match optional_pool_lock(owner) {
+                            Ok(mut owner) => {
+                                owner.intern_duplicate(page, session).map(Reference::Shared)
+                            }
+                            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                                reply.push(3);
+                                continue;
+                            }
+                            Err(error) => return Err(error),
+                        };
+                        match interned {
                             Ok(object) => append_object(
                                 &mut reply,
                                 object,
@@ -668,16 +692,14 @@ fn serve_inner(mut stream: UnixStream, pool: Owner, max_references: usize) -> io
                             }
                         }
                     }
-                    #[cfg(any(target_os = "linux", target_os = "macos"))]
-                    if let Owner::Shared(owner) = &pool {
-                        append_ready(
-                            &mut reply,
-                            owner
-                                .lock()
-                                .map_err(|_| io::Error::other("pool poisoned"))?
-                                .take_ready(session),
-                        );
-                    }
+                    // Hints are advisory. A busy owner must not delay a complete
+                    // rejection (or leave already acquired references uncertain).
+                    let ready = match optional_pool_lock(owner) {
+                        Ok(mut owner) => owner.take_ready(session),
+                        Err(error) if error.kind() == io::ErrorKind::WouldBlock => Vec::new(),
+                        Err(error) => return Err(error),
+                    };
+                    append_ready(&mut reply, ready);
                     write_batch_reply(&mut stream, &reply)?;
                 }
                 RELEASE_BATCH => {
@@ -1129,6 +1151,10 @@ impl PoolClient {
             .map(|result| {
                 result.and_then(|admission| match admission {
                     Admission::Published(object) => Ok(object),
+                    Admission::Limited => Err(io::Error::new(
+                        io::ErrorKind::WouldBlock,
+                        "shared pool busy or capacity exhausted; retain original page",
+                    )),
                     _ => Err(io::Error::new(
                         io::ErrorKind::WouldBlock,
                         "page not admitted",
@@ -2115,6 +2141,55 @@ mod tests {
         let second = client.put_duplicate(&page).unwrap();
         client.release(second).unwrap();
         client.release(reference).unwrap();
+        assert_eq!(client.stats().unwrap().session_references, 0);
+        drop(client);
+        thread.join().unwrap().unwrap();
+        assert_eq!(pool.lock().unwrap().object_count(), 0);
+    }
+
+    #[test]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn busy_batches_reject_without_observations_references_or_hint_waits() {
+        use super::super::shared::{PAGE, SharedPool};
+
+        let pool = Arc::new(Mutex::new(SharedPool::new(4 * PAGE, 4).unwrap()));
+        let (socket, server) = UnixStream::pair().unwrap();
+        let owner = pool.clone();
+        let thread = std::thread::spawn(move || serve_shared(server, owner, 8));
+        let mut client = PoolClient::new(socket, Duration::from_secs(1)).unwrap();
+        client.enable_shared_mapping().unwrap();
+        let page = vec![7; PAGE];
+        let reference = client.put(&page).unwrap();
+        let last_token = client.last_token;
+        let candidates = [vec![8; PAGE], vec![9; PAGE], vec![10; PAGE]];
+        let samples: Vec<_> = candidates
+            .iter()
+            .enumerate()
+            .map(|(index, bytes)| ColdRamSample {
+                page: index as u64 + 1,
+                bytes,
+            })
+            .collect();
+        let guard = pool.lock().unwrap();
+        for operation in [DISCOVER_XXH3, PUT_BATCH] {
+            let results = client.physical_exchange(operation, &samples).unwrap();
+            assert_eq!(results.len(), samples.len());
+            assert!(
+                results
+                    .into_iter()
+                    .all(|result| matches!(result, Discovered::Complete(Ok(Admission::Limited))))
+            );
+            assert_eq!(client.last_token, last_token);
+            assert!(client.take_ready().is_empty());
+            assert_eq!(guard.candidate_count(), 0);
+            assert_eq!(guard.object_count(), 1);
+        }
+        drop(guard);
+        let mut restored = vec![0; PAGE];
+        client.restore(&reference, &mut restored).unwrap();
+        assert_eq!(restored, page);
+        let second = client.put_duplicate(&page).unwrap();
+        client.release_objects(vec![second, reference]).unwrap();
         assert_eq!(client.stats().unwrap().session_references, 0);
         drop(client);
         thread.join().unwrap().unwrap();

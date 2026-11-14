@@ -1163,7 +1163,8 @@ pub enum ColdRamDisposition<O> {
     Observed,
     /// A repeat observation still has no cross-session match.
     Unmatched,
-    /// Payload/reference capacity prevented admission, not poor region yield.
+    /// Payload/reference capacity or transient pool contention prevented
+    /// admission; neither indicates poor region yield.
     Limited,
     /// Healthy non-capacity rejection, such as an incompressible local block.
     Rejected,

@@ -391,6 +391,7 @@ THP 的内核直接保持基页；驻留页、完整字节与稀疏输出断言�
 输入为 `ColdRamSample`，包含稳定副本与会话内非地址页编号；
 单批至多 256 项、总计 4 MiB，空批无副作用。只有 `Published` 取得一个引用，
 `Observed`、`Unmatched`、`Limited`、`Rejected` 均不取得引用或授权替换 RAM；
+`Limited` 包括容量不足或池锁暂时拥塞，均不作为低收益反馈。
 整批错误或结果数量不符是 runner 必须终止的协议错误。
 Linux pager 和 HVF 物理页 worker 使用该契约，物理模式仍分别限于每批
 256 个 4 KiB 页或 64 个 16 KiB 页。本地及 sealed 压缩 store 保留逐块编码语义。

@@ -2571,6 +2571,13 @@ keeps the original page and the existing session remains valid. Required
 restore/release operations and the five-second absolute RPC deadline are
 unchanged. Transport failure still terminates a dependent runner.
 
+The v3 batch path applies the same nonblocking rule to fingerprint discovery
+and each page materialization. Contended items return `Limited` without taking
+new references or recording observations. Advisory ready-hint draining after
+materialization also skips a busy owner rather than delaying the reply; queued
+hints remain available to later calls. The single-page compatibility wrapper
+reports `WouldBlock` for this healthy rejection.
+
 Slow publication/owner-lock diagnostics and RPC error opcode/byte counters
 identify contention without logging page contents. This is a targeted candidate
 for pressure qualification, not evidence that the 80-VM deadline failure is
