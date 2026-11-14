@@ -82,10 +82,7 @@ fn capabilities() -> Capabilities {
         )) && !cfg!(any(feature = "tee", feature = "aws-nitro")),
         cold_ram_faults: cfg!(all(target_os = "macos", target_arch = "aarch64"))
             || (cfg!(all(target_os = "linux", target_arch = "x86_64"))
-                && !cfg!(any(
-                    feature = "tee",
-                    feature = "aws-nitro"
-                ))),
+                && !cfg!(any(feature = "tee", feature = "aws-nitro"))),
     }
 }
 #[cfg(all(test, target_os = "linux"))]
@@ -115,6 +112,14 @@ mod cold_ram_tests {
             panic!("unsupported pager must not publish RAM")
         }
 
+        fn put_batch(
+            &mut self,
+            _: &[crate::api::ColdRamSample<'_>],
+        ) -> io::Result<Vec<io::Result<crate::api::ColdRamDisposition<()>>>> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            panic!("unsupported pager must not publish RAM")
+        }
+
         fn restore(&mut self, _: &(), _: &mut [u8]) -> io::Result<()> {
             self.calls.fetch_add(1, Ordering::SeqCst);
             panic!("unsupported pager must not restore RAM")
@@ -123,6 +128,15 @@ mod cold_ram_tests {
         fn release(&mut self, _: ()) -> io::Result<()> {
             self.calls.fetch_add(1, Ordering::SeqCst);
             panic!("unsupported pager must not release objects")
+        }
+
+        fn release_batch(&mut self, _: Vec<()>) -> io::Result<()> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            panic!("unsupported pager must not release objects")
+        }
+        fn take_ready(&mut self) -> Vec<u64> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            panic!("unsupported pager must not query ready hints")
         }
 
         fn stats(&mut self) -> io::Result<ColdRamPoolStats> {
@@ -163,10 +177,7 @@ mod cold_ram_tests {
                 .unwrap_err();
             if cfg!(all(
                 target_arch = "x86_64",
-                not(any(
-                    feature = "tee",
-                    feature = "aws-nitro"
-                ))
+                not(any(feature = "tee", feature = "aws-nitro"))
             )) {
                 assert_eq!(error.kind(), io::ErrorKind::Other);
                 assert_eq!(error.to_string(), "VMM has stopped");
@@ -182,10 +193,7 @@ mod cold_ram_tests {
             VmPlatform::capabilities().cold_ram_faults,
             cfg!(all(
                 target_arch = "x86_64",
-                not(any(
-                    feature = "tee",
-                    feature = "aws-nitro"
-                ))
+                not(any(feature = "tee", feature = "aws-nitro"))
             ))
         );
         let activity = VmPlatform::cold_ram_activity();
@@ -793,7 +801,9 @@ impl SnapshotState for MachineSnapshot {
             all(target_os = "linux", target_arch = "x86_64")
         ))]
         {
-            self.rebind(tag, |device, tag| device.prepare_protected_workspace_seed(tag))
+            self.rebind(tag, |device, tag| {
+                device.prepare_protected_workspace_seed(tag)
+            })
         }
         #[cfg(not(any(
             all(target_os = "macos", target_arch = "aarch64"),

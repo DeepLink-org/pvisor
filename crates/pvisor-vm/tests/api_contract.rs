@@ -3,6 +3,53 @@
 use pvisor_vm::api::{self, RestoreState, SnapshotState, VmBuilder, VmConfiguration};
 
 #[test]
+fn cold_store_batches_preserve_order_and_independent_reference_ownership() {
+    use api::ColdRamStore;
+    let mut store = pvisor::ram_backing::resident::LocalColdRamStore::new(16 * 1024, 4);
+    assert!(store.put_batch(&[]).unwrap().is_empty());
+    store.release_batch(Vec::new()).unwrap();
+    assert!(store.take_ready().is_empty());
+    assert_eq!(store.stats().unwrap().session_references, 0);
+    let zero = [0; 64 * 1024];
+    let seven = [7; 64 * 1024];
+    let results = store
+        .put_batch(&[
+            api::ColdRamSample {
+                page: 1,
+                bytes: &zero,
+            },
+            api::ColdRamSample {
+                page: 2,
+                bytes: &[],
+            },
+            api::ColdRamSample {
+                page: 3,
+                bytes: &seven,
+            },
+        ])
+        .unwrap();
+    assert_eq!(results.len(), 3);
+    let mut results = results.into_iter();
+    let api::ColdRamDisposition::Published(first) = results.next().unwrap().unwrap() else {
+        panic!("compressible snapshot must publish");
+    };
+    assert!(results.next().unwrap().is_err());
+    let api::ColdRamDisposition::Published(last) = results.next().unwrap().unwrap() else {
+        panic!("compressible snapshot must publish");
+    };
+    assert_eq!(store.stats().unwrap().session_references, 2);
+    let mut bytes = [0; 64 * 1024];
+    store.restore(&last, &mut bytes).unwrap();
+    assert_eq!(bytes, seven);
+    store.release(first).unwrap();
+    store.restore(&last, &mut bytes).unwrap();
+    assert_eq!(bytes, seven);
+    store.release_batch(vec![last]).unwrap();
+    assert_eq!(store.stats().unwrap().session_references, 0);
+    assert_eq!(store.stats().unwrap().objects, 0);
+}
+
+#[test]
 fn managed_filesystem_validation_is_atomic_and_excludes_snapshots() {
     let root = tempfile::tempdir().unwrap();
     let mut builder = VmBuilder::new(1, 128).unwrap();

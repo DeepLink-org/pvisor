@@ -1,9 +1,13 @@
 //! Physical-page owner. References pin immutable native-page slots; only the
 //! owner writes free slots. Linux uses size-sealed memfd; macOS an unlinked
 //! private file with kqueue lifetime watches. Clients receive read-only FDs.
-use super::{ImageId, invalid, resident::identity};
+use super::{
+    ImageId, invalid,
+    resident::identity,
+    shared_index::{Fingerprint, FingerprintIndex, Observation, PageObservation, fingerprint},
+};
 use std::{
-    collections::{BTreeMap, VecDeque},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     fs::File,
     io,
     os::{
@@ -17,8 +21,19 @@ use std::{
 pub(super) const PAGE: usize = 16384;
 #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
 pub(super) const PAGE: usize = 4096;
+/// Default disposable fingerprint count, independent of payload slot capacity.
+pub const DEFAULT_MAX_CANDIDATES: usize = 131072;
+
+pub(super) enum Discovery {
+    Unique,
+    Unmatched,
+    Upload,
+    Shared(Arc<SharedObject>),
+}
+
 pub struct SharedObject {
     id: ImageId,
+    fingerprint: Fingerprint,
     offset: u64,
     file: Arc<File>,
 }
@@ -58,14 +73,29 @@ pub struct SharedPool {
     readonly: Arc<File>,
     mapping: ResidentMapping,
     objects: BTreeMap<ImageId, Arc<SharedObject>>,
-    candidates: BTreeMap<ImageId, [u8; 16]>,
-    candidate_order: VecDeque<ImageId>,
+    // Exactly one entry per live slot, no extra payload or per-bucket allocation.
+    // Multiple strong IDs under one fast key require content-based fallback.
+    fingerprints: BTreeSet<(Fingerprint, ImageId)>,
+    candidates: FingerprintIndex,
+    ready: BTreeMap<[u8; 16], VecDeque<u64>>,
     free: Vec<u64>,
     next: u64,
     slots: usize,
 }
 impl SharedPool {
     pub fn new(max_bytes: usize, max_objects: usize) -> io::Result<Self> {
+        Self::with_candidate_limit(max_bytes, max_objects, DEFAULT_MAX_CANDIDATES)
+    }
+
+    /// Create a physical pool with an independent disposable fingerprint budget.
+    /// Zero disables observation retention, not existing-slot discovery or its
+    /// collision fallback.
+    /// This does not raise payload, reference or OS mapping limits.
+    pub fn with_candidate_limit(
+        max_bytes: usize,
+        max_objects: usize,
+        max_candidates: usize,
+    ) -> io::Result<Self> {
         let slots = (max_bytes / PAGE).min(max_objects);
         let size = slots
             .checked_mul(PAGE)
@@ -135,8 +165,9 @@ impl SharedPool {
             readonly,
             mapping: ResidentMapping { address, len: size },
             objects: BTreeMap::new(),
-            candidates: BTreeMap::new(),
-            candidate_order: VecDeque::new(),
+            fingerprints: BTreeSet::new(),
+            candidates: FingerprintIndex::new(max_candidates),
+            ready: BTreeMap::new(),
             free: Vec::new(),
             next: 0,
             slots,
@@ -151,8 +182,52 @@ impl SharedPool {
     pub fn payload_bytes(&self) -> usize {
         self.objects.len() * PAGE
     }
-    /// Admit only after equal hashes occur in two VM sessions. Candidates hold
-    /// no payload; full bytes are still compared before reusing a live slot.
+    /// A hash hit grants only a pinned candidate. The client must compare every
+    /// byte before using it; the VM separately rechecks live RAM at commit.
+    pub(super) fn discover(&mut self, key: Fingerprint, session: [u8; 16], page: u64) -> Discovery {
+        let mut matches = self.fingerprints.range((key, [0; 32])..=(key, [255; 32]));
+        if let Some((_, id)) = matches.next() {
+            return if matches.next().is_some() {
+                // Never choose one colliding object forever. Upload resolves the
+                // strong identity and byte equality for every member of the bucket.
+                Discovery::Upload
+            } else {
+                Discovery::Shared(self.objects[id].clone())
+            };
+        }
+        match self.observe(key, session, page) {
+            Observation::Matched(_) => Discovery::Upload,
+            Observation::First => Discovery::Unique,
+            Observation::Revisit => Discovery::Unmatched,
+        }
+    }
+    fn observe(&mut self, key: Fingerprint, session: [u8; 16], page: u64) -> Observation {
+        let result = self
+            .candidates
+            .observe(key, PageObservation { session, page });
+        if let Observation::Matched(Some(first)) = result
+            && let Some(ready) = self.ready.get_mut(&first.session)
+            && ready.len() < 256
+        {
+            ready.push_back(first.page);
+        }
+        result
+    }
+    pub(super) fn register_session(&mut self, session: [u8; 16]) {
+        self.ready.insert(session, VecDeque::new());
+    }
+    pub(super) fn take_ready(&mut self, session: [u8; 16]) -> Vec<u64> {
+        self.ready
+            .get_mut(&session)
+            .map(|queue| queue.drain(..).collect())
+            .unwrap_or_default()
+    }
+    pub(super) fn unregister_session(&mut self, session: [u8; 16]) {
+        self.ready.remove(&session);
+    }
+    /// Admit after a cross-session fast-hash observation or an existing fast-hash
+    /// bucket. Hashes are only hints, so collisions may admit distinct bounded
+    /// slots. SHA-256 identifies objects; full bytes authorize reuse of a slot.
     pub fn intern_duplicate(
         &mut self,
         bytes: &[u8],
@@ -162,24 +237,18 @@ impl SharedPool {
             return Err(invalid("physical pool requires a native page"));
         }
         let id = identity(bytes);
+        let key = fingerprint(bytes);
         if self.objects.contains_key(&id) {
-            return self.intern_identified(bytes, id);
+            return self.intern_identified(bytes, id, key);
         }
         if self
-            .candidates
-            .get(&id)
-            .is_some_and(|first| *first != session)
+            .fingerprints
+            .range((key, [0; 32])..=(key, [255; 32]))
+            .next()
+            .is_some()
+            || matches!(self.observe(key, session, 0), Observation::Matched(_))
         {
-            return self.intern_identified(bytes, id);
-        }
-        if !self.candidates.contains_key(&id) {
-            if self.candidates.len() >= self.slots.saturating_mul(4)
-                && let Some(old) = self.candidate_order.pop_front()
-            {
-                self.candidates.remove(&old);
-            }
-            self.candidates.insert(id, session);
-            self.candidate_order.push_back(id);
+            return self.intern_identified(bytes, id, key);
         }
         Err(io::Error::new(
             io::ErrorKind::WouldBlock,
@@ -187,33 +256,31 @@ impl SharedPool {
         ))
     }
     pub fn forget_candidates(&mut self, session: [u8; 16]) {
-        self.forget_candidates_batch(session, self.candidate_order.len());
+        self.forget_candidates_batch(session, self.candidates.len());
     }
     pub(super) fn candidate_count(&self) -> usize {
-        self.candidate_order.len()
+        self.candidates.len()
     }
     // Rotate at most `limit` original entries; callers serialize cleanup passes
     // but release the pool lock between batches so live RPCs can make progress.
     pub(super) fn forget_candidates_batch(&mut self, session: [u8; 16], limit: usize) {
-        for _ in 0..limit.min(self.candidate_order.len()) {
-            let id = self.candidate_order.pop_front().unwrap();
-            if self.candidates.get(&id) == Some(&session) {
-                self.candidates.remove(&id);
-            } else {
-                self.candidate_order.push_back(id);
-            }
-        }
+        self.candidates.forget(session, limit);
     }
     pub fn intern(&mut self, bytes: &[u8]) -> io::Result<Arc<SharedObject>> {
         if bytes.len() != PAGE {
             return Err(invalid("physical pool requires a native page"));
         }
         let id = identity(bytes);
-        self.intern_identified(bytes, id)
+        self.intern_identified(bytes, id, fingerprint(bytes))
     }
     // The two entry points above validate the page length and compute its full
     // content identity once. The identity alone never authorizes a shared hit.
-    fn intern_identified(&mut self, bytes: &[u8], id: ImageId) -> io::Result<Arc<SharedObject>> {
+    fn intern_identified(
+        &mut self,
+        bytes: &[u8],
+        id: ImageId,
+        key: Fingerprint,
+    ) -> io::Result<Arc<SharedObject>> {
         debug_assert_eq!(bytes.len(), PAGE);
         if let Some(object) = self.objects.get(&id) {
             if self.page(object.offset) != bytes {
@@ -245,10 +312,12 @@ impl SharedPool {
         }
         let object = Arc::new(SharedObject {
             id,
+            fingerprint: key,
             offset,
             file: self.readonly.clone(),
         });
         self.objects.insert(id, object.clone());
+        self.fingerprints.insert((key, id));
         Ok(object)
     }
     fn page(&self, offset: u64) -> &[u8] {
@@ -310,7 +379,8 @@ impl SharedPool {
                 return Err(io::Error::last_os_error());
             }
         }
-        self.objects.remove(&id);
+        let object = self.objects.remove(&id).unwrap();
+        self.fingerprints.remove(&(object.fingerprint, id));
         self.free.push(offset);
         Ok(())
     }
@@ -453,7 +523,10 @@ mod tests {
         changed[PAGE - 1] = 4;
         // Force the private lookup key to collide; equality must include the
         // last byte, not merely the externally supplied digest or a prefix.
-        assert!(pool.intern_identified(&changed, original.id()).is_err());
+        assert!(
+            pool.intern_identified(&changed, original.id(), fingerprint(&changed))
+                .is_err()
+        );
         assert_eq!(pool.object_count(), 1);
         pool.file.write_all_at(&changed, original.offset()).unwrap();
         assert!(pool.intern(&[3; PAGE]).is_err());
@@ -491,7 +564,7 @@ mod tests {
     }
     #[test]
     fn unique_candidates_use_no_page_slots_and_need_another_session() {
-        let mut pool = SharedPool::new(PAGE, 1).unwrap();
+        let mut pool = SharedPool::with_candidate_limit(PAGE, 1, 4).unwrap();
         for _ in 0..3 {
             assert!(pool.intern_duplicate(&[7; PAGE], [1; 16]).is_err());
         }
@@ -503,12 +576,15 @@ mod tests {
         object.restore(&mut restored).unwrap();
         assert_eq!(restored, [7; PAGE]);
         pool.forget_candidates([1; 16]);
-        assert!(pool.candidates.is_empty());
+        assert_eq!(pool.candidates.len(), 0);
         for n in 10..20 {
             assert!(pool.intern_duplicate(&[n; PAGE], [3; 16]).is_err());
         }
         assert_eq!(pool.candidates.len(), 4);
-        assert!(pool.candidates.contains_key(&identity(&[19; PAGE])));
+        assert!(matches!(
+            pool.discover(fingerprint(&[19; PAGE]), [4; 16], 0),
+            Discovery::Upload
+        ));
     }
     #[test]
     fn rejected_new_pages_do_not_damage_existing_shared_pages() {
@@ -522,6 +598,83 @@ mod tests {
         assert_eq!(a.offset(), b.offset());
     }
     #[test]
+    fn discovery_pin_survives_collection_and_candidate_eviction() {
+        let mut pool = SharedPool::with_candidate_limit(PAGE, 1, 1).unwrap();
+        let original = pool.intern(&[7; PAGE]).unwrap();
+        let offset = original.offset();
+        let Discovery::Shared(pin) = pool.discover(fingerprint(&[7; PAGE]), [1; 16], 0) else {
+            panic!("existing slot must be pinned");
+        };
+        drop(original);
+        pool.discover(fingerprint(&[8; PAGE]), [2; 16], 0);
+        pool.discover(fingerprint(&[9; PAGE]), [3; 16], 0);
+        pool.collect().unwrap();
+        assert_eq!(pool.object_count(), 1);
+        assert_eq!(pool.candidate_count(), 1);
+        let mut bytes = [0; PAGE];
+        pin.restore(&mut bytes).unwrap();
+        assert_eq!(bytes, [7; PAGE]);
+        drop(pin);
+        pool.collect().unwrap();
+        assert_eq!(pool.object_count(), 0);
+        let replacement = pool.intern(&[8; PAGE]).unwrap();
+        assert_eq!(replacement.offset(), offset);
+    }
+
+    #[test]
+    fn colliding_fast_keys_keep_both_strong_objects_reachable_and_collect_independently() {
+        let mut pool = SharedPool::with_candidate_limit(2 * PAGE, 2, 0).unwrap();
+        let key = fingerprint(&[7; PAGE]);
+        // Force only the discovery keys to collide, preserving real SHA-256
+        // identities and complete bytes. No production hasher override is needed.
+        let a = pool
+            .intern_identified(&[7; PAGE], identity(&[7; PAGE]), key)
+            .unwrap();
+        let b = pool
+            .intern_identified(&[8; PAGE], identity(&[8; PAGE]), key)
+            .unwrap();
+        assert_ne!(a.id(), b.id());
+        assert_ne!(a.offset(), b.offset());
+        assert!(matches!(pool.discover(key, [1; 16], 0), Discovery::Upload));
+        // Content fallback can reach either object, not just the first bucket
+        // member, without consuming another slot or a disposable candidate.
+        for byte in [7, 8] {
+            let object = pool.intern_duplicate(&[byte; PAGE], [2; 16]).unwrap();
+            assert_eq!(object.id(), identity(&[byte; PAGE]));
+            let mut restored = [0; PAGE];
+            object.restore(&mut restored).unwrap();
+            assert_eq!(restored, [byte; PAGE]);
+        }
+        assert_eq!(pool.object_count(), 2);
+        assert_eq!(pool.fingerprints.len(), 2);
+        assert_eq!(pool.candidate_count(), 0);
+        let id = a.id();
+        drop(a);
+        pool.collect_one(id).unwrap();
+        let Discovery::Shared(pin) = pool.discover(key, [3; 16], 0) else {
+            panic!("remaining collision member must become a normal fast hit");
+        };
+        assert_eq!(pin.id(), b.id());
+        drop(pin);
+        drop(b);
+        pool.collect().unwrap();
+        assert!(pool.fingerprints.is_empty());
+        assert!(matches!(
+            pool.discover(key, [4; 16], 0),
+            Discovery::Unmatched
+        ));
+        let replacement = pool.intern(&[9; PAGE]).unwrap();
+        assert!(matches!(
+            pool.discover(key, [4; 16], 0),
+            Discovery::Unmatched
+        ));
+        let Discovery::Shared(pin) = pool.discover(fingerprint(&[9; PAGE]), [4; 16], 0) else {
+            panic!("recycled slot must be indexed only by its new fingerprint");
+        };
+        assert_eq!(pin.id(), replacement.id());
+    }
+
+    #[test]
     fn bounded_candidate_retirement_preserves_live_sessions() {
         let mut pool = SharedPool::new(PAGE * 16, 16).unwrap();
         for n in 0..32u8 {
@@ -530,15 +683,52 @@ mod tests {
         let count = pool.candidate_count();
         for _ in 0..count / 4 {
             pool.forget_candidates_batch([1; 16], 4);
-            assert!(pool.candidates.values().any(|s| *s == [2; 16]));
+            assert!(matches!(
+                pool.discover(fingerprint(&[31; PAGE]), [3; 16], 0),
+                Discovery::Upload
+            ));
         }
         assert_eq!(pool.candidate_count(), 16);
-        assert!(pool.candidates.values().all(|s| *s == [2; 16]));
         for n in (1..32u8).step_by(2) {
             let object = pool.intern_duplicate(&[n; PAGE], [3; 16]).unwrap();
             let mut restored = [0; PAGE];
             object.restore(&mut restored).unwrap();
             assert_eq!(restored, [n; PAGE]);
         }
+        for n in (0..32u8).step_by(2) {
+            assert!(matches!(
+                pool.discover(fingerprint(&[n; PAGE]), [3; 16], 0),
+                Discovery::Unique
+            ));
+        }
+    }
+
+    #[test]
+    fn ready_hints_are_one_shot_bounded_and_session_scoped() {
+        let mut pool = SharedPool::with_candidate_limit(PAGE, 1, 1024).unwrap();
+        let first = [1; 16];
+        let second = [2; 16];
+        pool.register_session(first);
+        pool.register_session(second);
+        for n in 1..=300u64 {
+            let key = (n as u128).to_le_bytes();
+            assert!(matches!(pool.discover(key, first, n), Discovery::Unique));
+            assert!(matches!(pool.discover(key, first, n), Discovery::Unmatched));
+            assert!(matches!(
+                pool.discover(key, second, n + 1000),
+                Discovery::Upload
+            ));
+            assert!(matches!(
+                pool.discover(key, second, n + 1000),
+                Discovery::Upload
+            ));
+        }
+        assert_eq!(pool.take_ready(first), (1..=256).collect::<Vec<_>>());
+        assert!(pool.take_ready(first).is_empty());
+        assert!(pool.take_ready(second).is_empty());
+        assert_eq!(pool.object_count(), 0, "hints must acquire no authority");
+        pool.unregister_session(first);
+        assert!(!pool.ready.contains_key(&first));
+        assert!(pool.take_ready([3; 16]).is_empty());
     }
 }
