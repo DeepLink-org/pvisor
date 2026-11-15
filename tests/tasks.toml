@@ -8,7 +8,7 @@ run = '''
 set -Eeuo pipefail
 if [[ $# -gt 0 ]]; then echo "too many arguments for test-fw-make" >&2; exit 2; fi
 make_bin=$(command -v gmake || command -v make || true)
-if [[ -z "$make_bin" ]]; then echo 'SKIP: GNU make is not installed'; exit 0; fi
+if [[ -z "$make_bin" ]]; then echo 'required GNU make is not installed' >&2; exit 1; fi
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 for builder in linux native krunvm; do

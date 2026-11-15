@@ -42,7 +42,7 @@ wheel 将原生可执行脚本直接安装到环境的 bin 目录；旧 Python �
 | `crates/pvisor-replay/` | 回放规划、原生 Agent 适配器和续跑协议桥 |
 | `pvisor/`、`setup.py`、`scripts/packaging/` | Python 版本标记和原生脚本 wheel 打包 |
 | `crates/*/tests/` | Rust 集成测试；单元测试跟随所属模块 |
-| `tests/` | Python 打包和仓库工作流测试 |
+| `tests/unit/`、`tests/regression/`、`tests/hardware/` | Python 单元、真实进程回归和显式硬件测试；共享 driver 与资源留在 `tests/` |
 | `examples/`、`benchmark/` | 可运行的产品场景和性能测量 |
 | `scripts/ci/` | CI 检查及冒烟测试入口 |
 | `docs/src/zh/`、`docs/src/en/` | 文档源；`docs/site/` 是生成产物 |
@@ -122,10 +122,11 @@ CI 先检查默认运行时和应用的依赖边界，再构建带捕获的分�
 | `mise run test -- core pvisor cli` | 测试指定 Rust 包：共享契约、运行时和应用 |
 | `mise run test -- cli` / `mise run test -- pvisor-cli` | 可执行文件／前端测试；`mise run test -- pvisor` 选择运行时测试 |
 | `mise run test -- pvisor-vm` | VM 所有者测试；macOS 在 nextest 前签署 Hypervisor entitlement |
-| `mise run test-py -- -k packaging` | 在仓库及活动 benchmark 测试中筛选 unittest 检查 |
-| `mise run test-py -- discover -s benchmark/support` | 用 unittest 单独运行 benchmark 工具测试；默认 Python 测试已包含这些检查 |
-| `PVISOR_TEST_VM_BIN=target/release/pvisor mise run test-py -- tests/test_vm_terminal.py` | 启用真实 VM 的普通终端交互回归 |
-| `PVISOR_TEST_ZCODE=1 mise run test-py -- tests/test_zcode_integration.py` | 显式运行需要 Linux rootless、FUSE3 和 zcode 的集成测试 |
+| `mise run test-py -- -k packaging` | 在两个 Python 测试目录中筛选 unittest 检查 |
+| `mise run test-py-unit` / `mise run test-py-regression` | 分别选择隔离逻辑/mock 操作或真实进程/工具链回归 |
+| `mise run test-benchmark-tools` | benchmark 工具的 unittest 检查；无参数 `test` 和 CI 均包含 |
+| `PVISOR_TEST_VM_BIN=target/release/pvisor mise run test-py -- tests.regression.test_vm_terminal` | 启用真实 VM 的普通终端交互回归 |
+| `PVISOR_TEST_ZCODE=1 mise run test-py -- tests.regression.test_zcode_integration` | 显式运行需要 Linux rootless、FUSE3 和 zcode 的集成测试 |
 | `mise run test-isolation` | 运行严格的 Linux rootless/FUSE 回归，不跳过缺失的用户命名空间能力 |
 | `mise run smoke` | 构建 debug CLI 并检查主要命令入口 |
 | `mise run examples` | 构建 release CLI 并运行全部示例；追加场景名可选择子集 |
@@ -146,10 +147,10 @@ CI 先检查默认运行时和应用的依赖边界，再构建带捕获的分�
 混合文件中的纯运行时用例仍保留在 `pvisor`。
 原生 VM 和依赖环境的测试保留原有前置条件及跳过／ignore 门槛；编译检查不代表真实 guest 验证。
 
-默认 unittest 收集 `tests/` 和 `benchmark/`；共享 Operation 和 Overlay 契约由 `pvisor-core` 的 Rust 测试验证。
+默认 `test-py` 收集 `tests/unit/` 和 `tests/regression/`；CI 分别执行这两个互不重叠的子集。benchmark 工具用 `test-benchmark-tools`，不在 `test-py` 中另开一条发现路径。共享 Operation 和 Overlay 契约由 `pvisor-core` 的 Rust 测试验证。
 benchmark 中依赖 `/proc` 和 Linux rootfs 工具的测试仅在 Linux 上运行。
 VM 文件系统检查在 Linux guest 内运行，需要 root、Python 和 tar；
-在仓库目录执行 `PVISOR_TEST_GUEST_FS_DIRS=/var/tmp:. mise run test-py -- tests/test_vm_filesystem.py`，
+在仓库目录执行 `PVISOR_TEST_GUEST_FS_DIRS=/var/tmp:. mise run test-py -- tests.regression.test_vm_filesystem`，
 分别检查 guest 根文件系统与挂载工作区。未配置目录时跳过，显式启用后检查失败会报错。
 
 需要指定 Rust 集成测试或过滤条件时，在 `--` 后传给 nextest，例如：

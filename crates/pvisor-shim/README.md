@@ -213,14 +213,10 @@ the namespace holder instead of leaking the pod's namespaces for days.
 `PR_SET_PDEATHSIG` binds to the *thread* that forked the child, not to the
 process. Every internal child (VM runner, sandbox holder, init/exec
 parents) is therefore forked on the dedicated never-exiting
-`pvisor-internal-spawner` thread: forking from a pooled worker thread (for
-example a tokio `spawn_blocking` thread, which idle-exits within seconds)
-tied a healthy runner's death signal to that thread's lifetime — observed
-live as sandboxes dying with exit status 143 exactly when the forking
-pool thread hit its keep-alive, ~11 seconds after creation.
-`tests/internal_spawn_lifetime.rs` reproduces the mechanism (a pdeath
-child forked on a short-lived pool thread dies with the thread; the same
-child forked via the dedicated thread survives it).
+`pvisor-internal-spawner` thread. Pool-thread idle exit must not terminate
+healthy internal children. `tests/internal_spawn_lifetime.rs` checks both
+pooled-thread termination and dedicated-thread survival.
+
 Non-terminal task IO rides the named virtio-console ports
 (`krun-stdin/stdout/stderr`); the guest supervisor waits for them, so
 `CloseIO` EOF and piped stdin reach the workload with runc-compatible
@@ -432,11 +428,8 @@ containerd's startup restore probes a `sandboxer = "shim"` runtime's Task
 service with the *sandbox id* before it trusts the shim again; the Task
 service therefore also answers `State` and `Connect` for that id by
 reporting the holder process (running or stopped, mirroring how runc's
-pod-sandbox mode reports its pause task). Before this, every containerd
-restart made containerd publish synthetic exit-255 events for all pvisor
-sandboxes and kubelet killed the pods. Full containerd-restart survival
-additionally needs container-level reattach support and remains a known
-limitation (see the campaign notes in `CHAOS_TEST_SHIM_6H_20261110.md`).
+pod-sandbox mode reports its pause task). Full containerd-restart survival
+requires container-level reattach support and is not fully supported.
 
 ## Limitations (deliberate)
 
@@ -544,6 +537,17 @@ cross-platform and unit-tested on any host:
 ```bash
 mise run test -- shim          # or: cargo nextest run -p pvisor-shim
 ```
+
+The Linux parent-thread regression needs no containerd, cgroup, FUSE or VM:
+
+```bash
+mise run test -- pvisor-shim -- --test internal_spawn_lifetime --no-tests fail
+```
+
+Do not run the ignored subprocess probe by itself or use `--run-ignored all`
+for this target. On non-Linux hosts it has no cases; that is not Linux
+parent-death acceptance. Ordinary crate tests still use the native libtest
+harness, Cargo target selection and nextest reporting.
 
 The Linux syscall paths can be compile-checked from a development host:
 

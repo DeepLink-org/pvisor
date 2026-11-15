@@ -2,17 +2,16 @@
 
 `stage_chaos.py` drives **real native Linux/KVM** stage/apply/drop commands. It
 never creates a synthetic ledger, fake stage, product failpoint or approved
-snapshot. This is a correctness experiment, not a benchmark or proof of three
-hours of coverage. Product fixes belong to a separate agent.
+snapshot. It checks stage correctness under bounded fault injection.
 
 ## Run and supervise
 
 Use a non-root Linux user with `/dev/kvm` access, a built native executable and
 its matching firmware. No sudo, `apply --rootfs`, network traffic or writes to
-real host configuration are used. Locate firmware with:
+real host configuration are used. Build matching firmware with:
 
 ```sh
-find target/fw -name libkrunfw.so.5.6.2 -type f
+mise run fw -- build -j2
 ```
 
 The output must be a **fresh** directory whose existing ancestors are owned by
@@ -20,14 +19,13 @@ root/current UID and not group/world writable. Symlink ancestors and sticky
 `/tmp` are deliberately rejected for executable storage; repository `artifacts/`
 is suitable. Never chmod an existing ancestor to bypass safety checks.
 
-A 40-round handoff run (the supervising agent can instead omit `--rounds` for a
-roughly three-hour budget):
+Use the firmware path printed by the build. For a bounded run:
 
 ```sh
 python3 -m tests.stage_chaos \
   --binary target/debug/pvisor \
-  --firmware target/fw/x86_64-unknown-linux-musl-c31683c8c9f293b168a66b72d14b7b40bc8040b2a8b51ffc5311a240fe16704e/libkrunfw.so.5.6.2 \
-  --output artifacts/stage-chaos-fault-handoff-01 \
+  --firmware /absolute/path/to/matching/libkrunfw.so.5 \
+  --output artifacts/stage-chaos-run \
   --seed 314159 --seconds 10800 --rounds 40
 ```
 
@@ -46,10 +44,8 @@ concurrent apply/drop commands do not create another VM.
 Default schedule: the ten scenarios below repeated four times form a named
 40-round cycle; the cycle then repeats until the budget/round limit. Seed and
 round determine payloads, order and tiny injection delay; native scheduling is
-not deterministic. **`nested_all` is in the default cycle**, never silently
-skipped for a known bug. If the frozen binary is not fixed, the run stops there.
-The ordinary `--scenario nested_all --rounds 1` confirms a rebuilt binary before
-soak. No skip/unsupported outcome counts as a pass.
+not deterministic. Use `--scenario NAME --rounds 1` to select a single scenario.
+No skip/unsupported outcome counts as a pass.
 
 The driver prints a flushed JSON progress line about once per minute while
 watching subprocesses and at case boundaries. Default behavior stops at the
@@ -82,8 +78,7 @@ stop a longer run, but remains visibly incomplete in its final exit/summary.
    `outside_scope=0` exercises fully-applied drop refusal; project-all alone does
    not establish that coverage.
 6. **nested_all**: modify an existing nested file as well as ordinary files; an
-   all-project preview must be ready with the exact path set. This remains a
-   mandatory regression for the separately owned product fix.
+   all-project preview must be ready with the exact path set.
 7. **parallel_apply**: launch two real applies of **one file**, drain both and
    retain bounded per-command logs while watching. Require observed process
    overlap, one applied winner, at most one committed ledger record and an exact
@@ -164,53 +159,27 @@ attempted/finished/passed (`completed_rounds`) counts, per-scenario passes,
 miss/unknown outcomes, injections, retained paths and cleanup. `owned_signals`
 includes explicit fault signals, not just cleanup escalation. Sum actual
 `active_elapsed`, not requested seconds, for soak accounting; report wall time,
-revision, failures and aborted runs separately. No three-hour run is claimed here.
+revision, failures and aborted runs separately.
 
 Successful ordinary/race/known-cancel cases are fd-safely removed after guarded
 ownership/direct-child checks and complete process cleanup. Every kill-apply
 execution (including misses), unknown branch and failure is retained. JSONL,
 frozen inputs and summary always remain. The JSONL cap does not bound all retained
-VM backing files: provision disk, monitor `retained_cases`, and let the supervising
-agent reconcile its own roots. Never traverse upper symlinks for manual cleanup.
+VM backing files: provision disk, monitor `retained_cases`, and reconcile owned
+roots. Never traverse upper symlinks for manual cleanup.
 
 Not yet covered: explicit owner/runner-specific SIGKILL, power loss and automatic
 recovery correctness. Unknown and kill-raced-Committed branches are implemented
 but only actual per-run branch evidence establishes their execution. A Prepared
 window miss is not unsupported, injected or pass.
 
-## Validation and short-smoke evidence
+## Driver checks
 
 ```sh
-mise run test-py -- tests/test_stage_chaos.py -v
+mise run test-py -- tests.unit.test_stage_chaos tests.regression.test_stage_chaos -v
 ```
 
 No VM is needed for safety/oracle tests, including real detached fake children,
 starttime rejection, bounded capture/deadlines and incomplete summary accounting.
-Default broad validation remains `mise run test`; these changes are Python-only.
-
-For short native smoke, use the command above with `--seconds 60 --rounds 1
---scenario NAME` and a fresh output. Exact invocations are also in each output's
-config and command events. Seed 314159, `artifacts/stage-chaos-fault-20261031-*`:
-
-| Output suffix | Scenario | Observed result |
-| --- | --- | --- |
-| 01 | parallel_apply | Driver blocker vocabulary omitted `operation already in progress`; corrected, evidence retained. |
-| 02 | nested_all | Still blocked on modified ancestor directory in the current frozen binary; case retained, default does not skip. |
-| 03 | parallel_apply | Pass, 4.56 s active; overlap and one committed winner. |
-| 04 | parallel_drop | Pass, 4.77 s active; evidenced serializable winner. |
-| 05 | live_cancel | Pass, 4.76 s active; real ready, live refusal, known committed cancellation and complete cleanup. |
-| 06 | kill_apply | Prepared observed and SIGKILL sent, but driver log-key collision failed diagnostics. Preserve ledger; this old summary incorrectly reported zero injections. Fixed by nested gate telemetry and immediate injection accounting. |
-| 07 | kill_apply | Pass, 5.73 s active; one observed-Prepared injection, pending preview/drop refusal, complete cleanup; full case retained. |
-| 08 | kill_apply | Seed 271828, injection observed; stricter full-stage comparison found stale `session.lock` owner text truncated on refused drop. Ledger/upper/target unchanged. Corrected the execution-only bookkeeping exception, preserving lock identity/permissions. |
-| 09 | kill_apply | Seed 271828, pass, 5.75 s active; injected=1, pending preview/drop refused, upper/ledger retained, cleanup complete. |
-| 10 | parallel_drop | Seed 3, pass, 4.55 s active; observed overlap with drop launched first, but apply won. |
-
-These race smokes observed the apply-winner branch, not a drop-winner branch.
-The live smoke observed matching `cancelled` run/completion states, not the
-unknown branch. Gate misses, kill-raced-Committed and unknown branches are
-implemented/accounted separately but are not claimed exercised by these smokes.
-The final telemetry also writes the Prepared observation before signalling, so
-an evidence-cap abort cannot turn an unrecorded observation into fault coverage.
-
-Earlier `artifacts/stage-chaos-smoke-20261031-*` outputs remain unchanged. They
-are historical evidence, not a claim of coverage for the expanded fault driver.
+For a short native smoke, use the run command with
+`--seconds 60 --rounds 1 --scenario NAME` and a fresh output.

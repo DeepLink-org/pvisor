@@ -564,7 +564,7 @@ After reviewing both versions, record the pair and build:
 ```bash
 python3 scripts/check-docs.py --record-translations
 mise run docs-build
-mise run test-py -- tests/test_docs.py
+mise run test-py -- tests.unit.test_docs
 ```
 
 `translations.json` stores a combined SHA-256 of each pair. Structural
@@ -665,7 +665,7 @@ Validate content and build before updating bilingual revision hashes:
 
 ```bash
 mise run test -- pvisor
-mise run test-py -- tests/test_docs.py
+mise run test-py -- tests.unit.test_docs
 python3 scripts/check-docs.py --record-translations
 mise run docs-build
 ```

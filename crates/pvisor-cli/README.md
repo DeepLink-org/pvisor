@@ -1231,6 +1231,22 @@ Use `mise run test -- pvisor-cli` for application tests and `mise run test -- pv
 runtime tests. Native VM and ignored environment-dependent gates retain their
 existing prerequisites; compile checks are not real-guest validation.
 
+`command_extensions` checks executable help and dispatch. Select it with
+`mise run test -- pvisor-cli -- --test command_extensions`.
+
+`mise run test-isolation` checks prerequisites, then delegates building,
+discovery and execution to one native nextest run. Its `rootless` profile selects
+`rootless_local`, `run_config_cli` and `prepared_rootfs_cli`. Missing Linux
+namespaces or writable FUSE access fail before the build. These tests also fail
+when run directly without those capabilities.
+
+Run `mise run test-macos-fuse` on a Mac with working macFUSE. It checks
+prerequisites and selects the ignored mount-dependent tests through the
+`macos-fuse` nextest profile. The Seatbelt-only test runs by default.
+Hosted macOS CI does not supply real macFUSE coverage. See the
+[test architecture](../../tests/README.md#capability-gates-and-coverage)
+for capability gates and coverage boundaries.
+
 Interactive apply acceptance treats PTY output as a byte stream: picker checks
 wait for complete candidate rows, and preview/restoration checks wait for complete
 lines. The same nine interaction modes also run with one-byte reads, retaining
@@ -1238,18 +1254,15 @@ exclusion, conflict, writeback and exact saved-terminal-state assertions.
 
 The pool-startup cancellation integration test reserves nextest's test-thread
 slots while it runs. Concurrent cold execution of copied Mach-O binaries can
-stall before `main` on macOS and consume its resolver readiness budget. Slot
-reservation isolates this real-time contract; both five-second deadlines and
-the required cancellation exit status remain unchanged. It is not a benchmark
-of concurrent frontend cold starts.
+stall before `main` on macOS and consume its five-second resolver readiness
+budget.
 
 The `rootless_local` nested-stage/backing-visibility regression also reserves all
 nextest slots, across test binaries. Its checkout-local fixture temporarily
 creates real FUSE mounts in the host mount namespace. When CI checks out beneath
 HOME, a concurrent safe Session staging that HOME would inherit those mounts and
-correctly reject unsupported nested mounts. The reservation prevents test
-interference without relaxing that production boundary or moving fixtures out of
-the checkout. Its three fixture variants run sequentially within the test.
+correctly reject unsupported nested mounts. Its fixture variants run sequentially
+within the test.
 Use nextest (including `mise run test`) for this scheduling guarantee; direct
 libtest execution must be serialized with `--test-threads=1`, with no concurrent
 test binaries or independent test runners sharing the host mount namespace.

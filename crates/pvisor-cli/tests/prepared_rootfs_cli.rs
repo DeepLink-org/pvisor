@@ -194,13 +194,6 @@ fn isolated_host_case(name: &str) -> bool {
         .output()
         .expect("run isolated prepared-rootfs Host fixture with util-linux unshare");
     let stderr = String::from_utf8_lossy(&output.stderr);
-    if std::env::var_os("PVISOR_TEST_ALLOW_NO_USERNS").is_some()
-        && (stderr.trim() == "unshare: unshare failed: Operation not permitted"
-            || stderr.trim() == "unshare: unshare failed: Permission denied")
-    {
-        eprintln!("skipping explicitly optional prepared-rootfs Host namespace: {stderr}");
-        return false;
-    }
     assert!(
         output.status.success(),
         "isolated {name}: {stderr}\n{}",

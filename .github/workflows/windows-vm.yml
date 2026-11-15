@@ -71,7 +71,7 @@ jobs:
       - name: Test VM drivers and native ConPTY fixture (no WHP required)
         if: ${{ !cancelled() }}
         timeout-minutes: 5
-        run: mise run test-py -- tests/test_vm_cli_contract.py tests/test_windows_container_contract.py 2>&1 | tee "$NATIVE_EVIDENCE/drivers.log"
+        run: mise run test-py -- tests.unit.test_vm_cli_contract tests.regression.test_vm_cli_contract tests.unit.test_windows_container_contract tests.regression.test_windows_container_contract 2>&1 | tee "$NATIVE_EVIDENCE/drivers.log"
       - name: Core and guest public contracts (no WHP required)
         if: ${{ !cancelled() }}
         timeout-minutes: 10

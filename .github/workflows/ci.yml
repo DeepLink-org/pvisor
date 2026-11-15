@@ -106,7 +106,16 @@ jobs:
       - run: mise run fmt-py -- --check
       - run: mise run lint-py
       - run: mise run test-scripts
-      - run: mise run test-py
+      - name: Python unit tests
+        run: mise run test-py-unit
+      - name: Python process and integration regressions
+        run: mise run test-py-regression
+      - run: mise run test-benchmark-tools
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - name: Test the homepage's explanatory model
+        run: mise run test-home-demo
       - name: Test Compose acceptance runner contracts without VMs
         run: mise run test-py -- discover -s examples/pvisor/08-compose-apps -p 'test_*.py' -v
 
@@ -260,6 +269,10 @@ jobs:
         if: matrix.shard == 'core'
         run: mise run test -- pvisor-journal
 
+      - name: Test public API documentation
+        if: matrix.shard == 'core'
+        run: mise run test-doc
+
       - name: Test portable daemon cache service on macOS
         if: runner.os == 'macOS' && matrix.shard == 'core'
         run: mise run test -- pvisor-daemon -- --test cache
@@ -269,10 +282,6 @@ jobs:
         run: sysctl kern.hv_support
 
       - name: Run ${{ matrix.shard }} tests
-        env:
-          # GitHub-hosted Linux runners may disable unprivileged user
-          # namespaces. The dedicated isolation job remains strict.
-          PVISOR_TEST_ALLOW_NO_USERNS: "1"
         run: mise run test-rust -- ${{ matrix.packages }}
 
   cli-test:
@@ -332,8 +341,6 @@ jobs:
           retention-days: 7
 
       - name: Run CLI tests
-        env:
-          PVISOR_TEST_ALLOW_NO_USERNS: "1"
         run: mise run test -- pvisor-cli
 
   podman-contracts:
@@ -463,8 +470,6 @@ jobs:
           test -r /dev/kvm && test -w /dev/kvm
       - run: mise run smoke
       - name: Test Gateway-enabled runtime and CLI
-        env:
-          PVISOR_TEST_ALLOW_NO_USERNS: "1"
         run: mise run test -- pvisor pvisor-cli -- --features pvisor/gateway,pvisor-cli/gateway
 
   pvisor-isolation-regression:
@@ -514,7 +519,21 @@ jobs:
       - name: Run strict pVisor isolation regressions
         env:
           PVISOR_RUN_HOME: ${{ runner.temp }}/pvisor-isolation-runs
-        run: mise run test-isolation
+          MISE_TASK_TIMINGS: "true"
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/rootless-evidence"
+          mise run test-isolation 2>&1 | tee "$RUNNER_TEMP/rootless-evidence/mise.log"
+      - name: Upload rootless JUnit and task log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rootless-evidence-linux
+          path: |
+            ${{ runner.temp }}/rootless-evidence/
+            target/nextest/rootless/
+          if-no-files-found: error
 
       - name: Stop debug Host listener before release scenarios
         shell: bash
@@ -583,7 +602,7 @@ jobs:
   ci:
     name: CI
     if: always()
-    needs: [checks, python, firmware, native-components, rust-test, cli-test, podman-contracts, gateway-features, pvisor-isolation-regression, examples, semspec, windows]
+    needs: [agent-plugins, checks, python, firmware, native-components, rust-test, cli-test, podman-contracts, gateway-features, pvisor-isolation-regression, examples, semspec, windows]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

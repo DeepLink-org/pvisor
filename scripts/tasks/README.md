@@ -1,9 +1,11 @@
 # Task implementations
 
-These Bash scripts implement the build, case routing, local CI, Rust test and
-wheel tasks declared in the root `mise.toml`. Invoke them with `mise run` so they
-receive the repository working directory, pinned tools and shared environment.
-Task names and visibility belong in TOML; argument parsing, signing and
-publication behavior belong in the scripts. Keep small commands inline.
+These scripts implement the tasks declared in `mise.toml`. Invoke them through
+`mise run` for the project directory, pinned tools and shared environment.
 
-Validate routing and failure behavior with `mise run test-task-routing`.
+Task names and dependencies belong in TOML. Scripts own argument handling,
+signing and artifact publication. Native runners own test discovery and results.
+Keep small commands inline.
+
+Run `mise run test-task-routing` to check routing and failure behavior.
+See [test architecture](../../tests/README.md) for suite ownership.

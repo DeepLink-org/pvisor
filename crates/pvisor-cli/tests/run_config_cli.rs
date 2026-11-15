@@ -244,12 +244,16 @@ fn unsupported_memory_limit_preserves_observed_file_size_limit() {
 }
 
 #[test]
+#[cfg_attr(
+    target_os = "macos",
+    ignore = "requires macFUSE; run mise run test-macos-fuse"
+)]
 fn safe_preset_reaches_the_run_and_reports_its_limits() {
     #[cfg(target_os = "macos")]
-    if !std::path::Path::new("/Library/Filesystems/macfuse.fs").is_dir() {
-        eprintln!("skipping macOS safe preset integration: macFUSE is not installed");
-        return;
-    }
+    assert!(
+        std::path::Path::new("/Library/Filesystems/macfuse.fs").is_dir(),
+        "required macFUSE installation is unavailable"
+    );
     let temporary = tempfile::Builder::new()
         .prefix("pvsafe")
         .tempdir_in("/tmp")
@@ -276,17 +280,14 @@ fn safe_preset_reaches_the_run_and_reports_its_limits() {
         .unwrap();
     let stderr = String::from_utf8_lossy(&output.stderr);
     #[cfg(target_os = "linux")]
-    if std::env::var_os("PVISOR_TEST_ALLOW_NO_USERNS").is_some()
-        && !output.status.success()
+    if !output.status.success()
         && stderr.lines().any(|line| {
             line == "Error: required sandbox unavailable: Linux rootless namespaces must be enabled"
         })
     {
+        // Preserve the refusal's no-publication assertion, but do not turn
+        // missing runtime coverage into a passing test through early return.
         assert!(!stage.join("run-bundle.json").exists());
-        eprintln!(
-            "safe correctly refused to run without rootless namespaces; skipping runtime assertions on this optional shard"
-        );
-        return;
     }
     assert!(output.status.success(), "{stderr}");
     assert!(stderr.contains("CLI > safe preset > config > defaults"));
