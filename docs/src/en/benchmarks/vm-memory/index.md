@@ -83,4 +83,6 @@ Both library figures use the same N=1 preflight and whole-group MiB on the verti
 
 The [memory experiment record](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/memory/README.md#published-curves-and-archived-history) retains current curve provenance and reproduction protocols. Failed executions, incomplete repeated measurements and post-write evidence remain intact and excluded from successful preflights.
 
+Idle, startup and post-write curves for newer implementations are in the separate [engineering retest comparison](../../lab-notes/vm-memory-performance-analysis.md#pool-implementation-comparison). That comparison covers only the two revalidated modes; it does not replace the historical seven-arm or library results here.
+
 See the [daemon guide](../../guides/daemon/index.md#memory-pool) to enable the physical pool and [CLI control options](../../reference/cli.md#vm-instance-control) for VM compression, deduplication and offload configuration.
