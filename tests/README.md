@@ -37,6 +37,12 @@ The opt-in [native stage chaos driver](STAGE_CHAOS.md) runs bounded, seeded
 real-KVM stage/apply/drop oracles with frozen inputs and private evidence.
 Its ownership, cleanup, deadline and JSON-oracle unit tests require no VM.
 
+The opt-in [native Compose chaos checks](COMPOSE_CHAOS.md) run seeded stateful
+fault sequences and a synchronized frontend SIGKILL against real service VMs.
+They verify retry convergence, writable-upper and named-volume lifetimes,
+same-store project isolation and explicit cleanup. Their schedule/watchdog
+checks run without virtualization.
+
 Use `tests.fixtures.workspace()` for an isolated canonical temporary path and an
 `ExitStack` for mocks and other cleanup. Each use owns its resources; cleanup runs
 before removing the directory, including when an assertion fails.

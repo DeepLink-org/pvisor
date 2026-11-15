@@ -932,6 +932,10 @@ pub struct RamReclaim {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum PermissionSemantics {
     /// Emulate Linux ownership, permissions, extended attributes and idmaps.
+    /// Linux private virtual-owner rootfs and managed-volume backings reject
+    /// POSIX ACL xattrs with `EOPNOTSUPP`: native ACLs cannot enforce guest IDs
+    /// or update virtual mode. Ordinary native host backings retain their ACL
+    /// semantics; mode-only tools can use their standard chmod fallback.
     #[default]
     LinuxComplete,
     /// Disable extended attributes and idmaps, return the guest caller's uid/gid,

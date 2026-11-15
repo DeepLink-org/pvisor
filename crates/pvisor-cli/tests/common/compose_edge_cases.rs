@@ -100,6 +100,232 @@ fn write_mode(path: &Path, bytes: &[u8], mode: u32) {
     fs::set_permissions(path, fs::Permissions::from_mode(mode)).unwrap();
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+#[ignore = "requires Linux virtualization, firmware and an image with GNU sed/coreutils"]
+fn compose_native_gnu_atomic_replacement_preserves_virtual_permissions() {
+    let case = Case::new();
+    let image = std::env::var("PVISOR_COMPOSE_TEST_GNU")
+        .unwrap_or_else(|_| "mirror.gcr.io/library/debian:bookworm-slim".into());
+    case.native.call(&["pull", &image], None, 0);
+    case.write(serde_json::json!({
+        "services": {"app": {
+            "image": image,
+            "command": ["sh", "-c", "trap 'exit 0' TERM; while :; do sleep 1; done"],
+            "volumes": ["data:/data"]
+        }},
+        "volumes": {"data": {}}
+    }));
+    case.call(&["up", "-d", "--wait", "--wait-timeout", "10"], 0);
+    case.exec(
+        "app",
+        "set -eux; sed --version | grep -q 'GNU sed'; \
+         for path in /tmp/proof /data/proof; do \
+         printf original > \"$path\"; chmod 644 \"$path\"; chown 1234:2345 \"$path\"; \
+         sed -i s/original/changed/ \"$path\"; \
+         test \"$(stat -c %a:%u:%g \"$path\")\" = 644:1234:2345; \
+         test \"$(cat \"$path\")\" = changed; \
+         cp --preserve=mode,ownership \"$path\" \"$path.copy\"; \
+         test \"$(stat -c %a:%u:%g \"$path.copy\")\" = 644:1234:2345; done",
+        0,
+    );
+    case.call(&["down", "-v", "-t", "5"], 0);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+#[ignore = "requires Linux native virtualization, firmware and an Alpine image with chown/stat"]
+fn compose_native_rootfs_symlink_ownership_survives_restart_without_changing_target() {
+    let case = Case::new();
+    case.write(serde_json::json!({
+        "services": {"app": {
+            "image": "fixture:latest",
+            "command": ["sh", "-c", "trap 'exit 0' TERM; while :; do sleep 1; done"],
+            "volumes": ["data:/data"]
+        }},
+        "volumes": {"data": {}}
+    }));
+    case.call(&["up", "-d", "--wait", "--wait-timeout", "10"], 0);
+    case.exec(
+        "app",
+        "set -eu; test -L /etc/mtab; chown -h 7474:7475 /etc/mtab; \
+         test \"$(stat -c %u:%g /etc/mtab)\" = 7474:7475; \
+         chown 0:0 /data; ln -s /data /volume-link; \
+         chown -h 7474:7475 /volume-link; \
+         test \"$(stat -c %u:%g /volume-link)\" = 7474:7475; \
+         test \"$(stat -c %u:%g /data)\" = 0:0; \
+         printf durable > /data/proof",
+        0,
+    );
+    case.call(&["stop", "-t", "5"], 0);
+    case.call(&["start"], 0);
+    case.exec(
+        "app",
+        "set -eu; test -L /etc/mtab; \
+         test \"$(stat -c %u:%g /etc/mtab)\" = 7474:7475; \
+         test \"$(readlink /volume-link)\" = /data; \
+         test \"$(stat -c %u:%g /volume-link)\" = 7474:7475; \
+         test \"$(stat -c %u:%g /data)\" = 0:0; \
+         test \"$(cat /data/proof)\" = durable",
+        0,
+    );
+    case.call(&["down", "-v", "-t", "5"], 0);
+}
+
+#[test]
+#[ignore = "requires native virtualization, firmware and a native image with sh/cat"]
+fn compose_native_standard_stream_paths_reach_the_captured_descriptors() {
+    let native = Native::new();
+    let output = native.call(
+        &[
+            "run",
+            "--rm",
+            "-i",
+            "--network",
+            "none",
+            "fixture:latest",
+            "sh",
+            "-c",
+            "cat /dev/stdin; printf dev-stdout >/dev/stdout; printf dev-stderr >/dev/stderr",
+        ],
+        Some(b"input-bytes\n"),
+        0,
+    );
+    assert_eq!(output.stdout, b"input-bytes\ndev-stdout");
+    assert_eq!(output.stderr, b"dev-stderr");
+}
+
+#[test]
+#[ignore = "requires native virtualization, firmware and registry access for Python"]
+fn compose_native_mmap_with_append_open_retains_managed_volume_bytes() {
+    let case = Case::new();
+    let python =
+        std::env::var("PVISOR_COMPOSE_TEST_PYTHON").unwrap_or_else(|_| "python:3.12-alpine".into());
+    case.native.call(&["pull", &python], None, 0);
+    let script = r#"
+import mmap, os, sys
+path = "/data/page.dat"
+size = 4 * 1024 * 1024
+expected = bytes(range(256)) * 256
+if sys.argv[1] == "write":
+    with open(path, "w+b") as file:
+        file.truncate(size)
+        with mmap.mmap(file.fileno(), 0) as writable:
+            with open(path, "a+b") as append:
+                with mmap.mmap(append.fileno(), 0, access=mmap.ACCESS_READ) as sequential:
+                    for offset in [0, size - len(expected)]:
+                        writable[offset:offset + len(expected)] = expected
+                    writable.flush()
+        os.fsync(file.fileno())
+with open(path, "rb") as file:
+    actual = file.read()
+assert len(actual) == size, (len(actual), size)
+for offset in [0, size - len(expected)]:
+    assert actual[offset:offset + len(expected)] == expected, offset
+"#;
+    let mut document = serde_json::json!({
+        "services":{"app":{"image":python,"cpus":1,"mem_limit":"256m",
+            "command":["python3","-c",script,"write"],"volumes":["data:/data"]}},
+        "volumes":{"data":{}}
+    });
+    case.write(document.clone());
+    let completed = || {
+        let deadline = Instant::now() + Duration::from_secs(15);
+        loop {
+            let instance = case.instance("app");
+            if instance.state == "exited" {
+                assert_eq!(instance.exit_code, Some(0));
+                return instance;
+            }
+            assert!(Instant::now() < deadline, "mmap workload did not complete");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    };
+    case.call(&["up", "-d"], 0);
+    let original = completed();
+    document["services"]["app"]["command"][3] = "read".into();
+    case.write(document);
+    case.call(&["up", "-d"], 0);
+    assert_ne!(completed().id, original.id);
+    case.call(&["down", "-v", "-t", "0"], 0);
+}
+
+#[test]
+#[ignore = "requires native virtualization, firmware and a native image with sh/sleep"]
+fn compose_native_service_stop_signal_keeps_admitted_settings_and_explicit_precedence() {
+    let case = Case::new();
+    let mut document = serde_json::json!({"services":{"app":{
+        "image":"fixture:latest","cpus":1,"mem_limit":"128m",
+        "command":["sh","-c",
+            "trap 'exit 23' INT; trap 'exit 24' TERM; touch /signal-ready; while :; do sleep 0.1; done"],
+        "stop_signal":"SIGINT"
+    }}});
+    case.write(document.clone());
+    let ready = || {
+        case.exec(
+            "app",
+            "for i in $(seq 1 100); do if test -f /signal-ready; then rm /signal-ready; exit 0; fi; sleep 0.05; done; exit 1",
+            0,
+        );
+    };
+    case.call(&["up", "--wait"], 0);
+    ready();
+    let original = case.instance("app");
+    case.call(&["stop", "-t", "2"], 0);
+    assert_eq!(case.instance("app").exit_code, Some(23));
+    case.call(&["start", "app"], 0);
+    ready();
+    document["services"]["app"]["stop_signal"] = "SIGTERM".into();
+    case.write(document.clone());
+    case.call(&["up", "--wait", "--no-recreate"], 0);
+    assert_eq!(case.instance("app").id, original.id);
+    case.call(&["stop", "-t", "2"], 0);
+    assert_eq!(case.instance("app").exit_code, Some(23));
+    case.call(&["up", "--wait"], 0);
+    ready();
+    let replacement = case.instance("app");
+    assert_ne!(replacement.id, original.id);
+    case.native
+        .call(&["stop", "-s", "INT", "-t", "2", &replacement.id], None, 0);
+    assert_eq!(case.instance("app").exit_code, Some(23));
+    case.call(&["start", "app"], 0);
+    ready();
+    case.call(&["stop", "-t", "2"], 0);
+    assert_eq!(case.instance("app").exit_code, Some(24));
+    // Empty/null must inherit a non-TERM image signal, not the shared image
+    // signal parser's legacy empty => TERM fallback.
+    let context = case.root().join("signal-image");
+    fs::create_dir(&context).unwrap();
+    fs::write(
+        context.join("Dockerfile"),
+        "FROM fixture:latest\nSTOPSIGNAL SIGINT\n",
+    )
+    .unwrap();
+    case.native.call(
+        &[
+            "build",
+            "-t",
+            "signal-fixture:latest",
+            context.to_str().unwrap(),
+        ],
+        None,
+        0,
+    );
+    document["services"]["app"]["image"] = "signal-fixture:latest".into();
+    for value in [serde_json::json!(""), serde_json::Value::Null] {
+        document["services"]["app"]["stop_signal"] = value;
+        case.write(document.clone());
+        case.call(&["up", "--wait"], 0);
+        ready();
+        let admitted = case.instance("app");
+        assert_eq!(admitted.image.stop_signal, 2);
+        assert!(admitted.config.stop_signal.is_none());
+        case.call(&["stop", "-t", "2"], 0);
+        assert_eq!(case.instance("app").exit_code, Some(23));
+    }
+    case.call(&["down", "-t", "0"], 0);
+}
+
 #[test]
 #[ignore = "requires native virtualization, firmware and registry access for python:3.12-alpine"]
 fn compose_native_nonroot_unix_socket_and_boot_hostname_survive_restart() {

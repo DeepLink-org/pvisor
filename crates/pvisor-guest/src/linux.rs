@@ -167,6 +167,38 @@ fn wait_stdio_ports(
     }
 }
 
+fn ensure_device_alias(path: &Path, target: &str) -> io::Result<()> {
+    match fs::symlink_metadata(path) {
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            std::os::unix::fs::symlink(target, path)
+        }
+        Err(error) => Err(error),
+        Ok(metadata)
+            if metadata.file_type().is_symlink() && fs::read_link(path)? == Path::new(target) =>
+        {
+            Ok(())
+        }
+        Ok(_) => Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            format!("guest device alias collision: {}", path.display()),
+        )),
+    }
+}
+
+fn ensure_standard_stream_links(dev: &Path) -> io::Result<()> {
+    // devtmpfs supplies device nodes, not these userspace aliases. Resolve
+    // /proc/self in the workload that opens the alias, never pin PID 1's FDs.
+    for (name, target) in [
+        ("fd", "/proc/self/fd"),
+        ("stdin", "/proc/self/fd/0"),
+        ("stdout", "/proc/self/fd/1"),
+        ("stderr", "/proc/self/fd/2"),
+    ] {
+        ensure_device_alias(&dev.join(name), target)?;
+    }
+    Ok(())
+}
+
 fn initialize_filesystems() -> io::Result<()> {
     let restricted = libc::MS_NODEV | libc::MS_NOEXEC | libc::MS_NOSUID | libc::MS_RELATIME;
     for (source, target, kind, flags) in [
@@ -190,9 +222,7 @@ fn initialize_filesystems() -> io::Result<()> {
         fs::create_dir_all(target)?;
         mount(source, Path::new(target), kind, flags)?;
     }
-    if !Path::new("/dev/fd").exists() {
-        std::os::unix::fs::symlink("/proc/self/fd", "/dev/fd")?;
-    }
+    ensure_standard_stream_links(Path::new("/dev"))?;
     let hostname = ensure_local_hostname()?;
     ensure_etc_hosts_at(Path::new("/etc/hosts"), &hostname)?;
     Ok(())
@@ -940,6 +970,54 @@ fn sync_virtiofs_mounts() -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn standard_stream_aliases_are_process_relative_and_idempotent() {
+        let dev = tempfile::tempdir().unwrap();
+        ensure_standard_stream_links(dev.path()).unwrap();
+        ensure_standard_stream_links(dev.path()).unwrap();
+        for (name, target) in [
+            ("fd", "/proc/self/fd"),
+            ("stdin", "/proc/self/fd/0"),
+            ("stdout", "/proc/self/fd/1"),
+            ("stderr", "/proc/self/fd/2"),
+        ] {
+            assert_eq!(
+                fs::read_link(dev.path().join(name)).unwrap(),
+                Path::new(target)
+            );
+        }
+    }
+
+    #[test]
+    fn device_alias_validation_does_not_follow_or_replace_existing_paths() {
+        let dev = tempfile::tempdir().unwrap();
+        let link = dev.path().join("link");
+        let missing = dev.path().join("missing");
+        let target = missing.to_str().unwrap();
+        ensure_device_alias(&link, target).unwrap();
+        ensure_device_alias(&link, target).unwrap();
+        assert!(
+            !link.exists(),
+            "the accepted existing link must remain dangling"
+        );
+        assert_eq!(fs::read_link(&link).unwrap(), missing);
+        assert_eq!(
+            ensure_device_alias(&link, "/proc/self/fd/1")
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::AlreadyExists
+        );
+        fs::write(dev.path().join("stdout"), b"do not replace").unwrap();
+        assert_eq!(
+            ensure_standard_stream_links(dev.path()).unwrap_err().kind(),
+            io::ErrorKind::AlreadyExists
+        );
+        assert_eq!(
+            fs::read(dev.path().join("stdout")).unwrap(),
+            b"do not replace"
+        );
+    }
 
     #[test]
     fn attached_input_cancel_joins_without_stdin_eof_or_output_capacity() {

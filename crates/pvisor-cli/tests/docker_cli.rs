@@ -8,6 +8,8 @@ use std::{
 
 #[path = "common/compose_acceptance.rs"]
 mod compose_acceptance;
+#[path = "common/compose_chaos.rs"]
+mod compose_chaos;
 #[path = "common/compose_edge_cases.rs"]
 mod compose_edge_cases;
 #[path = "common/docker_p0_acceptance.rs"]

@@ -991,7 +991,7 @@ pub struct OverlayFs {
     negative_entry_cache_protected_prefixes: Vec<PathBuf>,
     virtual_metadata: bool,
     #[cfg(target_os = "linux")]
-    socket_metadata: Option<super::linux::inode_metadata::Catalog>,
+    special_metadata: Option<super::linux::inode_metadata::Catalog>,
     snapshot_config: Config,
     roots: Vec<PathBuf>,
     layers: Vec<Arc<PassthroughFs>>,
@@ -1566,8 +1566,10 @@ impl OverlayFs {
             negative_entry_cache_protected_prefixes: Vec::new(),
             virtual_metadata,
             #[cfg(target_os = "linux")]
-            socket_metadata: virtual_metadata
+            special_metadata: virtual_metadata
                 .then(|| {
+                    // Keep the existing reserved on-disk namespace and socket
+                    // records; symlinks use the same pinned-inode identity rule.
                     super::linux::inode_metadata::Catalog::new(
                         &roots[0],
                         c".wh..pvisor-socket-metadata",
@@ -2226,8 +2228,8 @@ impl OverlayFs {
                 };
                 attr.st_mode = mode as _;
             }
-            if attr.st_mode & libc::S_IFMT == libc::S_IFSOCK {
-                if let Some(catalog) = &self.socket_metadata {
+            if matches!(attr.st_mode & libc::S_IFMT, libc::S_IFSOCK | libc::S_IFLNK) {
+                if let Some(catalog) = &self.special_metadata {
                     let file = std::fs::OpenOptions::new()
                         .read(true)
                         .custom_flags(libc::O_PATH | libc::O_NOFOLLOW)
@@ -2241,19 +2243,31 @@ impl OverlayFs {
         Ok(())
     }
 
+    fn rejects_native_acl(&self, _name: &[u8]) -> bool {
+        #[cfg(target_os = "linux")]
+        {
+            self.virtual_metadata && super::linux::fs_utils::is_posix_acl_xattr(_name)
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            false
+        }
+    }
+
     #[cfg(target_os = "linux")]
     fn store_private_identity(&self, path: &Path, attr: &bindings::stat64) -> io::Result<()> {
-        if attr.st_mode & libc::S_IFMT == libc::S_IFSOCK {
-            // Older host kernels reject user xattrs on sockets. Keep the native
-            // socket, but persist its guest identity under Core's reserved
+        if matches!(attr.st_mode & libc::S_IFMT, libc::S_IFSOCK | libc::S_IFLNK) {
+            // Native symlinks and older host kernels' sockets reject user xattrs.
+            // Never follow a link or chown a host inode to emulate guest ownership.
+            // Persist the guest identity under Core's reserved
             // whiteout namespace, keyed by pinned device/inode/birth time.
             let file = std::fs::OpenOptions::new()
                 .read(true)
                 .custom_flags(libc::O_PATH | libc::O_NOFOLLOW)
                 .open(path)?;
-            self.socket_metadata
+            self.special_metadata
                 .as_ref()
-                .ok_or_else(|| io::Error::other("private socket catalog missing"))?
+                .ok_or_else(|| io::Error::other("private inode catalog missing"))?
                 .update(&file, *attr, |stored| {
                     stored.st_uid = attr.st_uid;
                     stored.st_gid = attr.st_gid;
@@ -4266,7 +4280,7 @@ impl FileSystem for OverlayFs {
         size: u32,
         offset: u64,
         _lock_owner: Option<u64>,
-        _delayed_write: bool,
+        delayed_write: bool,
         kill_priv: bool,
         flags: u32,
     ) -> io::Result<usize> {
@@ -4320,6 +4334,7 @@ impl FileSystem for OverlayFs {
             r,
             size,
             offset,
+            delayed_write,
             kill_priv,
         )
     }
@@ -4451,6 +4466,9 @@ impl FileSystem for OverlayFs {
         {
             return Err(io::Error::from_raw_os_error(libc::EPERM));
         }
+        if self.rejects_native_acl(effective.to_bytes()) {
+            return Err(io::Error::from_raw_os_error(libc::EOPNOTSUPP));
+        }
         pvisor_overlay_core::validate_guest_xattr(OsStr::from_bytes(effective.to_bytes()))
             .map_err(linux_error)?;
         let path = self.path(inode)?;
@@ -4486,6 +4504,9 @@ impl FileSystem for OverlayFs {
         {
             return Err(super::super::linux_errno::enodata());
         }
+        if self.rejects_native_acl(effective.to_bytes()) {
+            return Err(io::Error::from_raw_os_error(libc::EOPNOTSUPP));
+        }
         let path = self.path(inode)?;
         let (layer, inner) = self.observed_inner(ctx, &path)?;
         let result = self.layers[layer.0].getxattr(ctx, inner, effective, size);
@@ -4519,6 +4540,9 @@ impl FileSystem for OverlayFs {
                     if self.virtual_metadata
                         && pvisor_overlay_core::is_private_metadata_xattr(name)
                     {
+                        continue;
+                    }
+                    if self.rejects_native_acl(name.as_bytes()) {
                         continue;
                     }
                     if let Some(guest) = pvisor_overlay_core::guest_overlay_xattr_name(name) {
@@ -4559,6 +4583,9 @@ impl FileSystem for OverlayFs {
             ))
         {
             return Err(io::Error::from_raw_os_error(libc::EPERM));
+        }
+        if self.rejects_native_acl(effective.to_bytes()) {
+            return Err(io::Error::from_raw_os_error(libc::EOPNOTSUPP));
         }
         pvisor_overlay_core::validate_guest_xattr(OsStr::from_bytes(effective.to_bytes()))
             .map_err(linux_error)?;
@@ -5167,6 +5194,145 @@ mod tests {
                 assert_eq!(entry.attr.st_gid, 4242);
                 assert_eq!(entry.attr.st_mode, kind | 0o640);
             }
+        }
+
+        #[test]
+        fn virtual_metadata_rejects_native_posix_acl_without_changing_guest_mode() {
+            let (_temp, fs, root) = fixture(Some(b"0:0:040755"));
+            let (entry, handle, _) = fs
+                .create(
+                    root,
+                    fuse::ROOT_ID,
+                    c"acl-temp",
+                    libc::S_IFREG,
+                    false,
+                    libc::O_RDWR as u32,
+                    0,
+                    Extensions::default(),
+                )
+                .unwrap();
+            let acl = [
+                2, 0, 0, 0, 1, 0, 6, 0, 255, 255, 255, 255, 4, 0, 4, 0, 255, 255, 255, 255, 32, 0,
+                4, 0, 255, 255, 255, 255,
+            ];
+            for name in [c"system.posix_acl_access", c"system.posix_acl_default"] {
+                assert_eq!(
+                    fs.setxattr(root, entry.inode, name, &acl, 0)
+                        .unwrap_err()
+                        .raw_os_error(),
+                    Some(libc::EOPNOTSUPP)
+                );
+                assert_eq!(
+                    fs.getxattr(root, entry.inode, name, 0)
+                        .err()
+                        .unwrap()
+                        .raw_os_error(),
+                    Some(libc::EOPNOTSUPP)
+                );
+                assert_eq!(
+                    fs.removexattr(root, entry.inode, name)
+                        .unwrap_err()
+                        .raw_os_error(),
+                    Some(libc::EOPNOTSUPP)
+                );
+            }
+            let mut attr = fs.getattr(root, entry.inode, handle).unwrap().0;
+            assert_eq!(attr.st_mode & 0o7777, 0);
+            attr.st_mode |= 0o644;
+            fs.setattr(root, entry.inode, attr, handle, SetattrValid::MODE)
+                .unwrap();
+            assert_eq!(
+                fs.getattr(root, entry.inode, handle).unwrap().0.st_mode & 0o7777,
+                0o644
+            );
+            fs.release(
+                root,
+                entry.inode,
+                libc::O_RDWR as u32,
+                handle.unwrap(),
+                false,
+                false,
+                None,
+            )
+            .unwrap();
+        }
+
+        #[test]
+        fn private_symlink_chown_preserves_target_and_survives_rename_and_reopen() {
+            use std::os::unix::fs::{MetadataExt, symlink};
+            let (temp, fs, root) = fixture(Some(b"0:0:040755"));
+            let lower = temp.path().join("lower");
+            let upper = temp.path().join("upper");
+            std::fs::write(lower.join("target"), b"unchanged target").unwrap();
+            symlink("target", lower.join("link")).unwrap();
+            let target = std::fs::metadata(lower.join("target")).unwrap();
+            let original = std::fs::symlink_metadata(lower.join("link")).unwrap();
+            let config = fs.snapshot_config.clone();
+            let entry = fs.lookup(root, fuse::ROOT_ID, c"link").unwrap();
+            let mut requested = entry.attr;
+            requested.st_uid = 7474;
+            requested.st_gid = 7475;
+            let updated = fs
+                .setattr(
+                    root,
+                    entry.inode,
+                    requested,
+                    None,
+                    SetattrValid::UID | SetattrValid::GID,
+                )
+                .unwrap()
+                .0;
+            assert_eq!((updated.st_uid, updated.st_gid), (7474, 7475));
+            let native = std::fs::symlink_metadata(upper.join("link")).unwrap();
+            assert_eq!(
+                (native.uid(), native.gid()),
+                (original.uid(), original.gid())
+            );
+            assert_eq!(
+                std::fs::read_link(upper.join("link")).unwrap(),
+                Path::new("target")
+            );
+            let after = std::fs::metadata(lower.join("target")).unwrap();
+            assert_eq!(
+                (after.uid(), after.gid(), after.mode()),
+                (target.uid(), target.gid(), target.mode())
+            );
+            assert_eq!(
+                std::fs::read(lower.join("target")).unwrap(),
+                b"unchanged target"
+            );
+            let owner = Context {
+                uid: 7474,
+                gid: 7475,
+                ..root
+            };
+            requested.st_uid = 9999;
+            assert_eq!(
+                fs.setattr(owner, entry.inode, requested, None, SetattrValid::UID)
+                    .unwrap_err()
+                    .raw_os_error(),
+                Some(libc::EPERM)
+            );
+            fs.rename(root, fuse::ROOT_ID, c"link", fuse::ROOT_ID, c"moved", 0)
+                .unwrap();
+            assert!(
+                fs.lookup(root, fuse::ROOT_ID, c".wh..pvisor-socket-metadata")
+                    .is_err()
+            );
+            drop(fs);
+            let reopened = OverlayFs::new(config, Arc::new(InodeAllocator::new())).unwrap();
+            reopened.init(FsOptions::empty()).unwrap();
+            let moved = reopened.lookup(root, fuse::ROOT_ID, c"moved").unwrap();
+            assert_eq!((moved.attr.st_uid, moved.attr.st_gid), (7474, 7475));
+            assert_eq!(reopened.readlink(root, moved.inode).unwrap(), b"target");
+            reopened.unlink(root, fuse::ROOT_ID, c"moved").unwrap();
+            symlink("replacement-target", upper.join("moved")).unwrap();
+            let fresh = reopened.lookup(root, fuse::ROOT_ID, c"moved").unwrap();
+            let native = std::fs::symlink_metadata(upper.join("moved")).unwrap();
+            assert_eq!(
+                (fresh.attr.st_uid, fresh.attr.st_gid),
+                (native.uid(), native.gid())
+            );
         }
 
         #[test]

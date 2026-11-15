@@ -60,6 +60,17 @@ Bootstrap failure retains the runtime's fail-closed behavior. The standard-descr
 test covers all closed/open combinations; the CLI's ignored minimal-rootfs KVM
 test also exercises the constructor and devtmpfs path through repeated cold boots.
 
+After mounting devtmpfs and proc, initialization installs `/dev/fd` and the
+`/dev/stdin`, `/dev/stdout`, `/dev/stderr` aliases to `/proc/self/fd` and descriptors
+0/1/2. devtmpfs does not create these userspace links. Each alias resolves in the
+process opening it, including ordinary workloads and exec jobs, rather than
+referring to PID 1's console. Correct existing links, including dangling ones,
+are retained; conflicting files or link targets fail setup without replacement.
+Consumers must provide reopenable descriptors when applications open these
+paths: direct virtio-console descriptors remain exclusive-open devices.
+Docker-style launches select the existing attached pipe/PTY adapter, keeping
+path opens on the same captured I/O channels as inherited-descriptor writes.
+
 Before reporting workload exit, PID 1 synchronizes every visible virtio-fs
 mount and checks its result. This drains guest writes that outlive ordinary
 file closes. A writeback failure is reported and changes the final status to

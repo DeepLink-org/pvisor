@@ -698,6 +698,9 @@ mounts. Read-only live shares still enforce write rejection.
 Session per service, with one VM per execution.
 It is a native frontend, not a wrapper around Docker Compose, and requires no
 Docker binary, socket or daemon. Use `pvisor compose`, not `docker compose`.
+The opt-in [Compose chaos checks](../../tests/COMPOSE_CHAOS.md) exercise seeded
+restart/recreate/failure sequences, frontend SIGKILL recovery, project isolation
+and cleanup against real VMs; they are not a full Compose-spec conformance suite.
 
 Save this as `compose.yaml`:
 
@@ -751,6 +754,11 @@ Supported service fields:
 
 - At least one of `image` or local `build`; optional native `platform`, `container_name`, `working_dir`,
   `user`, whole-number `cpus` and `mem_limit` (same VM budgets as `run`).
+- `stop_signal` selects the Linux guest signal used by `stop`, `down` and
+  replacement, overriding the image default. Names such as `SIGINT`/`INT` and
+  quoted numbers are validated before storage. Empty/null values inherit the
+  image default, as when omitted. The admitted override survives
+  restart and `--no-recreate`; an explicit `pvisor stop --signal` wins.
 - `command` as an argument list or shell-word string. Strings are split but not
   executed by a shell; request `["sh", "-c", "..."]` explicitly for shell syntax.
   Omitted/null commands inherit image CMD unless a non-null entrypoint is set.
@@ -957,6 +965,8 @@ Additional native edge cases live in `tests/common/compose_edge_cases.rs`:
 
 | Case | Assertions |
 | --- | --- |
+| [`compose_native_gnu_atomic_replacement_preserves_virtual_permissions`](tests/common/compose_edge_cases.rs#L106) | Linux real GNU sed/cp preserve guest UID/GID/mode across atomic replacement on rootfs and managed volume; `PVISOR_COMPOSE_TEST_GNU` selects a GNU-tool image (default Debian bookworm-slim) |
+| [`compose_native_rootfs_symlink_ownership_survives_restart_without_changing_target`](tests/common/compose_edge_cases.rs#L138) | Linux rootfs lower/upper symlink `lchown`, unchanged managed-volume target ownership, and retained link identity/data across same-container restart |
 | `compose_native_nonroot_unix_socket_and_boot_hostname_survive_restart` | Rootfs AF_UNIX bind/health as UID 65534, socket identity/umask and cross-user denial, unique non-loopback boot hostname, generated-hosts refresh across restart |
 | `compose_native_nonroot_atomic_file_replacement_and_missing_source_recovery` | UID 65534 health/exec identity, cwd/env, ro/rw authority, old inode after atomic host replacement, new inode on restart, deleted-source failure and retry without replacing the container |
 | `compose_native_failed_completion_job_recovers_without_rerunning_success` | Exit 17 blocks the dependent, fixing input retries the same job container, successful jobs are reused across repeated up and dependent restart |

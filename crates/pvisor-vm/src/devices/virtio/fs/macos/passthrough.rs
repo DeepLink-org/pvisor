@@ -767,6 +767,7 @@ impl PassthroughFs {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(in crate::devices::virtio::fs) fn write_leased<R: io::Read + ZeroCopyReader>(
         &self,
         ctx: Context,
@@ -774,6 +775,7 @@ impl PassthroughFs {
         mut reader: R,
         size: u32,
         offset: u64,
+        _delayed_write: bool,
         kill_priv: bool,
     ) -> io::Result<usize> {
         // Serialize descriptor effects against writes and sync; File's
@@ -2235,12 +2237,12 @@ impl FileSystem for PassthroughFs {
         size: u32,
         offset: u64,
         _lock_owner: Option<u64>,
-        _delayed_write: bool,
+        delayed_write: bool,
         kill_priv: bool,
         _flags: u32,
     ) -> io::Result<usize> {
         let lease = self.lease_handle(inode, handle)?;
-        self.write_leased(ctx, &lease, r, size, offset, kill_priv)
+        self.write_leased(ctx, &lease, r, size, offset, delayed_write, kill_priv)
     }
 
     fn getattr(

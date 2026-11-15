@@ -1311,6 +1311,8 @@ impl Store {
     }
     /// Gracefully stop the selected generation, escalating through its owner.
     /// No signal is sent to a persisted host PID.
+    /// An explicit signal overrides the admitted Compose service override,
+    /// which otherwise takes precedence over the image's stop signal.
     /// `Duration::MAX` disables escalation and waits indefinitely for owner exit.
     /// Finite grace periods that cannot fit the monotonic clock are rejected
     /// before signal delivery. Other failures can follow accepted stop effects.
@@ -2256,7 +2258,10 @@ fn run_vm<Backing>(
             },
             tty: instance.config.tty,
             create_workdir: true,
-            attached: false,
+            // Workloads need reopenable standard descriptors: virtio-console
+            // ports are exclusive-open devices, so /dev/stdout would be EBUSY.
+            // The generic guest supervisor owns and drains the pipe relays.
+            attached: true,
             allocator_reclaim: None,
         }),
         control: true,
