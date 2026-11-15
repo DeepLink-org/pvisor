@@ -2,17 +2,24 @@
 //! The caller owns endpoint authentication, connection limits and service lifetime.
 //! Legacy GET restores a bounded block; Linux sealed clients own compressed
 //! memfds and decode locally. No disk backing or implicit VM eviction here.
+#[path = "async_service.rs"]
+mod async_service;
+#[path = "physical_client.rs"]
+mod physical_client;
 #[cfg(target_os = "linux")]
 #[path = "sealed_client.rs"]
 mod sealed_client;
 use super::{
     BLOCK_BYTES, ImageId, invalid,
     resident::{CompressedObject, CompressedPool, identity},
+    shared_index::fingerprint,
 };
+pub use async_service::AsyncPoolService;
+pub use physical_client::{PhysicalClient, PhysicalReference};
 #[cfg(target_os = "linux")]
 pub use sealed_client::{SealedClient, SealedReference};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet, VecDeque},
     io::{self, Read, Write},
     os::fd::AsRawFd,
     os::unix::net::UnixStream,
@@ -30,6 +37,19 @@ const MAPPING: u8 = 6;
 const PUT_DUPLICATE: u8 = 7;
 const SEALED: u8 = 8;
 const PUT_SEALED: u8 = 9;
+const DISCOVERY: u8 = 10;
+// Retired discovery operations 11/12 must never be reinterpreted.
+const PUT_BATCH: u8 = 13;
+const RELEASE_BATCH: u8 = 14;
+const DISCOVER_XXH3: u8 = 15;
+const SHARED_STATS: u8 = 16;
+const REGISTER_GENERATION: u8 = 17;
+const DISCOVERY_VERSION: u32 = 3;
+const RECOVERY_DISCOVERY_VERSION: u32 = 4;
+const DISCOVERY_BATCH: usize = 256;
+const MAX_BATCH_REPLY: usize = 96 * 1024;
+
+use pvisor_vm::api::{ColdRamDisposition as Admission, ColdRamSample};
 
 /// A connection-owned reference, not an object ID that grants global access.
 pub struct RemoteObject {
@@ -39,6 +59,11 @@ pub struct RemoteObject {
     length: usize,
     // Offset + 1 leaves zero as the absent value without an extra tag word.
     offset: Option<std::num::NonZeroU64>,
+}
+enum Discovered {
+    Complete(io::Result<Admission<RemoteObject>>),
+    Upload,
+    Collision(RemoteObject),
 }
 impl RemoteObject {
     pub fn id(&self) -> ImageId {
@@ -56,6 +81,22 @@ pub struct PoolStats {
     /// Objects held here with additional references outside this session.
     pub cross_session_objects: u64,
 }
+impl PoolStats {
+    /// The owning adapter supplies scope; wire counts cannot infer whether
+    /// they describe a live publisher or only the client's retained pins.
+    pub(crate) fn into_cold(
+        self,
+        scope: pvisor_vm::api::ColdRamAccountingScope,
+    ) -> pvisor_vm::api::ColdRamPoolStats {
+        pvisor_vm::api::ColdRamPoolStats {
+            scope,
+            encoded_bytes: self.encoded_bytes,
+            objects: self.objects,
+            session_references: self.session_references,
+            cross_session_objects: self.cross_session_objects,
+        }
+    }
+}
 fn read_u32(stream: &mut impl Read) -> io::Result<u32> {
     let mut bytes = [0; 4];
     stream.read_exact(&mut bytes)?;
@@ -66,7 +107,7 @@ fn read_u64(stream: &mut impl Read) -> io::Result<u64> {
     stream.read_exact(&mut bytes)?;
     Ok(u64::from_le_bytes(bytes))
 }
-fn reject(stream: &mut UnixStream, message: &str) -> io::Result<()> {
+fn reject(stream: &mut impl Write, message: &str) -> io::Result<()> {
     let bytes = message.as_bytes();
     let length = bytes.len().min(256);
     let mut frame = Vec::with_capacity(5 + length);
@@ -95,36 +136,162 @@ fn status(stream: &mut impl Read) -> io::Result<Option<io::Error>> {
     }
 }
 
-/// One service thread per authorized connection; callers bound connection count.
-/// No idle expiry: disconnected sessions release references, quiet VMs retain them.
+fn write_batch_reply(stream: &mut impl Write, payload: &[u8]) -> io::Result<()> {
+    let mut frame = Vec::with_capacity(5 + payload.len());
+    frame.push(0);
+    frame.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+    frame.extend_from_slice(payload);
+    stream.write_all(&frame)
+}
+
+fn read_batch_reply(stream: &mut impl Read) -> io::Result<io::Result<Vec<u8>>> {
+    if let Some(error) = status(stream)? {
+        return Ok(Err(error));
+    }
+    let size = read_u32(stream)? as usize;
+    if size > MAX_BATCH_REPLY {
+        return Err(invalid("physical batch reply too large"));
+    }
+    let mut payload = vec![0; size];
+    stream.read_exact(&mut payload)?;
+    Ok(Ok(payload))
+}
+
+fn append_ready(reply: &mut Vec<u8>, ready: Vec<u64>) {
+    reply.extend_from_slice(&(ready.len() as u32).to_le_bytes());
+    for page in ready {
+        reply.extend_from_slice(&page.to_le_bytes());
+    }
+}
+
+fn read_ready(stream: &mut impl Read) -> io::Result<Vec<u64>> {
+    let count = read_u32(stream)? as usize;
+    if count > DISCOVERY_BATCH {
+        return Err(invalid("too many ready hints"));
+    }
+    let mut ready = Vec::with_capacity(count);
+    for _ in 0..count {
+        let page = read_u64(stream)?;
+        if page == 0 {
+            return Err(invalid("zero ready handle"));
+        }
+        ready.push(page);
+    }
+    Ok(ready)
+}
+
+fn append_object(
+    reply: &mut Vec<u8>,
+    object: Reference,
+    references: &mut BTreeMap<u64, Reference>,
+    counts: &mut BTreeMap<ImageId, LocalReferenceCount>,
+    next: &mut u64,
+) {
+    let offset = object.offset().expect("physical object");
+    let id = object.id();
+    let token = acquire_reference(references, counts, next, object);
+    reply.push(2);
+    reply.extend_from_slice(&token.to_le_bytes());
+    reply.extend_from_slice(&offset.to_le_bytes());
+    reply.extend_from_slice(&id);
+}
+
+fn release_reference(
+    token: u64,
+    references: &mut BTreeMap<u64, Reference>,
+    counts: &mut BTreeMap<ImageId, LocalReferenceCount>,
+    pool: &Owner,
+) -> io::Result<()> {
+    let object = references.remove(&token).expect("preflighted reference");
+    let id = object.id();
+    let entry = counts.get_mut(&id).expect("reference count must exist");
+    entry.count -= 1;
+    if entry.count == 0 {
+        counts.remove(&id);
+    }
+    drop(object);
+    pool.collect(Some(id))
+}
+
+/// Blocking legacy compressed service for authorized embedded callers.
+/// The caller owns the serving thread and connection count. This backend grants
+/// no mapped backing: disconnect releases references; idle sessions retain them.
+/// Daemon services use AsyncPoolService instead.
 pub fn serve(
     stream: UnixStream,
     pool: Arc<Mutex<CompressedPool>>,
     max_references: usize,
 ) -> io::Result<()> {
-    serve_inner(stream, Owner::Compressed(pool), max_references)
+    serve_inner(
+        stream,
+        Owner::Compressed(pool),
+        max_references,
+        Registration::Legacy,
+    )
 }
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-pub fn serve_shared(
+// Blocking mapped-backend fixtures exercise the wire engine and peer-exit
+// contract in unit tests. Production mapped services are exclusively async.
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+pub(crate) fn serve_shared(
     stream: UnixStream,
     pool: Arc<Mutex<super::shared::SharedPool>>,
     max_references: usize,
 ) -> io::Result<()> {
-    serve_inner(stream, Owner::Shared(pool), max_references)
+    serve_inner(
+        stream,
+        Owner::Shared(pool),
+        max_references,
+        Registration::Legacy,
+    )
 }
 
 /// Serve immutable compressed objects to authorized Linux clients. Outstanding
 /// references on disconnect stay budgeted until pidfd proves peer exit; client
 /// descriptors remain valid even if this service exits. No socket reconnection.
-#[cfg(target_os = "linux")]
-pub fn serve_sealed(
+#[cfg(all(test, target_os = "linux"))]
+pub(crate) fn serve_sealed(
     stream: UnixStream,
     pool: Arc<Mutex<super::sealed::SealedPool>>,
     max_references: usize,
 ) -> io::Result<()> {
-    serve_inner(stream, Owner::Sealed(pool), max_references)
+    serve_inner(
+        stream,
+        Owner::Sealed(pool),
+        max_references,
+        Registration::Legacy,
+    )
 }
 
+#[derive(Clone)]
+enum Registration {
+    Legacy,
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    Required(Arc<super::generation::PhysicalGeneration>),
+}
+
+impl Registration {
+    fn required(&self) -> bool {
+        !matches!(self, Self::Legacy)
+    }
+
+    fn version(&self) -> u32 {
+        if self.required() {
+            RECOVERY_DISCOVERY_VERSION
+        } else {
+            DISCOVERY_VERSION
+        }
+    }
+
+    fn verify(&self, id: [u8; 16]) -> io::Result<()> {
+        match self {
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            Self::Required(generation) => generation.verify_registration(id),
+            Self::Legacy => Err(invalid("generation registration unsupported")),
+        }
+    }
+}
+
+#[derive(Clone)]
 enum Owner {
     Compressed(Arc<Mutex<CompressedPool>>),
     #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -162,6 +329,23 @@ impl ObservedReference {
 struct LocalReferenceCount {
     count: usize,
     object: ObservedReference,
+}
+fn acquire_reference(
+    references: &mut BTreeMap<u64, Reference>,
+    counts: &mut BTreeMap<ImageId, LocalReferenceCount>,
+    next: &mut u64,
+    object: Reference,
+) -> u64 {
+    *next += 1;
+    counts
+        .entry(object.id())
+        .and_modify(|entry| entry.count += 1)
+        .or_insert_with(|| LocalReferenceCount {
+            count: 1,
+            object: object.observe(),
+        });
+    references.insert(*next, object);
+    *next
 }
 impl Reference {
     fn id(&self) -> ImageId {
@@ -227,6 +411,11 @@ impl Owner {
         }
         false
     }
+    // Only GET-only compression may retire authority on transport loss.
+    // Every backend handing out mappings must first prove peer process exit.
+    fn requires_peer_exit(&self) -> bool {
+        self.is_shared() || self.is_sealed()
+    }
     fn intern(&self, bytes: &[u8], duplicate: bool, session: [u8; 16]) -> io::Result<Reference> {
         #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         let _ = (duplicate, session);
@@ -242,18 +431,7 @@ impl Owner {
                 // original page instead of queueing another scan behind the owner.
                 // No reference or slot has been created when this rejection returns.
                 let mut pool = if duplicate {
-                    match pool.try_lock() {
-                        Ok(guard) => guard,
-                        Err(TryLockError::WouldBlock) => {
-                            return Err(io::Error::new(
-                                io::ErrorKind::WouldBlock,
-                                "shared pool busy; retain original page",
-                            ));
-                        }
-                        Err(TryLockError::Poisoned(_)) => {
-                            return Err(io::Error::other("pool poisoned"));
-                        }
-                    }
+                    optional_pool_lock(pool)?
                 } else {
                     pool.lock().map_err(|_| io::Error::other("pool poisoned"))?
                 };
@@ -323,6 +501,19 @@ impl Owner {
         }
     }
 }
+
+// Optional discovery/publication must not wait behind another owner operation.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn optional_pool_lock<T>(pool: &Mutex<T>) -> io::Result<std::sync::MutexGuard<'_, T>> {
+    pool.try_lock().map_err(|error| match error {
+        TryLockError::WouldBlock => io::Error::new(
+            io::ErrorKind::WouldBlock,
+            "shared pool busy; retain original page",
+        ),
+        TryLockError::Poisoned(_) => io::Error::other("pool poisoned"),
+    })
+}
+
 // Log only slow owner critical sections; no page data is emitted.
 struct TimedPoolGuard<'a, T> {
     guard: Option<std::sync::MutexGuard<'a, T>>,
@@ -368,23 +559,110 @@ fn timed_pool_lock<'a, T>(
         operation,
     })
 }
-fn serve_inner(mut stream: UnixStream, pool: Owner, max_references: usize) -> io::Result<()> {
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
-    let peer = if pool.is_shared() || pool.is_sealed() {
+fn serve_inner(
+    mut stream: UnixStream,
+    pool: Owner,
+    max_references: usize,
+    registration: Registration,
+) -> io::Result<()> {
+    #[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+    let peer = if pool.requires_peer_exit() {
         Some(super::shared::peer_pidfd(&stream)?)
     } else {
         None
     };
-    if max_references == 0 {
-        return Err(invalid("invalid pool reference budget"));
-    }
-    let session = *uuid::Uuid::new_v4().as_bytes();
+    let mut state = Session::new(pool, max_references, registration)?;
     stream.write_all(MAGIC)?;
-    stream.write_all(&session)?;
-    let mut references: BTreeMap<u64, Reference> = BTreeMap::new();
-    let mut local_counts: BTreeMap<ImageId, LocalReferenceCount> = BTreeMap::new();
-    let result = (|| {
-        let mut next = 0u64;
+    stream.write_all(&state.id)?;
+    let result = state.exchange(&mut stream);
+    state.disconnect()?;
+    #[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+    if !state.references.is_empty()
+        && let Some(peer) = peer
+    {
+        super::shared::wait_peer_exit(&peer).unwrap_or_else(|error| {
+            eprintln!("cannot safely release shared RAM ownership: {error}");
+            std::process::abort();
+        });
+    }
+    state.retire()?;
+    result
+}
+
+trait ServerIo: Read + Write {
+    fn mapping(&mut self, fd: std::os::fd::RawFd) -> io::Result<()>;
+}
+
+impl ServerIo for UnixStream {
+    fn mapping(&mut self, fd: std::os::fd::RawFd) -> io::Result<()> {
+        send_mapping_fd(self, fd)
+    }
+}
+
+// Async service, legacy compressed service and blocking protocol fixtures share
+// atomic release validation and reference ownership in this state machine.
+struct Session {
+    pool: Owner,
+    registration: Registration,
+    max_references: usize,
+    id: [u8; 16],
+    references: BTreeMap<u64, Reference>,
+    local_counts: BTreeMap<ImageId, LocalReferenceCount>,
+    next: u64,
+    registered: bool,
+    started: bool,
+    observed: bool,
+    closed: bool,
+    admission: Option<tokio::sync::OwnedSemaphorePermit>,
+}
+
+impl Session {
+    fn new(pool: Owner, max_references: usize, registration: Registration) -> io::Result<Self> {
+        if max_references == 0 {
+            return Err(invalid("invalid pool reference budget"));
+        }
+        Ok(Self {
+            registered: !registration.required(),
+            pool,
+            registration,
+            max_references,
+            id: *uuid::Uuid::new_v4().as_bytes(),
+            references: BTreeMap::new(),
+            local_counts: BTreeMap::new(),
+            next: 0,
+            started: false,
+            observed: false,
+            closed: false,
+            admission: None,
+        })
+    }
+
+    fn exchange(&mut self, mut stream: &mut impl ServerIo) -> io::Result<()> {
+        if self.closed {
+            return Err(io::Error::new(
+                io::ErrorKind::NotConnected,
+                "closed pool session",
+            ));
+        }
+        if !self.started {
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            if let Owner::Shared(owner) = &self.pool {
+                owner
+                    .lock()
+                    .map_err(|_| io::Error::other("pool poisoned"))?
+                    .register_session(self.id);
+            }
+            self.started = true;
+        }
+        let pool = &self.pool;
+        let registration = &self.registration;
+        let max_references = self.max_references;
+        let session = self.id;
+        let references = &mut self.references;
+        let local_counts = &mut self.local_counts;
+        let next = &mut self.next;
+        let registered = &mut self.registered;
+        let observed = &mut self.observed;
         loop {
             let mut operation = [0];
             match stream.read(&mut operation) {
@@ -393,7 +671,22 @@ fn serve_inner(mut stream: UnixStream, pool: Owner, max_references: usize) -> io
                 Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
                 Err(error) => return Err(error),
             }
+            if !*registered
+                && matches!(
+                    operation[0],
+                    PUT | PUT_SHARED | PUT_DUPLICATE | PUT_SEALED | PUT_BATCH | DISCOVER_XXH3
+                )
+            {
+                return Err(invalid("physical publication has no generation witness"));
+            }
             match operation[0] {
+                REGISTER_GENERATION => {
+                    let mut id = [0; 16];
+                    stream.read_exact(&mut id)?;
+                    registration.verify(id)?;
+                    *registered = true;
+                    stream.write_all(&[0])?;
+                }
                 PUT | PUT_SHARED | PUT_DUPLICATE | PUT_SEALED => {
                     let size = read_u32(&mut stream)? as usize;
                     if size == 0 || size > BLOCK_BYTES {
@@ -401,7 +694,7 @@ fn serve_inner(mut stream: UnixStream, pool: Owner, max_references: usize) -> io
                     }
                     let mut bytes = vec![0; size];
                     stream.read_exact(&mut bytes)?;
-                    if references.len() >= max_references || next == u64::MAX {
+                    if references.len() >= max_references || *next == u64::MAX {
                         reject(&mut stream, "pool reference budget exhausted")?;
                         continue;
                     }
@@ -428,30 +721,22 @@ fn serve_inner(mut stream: UnixStream, pool: Owner, max_references: usize) -> io
                             continue;
                         }
                     };
-                    next += 1;
                     let id = object.id();
                     let offset = object.offset();
                     // Reference remains owned even if this response fails; session cleanup releases it.
+                    let token = acquire_reference(references, local_counts, next, object);
                     let mut reply = Vec::with_capacity(53);
                     reply.push(0);
-                    reply.extend_from_slice(&next.to_le_bytes());
+                    reply.extend_from_slice(&token.to_le_bytes());
                     reply.extend_from_slice(&id);
                     reply.extend_from_slice(&(size as u32).to_le_bytes());
                     if matches!(operation[0], PUT_SHARED | PUT_DUPLICATE) {
                         reply.extend_from_slice(&offset.unwrap().to_le_bytes());
                     }
-                    local_counts
-                        .entry(id)
-                        .and_modify(|entry| entry.count += 1)
-                        .or_insert_with(|| LocalReferenceCount {
-                            count: 1,
-                            object: object.observe(),
-                        });
-                    references.insert(next, object);
                     stream.write_all(&reply)?;
                     #[cfg(target_os = "linux")]
-                    if let Reference::Sealed(object) = &references[&next] {
-                        send_mapping_fd(&stream, object.file().as_raw_fd())?;
+                    if let Reference::Sealed(object) = &references[&*next] {
+                        stream.mapping(object.file().as_raw_fd())?;
                     }
                 }
                 SEALED => {
@@ -461,6 +746,156 @@ fn serve_inner(mut stream: UnixStream, pool: Owner, max_references: usize) -> io
                         reject(&mut stream, "sealed compression unsupported by this pool")?;
                     }
                 }
+                DISCOVERY => {
+                    if pool.is_shared() {
+                        let mut reply = vec![0];
+                        reply.extend_from_slice(&registration.version().to_le_bytes());
+                        reply.extend_from_slice(&(DISCOVERY_BATCH as u32).to_le_bytes());
+                        stream.write_all(&reply)?;
+                    } else {
+                        reject(&mut stream, "hash discovery requires a physical pool")?;
+                    }
+                }
+                #[cfg(any(target_os = "linux", target_os = "macos"))]
+                DISCOVER_XXH3 => {
+                    let count = read_u32(&mut stream)? as usize;
+                    if count == 0 || count > DISCOVERY_BATCH {
+                        return Err(invalid("invalid discovery batch length"));
+                    }
+                    let mut fingerprints = vec![0; count * 24];
+                    stream.read_exact(&mut fingerprints)?;
+                    let Owner::Shared(owner) = &pool else {
+                        reject(&mut stream, "hash discovery requires a physical pool")?;
+                        continue;
+                    };
+                    let mut reply = Vec::new();
+                    reply.extend_from_slice(&(count as u32).to_le_bytes());
+                    {
+                        let mut owner = match optional_pool_lock(owner) {
+                            Ok(owner) => owner,
+                            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                                // No observations or references were acquired.
+                                reply.resize(4 + count, 3);
+                                append_ready(&mut reply, Vec::new());
+                                write_batch_reply(&mut stream, &reply)?;
+                                continue;
+                            }
+                            Err(error) => return Err(error),
+                        };
+                        for item in fingerprints.as_chunks::<24>().0 {
+                            let id = item[..16].try_into().unwrap();
+                            let page = u64::from_le_bytes(item[16..].try_into().unwrap());
+                            if references.len() >= max_references || *next == u64::MAX {
+                                reply.push(3); // No acquired reference.
+                                continue;
+                            }
+                            *observed = true;
+                            match owner.discover(id, session, page) {
+                                super::shared::Discovery::Unique => reply.push(0),
+                                super::shared::Discovery::Unmatched => reply.push(4),
+                                super::shared::Discovery::Upload => reply.push(1),
+                                super::shared::Discovery::Shared(object) => {
+                                    // Pin before replying. Hash-only lookup does not
+                                    // authorize use: clients must compare full bytes.
+                                    append_object(
+                                        &mut reply,
+                                        Reference::Shared(object),
+                                        references,
+                                        local_counts,
+                                        next,
+                                    );
+                                }
+                            }
+                        }
+                        append_ready(&mut reply, owner.take_ready(session));
+                    }
+                    // Neither socket I/O nor client validation holds the pool lock.
+                    write_batch_reply(&mut stream, &reply)?;
+                }
+                #[cfg(any(target_os = "linux", target_os = "macos"))]
+                PUT_BATCH => {
+                    let count = read_u32(&mut stream)? as usize;
+                    if count == 0 || count > DISCOVERY_BATCH {
+                        return Err(invalid("invalid physical materialization batch"));
+                    }
+                    let Owner::Shared(owner) = &pool else {
+                        return Err(invalid("invalid physical materialization batch"));
+                    };
+                    let mut bytes = vec![0; count * super::shared::PAGE];
+                    stream.read_exact(&mut bytes)?;
+                    let mut reply = Vec::new();
+                    reply.extend_from_slice(&(count as u32).to_le_bytes());
+                    for page in bytes.as_chunks::<{ super::shared::PAGE }>().0 {
+                        if references.len() >= max_references || *next == u64::MAX {
+                            reply.push(3);
+                            continue;
+                        }
+                        // One page per lock acquisition preserves session fairness.
+                        let interned = match optional_pool_lock(owner) {
+                            Ok(mut owner) => {
+                                owner.intern_duplicate(page, session).map(Reference::Shared)
+                            }
+                            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                                reply.push(3);
+                                continue;
+                            }
+                            Err(error) => return Err(error),
+                        };
+                        match interned {
+                            Ok(object) => {
+                                append_object(&mut reply, object, references, local_counts, next)
+                            }
+                            Err(error) if error.kind() == io::ErrorKind::OutOfMemory => {
+                                reply.push(3)
+                            }
+                            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                                reply.push(0)
+                            }
+                            Err(error) => {
+                                let text = error.to_string();
+                                let bytes = text.as_bytes();
+                                let len = bytes.len().min(256);
+                                reply.push(5);
+                                reply.extend_from_slice(&(len as u32).to_le_bytes());
+                                reply.extend_from_slice(&bytes[..len]);
+                            }
+                        }
+                    }
+                    // Hints are advisory. A busy owner must not delay a complete
+                    // rejection (or leave already acquired references uncertain).
+                    let ready = match optional_pool_lock(owner) {
+                        Ok(mut owner) => owner.take_ready(session),
+                        Err(error) if error.kind() == io::ErrorKind::WouldBlock => Vec::new(),
+                        Err(error) => return Err(error),
+                    };
+                    append_ready(&mut reply, ready);
+                    write_batch_reply(&mut stream, &reply)?;
+                }
+                RELEASE_BATCH => {
+                    let count = read_u32(&mut stream)? as usize;
+                    if count == 0 || count > DISCOVERY_BATCH || !pool.is_shared() {
+                        return Err(invalid("invalid physical release batch"));
+                    }
+                    let mut bytes = vec![0; count * 8];
+                    stream.read_exact(&mut bytes)?;
+                    let tokens: BTreeSet<_> = bytes
+                        .as_chunks::<8>()
+                        .0
+                        .iter()
+                        .map(|item| u64::from_le_bytes(*item))
+                        .collect();
+                    if tokens.len() != count
+                        || tokens.iter().any(|token| !references.contains_key(token))
+                    {
+                        reject(&mut stream, "invalid batch references")?;
+                        continue;
+                    }
+                    // Validate the whole chunk before consuming any authority.
+                    for token in tokens {
+                        release_reference(token, references, local_counts, pool)?;
+                    }
+                    stream.write_all(&[0])?;
+                }
                 MAPPING => {
                     #[cfg(any(target_os = "linux", target_os = "macos"))]
                     if let Owner::Shared(owner) = &pool {
@@ -469,7 +904,7 @@ fn serve_inner(mut stream: UnixStream, pool: Owner, max_references: usize) -> io
                             .map_err(|_| io::Error::other("pool poisoned"))?
                             .readonly_file();
                         stream.write_all(&[0])?;
-                        send_mapping_fd(&stream, file.as_raw_fd())?;
+                        stream.mapping(file.as_raw_fd())?;
                         continue;
                     }
                     reject(&mut stream, "physical sharing unsupported by this pool")?;
@@ -491,77 +926,114 @@ fn serve_inner(mut stream: UnixStream, pool: Owner, max_references: usize) -> io
                 }
                 RELEASE => {
                     let token = read_u64(&mut stream)?;
-                    let Some(object) = references.remove(&token) else {
+                    if !references.contains_key(&token) {
                         reject(&mut stream, "unknown pool reference")?;
                         continue;
-                    };
-                    let id = object.id();
-                    let entry = local_counts
-                        .get_mut(&id)
-                        .expect("reference count must exist");
-                    entry.count -= 1;
-                    if entry.count == 0 {
-                        local_counts.remove(&id);
                     }
-                    drop(object);
-                    pool.collect(Some(id))?;
+                    release_reference(token, references, local_counts, pool)?;
                     stream.write_all(&[0])?;
                 }
-                STATS => {
+                STATS | SHARED_STATS => {
+                    if operation[0] == SHARED_STATS && !pool.is_shared() {
+                        return Err(invalid("physical stats on nonphysical session"));
+                    }
                     let cross_session = local_counts
                         .values()
                         .filter(|entry| entry.object.strong_count() > 1 + entry.count)
                         .count() as u64;
                     let (payload, objects) = pool.stats()?;
                     let values = [payload, objects, references.len() as u64, cross_session];
-                    stream.write_all(&[0])?;
+                    let mut reply = Vec::new();
                     for value in values {
-                        stream.write_all(&value.to_le_bytes())?;
+                        reply.extend_from_slice(&value.to_le_bytes());
+                    }
+                    if operation[0] == SHARED_STATS {
+                        #[cfg(any(target_os = "linux", target_os = "macos"))]
+                        if let Owner::Shared(owner) = &pool {
+                            append_ready(
+                                &mut reply,
+                                owner
+                                    .lock()
+                                    .map_err(|_| io::Error::other("pool poisoned"))?
+                                    .take_ready(session),
+                            );
+                        }
+                        write_batch_reply(&mut stream, &reply)?;
+                    } else {
+                        stream.write_all(&[0])?;
+                        stream.write_all(&reply)?;
                     }
                 }
                 _ => return Err(invalid("unknown pool operation")),
             }
         }
-    })();
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
-    if let Owner::Shared(owner) = &pool {
-        // Only cleanup passes serialize here; this gate never blocks live RPCs.
-        // Preserve one rotation's scope while releasing the shared pool between
-        // bounded batches. Concurrent publication may evict candidates, but cannot
-        // publish new candidates belonging to this disconnected session.
-        static CLEANUP: Mutex<()> = Mutex::new(());
-        let _cleanup = CLEANUP
-            .lock()
-            .map_err(|_| io::Error::other("cleanup poisoned"))?;
-        let mut remaining = owner
-            .lock()
-            .map_err(|_| io::Error::other("pool poisoned"))?
-            .candidate_count();
-        while remaining != 0 {
-            let batch = remaining.min(256);
+    }
+
+    fn disconnect(&mut self) -> io::Result<()> {
+        self.closed = true;
+        if !self.started {
+            return Ok(());
+        }
+        let session = self.id;
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        if let Owner::Shared(owner) = &self.pool {
             owner
                 .lock()
                 .map_err(|_| io::Error::other("pool poisoned"))?
-                .forget_candidates_batch(session, batch);
-            remaining -= batch;
-            std::thread::sleep(Duration::from_micros(50));
+                .unregister_session(session);
+            // Stats/readiness/FD-only sessions never entered the candidate
+            // index. Thousands of such disconnects must not each rotate it.
+            if !self.observed {
+                return Ok(());
+            }
+            // Only cleanup passes serialize here; this gate never blocks live RPCs.
+            // Preserve one rotation's scope while releasing the shared pool between
+            // bounded batches. Concurrent publication may evict candidates, but cannot
+            // publish new candidates belonging to this disconnected session.
+            static CLEANUP: Mutex<()> = Mutex::new(());
+            let _cleanup = CLEANUP
+                .lock()
+                .map_err(|_| io::Error::other("cleanup poisoned"))?;
+            let mut remaining = owner
+                .lock()
+                .map_err(|_| io::Error::other("pool poisoned"))?
+                .candidate_count();
+            while remaining != 0 {
+                let batch = remaining.min(256);
+                owner
+                    .lock()
+                    .map_err(|_| io::Error::other("pool poisoned"))?
+                    .forget_candidates_batch(session, batch);
+                remaining -= batch;
+                std::thread::sleep(Duration::from_micros(50));
+            }
+        }
+        Ok(())
+    }
+
+    // Call only after transport close with no mapped references, or proven peer
+    // exit. An abandoned/cancelled task must never implicitly recycle live slots.
+    fn retire(&mut self) -> io::Result<()> {
+        self.closed = true;
+        self.local_counts.clear();
+        self.references.clear();
+        self.pool.collect(None)
+    }
+}
+
+impl Drop for Session {
+    fn drop(&mut self) {
+        if !self.references.is_empty() && self.pool.requires_peer_exit() {
+            // Only unexpected task cancellation/panic reaches this fallback.
+            // Retain authority and the connection permit until owner-process
+            // exit, rather than making still-mapped slots reusable.
+            std::mem::forget(std::mem::take(&mut self.references));
+            if let Some(admission) = self.admission.take() {
+                std::mem::forget(admission);
+            }
+            eprintln!("memory-pool abandoned session retained until owner exit");
         }
     }
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
-    if !references.is_empty()
-        && let Some(peer) = peer
-    {
-        // Socket loss is not proof that private COW mappings have disappeared.
-        // Hold every slot until the peer's pidfd proves the VM process exited.
-        super::shared::wait_peer_exit(&peer).unwrap_or_else(|error| {
-            eprintln!("cannot safely release shared RAM ownership: {error}");
-            std::process::abort();
-        });
-    }
-    drop(local_counts);
-    drop(references);
-    pool.collect(None)?;
-    result
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -597,6 +1069,11 @@ pub struct PoolClient {
     session: Arc<[u8; 16]>,
     timeout: Duration,
     shared_file: Option<Arc<std::fs::File>>,
+    shared_length: u64,
+    ready: VecDeque<u64>,
+    last_token: u64,
+    physical_version: u32,
+    generation_registered: bool,
 }
 // One absolute deadline covers partial writes and trickling replies. Nonblocking
 // I/O plus poll avoids relying on per-syscall Unix socket timeout semantics.
@@ -752,6 +1229,38 @@ impl Write for DeadlineStream<'_> {
         self.stream.flush()
     }
 }
+
+fn read_shared_page(
+    file: &std::fs::File,
+    length: u64,
+    offset: u64,
+) -> io::Result<[u8; super::shared::PAGE]> {
+    use std::os::unix::fs::FileExt;
+    if !offset.is_multiple_of(super::shared::PAGE as u64)
+        || offset
+            .checked_add(super::shared::PAGE as u64)
+            .is_none_or(|end| end > length)
+    {
+        return Err(invalid("invalid shared page offset"));
+    }
+    let mut actual = [0; super::shared::PAGE];
+    file.read_exact_at(&mut actual, offset)?;
+    Ok(actual)
+}
+
+fn validate_shared_page(
+    file: &std::fs::File,
+    length: u64,
+    offset: u64,
+    bytes: &[u8],
+) -> io::Result<()> {
+    let actual = read_shared_page(file, length, offset)?;
+    if actual != bytes {
+        return Err(invalid("shared page publication content mismatch"));
+    }
+    Ok(())
+}
+
 impl PoolClient {
     pub fn new(mut stream: UnixStream, timeout: Duration) -> io::Result<Self> {
         if timeout.is_zero() {
@@ -772,6 +1281,11 @@ impl PoolClient {
             session: Arc::new(session),
             timeout,
             shared_file: None,
+            shared_length: 0,
+            ready: VecDeque::new(),
+            last_token: 0,
+            physical_version: 0,
+            generation_registered: false,
         })
     }
     fn exchange<T>(
@@ -805,19 +1319,242 @@ impl PoolClient {
         self.put_inner(bytes, false)
     }
     pub fn put_duplicate(&mut self, bytes: &[u8]) -> io::Result<RemoteObject> {
-        self.put_inner(bytes, self.shared_file.is_some())
+        self.put_duplicates(&[bytes])?.pop().unwrap()
     }
+
+    /// Discover up to 256 native-page snapshots with one XXH3-128-only exchange.
+    /// Unique pages acquire nothing and return WouldBlock. Existing slots are
+    /// pinned and fully byte-checked locally; only cross-session candidates
+    /// needing materialization or fast-hash collisions upload payloads. A
+    /// collision's unused pin is released before content-based publication.
+    /// SHA-256 remains the stored identity, not a discovery hash. Results
+    /// preserve input order.
+    /// Empty batches perform no I/O; invalid geometry is rejected before I/O.
+    /// A transport/protocol error may leave uncertain server references pinned
+    /// until process exit, as with put. No reconnect or live RAM access occurs.
+    /// Nonphysical stores retain their individual publication protocol.
+    pub fn put_duplicates(
+        &mut self,
+        blocks: &[&[u8]],
+    ) -> io::Result<Vec<io::Result<RemoteObject>>> {
+        let samples: Vec<_> = blocks
+            .iter()
+            .map(|bytes| ColdRamSample { page: 0, bytes })
+            .collect();
+        Ok(self
+            .publish_pages(&samples)?
+            .into_iter()
+            .map(|result| {
+                result.and_then(|admission| match admission {
+                    Admission::Published(object) => Ok(object),
+                    Admission::Limited => Err(io::Error::new(
+                        io::ErrorKind::WouldBlock,
+                        "shared pool busy or capacity exhausted; retain original page",
+                    )),
+                    _ => Err(io::Error::new(
+                        io::ErrorKind::WouldBlock,
+                        "page not admitted",
+                    )),
+                })
+            })
+            .collect())
+    }
+
+    /// Publish snapshots with advisory, session-scoped handles. Only Published
+    /// owns a reference; hints never expose or authorize VM addresses.
+    pub fn publish_pages(
+        &mut self,
+        blocks: &[ColdRamSample<'_>],
+    ) -> io::Result<Vec<io::Result<Admission<RemoteObject>>>> {
+        if blocks.is_empty() {
+            return Ok(Vec::new());
+        }
+        self.require_registration()?;
+        if self.shared_file.is_none() {
+            return Ok(blocks
+                .iter()
+                .map(|sample| {
+                    self.put_inner(sample.bytes, false)
+                        .map(Admission::Published)
+                })
+                .collect());
+        }
+        if blocks.len() > DISCOVERY_BATCH
+            || blocks
+                .iter()
+                .any(|sample| sample.bytes.len() != super::shared::PAGE)
+        {
+            return Err(invalid("invalid physical discovery batch geometry"));
+        }
+        let discovered = self.physical_exchange(DISCOVER_XXH3, blocks)?;
+        let mut results = Vec::with_capacity(blocks.len());
+        let mut uploads = Vec::new();
+        let mut positions = Vec::new();
+        let mut unused = Vec::new();
+        for (index, result) in discovered.into_iter().enumerate() {
+            match result {
+                Discovered::Complete(result) => results.push(Some(result)),
+                other => {
+                    if let Discovered::Collision(object) = other {
+                        unused.push(object);
+                    }
+                    uploads.push(ColdRamSample {
+                        page: blocks[index].page,
+                        bytes: blocks[index].bytes,
+                    });
+                    positions.push(index);
+                    results.push(None);
+                }
+            }
+        }
+        // Release all unused speculative pins before materialization.
+        self.release_objects(unused)?;
+        if !uploads.is_empty() {
+            for (index, result) in positions
+                .into_iter()
+                .zip(self.physical_exchange(PUT_BATCH, &uploads)?)
+            {
+                let Discovered::Complete(result) = result else {
+                    self.stream.take();
+                    return Err(invalid("materialization returned an unresolved candidate"));
+                };
+                results[index] = Some(result);
+            }
+        }
+        Ok(results.into_iter().map(Option::unwrap).collect())
+    }
+    fn physical_exchange(
+        &mut self,
+        operation: u8,
+        blocks: &[ColdRamSample<'_>],
+    ) -> io::Result<Vec<Discovered>> {
+        let file = self.shared_file.clone().expect("physical session");
+        let length = self.shared_length;
+        let session = self.session.clone();
+        let mut last_token = self.last_token;
+        let (results, ready) = self.exchange(|stream| {
+            let mut frame = vec![operation];
+            frame.extend_from_slice(&(blocks.len() as u32).to_le_bytes());
+            for sample in blocks {
+                if operation == DISCOVER_XXH3 {
+                    frame.extend_from_slice(&fingerprint(sample.bytes));
+                    frame.extend_from_slice(&sample.page.to_le_bytes());
+                } else {
+                    frame.extend_from_slice(sample.bytes);
+                }
+            }
+            stream.write_all(&frame)?;
+            let payload = match read_batch_reply(stream)? {
+                Ok(payload) => payload,
+                Err(error) => return Ok(Err(error)),
+            };
+            let mut reply = io::Cursor::new(payload.as_slice());
+            if read_u32(&mut reply)? as usize != blocks.len() {
+                return Err(invalid("discovery result count mismatch"));
+            }
+            let mut tokens = BTreeSet::new();
+            let mut results = Vec::with_capacity(blocks.len());
+            for sample in blocks {
+                let bytes = sample.bytes;
+                let mut tag = [0];
+                reply.read_exact(&mut tag)?;
+                results.push(match tag[0] {
+                    0 => Discovered::Complete(Ok(Admission::Observed)),
+                    1 if operation == DISCOVER_XXH3 => Discovered::Upload,
+                    2 => {
+                        let token = read_u64(&mut reply)?;
+                        let offset = read_u64(&mut reply)?;
+                        let mut id = [0; 32];
+                        reply.read_exact(&mut id)?;
+                        if token <= last_token || !tokens.insert(token) {
+                            return Err(invalid("invalid discovery reference token"));
+                        }
+                        last_token = token;
+                        let actual = read_shared_page(&file, length, offset)?;
+                        let object = RemoteObject {
+                            session: session.clone(),
+                            token,
+                            id,
+                            length: bytes.len(),
+                            offset: std::num::NonZeroU64::new(offset + 1),
+                        };
+                        if operation == PUT_BATCH && id != identity(bytes) {
+                            return Err(invalid("invalid materialized identity"));
+                        }
+                        if actual == bytes {
+                            Discovered::Complete(Ok(Admission::Published(object)))
+                        } else {
+                            if operation == PUT_BATCH
+                                || identity(&actual) != id
+                                || identity(bytes) == id
+                            {
+                                return Err(invalid("shared page publication content mismatch"));
+                            }
+                            Discovered::Collision(object)
+                        }
+                    }
+                    3 => Discovered::Complete(Ok(Admission::Limited)),
+                    4 => Discovered::Complete(Ok(Admission::Unmatched)),
+                    5 => {
+                        let size = read_u32(&mut reply)? as usize;
+                        if size > 256 {
+                            return Err(invalid("batch rejection too large"));
+                        }
+                        let mut bytes = vec![0; size];
+                        reply.read_exact(&mut bytes)?;
+                        let text = String::from_utf8(bytes)
+                            .map_err(|_| invalid("invalid batch error text"))?;
+                        Discovered::Complete(Err(io::Error::other(text)))
+                    }
+                    _ => return Err(invalid("invalid discovery result")),
+                });
+            }
+            let ready = read_ready(&mut reply)?;
+            if reply.position() != payload.len() as u64 {
+                return Err(invalid("trailing physical batch bytes"));
+            }
+            Ok(Ok((results, ready)))
+        })?;
+        self.last_token = last_token;
+        self.retain_ready(ready);
+        Ok(results)
+    }
+
+    fn retain_ready(&mut self, pages: Vec<u64>) {
+        for page in pages {
+            if self.ready.len() < DISCOVERY_BATCH && !self.ready.contains(&page) {
+                self.ready.push_back(page);
+            }
+        }
+    }
+
+    /// Drain bounded, advisory handles without performing IPC.
+    pub fn take_ready(&mut self) -> Vec<u64> {
+        self.ready.drain(..).collect()
+    }
+
     fn put_inner(&mut self, bytes: &[u8], duplicate: bool) -> io::Result<RemoteObject> {
+        self.require_registration()?;
         if bytes.is_empty() || bytes.len() > BLOCK_BYTES {
             return Err(invalid("invalid pool input length"));
         }
-        let session = self.session.clone();
         let expected = identity(bytes);
+        self.put_identified(bytes, duplicate, expected)
+    }
+    fn put_identified(
+        &mut self,
+        bytes: &[u8],
+        duplicate: bool,
+        expected: ImageId,
+    ) -> io::Result<RemoteObject> {
+        let session = self.session.clone();
         let shared_file = self.shared_file.clone();
+        let shared_length = self.shared_length;
+        let last_token = self.last_token;
         if shared_file.is_some() && bytes.len() != super::shared::PAGE {
             return Err(invalid("shared pool requires native pages"));
         }
-        self.exchange(|stream| {
+        let object = self.exchange(|stream| {
             let operation = if duplicate {
                 PUT_DUPLICATE
             } else if shared_file.is_some() {
@@ -838,25 +1575,12 @@ impl PoolClient {
             let mut id = [0; 32];
             stream.read_exact(&mut id)?;
             let length = read_u32(stream)? as usize;
-            if token == 0 || id != expected || length != bytes.len() {
+            if token <= last_token || id != expected || length != bytes.len() {
                 return Err(invalid("invalid pool object reply"));
             }
             let offset = if let Some(file) = &shared_file {
                 let offset = read_u64(stream)?;
-                let file_len = file.metadata()?.len();
-                if !offset.is_multiple_of(super::shared::PAGE as u64)
-                    || offset
-                        .checked_add(super::shared::PAGE as u64)
-                        .is_none_or(|end| end > file_len)
-                {
-                    return Err(invalid("invalid shared page offset"));
-                }
-                use std::os::unix::fs::FileExt;
-                let mut actual = [0; super::shared::PAGE];
-                file.read_exact_at(&mut actual, offset)?;
-                if actual != bytes {
-                    return Err(invalid("shared page publication content mismatch"));
-                }
+                validate_shared_page(file, shared_length, offset, bytes)?;
                 std::num::NonZeroU64::new(offset + 1)
             } else {
                 None
@@ -868,11 +1592,23 @@ impl PoolClient {
                 length,
                 offset,
             }))
-        })
+        })?;
+        self.last_token = object.token;
+        Ok(object)
     }
+    /// Validate physical-service capabilities without becoming a publisher.
+    /// Consumes the connection and drops its temporary mapping descriptor.
+    /// Managers use this probe so readiness checks do not retain generation
+    /// witnesses or reserve retired memory for their entire process lifetime.
     #[cfg(any(target_os = "linux", target_os = "macos"))]
-    pub fn enable_shared_mapping(&mut self) -> io::Result<()> {
-        let file = self.exchange(|stream| {
+    pub fn check_shared_mapping(mut self) -> io::Result<()> {
+        self.negotiate_shared_mapping()?;
+        Ok(())
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn negotiate_shared_mapping(&mut self) -> io::Result<(Arc<std::fs::File>, u64, u32)> {
+        let (file, length) = self.exchange(|stream| {
             stream.write_all(&[MAPPING])?;
             if let Some(error) = status(stream)? {
                 return Ok(Err(error));
@@ -900,17 +1636,91 @@ impl PoolClient {
                 ));
             }
             let file = std::fs::File::from(fd);
-            if file.metadata()?.len() == 0
-                || !file
-                    .metadata()?
-                    .len()
-                    .is_multiple_of(super::shared::PAGE as u64)
-            {
+            let length = file.metadata()?.len();
+            if length == 0 || !length.is_multiple_of(super::shared::PAGE as u64) {
                 return Err(invalid("invalid shared pool file size"));
             }
-            Ok(Ok(Arc::new(file)))
+            Ok(Ok((Arc::new(file), length)))
         })?;
+        let version = self.exchange(|stream| {
+            stream.write_all(&[DISCOVERY])?;
+            if let Some(error) = status(stream)? {
+                return Ok(Err(error));
+            }
+            let version = read_u32(stream)?;
+            let batch = read_u32(stream)?;
+            if !matches!(version, DISCOVERY_VERSION | RECOVERY_DISCOVERY_VERSION)
+                || batch != DISCOVERY_BATCH as u32
+            {
+                return Err(invalid("unsupported physical discovery protocol"));
+            }
+            Ok(Ok(version))
+        })?;
+        Ok((file, length, version))
+    }
+
+    /// Negotiate physical discovery and retain its read-only backing. Recoverable
+    /// services additionally require a private generation record matching this
+    /// exact inode and a process-held witness before allowing publication.
+    /// Failure closes an incomplete recovery handshake. No received backing may
+    /// be passed to another process, or its witness could outlive this contract.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    pub fn enable_shared_mapping(&mut self) -> io::Result<()> {
+        let (file, length, version) = self.negotiate_shared_mapping()?;
         self.shared_file = Some(file);
+        self.shared_length = length;
+        self.physical_version = version;
+        self.generation_registered = false;
+        if version == RECOVERY_DISCOVERY_VERSION {
+            let registration = (|| {
+                let address = self
+                    .stream
+                    .as_ref()
+                    .ok_or_else(|| invalid("pool connection closed during negotiation"))?
+                    .peer_addr()?;
+                let directory = address
+                    .as_pathname()
+                    .and_then(std::path::Path::parent)
+                    .ok_or_else(|| invalid("recoverable pool requires a named Unix endpoint"))?;
+                let lease = super::generation::GenerationLease::acquire(
+                    directory,
+                    self.shared_file.as_ref().unwrap(),
+                )?;
+                self.register_generation(lease.id())?;
+                lease.retain_for_process()
+            })();
+            if let Err(error) = registration {
+                self.stream.take();
+                self.shared_file.take();
+                self.shared_length = 0;
+                self.generation_registered = false;
+                return Err(error);
+            }
+        }
+        Ok(())
+    }
+
+    fn require_registration(&self) -> io::Result<()> {
+        if self.physical_version == RECOVERY_DISCOVERY_VERSION && !self.generation_registered {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "recoverable physical publication requires generation registration",
+            ));
+        }
+        Ok(())
+    }
+
+    fn register_generation(&mut self, id: [u8; 16]) -> io::Result<()> {
+        self.exchange(|stream| {
+            let mut frame = vec![REGISTER_GENERATION];
+            frame.extend_from_slice(&id);
+            stream.write_all(&frame)?;
+            Ok(match status(stream)? {
+                Some(error) => Err(error),
+                None => Ok(()),
+            })
+        })?;
+        self.generation_registered = true;
         Ok(())
     }
     pub fn shared_mapping(
@@ -955,17 +1765,79 @@ impl PoolClient {
     /// Release only after all guest pages referring to this handle are restored
     /// or intentionally discarded. Other PUTs of identical content remain valid.
     pub fn release(&mut self, object: RemoteObject) -> io::Result<()> {
-        self.owns(&object)?;
+        self.release_objects(vec![object])
+    }
+    /// Release unmapped references in bounded chunks. A failed exchange can
+    /// leave earlier chunks released and remaining tokens pinned until exit.
+    pub fn release_objects(&mut self, objects: Vec<RemoteObject>) -> io::Result<()> {
+        for object in &objects {
+            self.owns(object)?;
+        }
+        if self.shared_file.is_some() {
+            for chunk in objects.chunks(DISCOVERY_BATCH) {
+                let tokens: Vec<_> = chunk.iter().map(|object| object.token).collect();
+                self.release_tokens(&tokens)?;
+            }
+        } else {
+            for object in objects {
+                self.exchange(|stream| {
+                    stream.write_all(&[RELEASE])?;
+                    stream.write_all(&object.token.to_le_bytes())?;
+                    Ok(match status(stream)? {
+                        Some(error) => Err(error),
+                        None => Ok(()),
+                    })
+                })?;
+            }
+        }
+        Ok(())
+    }
+
+    // Internal current-session notification. The raw API validates every
+    // RemoteObject first; PhysicalClient validates its logical store and exact
+    // current backing before queuing tokens. Never accept caller-supplied IDs.
+    fn release_tokens(&mut self, tokens: &[u64]) -> io::Result<()> {
+        if tokens.is_empty() || tokens.len() > DISCOVERY_BATCH {
+            return Err(invalid("invalid release batch size"));
+        }
         self.exchange(|stream| {
-            stream.write_all(&[RELEASE])?;
-            stream.write_all(&object.token.to_le_bytes())?;
+            let mut frame = vec![RELEASE_BATCH];
+            frame.extend_from_slice(&(tokens.len() as u32).to_le_bytes());
+            for token in tokens {
+                frame.extend_from_slice(&token.to_le_bytes());
+            }
+            stream.write_all(&frame)?;
             Ok(match status(stream)? {
                 Some(error) => Err(error),
                 None => Ok(()),
             })
         })
     }
+
     pub fn stats(&mut self) -> io::Result<PoolStats> {
+        if self.shared_file.is_some() {
+            let (stats, ready) = self.exchange(|stream| {
+                stream.write_all(&[SHARED_STATS])?;
+                let payload = match read_batch_reply(stream)? {
+                    Ok(payload) => payload,
+                    Err(error) => return Ok(Err(error)),
+                };
+                let mut reply = io::Cursor::new(payload.as_slice());
+                let stats = PoolStats {
+                    encoded_bytes: read_u64(&mut reply)?,
+                    objects: read_u64(&mut reply)?,
+                    session_references: read_u64(&mut reply)?,
+                    cross_session_objects: read_u64(&mut reply)?,
+                };
+                let ready = read_ready(&mut reply)?;
+                if reply.position() != payload.len() as u64 {
+                    return Err(invalid("trailing physical stats bytes"));
+                }
+                Ok(Ok((stats, ready)))
+            })?;
+            self.retain_ready(ready);
+            return Ok(stats);
+        }
         self.exchange(|stream| {
             stream.write_all(&[STATS])?;
             if let Some(error) = status(stream)? {
@@ -984,6 +1856,593 @@ impl PoolClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cold_accounting_preserves_counts_and_requires_explicit_owner_scope() {
+        use pvisor_vm::api::ColdRamAccountingScope;
+        for scope in [
+            ColdRamAccountingScope::Pool,
+            ColdRamAccountingScope::Instance,
+            ColdRamAccountingScope::LocalPins,
+        ] {
+            let stats = PoolStats {
+                encoded_bytes: 197,
+                objects: 3,
+                session_references: 7,
+                cross_session_objects: 2,
+            }
+            .into_cold(scope);
+            assert_eq!(stats.scope, scope);
+            assert_eq!(stats.encoded_bytes, 197);
+            assert_eq!(stats.objects, 3);
+            assert_eq!(stats.session_references, 7);
+            assert_eq!(stats.cross_session_objects, 2);
+        }
+    }
+
+    #[test]
+    fn only_mapped_backends_require_peer_exit_before_reference_retirement() {
+        let compressed = Owner::Compressed(Arc::new(Mutex::new(CompressedPool::new(
+            BLOCK_BYTES * 2,
+            2,
+        ))));
+        assert!(!compressed.requires_peer_exit());
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        {
+            let shared = Owner::Shared(Arc::new(Mutex::new(
+                super::super::shared::SharedPool::new(super::super::shared::PAGE * 2, 2).unwrap(),
+            )));
+            assert!(shared.requires_peer_exit());
+        }
+        #[cfg(target_os = "linux")]
+        {
+            let sealed = Owner::Sealed(Arc::new(Mutex::new(
+                super::super::sealed::SealedPool::new(BLOCK_BYTES * 2, 2),
+            )));
+            assert!(sealed.requires_peer_exit());
+        }
+    }
+
+    #[test]
+    fn framed_reply_reads_are_bounded_independently_of_page_count() {
+        struct Counted {
+            bytes: io::Cursor<Vec<u8>>,
+            reads: usize,
+        }
+        impl Read for Counted {
+            fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
+                self.reads += 1;
+                self.bytes.read(bytes)
+            }
+        }
+        for count in [1, DISCOVERY_BATCH] {
+            let payload = vec![0; 4 + count * 49 + 4];
+            let mut bytes = vec![0];
+            bytes.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+            bytes.extend_from_slice(&payload);
+            let mut input = Counted {
+                bytes: io::Cursor::new(bytes),
+                reads: 0,
+            };
+            assert_eq!(read_batch_reply(&mut input).unwrap().unwrap(), payload);
+            assert_eq!(input.reads, 3);
+        }
+    }
+
+    #[test]
+    fn matching_peer_wakes_first_observer_without_granting_a_reference() {
+        use super::super::shared::{PAGE, SharedPool};
+        let pool = Arc::new(Mutex::new(SharedPool::new(PAGE, 1).unwrap()));
+        let (a, sa) = UnixStream::pair().unwrap();
+        let (b, sb) = UnixStream::pair().unwrap();
+        let owner = pool.clone();
+        let ta = std::thread::spawn(move || serve_shared(sa, owner, 2));
+        let owner = pool.clone();
+        let tb = std::thread::spawn(move || serve_shared(sb, owner, 2));
+        let mut a = PoolClient::new(a, Duration::from_secs(2)).unwrap();
+        let mut b = PoolClient::new(b, Duration::from_secs(2)).unwrap();
+        a.enable_shared_mapping().unwrap();
+        b.enable_shared_mapping().unwrap();
+        let bytes = [7; PAGE];
+        assert!(matches!(
+            a.publish_pages(&[ColdRamSample {
+                page: 17,
+                bytes: &bytes
+            }])
+            .unwrap()
+            .pop()
+            .unwrap()
+            .unwrap(),
+            Admission::Observed
+        ));
+        assert!(matches!(
+            a.publish_pages(&[ColdRamSample {
+                page: 17,
+                bytes: &bytes
+            }])
+            .unwrap()
+            .pop()
+            .unwrap()
+            .unwrap(),
+            Admission::Unmatched
+        ));
+        let Admission::Published(br) = b
+            .publish_pages(&[ColdRamSample {
+                page: 99,
+                bytes: &bytes,
+            }])
+            .unwrap()
+            .pop()
+            .unwrap()
+            .unwrap()
+        else {
+            panic!("peer must materialize")
+        };
+        assert_eq!(a.stats().unwrap().session_references, 0);
+        assert_eq!(a.take_ready(), [17]);
+        assert!(a.take_ready().is_empty());
+        assert!(b.take_ready().is_empty());
+        let Admission::Published(ar) = a
+            .publish_pages(&[ColdRamSample {
+                page: 17,
+                bytes: &bytes,
+            }])
+            .unwrap()
+            .pop()
+            .unwrap()
+            .unwrap()
+        else {
+            panic!("first observer must find peer")
+        };
+        assert_eq!(ar.id(), br.id());
+        a.release_objects(vec![ar]).unwrap();
+        b.release_objects(vec![br]).unwrap();
+        assert_eq!(a.stats().unwrap().objects, 0);
+        drop(a);
+        drop(b);
+        ta.join().unwrap().unwrap();
+        tb.join().unwrap().unwrap();
+    }
+
+    #[test]
+    fn a_full_materialization_and_release_use_one_bounded_exchange_each() {
+        use super::super::shared::{PAGE, SharedPool};
+        let pages: Vec<_> = (0..DISCOVERY_BATCH)
+            .map(|index| {
+                let mut page = vec![7; PAGE];
+                page[..8].copy_from_slice(&(index as u64).to_le_bytes());
+                page
+            })
+            .collect();
+        let expected = pages.clone();
+        let (client, mut peer) = UnixStream::pair().unwrap();
+        let thread = std::thread::spawn(move || {
+            peer.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+            let mut pool = SharedPool::new(DISCOVERY_BATCH * PAGE, DISCOVERY_BATCH).unwrap();
+            peer.write_all(MAGIC).unwrap();
+            peer.write_all(&[1; 16]).unwrap();
+            let mut op = [0];
+            peer.read_exact(&mut op).unwrap();
+            assert_eq!(op, [MAPPING]);
+            peer.write_all(&[0]).unwrap();
+            send_mapping_fd(&peer, pool.readonly_file().as_raw_fd()).unwrap();
+            peer.read_exact(&mut op).unwrap();
+            assert_eq!(op, [DISCOVERY]);
+            peer.write_all(&[0]).unwrap();
+            peer.write_all(&DISCOVERY_VERSION.to_le_bytes()).unwrap();
+            peer.write_all(&(DISCOVERY_BATCH as u32).to_le_bytes())
+                .unwrap();
+            peer.read_exact(&mut op).unwrap();
+            assert_eq!(op, [DISCOVER_XXH3]);
+            assert_eq!(read_u32(&mut peer).unwrap() as usize, DISCOVERY_BATCH);
+            let mut discovery = vec![0; DISCOVERY_BATCH * 24];
+            peer.read_exact(&mut discovery).unwrap();
+            for (item, page) in discovery.as_chunks::<24>().0.iter().zip(&expected) {
+                assert_eq!(&item[..16], &fingerprint(page));
+                assert_eq!(&item[16..], &[0; 8]);
+            }
+            let mut reply = (DISCOVERY_BATCH as u32).to_le_bytes().to_vec();
+            reply.extend(vec![1; DISCOVERY_BATCH]);
+            append_ready(&mut reply, Vec::new());
+            write_batch_reply(&mut peer, &reply).unwrap();
+            peer.read_exact(&mut op).unwrap();
+            assert_eq!(op, [PUT_BATCH], "no per-page PUT is permitted");
+            assert_eq!(read_u32(&mut peer).unwrap() as usize, DISCOVERY_BATCH);
+            let mut payload = vec![0; DISCOVERY_BATCH * PAGE];
+            peer.read_exact(&mut payload).unwrap();
+            let mut reply = (DISCOVERY_BATCH as u32).to_le_bytes().to_vec();
+            let mut pins = Vec::new();
+            for (index, (actual, expected)) in payload
+                .as_chunks::<PAGE>()
+                .0
+                .iter()
+                .zip(&expected)
+                .enumerate()
+            {
+                assert_eq!(actual.as_slice(), expected);
+                let object = pool.intern(actual).unwrap();
+                reply.push(2);
+                reply.extend_from_slice(&(index as u64 + 1).to_le_bytes());
+                reply.extend_from_slice(&object.offset().to_le_bytes());
+                reply.extend_from_slice(&object.id());
+                pins.push(object);
+            }
+            append_ready(&mut reply, Vec::new());
+            write_batch_reply(&mut peer, &reply).unwrap();
+            peer.read_exact(&mut op).unwrap();
+            assert_eq!(op, [RELEASE_BATCH], "no per-page RELEASE is permitted");
+            assert_eq!(read_u32(&mut peer).unwrap() as usize, DISCOVERY_BATCH);
+            let mut released = vec![0; DISCOVERY_BATCH * 8];
+            peer.read_exact(&mut released).unwrap();
+            for (index, bytes) in released.as_chunks::<8>().0.iter().enumerate() {
+                assert_eq!(u64::from_le_bytes(*bytes), index as u64 + 1);
+            }
+            peer.write_all(&[0]).unwrap();
+            drop(pins);
+        });
+        let mut client = PoolClient::new(client, Duration::from_secs(3)).unwrap();
+        client.enable_shared_mapping().unwrap();
+        client.release_objects(Vec::new()).unwrap();
+        assert!(client.put_duplicates(&[]).unwrap().is_empty());
+        let blocks: Vec<_> = pages.iter().map(Vec::as_slice).collect();
+        let objects: Vec<_> = client
+            .put_duplicates(&blocks)
+            .unwrap()
+            .into_iter()
+            .map(Result::unwrap)
+            .collect();
+        assert_eq!(objects.len(), DISCOVERY_BATCH);
+        client.release_objects(objects).unwrap();
+        drop(client);
+        thread.join().unwrap();
+    }
+
+    #[test]
+    fn invalid_release_batch_does_not_consume_any_valid_reference() {
+        use super::super::shared::{PAGE, SharedPool};
+        let owner = Arc::new(Mutex::new(SharedPool::new(PAGE, 1).unwrap()));
+        let (client, peer) = UnixStream::pair().unwrap();
+        let thread = std::thread::spawn(move || serve_shared(peer, owner, 4));
+        let mut client = PoolClient::new(client, Duration::from_secs(2)).unwrap();
+        client.enable_shared_mapping().unwrap();
+        let one = client.put(&[7; PAGE]).unwrap();
+        let two = client.put(&[7; PAGE]).unwrap();
+        for token in [one.token, u64::MAX] {
+            let rejection: io::Result<()> = client.exchange(|stream| {
+                let mut frame = vec![RELEASE_BATCH];
+                frame.extend_from_slice(&2u32.to_le_bytes());
+                frame.extend_from_slice(&one.token.to_le_bytes());
+                frame.extend_from_slice(&token.to_le_bytes());
+                stream.write_all(&frame)?;
+                Ok(match status(stream)? {
+                    Some(error) => Err(error),
+                    None => Ok(()),
+                })
+            });
+            assert!(rejection.is_err());
+            assert_eq!(client.stats().unwrap().session_references, 2);
+        }
+        client.release_objects(vec![one, two]).unwrap();
+        assert_eq!(client.stats().unwrap().objects, 0);
+        drop(client);
+        thread.join().unwrap().unwrap();
+    }
+
+    #[test]
+    fn hash_discovery_batches_preserve_order_and_reference_budgets() {
+        const PAGE: usize = super::super::shared::PAGE;
+        let pool = Arc::new(Mutex::new(
+            super::super::shared::SharedPool::with_candidate_limit(PAGE * 2, 2, 16).unwrap(),
+        ));
+        let (a, sa) = UnixStream::pair().unwrap();
+        let (b, sb) = UnixStream::pair().unwrap();
+        let owner = pool.clone();
+        let ta = std::thread::spawn(move || serve_shared(sa, owner, 2));
+        let owner = pool.clone();
+        let tb = std::thread::spawn(move || serve_shared(sb, owner, 2));
+        let mut a = PoolClient::new(a, Duration::from_secs(2)).unwrap();
+        let mut b = PoolClient::new(b, Duration::from_secs(2)).unwrap();
+        a.enable_shared_mapping().unwrap();
+        b.enable_shared_mapping().unwrap();
+        let seven = [7; PAGE];
+        let eight = [8; PAGE];
+        let nine = [9; PAGE];
+        assert!(a.put_duplicates(&[]).unwrap().is_empty());
+        assert!(a.put_duplicates(&[&seven[..PAGE - 1]]).is_err());
+        assert!(
+            a.put_duplicates(&vec![&seven[..]; DISCOVERY_BATCH + 1])
+                .is_err()
+        );
+        let unique = a.put_duplicates(&[&seven, &eight, &nine, &seven]).unwrap();
+        assert!(unique.iter().all(|r| matches!(
+            r, Err(error) if error.kind() == io::ErrorKind::WouldBlock
+        )));
+        assert_eq!(a.stats().unwrap().objects, 0);
+        assert_eq!(a.stats().unwrap().session_references, 0);
+        let largest = a
+            .put_duplicates(&vec![&seven[..]; DISCOVERY_BATCH])
+            .unwrap();
+        assert_eq!(largest.len(), DISCOVERY_BATCH);
+        assert!(largest.iter().all(Result::is_err));
+        let b_objects: Vec<_> = b
+            .put_duplicates(&[&eight, &seven])
+            .unwrap()
+            .into_iter()
+            .map(Result::unwrap)
+            .collect();
+        let results = a.put_duplicates(&[&seven, &eight, &nine]).unwrap();
+        assert!(results[0].is_ok());
+        assert!(results[1].is_ok());
+        assert_eq!(
+            results[2].as_ref().err().unwrap().kind(),
+            io::ErrorKind::WouldBlock
+        );
+        let a_objects: Vec<_> = results.into_iter().filter_map(Result::ok).collect();
+        assert_eq!(a_objects[0].id(), b_objects[1].id());
+        assert_eq!(a_objects[1].id(), b_objects[0].id());
+        assert_eq!(a.stats().unwrap().session_references, 2);
+        assert_eq!(a.stats().unwrap().cross_session_objects, 2);
+        for object in a_objects {
+            a.release(object).unwrap();
+        }
+        for object in b_objects {
+            b.release(object).unwrap();
+        }
+        assert_eq!(a.stats().unwrap().objects, 0);
+        drop(a);
+        drop(b);
+        ta.join().unwrap().unwrap();
+        tb.join().unwrap().unwrap();
+    }
+
+    // A strict peer checks the actual wire boundary, rather than inferring
+    // payload avoidance from pool object counts.
+    fn discovery_peer(
+        mut stream: UnixStream,
+        known: bool,
+        fault: &'static str,
+    ) -> std::thread::JoinHandle<()> {
+        std::thread::spawn(move || {
+            use super::super::shared::{PAGE, SharedPool};
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            stream
+                .set_write_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            let mut pool = SharedPool::new(2 * PAGE, 2).unwrap();
+            let byte = if matches!(fault, "bytes" | "collision") {
+                8
+            } else {
+                7
+            };
+            let object = pool.intern(&[byte; PAGE]).unwrap();
+            stream.write_all(MAGIC).unwrap();
+            stream.write_all(&[1; 16]).unwrap();
+            let mut operation = [0];
+            stream.read_exact(&mut operation).unwrap();
+            assert_eq!(operation, [MAPPING]);
+            stream.write_all(&[0]).unwrap();
+            send_mapping_fd(&stream, pool.readonly_file().as_raw_fd()).unwrap();
+            stream.read_exact(&mut operation).unwrap();
+            assert_eq!(operation, [DISCOVERY]);
+            stream.write_all(&[0]).unwrap();
+            let version = if fault == "version" {
+                1
+            } else if fault == "xxh3-v2" {
+                2
+            } else {
+                DISCOVERY_VERSION
+            };
+            stream.write_all(&version.to_le_bytes()).unwrap();
+            stream
+                .write_all(&(DISCOVERY_BATCH as u32).to_le_bytes())
+                .unwrap();
+            if matches!(fault, "version" | "xxh3-v2") {
+                assert_eq!(stream.read(&mut operation).unwrap(), 0);
+                return;
+            }
+            stream.read_exact(&mut operation).unwrap();
+            assert_eq!(operation, [DISCOVER_XXH3]);
+            assert_eq!(read_u32(&mut stream).unwrap(), 1);
+            let mut id = [0; 16];
+            stream.read_exact(&mut id).unwrap();
+            assert_eq!(id, fingerprint(&[7; PAGE]));
+            assert_eq!(read_u64(&mut stream).unwrap(), 0);
+            if fault == "length" {
+                stream.write_all(&[0]).unwrap();
+                stream
+                    .write_all(&((MAX_BATCH_REPLY + 1) as u32).to_le_bytes())
+                    .unwrap();
+                assert_eq!(stream.read(&mut operation).unwrap(), 0);
+                return;
+            }
+            let mut reply = Vec::new();
+            reply.extend_from_slice(&(if fault == "count" { 2u32 } else { 1 }).to_le_bytes());
+            reply.push(if fault == "tag" {
+                255
+            } else if known {
+                2
+            } else {
+                0
+            });
+            if known {
+                if fault == "truncated" {
+                    stream.write_all(&[0]).unwrap();
+                    stream.write_all(&57u32.to_le_bytes()).unwrap();
+                    stream.write_all(&[1, 0, 0]).unwrap();
+                    return;
+                }
+                reply.extend_from_slice(&(if fault == "token" { 0u64 } else { 1 }).to_le_bytes());
+                let offset = if fault == "offset" {
+                    (2 * PAGE) as u64
+                } else {
+                    object.offset()
+                };
+                reply.extend_from_slice(&offset.to_le_bytes());
+                // "bytes" is corrupt backing for the claimed strong identity,
+                // unlike an intact but different object returned by a weak hit.
+                let id = if fault == "bytes" {
+                    identity(&[7; PAGE])
+                } else {
+                    object.id()
+                };
+                reply.extend_from_slice(&id);
+            }
+            if fault == "ready" {
+                reply.extend_from_slice(&257u32.to_le_bytes());
+            } else {
+                append_ready(&mut reply, Vec::new());
+            }
+            if fault == "trailing" {
+                reply.push(0);
+            }
+            write_batch_reply(&mut stream, &reply).unwrap();
+            if !fault.is_empty() && fault != "collision" {
+                assert_eq!(stream.read(&mut operation).unwrap(), 0);
+                return;
+            }
+            let replacement = if fault == "collision" {
+                stream.read_exact(&mut operation).unwrap();
+                assert_eq!(
+                    operation,
+                    [RELEASE_BATCH],
+                    "unused pin must be released first"
+                );
+                assert_eq!(read_u32(&mut stream).unwrap(), 1);
+                assert_eq!(read_u64(&mut stream).unwrap(), 1);
+                stream.write_all(&[0]).unwrap();
+                stream.read_exact(&mut operation).unwrap();
+                assert_eq!(operation, [PUT_BATCH]);
+                assert_eq!(read_u32(&mut stream).unwrap(), 1);
+                let mut bytes = [0; PAGE];
+                stream.read_exact(&mut bytes).unwrap();
+                assert_eq!(bytes, [7; PAGE]);
+                let replacement = pool.intern(&bytes).unwrap();
+                let mut reply = 1u32.to_le_bytes().to_vec();
+                reply.push(2);
+                reply.extend_from_slice(&2u64.to_le_bytes());
+                reply.extend_from_slice(&replacement.offset().to_le_bytes());
+                reply.extend_from_slice(&replacement.id());
+                append_ready(&mut reply, Vec::new());
+                write_batch_reply(&mut stream, &reply).unwrap();
+                Some(replacement)
+            } else {
+                None
+            };
+            // No payload PUT may occur for a unique page or an existing hit.
+            stream.read_exact(&mut operation).unwrap();
+            assert_eq!(operation, [SHARED_STATS]);
+            write_batch_reply(&mut stream, &[0; 36]).unwrap();
+            if known {
+                stream.read_exact(&mut operation).unwrap();
+                assert_eq!(operation, [RELEASE_BATCH]);
+                assert_eq!(read_u32(&mut stream).unwrap(), 1);
+                assert_eq!(
+                    read_u64(&mut stream).unwrap(),
+                    if replacement.is_some() { 2 } else { 1 }
+                );
+                stream.write_all(&[0]).unwrap();
+            }
+        })
+    }
+
+    #[test]
+    fn unique_and_existing_pages_never_send_payloads() {
+        for known in [false, true] {
+            let (client, peer) = UnixStream::pair().unwrap();
+            let peer = discovery_peer(peer, known, "");
+            let mut client = PoolClient::new(client, Duration::from_secs(2)).unwrap();
+            client.enable_shared_mapping().unwrap();
+            let result = client.put_duplicate(&[7; super::super::shared::PAGE]);
+            assert_eq!(result.is_ok(), known);
+            client.stats().unwrap();
+            if let Ok(object) = result {
+                client.release(object).unwrap();
+            }
+            drop(client);
+            peer.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn invalid_discovery_replies_and_different_backing_bytes_fail_closed() {
+        for fault in [
+            "bytes",
+            "count",
+            "tag",
+            "token",
+            "offset",
+            "truncated",
+            "length",
+            "ready",
+            "trailing",
+        ] {
+            let (client, peer) = UnixStream::pair().unwrap();
+            let peer = discovery_peer(peer, true, fault);
+            let mut client = PoolClient::new(client, Duration::from_secs(2)).unwrap();
+            client.enable_shared_mapping().unwrap();
+            assert!(
+                client
+                    .put_duplicate(&[7; super::super::shared::PAGE])
+                    .is_err(),
+                "{fault}"
+            );
+            assert!(client.stats().is_err(), "{fault}");
+            peer.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn weak_hit_with_different_intact_bytes_releases_pin_and_falls_back_to_content() {
+        let (client, peer) = UnixStream::pair().unwrap();
+        let peer = discovery_peer(peer, true, "collision");
+        let mut client = PoolClient::new(client, Duration::from_secs(2)).unwrap();
+        client.enable_shared_mapping().unwrap();
+        let object = client
+            .put_duplicate(&[7; super::super::shared::PAGE])
+            .unwrap();
+        assert_eq!(object.id(), identity(&[7; super::super::shared::PAGE]));
+        assert_eq!(object.token, 2);
+        client.stats().unwrap();
+        client.release(object).unwrap();
+        drop(client);
+        peer.join().unwrap();
+    }
+
+    #[test]
+    fn sha256_discovery_service_is_rejected_before_physical_mode_is_enabled() {
+        for version in ["version", "xxh3-v2"] {
+            let (client, peer) = UnixStream::pair().unwrap();
+            let peer = discovery_peer(peer, false, version);
+            let mut client = PoolClient::new(client, Duration::from_secs(2)).unwrap();
+            assert!(client.enable_shared_mapping().is_err());
+            assert!(client.shared_file.is_none());
+            assert!(client.stats().is_err());
+            peer.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn retired_sha256_query_is_not_interpreted_as_xxh3_keys() {
+        use super::super::shared::{PAGE, SharedPool};
+        let pool = Arc::new(Mutex::new(SharedPool::new(PAGE, 1).unwrap()));
+        let owner = pool.clone();
+        let (mut client, peer) = UnixStream::pair().unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let peer = std::thread::spawn(move || serve_shared(peer, owner, 1));
+        let mut handshake = [0; 24];
+        client.read_exact(&mut handshake).unwrap();
+        assert_eq!(&handshake[..8], MAGIC);
+        client.write_all(&[11]).unwrap();
+        let mut byte = [0];
+        assert_eq!(client.read(&mut byte).unwrap(), 0);
+        assert!(peer.join().unwrap().is_err());
+        assert_eq!(pool.lock().unwrap().candidate_count(), 0);
+    }
+
     #[test]
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     fn busy_duplicate_rejects_without_poisoning_existing_reference() {
@@ -1013,6 +2472,55 @@ mod tests {
         let second = client.put_duplicate(&page).unwrap();
         client.release(second).unwrap();
         client.release(reference).unwrap();
+        assert_eq!(client.stats().unwrap().session_references, 0);
+        drop(client);
+        thread.join().unwrap().unwrap();
+        assert_eq!(pool.lock().unwrap().object_count(), 0);
+    }
+
+    #[test]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn busy_batches_reject_without_observations_references_or_hint_waits() {
+        use super::super::shared::{PAGE, SharedPool};
+
+        let pool = Arc::new(Mutex::new(SharedPool::new(4 * PAGE, 4).unwrap()));
+        let (socket, server) = UnixStream::pair().unwrap();
+        let owner = pool.clone();
+        let thread = std::thread::spawn(move || serve_shared(server, owner, 8));
+        let mut client = PoolClient::new(socket, Duration::from_secs(1)).unwrap();
+        client.enable_shared_mapping().unwrap();
+        let page = vec![7; PAGE];
+        let reference = client.put(&page).unwrap();
+        let last_token = client.last_token;
+        let candidates = [vec![8; PAGE], vec![9; PAGE], vec![10; PAGE]];
+        let samples: Vec<_> = candidates
+            .iter()
+            .enumerate()
+            .map(|(index, bytes)| ColdRamSample {
+                page: index as u64 + 1,
+                bytes,
+            })
+            .collect();
+        let guard = pool.lock().unwrap();
+        for operation in [DISCOVER_XXH3, PUT_BATCH] {
+            let results = client.physical_exchange(operation, &samples).unwrap();
+            assert_eq!(results.len(), samples.len());
+            assert!(
+                results
+                    .into_iter()
+                    .all(|result| matches!(result, Discovered::Complete(Ok(Admission::Limited))))
+            );
+            assert_eq!(client.last_token, last_token);
+            assert!(client.take_ready().is_empty());
+            assert_eq!(guard.candidate_count(), 0);
+            assert_eq!(guard.object_count(), 1);
+        }
+        drop(guard);
+        let mut restored = vec![0; PAGE];
+        client.restore(&reference, &mut restored).unwrap();
+        assert_eq!(restored, page);
+        let second = client.put_duplicate(&page).unwrap();
+        client.release_objects(vec![second, reference]).unwrap();
         assert_eq!(client.stats().unwrap().session_references, 0);
         drop(client);
         thread.join().unwrap().unwrap();

@@ -222,11 +222,33 @@ fn implicit_start_and_manager_restart_preserve_pool_identity_and_fixed_mode() {
     );
     assert_eq!(fs::metadata(&socket).unwrap().ino(), inode);
     fixture.success("stop", &[]);
+    #[cfg(target_os = "linux")]
+    let generation = fs::read(socket.parent().unwrap().join("generation.json")).unwrap();
     fixture.pool.as_mut().unwrap().kill().unwrap();
     fixture.pool.as_mut().unwrap().wait().unwrap();
-    // Pool-process loss is not manager restart: stale RAM endpoints are retained.
-    assert!(!fixture.call("resolve-memory-pool", &[]).status.success());
-    assert_eq!(fs::metadata(&socket).unwrap().ino(), inode);
+    #[cfg(target_os = "linux")]
+    {
+        assert_eq!(
+            fixture.success("resolve-memory-pool", &[]),
+            serde_json::to_value(&socket).unwrap()
+        );
+        let _replacement = PoolOwner(peer_pidfd(&socket));
+        assert_ne!(
+            fs::read(socket.parent().unwrap().join("generation.json")).unwrap(),
+            generation
+        );
+        assert_eq!(
+            fixture.success("status", &[])["memory_pool"]["config"],
+            first["memory_pool"]["config"]
+        );
+        fixture.success("stop", &[]);
+    }
+    #[cfg(target_os = "macos")]
+    {
+        // Legacy remote compression cannot recover its lost restore authority.
+        assert!(!fixture.call("resolve-memory-pool", &[]).status.success());
+        assert_eq!(fs::metadata(&socket).unwrap().ino(), inode);
+    }
 }
 
 #[test]
@@ -335,46 +357,52 @@ fn stop_requires_the_observed_instance_and_protocol() {
 }
 
 #[cfg(target_os = "linux")]
-#[test]
-fn implicit_bootstrap_creates_a_real_pool_and_reuses_it_after_manager_crash() {
-    use std::os::fd::{AsRawFd, FromRawFd};
-    struct PoolOwner(std::fs::File);
-    impl Drop for PoolOwner {
-        fn drop(&mut self) {
-            // The pidfd pins the identity obtained from our private pool socket;
-            // cleanup never kills by a persisted/recycled PID.
-            unsafe {
-                libc::syscall(
-                    libc::SYS_pidfd_send_signal,
-                    self.0.as_raw_fd(),
-                    libc::SIGKILL,
-                    std::ptr::null::<libc::siginfo_t>(),
-                    0,
-                );
-            }
+struct PoolOwner(std::fs::File);
+#[cfg(target_os = "linux")]
+impl Drop for PoolOwner {
+    fn drop(&mut self) {
+        use std::os::fd::AsRawFd;
+        // The pidfd pins the identity obtained from our private pool socket;
+        // cleanup never kills by a persisted/recycled PID.
+        unsafe {
+            libc::syscall(
+                libc::SYS_pidfd_send_signal,
+                self.0.as_raw_fd(),
+                libc::SIGKILL,
+                std::ptr::null::<libc::siginfo_t>(),
+                0,
+            );
         }
     }
-    fn peer_pidfd(path: &std::path::Path) -> std::fs::File {
-        let stream = UnixStream::connect(path).unwrap();
-        let mut credentials: libc::ucred = unsafe { std::mem::zeroed() };
-        let mut length = std::mem::size_of_val(&credentials) as libc::socklen_t;
-        assert_eq!(
-            unsafe {
-                libc::getsockopt(
-                    stream.as_raw_fd(),
-                    libc::SOL_SOCKET,
-                    libc::SO_PEERCRED,
-                    (&mut credentials as *mut libc::ucred).cast(),
-                    &mut length,
-                )
-            },
-            0
-        );
-        assert_eq!(credentials.uid, unsafe { libc::geteuid() });
-        let descriptor = unsafe { libc::syscall(libc::SYS_pidfd_open, credentials.pid, 0) };
-        assert!(descriptor >= 0);
-        unsafe { std::fs::File::from_raw_fd(descriptor as i32) }
-    }
+}
+#[cfg(target_os = "linux")]
+fn peer_pidfd(path: &std::path::Path) -> std::fs::File {
+    use std::os::fd::{AsRawFd, FromRawFd};
+    let stream = UnixStream::connect(path).unwrap();
+    let mut credentials: libc::ucred = unsafe { std::mem::zeroed() };
+    let mut length = std::mem::size_of_val(&credentials) as libc::socklen_t;
+    assert_eq!(
+        unsafe {
+            libc::getsockopt(
+                stream.as_raw_fd(),
+                libc::SOL_SOCKET,
+                libc::SO_PEERCRED,
+                (&mut credentials as *mut libc::ucred).cast(),
+                &mut length,
+            )
+        },
+        0
+    );
+    assert_eq!(credentials.uid, unsafe { libc::geteuid() });
+    let descriptor = unsafe { libc::syscall(libc::SYS_pidfd_open, credentials.pid, 0) };
+    assert!(descriptor >= 0);
+    unsafe { std::fs::File::from_raw_fd(descriptor as i32) }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn implicit_bootstrap_creates_a_real_pool_and_reuses_it_after_manager_crash() {
+    use std::os::fd::AsRawFd;
     let fixture = Fixture::new();
     let resolved = fixture.success("resolve-memory-pool", &[]);
     let socket = PathBuf::from(resolved.as_str().unwrap());

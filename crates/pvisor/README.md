@@ -56,8 +56,101 @@ for invalidation, cleanup controls and compatibility limits.
 Native Sessions and Docker-style VM launches authenticate and negotiate a selected
 RAM pool before constructing the VMM, then transfer that same owned session to
 the pager. A dead or invalid pool rejects startup without booting a guest,
-reconnecting, deleting its socket or replacing pool ownership. Pool loss after
-VM entry still terminates dependent runners; it is not automatic recovery.
+deleting its socket or replacing pool ownership. Physical references retain their
+exact backing independently of the publication connection. After VM entry,
+transport loss disables optional publication while existing reads, file refaults
+and COW remain local. Corrupt content, invalid protocol data and mapping failures
+still fail closed. Legacy remotely restored compression still needs its owner.
+Physical pools negotiate batch hash discovery before VM entry. The pager sends
+up to 256 XXH3-128 fingerprints per query; unique pages send no payload, existing
+slots acquire session references and undergo full-byte validation, and only
+cross-session candidates needing materialization or fast-hash collisions upload
+their page snapshots. Discovery uses unseeded XXH3-128 with a 16-byte
+little-endian wire encoding; SHA-256 remains the shared object's content identity.
+Unique probes and byte-equal existing-slot hits no longer hash pages with SHA-256.
+Different intact bytes are a discovery miss: release the unused pin, then resolve
+the full content. Corrupt backing and malformed replies still fail closed.
+Hashing and pool IPC run outside CPU/device barriers; live RAM is rechecked by
+`pvisor-vm` before any mapping replacement. Disposable fingerprints have their
+own budget, separate from pinned payload slots. A secondary ordered index has
+one fast-key/strong-ID entry per live slot; ambiguous buckets use content-based
+fallback, so collisions cannot permanently hide a live object. Discovery protocol
+v3 adds an opaque 64-bit, session-scoped page handle beside each fingerprint and
+bounded length-delimited replies. Arrays are read as frames, not per field;
+materialization and release use batches of at most 256 pages/references. Invalid
+release chunks consume nothing; transport failure can leave prior chunks applied.
+V1/V2 physical services fail negotiation before VM entry: drain dependent VMs
+before upgrading both owners and clients.
+
+First observations, unmatched revisits and capacity rejection are distinct
+scheduler feedback. A cross-session match may enqueue one best-effort ready hint
+for its first observer; each session retains at most 256 hints. Hints grant no
+references and contain no VM addresses. The fixed VM/store session fences their
+lifetime; stale hints require fresh capture and live-byte validation.
+The scanner gives its first two seconds of actual sampling a discovery window
+and keeps productive work responsive, with equal worker wall-time rest.
+Steady exploration rests for nine times the preceding batch work and yields at
+least 250 ms between quiet complete rounds. These are conservative duty-cycle
+rules, not host CPU percentage or latency guarantees.
+
+Clients cache the negotiated backing length. Linux additionally retains one
+validated read-only backing view under the exact File owner, removing per-page
+metadata queries and pread from commit while retaining bounds and full-byte
+checks. Its address-space/PTE costs still count as overhead. Snapshot buffers are
+reused only across active batches, at most 1 MiB per physical worker, and dropped
+on empty work. Direct process-memory reads, shared sampling IPC buffers and
+daemon-wide scan scheduling are not enabled.
+The physical store flushes releases only during optional store work, never from
+mapping release. Before acquiring references it reserves a FIFO token slot for
+each possible release, with storage proportional to its outstanding references
+under the publisher's reference budget. Releasing even a whole COW payload does
+not grow that queue or disconnect a healthy publisher. Reservation failure limits
+new publication instead; optional work still sends at most 256 release tokens
+per exchange. Stop-publication logs include the failing operation, error kind,
+wall-clock timestamp and queued/outstanding counts.
+Recovery reauthenticates the private endpoint and negotiates a
+new backing generation with exponential backoff and jitter. Old tokens are never
+sent to the new session, and old page handles never resolve through the new file.
+The mutable-slot compatibility protocol cannot resume an uncertain session on
+the same backing. At most four locally live sessions are retained; a full recovery
+budget leaves publication disabled instead of disturbing live mappings.
+This bridge can retain whole retired pool files and uncertain remote pins until
+VM exit. Recoverable physical services advertise discovery v4 and require a
+process-held generation witness before publication. The witness binds the exact
+backing inode and remains held until process exit, including after explicit page
+handles disappear: COW VMAs and verification views may still retain that file.
+Manager readiness probes do not acquire witnesses. After fencing a dead owner,
+the manager can replace only its validated stale socket and start a new backing.
+Retired witnessed files reserve their full logical length against `max_bytes`;
+no restart resets that budget. Insufficient capacity disables new allocations,
+not existing mappings. Reservations may conservatively remain until VM exit.
+Metadata is bounded to 256 records per pool and 32 witnessed generations per
+process; exceeding those limits fails admission. Legacy services without these
+records cannot be recovered in place. This is not sealed-segment storage or a
+claim of 2–3K-VM scalability. The daemon now uses `AsyncPoolService`: sockets and
+peer-exit watches are async tasks; at most four admitted blocking jobs share
+32 MiB of in-flight frame/reply capacity. Admission precedes spawning, and
+cancelled/timed-out work retains its job/buffer permits until it actually ends.
+Blocking `serve` remains only for legacy compressed embedded callers. Blocking
+physical/sealed adapters and their peer-exit waits are crate-private test fixtures,
+not production services; the unused blocking recoverable-generation entry is removed.
+All adapters execute one session/reference state machine. Linux no longer exposes
+the old raw `PoolClient` as a pager store: mapped and sealed storage use their
+owned adapters. The legacy raw GET pager adapter remains only on macOS.
+Disconnect still does not release mapped references before proven peer exit.
+Linux physically immutable file READs can map their original inode privately
+without hashing, uploading or acquiring pool references; clean file pages skip
+content discovery and anonymous COW returns to it. Ordinary mutable/placeholder
+files keep the original path. See the [VM contract](../pvisor-vm/README.md#不可变文件-readmmap-的本地共享).
+`ColdRamStore::publication_ready` gates snapshot work before allocation/barriers.
+Storage diagnostics distinguish publisher Pool, local Instance and unavailable-
+publisher LocalPins scopes; LocalPins is not total retained file/kernel memory.
+The `pool_memory_case` engineering helper accepts `--embedded-fw` instead of
+`--firmware FILE` for build-embedded kernels. It verifies the kernel is present
+before boot; it never substitutes the host kernel or downloads firmware.
+Its physical mode uses the same authenticated `PhysicalClient` adapter as the
+runtime, including local reference ownership and deferred releases. Historical
+raw-client measurements remain a separate cohort, not a current-path substitute.
 Container logs remain cumulative across restarts, while startup errors include
 only the current generation's stderr (up to 32 KiB), not earlier workload or
 pool-loss diagnostics.
@@ -1052,8 +1145,9 @@ the daemon starts or reuses its detached `pvisor-daemon memory-pool --directory 
 component. Linux `--memory-pool-mode compressed` selects shared sealed compressed
 objects instead of default physical-page sharing. Compressed clients retain
 validated handles and local recovery after pool loss, while new publication
-stops. Physical/legacy pool loss still fails dependent VMs. API restart does not
-provide pool-process or host-reboot recovery. Reserve pool/host overhead outside
+stops. Physical-page references now retain local backing on transport loss;
+legacy remote compression still requires its owner. API restart does not
+provide automatic pool-process or host-reboot recovery. Reserve pool/host overhead outside
 sandbox admission limits. See the [daemon boundary](../pvisor-daemon/README.md).
 
 Physical pool publication computes the complete page identity once per incoming
@@ -1167,8 +1261,10 @@ Apple Silicon uses a fresh unlinked file-backed RAM mapping and the existing
 HVF compressed pool; Linux retains anonymous RAM and negotiates physical or
 sealed-compressed storage. No environment mutation or new VM pager is introduced.
 Omitting the selector retains legacy container defaults. An unavailable pool
-fails startup. macOS depends on the live pool for restore and fails closed on
-pool loss; it does not inherit Linux sealed-local recovery. See the daemon README
+fails startup. Legacy macOS compression depends on the live pool for restore
+and fails closed on pool loss; it does not inherit Linux sealed-local recovery.
+Native physical-page mode uses the same locally retained reference contract,
+but its recovery path still needs native HVF validation. See the daemon README
 for standalone startup, manager restart, budgets and experimental limitations.
 
 The experimental `docker` module owns the user-private image catalog, pinned
@@ -2528,6 +2624,13 @@ return a complete rejection before changing slots or references. The caller
 keeps the original page and the existing session remains valid. Required
 restore/release operations and the five-second absolute RPC deadline are
 unchanged. Transport failure still terminates a dependent runner.
+
+The v3 batch path applies the same nonblocking rule to fingerprint discovery
+and each page materialization. Contended items return `Limited` without taking
+new references or recording observations. Advisory ready-hint draining after
+materialization also skips a busy owner rather than delaying the reply; queued
+hints remain available to later calls. The single-page compatibility wrapper
+reports `WouldBlock` for this healthy rejection.
 
 Slow publication/owner-lock diagnostics and RPC error opcode/byte counters
 identify contention without logging page contents. This is a targeted candidate

@@ -763,6 +763,7 @@ fn daemon_pool_shares_objects_and_survives_owner_reopen_without_replacement() {
         max_objects: 16,
         max_connections: 8,
         max_references: 16,
+        max_candidates: 64,
     };
     fs::write(
         directory.join("config.json"),
@@ -903,7 +904,88 @@ fn compressed_pool() -> (
         max_objects: 2,
         max_connections: 8,
         max_references: 2,
+        max_candidates: 8,
     })
+}
+
+/// This is a connection-admission/thread bound check, not a 3000-VM load claim.
+#[cfg(target_os = "linux")]
+fn idle_async_connections(count: usize) {
+    let config = PoolConfig {
+        mode: pvisor_daemon::memory_pool::PoolMode::PhysicalPages,
+        max_bytes: 4096,
+        max_objects: 1,
+        max_connections: count + 1,
+        max_references: 1,
+        max_candidates: 16,
+    };
+    let (_state, child, socket, _) = pool_service(config);
+    let connect = || {
+        PoolClient::new(
+            UnixStream::connect(&socket).unwrap(),
+            Duration::from_secs(2),
+        )
+    };
+    let threads = || {
+        fs::read_dir(format!("/proc/{}/task", child.0.id()))
+            .unwrap()
+            .count()
+    };
+    let mut control = connect().unwrap();
+    control.stats().unwrap();
+    let before = threads();
+    let mut clients = Vec::new();
+    for n in 0..count {
+        let mut client = connect().unwrap();
+        if n % 32 == 0 {
+            client.stats().unwrap();
+        }
+        clients.push(client);
+    }
+    let peak = threads();
+    assert!(
+        peak <= 8,
+        "{count} idle sockets created {peak} threads (before {before})"
+    );
+    assert!(
+        connect().is_err(),
+        "admit before spawning: excess sockets must be closed"
+    );
+    assert_eq!(control.stats().unwrap().session_references, 0);
+    // A descriptor negotiation still uses the unchanged SCM_RIGHTS contract.
+    clients.pop().unwrap().check_shared_mapping().unwrap();
+    drop(clients);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut replacements = Vec::new();
+    for _ in 0..count {
+        loop {
+            if let Ok(client) = connect() {
+                replacements.push(client);
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "empty sessions leaked admission until peer exit"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+    replacements.last_mut().unwrap().stats().unwrap();
+    assert!(threads() <= 8);
+    eprintln!("async pool: sockets={count} threads_before={before} threads_peak={peak}");
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn async_pool_idle_connections_have_a_fixed_thread_bound() {
+    idle_async_connections(256);
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+#[ignore = "manual 3000-socket admission gate; requires at least 6100 owner FDs"]
+fn async_pool_three_thousand_idle_connections() {
+    idle_async_connections(3000);
 }
 
 #[test]
@@ -990,14 +1072,275 @@ fn standalone_manager_lifecycle(config: PoolConfig) {
     pool.0.kill().unwrap();
     pool.0.wait().unwrap();
     wait_exit(&mut manager, false);
-    assert!(
-        ensure_service(
-            state.path(),
-            std::path::Path::new(env!("CARGO_BIN_EXE_pvisor-daemon")),
-            config
-        )
-        .is_err()
-    );
+    if config.mode == pvisor_daemon::memory_pool::PoolMode::PhysicalPages
+        || (cfg!(target_os = "linux")
+            && config.mode == pvisor_daemon::memory_pool::PoolMode::Physical)
+    {
+        pvisor::ram_backing::generation::PhysicalGeneration::recoverable(socket.parent().unwrap())
+            .unwrap();
+    } else {
+        assert!(
+            ensure_service(
+                state.path(),
+                std::path::Path::new(env!("CARGO_BIN_EXE_pvisor-daemon")),
+                config
+            )
+            .is_err()
+        );
+    }
+}
+
+#[cfg(target_os = "linux")]
+mod physical_recovery {
+    use super::*;
+    use pvisor::ram_backing::ipc::{PhysicalClient, PhysicalReference};
+    use pvisor_vm::api::{ColdRamDisposition, ColdRamSample};
+    use std::{
+        os::{
+            fd::{AsRawFd, FromRawFd},
+            unix::fs::MetadataExt,
+        },
+        path::Path,
+    };
+
+    const PAGE: usize = 4096;
+
+    struct RestartedOwner(fs::File);
+    impl RestartedOwner {
+        fn capture(socket: &Path) -> Self {
+            let stream = UnixStream::connect(socket).unwrap();
+            let mut peer: libc::ucred = unsafe { std::mem::zeroed() };
+            let mut size = std::mem::size_of_val(&peer) as libc::socklen_t;
+            assert_eq!(
+                unsafe {
+                    libc::getsockopt(
+                        stream.as_raw_fd(),
+                        libc::SOL_SOCKET,
+                        libc::SO_PEERCRED,
+                        (&mut peer as *mut libc::ucred).cast(),
+                        &mut size,
+                    )
+                },
+                0
+            );
+            assert_eq!(peer.uid, unsafe { libc::geteuid() });
+            assert!(peer.pid > 0 && peer.pid as u32 != std::process::id());
+            let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, peer.pid, 0) };
+            assert!(fd >= 0);
+            Self(unsafe { fs::File::from_raw_fd(fd as i32) })
+        }
+    }
+    impl Drop for RestartedOwner {
+        fn drop(&mut self) {
+            unsafe {
+                libc::syscall(
+                    libc::SYS_pidfd_send_signal,
+                    self.0.as_raw_fd(),
+                    libc::SIGKILL,
+                    std::ptr::null::<libc::siginfo_t>(),
+                    0,
+                );
+            }
+        }
+    }
+
+    fn raw(socket: &Path) -> PoolClient {
+        let mut client =
+            PoolClient::new(UnixStream::connect(socket).unwrap(), Duration::from_secs(2)).unwrap();
+        client.enable_shared_mapping().unwrap();
+        client
+    }
+
+    fn published(client: &mut PhysicalClient, fill: u8) -> PhysicalReference {
+        let bytes = vec![fill; PAGE];
+        match client
+            .publish_pages(&[ColdRamSample {
+                page: 1,
+                bytes: &bytes,
+            }])
+            .unwrap()
+            .pop()
+            .unwrap()
+            .unwrap()
+        {
+            ColdRamDisposition::Published(object) => object,
+            _ => panic!("preseeded page was not published"),
+        }
+    }
+
+    struct Mapping(*mut libc::c_void);
+    impl Mapping {
+        fn new(client: &PhysicalClient, object: &PhysicalReference) -> Self {
+            let backing = client.shared_mapping(object).unwrap();
+            let address = unsafe {
+                libc::mmap(
+                    std::ptr::null_mut(),
+                    PAGE,
+                    libc::PROT_READ | libc::PROT_WRITE,
+                    libc::MAP_PRIVATE,
+                    backing.file.as_raw_fd(),
+                    backing.offset as libc::off_t,
+                )
+            };
+            assert_ne!(address, libc::MAP_FAILED);
+            Self(address)
+        }
+        fn first(&self) -> u8 {
+            unsafe { std::ptr::read_volatile(self.0.cast::<u8>()) }
+        }
+    }
+    impl Drop for Mapping {
+        fn drop(&mut self) {
+            unsafe {
+                libc::munmap(self.0, PAGE);
+            }
+        }
+    }
+
+    fn restart_with_retired_budget(budget_pages: usize) {
+        let config = PoolConfig {
+            mode: pvisor_daemon::memory_pool::PoolMode::PhysicalPages,
+            max_bytes: budget_pages * PAGE,
+            max_objects: 1,
+            max_connections: 8,
+            max_references: 8,
+            max_candidates: 8,
+        };
+        let (state, mut service, socket, _) = pool_service(config.clone());
+        let mut seed = raw(&socket);
+        let _seed_reference = seed.put(&vec![0x37; PAGE]).unwrap();
+        let mut client = PhysicalClient::new(raw(&socket), Some(socket.clone())).unwrap();
+        let old = published(&mut client, 0x37);
+        let old_file = client.shared_mapping(&old).unwrap().file;
+        let mapping = Mapping::new(&client, &old);
+        assert_eq!(mapping.first(), 0x37);
+        service.0.kill().unwrap();
+        service.0.wait().unwrap();
+        assert_eq!(
+            unsafe { libc::madvise(mapping.0, PAGE, libc::MADV_DONTNEED) },
+            0
+        );
+        assert_eq!(
+            mapping.first(),
+            0x37,
+            "file refault cannot require a live publisher"
+        );
+        unsafe {
+            std::ptr::write_volatile(mapping.0.cast::<u8>(), 0x72);
+        }
+        assert_eq!(mapping.first(), 0x72);
+        let mut output = vec![0; PAGE];
+        client.restore(&old, &mut output).unwrap();
+        assert_eq!(output, vec![0x37; PAGE]);
+
+        assert_eq!(
+            ensure_service(
+                state.path(),
+                Path::new(env!("CARGO_BIN_EXE_pvisor-daemon")),
+                config.clone()
+            )
+            .unwrap(),
+            socket
+        );
+        let _owner = RestartedOwner::capture(&socket);
+        let new = raw(&socket);
+        client.reconnect(new).unwrap();
+        let mut seed = raw(&socket);
+        let new_page = seed.put(&vec![0x51; PAGE]);
+        if budget_pages == 1 {
+            assert!(
+                new_page.is_err(),
+                "retired full-file reservation leaves no new payload budget"
+            );
+            assert_eq!(seed.stats().unwrap().encoded_bytes, 0);
+        } else {
+            let _seed_reference = new_page.unwrap();
+            let new = published(&mut client, 0x51);
+            let new_file = client.shared_mapping(&new).unwrap().file;
+            assert_ne!(
+                (
+                    old_file.metadata().unwrap().dev(),
+                    old_file.metadata().unwrap().ino()
+                ),
+                (
+                    new_file.metadata().unwrap().dev(),
+                    new_file.metadata().unwrap().ino()
+                )
+            );
+            client.release_objects(vec![old]).unwrap();
+            assert!(client.publication_ready());
+            client.restore(&new, &mut output).unwrap();
+            assert_eq!(
+                output,
+                vec![0x51; PAGE],
+                "old release must never target a new token"
+            );
+            drop(mapping);
+            client.release_objects(vec![new]).unwrap();
+            return;
+        }
+        client.restore(&old, &mut output).unwrap();
+        assert_eq!(output, vec![0x37; PAGE]);
+        assert_eq!(
+            mapping.first(),
+            0x72,
+            "recovery cannot disturb existing COW bytes"
+        );
+        drop(mapping);
+        client.release_objects(vec![old]).unwrap();
+    }
+
+    #[test]
+    fn physical_restart_reconnects_without_rebinding_old_backings_or_tokens() {
+        restart_with_retired_budget(2);
+    }
+
+    #[test]
+    fn physical_restart_reserves_retired_bytes_instead_of_resetting_the_budget() {
+        restart_with_retired_budget(1);
+    }
+
+    #[test]
+    fn a_live_owner_or_legacy_generation_never_allows_endpoint_replacement() {
+        use fs2::FileExt;
+        use std::os::unix::fs::OpenOptionsExt;
+        let config = PoolConfig {
+            max_bytes: PAGE,
+            max_objects: 1,
+            ..Default::default()
+        };
+        let (state, mut service, socket, _) = pool_service(config.clone());
+        service.0.kill().unwrap();
+        service.0.wait().unwrap();
+        let lock = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .mode(0o600)
+            .open(socket.parent().unwrap().join("service.lock"))
+            .unwrap();
+        lock.lock_exclusive().unwrap();
+        let inode = fs::metadata(&socket).unwrap().ino();
+        assert!(
+            ensure_service(
+                state.path(),
+                Path::new(env!("CARGO_BIN_EXE_pvisor-daemon")),
+                config.clone()
+            )
+            .is_err()
+        );
+        assert_eq!(fs::metadata(&socket).unwrap().ino(), inode);
+        FileExt::unlock(&lock).unwrap();
+        fs::remove_file(socket.parent().unwrap().join("generation.json")).unwrap();
+        assert!(
+            ensure_service(
+                state.path(),
+                Path::new(env!("CARGO_BIN_EXE_pvisor-daemon")),
+                config
+            )
+            .is_err()
+        );
+        assert_eq!(fs::metadata(&socket).unwrap().ino(), inode);
+    }
 }
 
 #[test]
@@ -1009,6 +1352,7 @@ fn macos_compressed_pool_shares_bounds_and_fails_closed_after_service_loss() {
         max_objects: 1,
         max_connections: 8,
         max_references: 2,
+        max_candidates: 4,
     };
     let (state, mut service, socket, config) = pool_service(config);
     let connect = || {

@@ -929,6 +929,15 @@ impl<F: FileSystem + Sync> Server<F> {
 
                 w.write_all(out.as_slice()).map_err(Error::EncodeMessage)?;
                 if let Some(completion) = read_completion {
+                    #[cfg(target_os = "linux")]
+                    if completion.wants_immutable() {
+                        if let Some(file) = self
+                            .fs
+                            .immutable_read_file(in_header.nodeid.into(), fh.into())
+                        {
+                            completion.immutable(file, offset, count);
+                        }
+                    }
                     completion.finish(count);
                 }
                 Ok(out.len as usize)

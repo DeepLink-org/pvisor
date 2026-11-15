@@ -319,7 +319,11 @@ pub struct Context {
 
 #[cfg(test)]
 pub(super) fn root_context() -> Context {
-    Context { uid: 0, gid: 0, pid: 1 }
+    Context {
+        uid: 0,
+        gid: 0,
+        pid: 1,
+    }
 }
 
 impl From<fuse::InHeader> for Context {
@@ -404,6 +408,17 @@ impl OpenReply {
 /// The main trait that connects a file system with a transport.
 #[allow(unused_variables)]
 pub trait FileSystem {
+    /// Optional native READ backing, qualified only after a successful READ.
+    /// Returning Some promises physically immutable regular-file contents and
+    /// size for the entire VM lifetime, including every writable host alias.
+    /// Read-only permissions, logical object IDs and placeholder projections
+    /// alone do not qualify. The caller may privately map matching full pages;
+    /// failure/None changes no READ semantics. No path is reopened here.
+    #[cfg(target_os = "linux")]
+    fn immutable_read_file(&self, inode: Self::Inode, handle: Self::Handle) -> Option<Arc<File>> {
+        None
+    }
+
     /// Cumulative diagnostic counters owned by this adapter and its Core.
     /// This does not flush, materialize, or mutate filesystem state.
     fn diagnostic_profiles(&self) -> Vec<pvisor_overlay_core::profile::ProfileReport> {

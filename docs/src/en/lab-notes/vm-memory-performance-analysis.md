@@ -8,7 +8,7 @@
 
 **With four instances each holding the same 64 MiB of random data, the physical pool starts sustained reclamation of 128 MiB of billed memory at about 1.7 seconds, while KSM needs about 27.8 seconds; when no shareable application pages exist, the pool occupies 391.62 MiB and spends 8.1 CPU seconds scanning for no benefit.** File-read hints advance reclamation in the library experiment, while DAX directly reuses pages of an explicitly attached immutable file. All readings are single observations with N=1 per cell: no confidence intervals, stable ranking or production-density claim. The comparisons below record reclamation speed, CPU and end-of-window usage together to examine each path's benefits and costs.
 
-The two complete preflights dated 2026-10-18 contain 21 static-memory conditions and seven library conditions, with N=1 per condition. All 1,218 / 406 content, private-write and independent-exit checks passed, along with resource, provenance and raw-evidence audits. The analysis uses only these two complete preflights; additional partial repeated measurements are excluded from aggregates. These readings provide no confidence intervals, stable ranking or production-density claim.
+The two complete preflights dated 2026-10-18 contain 21 static-memory conditions and seven library conditions, with N=1 per condition. All 1,218 / 406 content, private-write and independent-exit checks passed, along with resource, provenance and raw-evidence audits. This historical seven-arm section uses only those two complete preflights; additional partial repeated measurements are excluded from aggregates. The later [implementation comparison](#pool-implementation-comparison) presents two newer cohorts separately without rewriting these historical readings. These readings provide no confidence intervals, stable ranking or production-density claim.
 
 ### Why test three content types {#pool-motivation}
 
@@ -97,3 +97,45 @@ After readback, hints on, hints off and DAX each verify all **16,384 target page
 For shared random contents, the physical pool reaches the sustained 128 MiB drop at about 1.7 seconds, while KSM reaches it at about 27.8 seconds and has lower memory and CPU readings at 60 seconds. Evaluating short-lived pages emphasizes early reclamation; long-lived pages also call for examining sustained cost. Both timescales require the actual page lifetime as context. These single observations do not establish pure algorithm speed, subsecond tool throughput or repeatable CPU improvements.
 
 Full provenance and reproduction steps remain in the [memory experiment record](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/memory/README.md). Local raw evidence is retained in `benchmark/memory/.data/q8/` and `l4/`, with audited report SHA-256 values `05958d9ca694f8aa63e81d2bce4a97ee7ad575d7dd19ed3279be91ceced03d8a` and `dfbf4fb91ea2613601bf2217dd08ddb55885591d3e1ec5c805da07b954c18f2f`. Preflight and formal samples remain separate, failed conditions are not used to complete successful cohorts, and the original post-write evidence remains intact.
+
+## Implementation retest: cleanup and historical-plot differences {#pool-implementation-comparison}
+
+### Comparison scope {#cleanup-comparison-scope}
+
+The new figures overlay two independent complete preflights from 2026-11-15, before and after cleanup. **They do not replace the historical seven-arm chart above with a new seven-arm result.** Each cohort covers off/physical × three static content types, six conditions with N=1 each; all 348 content/lifecycle checks, publication-health, resource and cleanup audits passed in each cohort. They use byte-identical guest firmware, the same worker source, four 256 MiB/one-vCPU VMs with 64 MiB payloads, and the same complete-group four-CPU/2-GiB/zero-swap budget. Both host kernels are `7.3.3-300.fc45.x86_64`, with KSM disabled.
+
+**Teal means off, amber means physical; dashed lines are before cleanup, solid lines after cleanup.** Each panel shares axes and retains raw samples, without smoothing, cross-cohort averaging or interpolation to infer merge times. Two independent N=1 cohorts provide no causal speedup, confidence interval or formal non-regression conclusion. Static anonymous heaps do not exercise the new immutable-file READ/mmap path.
+
+### Idle: the main levels remain close {#cleanup-idle-curves}
+
+![Overlaid 60-second charged-memory and PSS curves before and after cleanup; dashed before, solid after](../assets/benchmarks/memory-pool-cleanup-compare-idle.svg)
+
+The shareable-content drop has a similar shape. Before/after 60-second charged readings are 218.14/212.16 MiB for repeated contents and 292.57/291.08 MiB for shared random contents. Unique random contents move from 457.07 to 466.03 MiB, while PSS moves from 471.99 to 470.87 MiB. The increase mainly appears in the file-charge category, not an equal process-residency increase; its exact charge attribution has not been isolated.
+
+### Startup: retain each readiness point {#cleanup-startup-curves}
+
+![Before/after memory curves from the initial group snapshot through readiness, with actual readiness-snapshot markers](../assets/benchmarks/memory-pool-cleanup-compare-startup.svg)
+
+Each cohort's horizontal axis starts at its own initial group snapshot rather than forcing every curve to the same startup duration. Squares/circles mark before/after all-ready snapshots respectively. Both cohorts accumulate memory during sequential instance startup; zero in the ready-relative plot is not a synchronized scanner start. Small duration differences in a single environment do not establish repeatable startup benefits.
+
+### After full writes: additional costs persist {#cleanup-post-write-curves}
+
+![Overlaid charged-memory and PSS curves for 30 seconds after full private writes](../assets/benchmarks/memory-pool-cleanup-compare-post-write.svg)
+
+For shared random contents, both cohorts gradually release old shared payload after complete private writes, but finish above off. The after-cleanup 30-second charged readings are physical 499.61 MiB and off 470.95 MiB, with about 71,200 private pool VMAs remaining. Fluctuations and differing file-charge levels for repeated and unique random contents are retained rather than excluding unfavorable readings. PSS and charged snapshots/curves are different, non-atomic observations; they need not match byte-for-byte at the same nominal boundary.
+
+### Published docs versus current levels {#published-versus-current}
+
+Historical columns below come from the published seven-arm table above; current columns come from the complete post-cleanup two-arm preflight. Units are complete four-VM group MiB, with independent N=1 cells.
+
+| Contents | Historical docs off | Current off | Historical docs physical | Current physical |
+|---|---:|---:|---:|---:|
+| Repeated | 398.92 | 472.09 | 149.14 | 212.16 |
+| Shared random | 398.91 | 469.76 | 222.61 | 291.08 |
+| Instance-unique random | 399.32 | 470.26 | 391.62 | 466.03 |
+
+Current absolute physical readings exceed the old chart, but the off baseline also rises from about 399 MiB to about 470 MiB. Subtracting physical readings alone cannot establish a deduplication-algorithm regression. The historical host kernel was `7.2.10-200.fc44.x86_64`, versus `7.3.3-300.fc45.x86_64` now; firmware byte identity has not been established, and runtime implementations differ. These are side-by-side cross-cohort levels, not a matched version A/B.
+
+The historical `q8`/`l4` raw sample archives were unavailable on the plotting machine; their published SVGs and tables remain. The original seven-arm and library/DAX figures are therefore byte-preserved: no samples were recovered by digitizing SVGs, and no new KSM, Docker, Firecracker, compression or DAX curves were fabricated. The overlays use only the still-auditable pre/post-cleanup raw data.
+
+The before-cleanup raw report SHA-256 is `4f1ec708579e630ac3ab51ac2de7a8d4c326e25818a9335170c286d1d64feba1`; after cleanup it is `2d55deb5a0aa0c1c2dd84d6daa18ab91815e8833bce43360bd15999a3f3fe623`. Reproduction and local provenance are in the [memory replot manual](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/memory/README.md#implementation-curve-comparison).

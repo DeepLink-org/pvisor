@@ -60,9 +60,12 @@ and uses the platform default only for a new pool.
 the detached pool and its state even when clients still depend on it. It does
 not terminate or drain the pool. There is no idle exit or forced pool-stop command.
 After manager death, its lock permits recovery of only its control socket;
-the existing pool is probed and reused. A stale or unavailable **pool** socket
-still fails closed and is never removed/replaced. Stopping/restarting a manager
-cannot repair lost RAM ownership. State in `/tmp` is not reboot recovery.
+the existing pool is probed and reused. If a recoverable physical **pool** has
+also died, a manager restart can fence its service lock, validate its generation
+and replace only its private stale socket. Existing mappings retain the old file;
+the new publisher uses a fresh backing and charges retired generations first.
+A live owner, unsafe endpoint, legacy missing generation record or incompatible
+configuration still refuses replacement. State in `/tmp` is not reboot recovery.
 
 This discovery profile currently provides the memory pool. The explicit
 `serve --cache` / `serve --sandbox` deployment commands below retain their
@@ -1047,9 +1050,11 @@ serving creates private state, prints the canonical socket in a JSON readiness
 record and monitors the detached pool. SIGINT/SIGTERM stops the manager while
 preserving the pool for live VMs; manager restart reuses that same service.
 Unexpected pool loss fails the manager. Stale sockets/configuration conflicts
-fail closed; neither a restart nor another manager replaces live RAM ownership.
-Stop dependent VMs before terminating the pool component. The pool's startup
-lock serializes independent managers as well as sandbox startup.
+never justify replacing a live owner. Restarting a manager can recover a dead
+v4 physical publisher, but cannot recover legacy remotely restored compression.
+Do not terminate a legacy pool while dependent VMs run. The pool's startup lock
+serializes independent managers as well as sandbox startup. A VM reconnects to
+an available replacement; it does not launch a replacement component itself.
 
 Apple Silicon macOS defaults to `--memory-pool-mode compressed`, using the
 existing HVF cold-page backend and the same daemon lifecycle, budgets and
@@ -1091,8 +1096,24 @@ the CPU/device barrier, and releases replaced references outside that barrier.
 COW pages are detached from the source shadow before old slots can be reused.
 Unique pages stay private. The current 4 KiB guest pages do not always align into
 identical 16 KiB host pages across VMs, including for identical random heaps.
-This mode does not compress, reconnect, or support snapshots/offload. Pool loss
-terminates dependent VMs; state records do not recover RAM after owner loss.
+This mode does not compress or support snapshots/offload. Current physical
+clients retain each page's exact read-only backing across publisher loss and
+disable new publication instead of terminating on transport loss. Recovery can
+bind a separately authenticated new backing generation without changing old
+mapping identities; uncertain tokens are never sent to a replacement session.
+The mutable-slot protocol cannot resume the same uncertain backing generation.
+Native HVF recovery remains unvalidated. Recoverable services require a shared
+process-lifetime lock on their private generation record before publication.
+After exclusive service-lock fencing, manager startup may replace a validated
+stale endpoint. Full logical lengths of witnessed retired backings are charged
+against the configured byte budget before new payload admission; duplicate hits
+and existing mappings remain valid even when no new allocation fits. A single
+owner maintenance thread reclaims dead witnesses once per second. Accounting
+errors disable new allocations, never evict live RAM. Record and process witness
+limits are 256 and 32 respectively. Conservatively retained whole files may
+exhaust capacity until old VM processes exit. Sealed segments, immediate
+re-adoption of old content and global scan grants are not yet
+implemented. Corrupt data or mapping failures still fail closed.
 Legacy macOS `physical` records keep their compressed meaning; use the explicit
 new `physical-pages` mode, never change an active state's configuration.
 
@@ -1114,17 +1135,66 @@ example state above, SOCKET is `/tmp/pvisor-pool/memory-pool/pool.sock` (the JSO
 record includes its canonical macOS `/private/tmp` spelling). No OpenSandbox
 bootstrap, API key, KVM or cgroup is required for this macOS path.
 
-On Linux, physical sharing remains the default. The VM scans resident 4 KiB pages and publishes
-immutable content-addressed pages into a bounded daemon memfd. Only candidates observed in different VM sessions enter the pool; candidates
-hold hashes without retaining page payloads. Equal bytes reuse one slot. After CPU/device quiescence and a live-byte recheck, the VM maps that
-slot privately: reads retain the shared physical page, while writes use kernel
-COW. This path does not require userfaultfd and does not compress unique pages.
-Local cold-RAM compression remains a separate userfaultfd mode.
+On Linux, physical sharing remains the default. The VM scans resident 4 KiB pages
+and publishes immutable content-addressed pages into a bounded daemon memfd.
+New candidates need cross-session fast-hash observations or an existing matching
+fast-hash bucket; these are hints and collisions can admit distinct slots within
+the same budgets. Candidates hold hashes without retaining page payloads. Only
+equal complete bytes reuse one slot. After CPU/device quiescence and a live-byte
+recheck, the VM maps that slot privately: reads retain the shared physical page,
+while writes use kernel COW. This path does not require userfaultfd and does not
+compress unique pages. Local cold-RAM compression remains a separate userfaultfd mode.
+
+Physical clients now negotiate versioned hash-first discovery before VM entry.
+Protocol v3 carries up to 256 unseeded XXH3-128 fingerprints, encoded as 16-byte
+little-endian values, plus opaque session-local page handles, without payloads.
+SHA-256 still identifies stored
+objects and verifies restores; unique probes and byte-equal existing-slot hits
+do not compute SHA-256. The daemon distinguishes unique observations, candidates needing materialization,
+pinned existing slots (with their strong identities) and reference-budget rejection.
+Materialization and fast-hash collision fallback send full snapshots through
+the existing socket backend. An intact different object releases its speculative
+pin before fallback; a corrupt slot or malformed reply still fails closed.
+Every returned slot is full-byte checked by the client, and live RAM is checked again under the VM
+CPU/device barrier; a fingerprint never authorizes a mapping by itself.
+Replies have bounded lengths and are received as complete frames before parsing.
+Materialization and release also use bounded batches; independent per-item
+admission/reference budgets remain in force. A release chunk validates all tokens
+before consuming any; earlier chunks may have completed if a later one fails.
+Old physical services, including discovery v1/v2, fail negotiation; drain
+dependent VMs and start a compatible service rather than replacing a live pool.
+
+The disposable fingerprint index is an in-memory hash table with bounded FIFO
+retirement, not a persistent RAM database. Private `config.json` accepts
+`max_candidates` independently of payload slots (default 131,072; omitted legacy
+values receive that default). Zero disables observation retention, not existing-slot
+lookup or its collision fallback. Candidate eviction never releases a pinned shared object.
+The strong SHA-256 object index remains authoritative for storage. A secondary
+ordered index stores one `(XXH3-128, SHA-256)` entry per live slot and removes it
+when that slot is collected. A bucket with multiple strong identities requests
+content-based publication instead of repeatedly choosing one colliding object.
+This index is bounded by existing slot capacity, not by observation count.
+An observation may retain one opaque page handle for its first session, never a
+VM address or page payload. A cross-session match issues at most one ready hint
+for that retained observation; each connected session has a 256-entry queue,
+dropped on disconnect. Hints are best-effort, acquire no slot/reference and may
+be stale; clients always resample and revalidate before committing. Pending hints
+ride ordinary discovery/statistics replies, without a callback socket or
+unsolicited stream frames. The store/VM session lifetime fences their fixed RAM
+topology; a session cannot be reused for another VM.
+Changing a live state's configuration remains unsupported. Payload/object and
+per-connection reference defaults are unchanged: this step does not raise VMA
+limits, enable direct process-memory access or centralize VM scan scheduling.
 
 The physical pager uses UKSM-inspired region scheduling: productive regions
 receive larger scan quotas, COW/unstable regions lose priority, and every region
 retains exploration work. Residency queries cover only selected regions. See
 [the scanner contract](../../docs/src/en/design/memory-optimization/deduplication.md#adaptive-scan).
+First observations and capacity rejection no longer count as poor region yield.
+The first two seconds of actual sampling and productive/hinted work use a
+worker wall-time rest ratio of at least 1:1; steady exploration uses 9:1, with
+quiet complete rounds still yielding at least 250 ms. There is no extra scan
+thread or CPU-percentage guarantee; publication and commit costs remain charged.
 
 Select `--memory-pool --memory-pool-mode compressed` for the Linux sealed
 compressed pool instead. Equal decoded 64 KiB blocks share an object across VM
@@ -1151,6 +1221,53 @@ Indexes, VM mappings, threads and allocator memory add overhead. Budget rejectio
 keeps the original page resident. An older compressed pool is not reused by the
 physical-sharing client; drain old VMs and use fresh pool state when upgrading.
 
+The foreground pool serves connections asynchronously on two Tokio I/O workers,
+with at most four blocking workers for the existing shared protocol engine,
+file operations and cleanup. Idle connections and disconnected peer-exit watches
+do not consume dedicated threads. The one generation-maintenance thread remains
+per owner. Linux pidfds and macOS process-event watches retain the existing
+proof-of-exit rule; closing a socket, timing out or cancelling its task never
+makes a mapped slot reusable. Empty sessions release admission without waiting
+for peer exit. Unexpected runtime/task failure conservatively retains uncertain
+pins and their connection permit until owner exit.
+Backend construction chooses exactly one physical or platform-compressed service;
+physical generation publication and its maintenance owner are created together.
+There is no separate synchronous physical/sealed production service.
+
+Connection admission is checked before spawning; disconnected pinned sessions
+still consume it. Request parsing validates sizes before payload allocation.
+Across the service at most 32 MiB of request/reply buffer capacity and four
+blocking jobs are admitted, including jobs whose awaiter was cancelled.
+Once an opcode arrives, its complete frame, queued work and response share a
+five-second absolute deadline; trickling bytes cannot renew it. Truly idle
+sockets have no expiry. Readiness advertises `async_sessions: true`.
+The default remains 32 connections: larger deployments require an explicit,
+fresh configuration and enough process FD capacity (sockets plus peer watches),
+payload/candidate budgets and host resources. This change alone is not a
+2–3K active-VM throughput or memory-savings validation.
+
+Linux connection gates (no guest/KVM required):
+
+```sh
+mise run test -- pvisor-daemon -- --test memory_pool --test-threads 1 \
+  -E 'test(async_pool_idle_connections_have_a_fixed_thread_bound)'
+mise run test -- pvisor-daemon -- --test memory_pool --test-threads 1 \
+  --run-ignored only --success-output immediate \
+  -E 'test(async_pool_three_thousand_idle_connections)'
+```
+
+The first gate opens 256 sockets; the manual gate opens 3000 and requires at
+least 6100 owner FDs. Both enforce at most eight owner threads, excess-connection
+rejection, existing FD negotiation and reuse of all empty-session admission.
+They do not simulate active VM publication traffic. Native macOS process-watch
+behavior and HVF workloads need separate platform validation.
+
+Linux VM file sharing also distinguishes clean immutable backing from anonymous
+RAM: DAX windows are excluded from scanning; completed READs of qualified physical
+immutable lowers can privately map their native file pages without pool tokens,
+hashing or uploads. COW pages and mutable/logical-placeholder files retain ordinary
+content discovery. See the [VM contract](../pvisor-vm/README.md#不可变文件-readmmap-的本地共享).
+
 Compressed-mode byte accounting includes frame headers and 4 KiB file-page
 rounding. Admission requires at least 1/8 savings after rounding plus a
 conservative 256-byte metadata allowance. The same object/connection/reference
@@ -1171,10 +1288,12 @@ nonresident RAM and leaves untouched capacity sparse. Shared reads do not restor
 private RAM; COW writes and scanning consume memory and CPU; scanning releases obsolete
 pool references after writes. Budget for the actual
 working set and startup/write peaks.
-The physical pool must stay alive while dependent VMs run; its loss fails those
-VMs. Compressed clients retain already delivered backing after service loss,
-but neither mode reconnects or silently replaces a stale socket. State-directory
-retention supports API restart, not pool-process or host-reboot recovery.
+Physical store references survive pool-process loss and can reconnect to a fresh
+generation without rebinding old page identities or tokens. Legacy v3 pools
+without witness records cannot be restarted in place; drain their VMs before
+replacing state. Linux sealed compressed clients retain delivered backing but
+do not reconnect; legacy macOS compressed restore still requires its live owner.
+State-directory retention does not provide host-reboot recovery.
 The VM/pool benchmark includes
 the pool component in one group; it does not establish full API/SDK conformance
 or production density.
@@ -1205,7 +1324,13 @@ an identity-pinned pidfd, and verifies restart reuses the unchanged live pool.
 These are service lifecycle contracts, not native guest or macOS acceptance.
 
 Standalone pool tests cover same-user compressed object sharing, budgets,
-manager shutdown/reopen, unavailable owners and stale-socket refusal. On Apple
+manager shutdown/reopen, unavailable owners and unsafe/legacy stale-socket
+refusal. Linux recovery tests kill a real physical pool, verify file refault,
+private COW and local restore, restart through `ensure_service`, then reconnect
+without rebinding old backing offsets or sending old tokens to the new publisher.
+Separate cases verify that a full retired reservation blocks new payload and
+that a live service lock prevents socket replacement. These are process/mapping
+contracts, not 2–3K-VM or workload-through-restart acceptance. On Apple
 Silicon, the opt-in native container case also checks cold-page publication in
 both VMs, cross-session objects, post-idle exec, private writes, stop/start,
 pool-loss termination and refusal to restart without the configured pool. It

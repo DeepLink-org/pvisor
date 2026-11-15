@@ -2846,6 +2846,7 @@ dependencies = [
  "pvisor",
  "pvisor-core",
  "pvisor-guest",
+ "pvisor-vm",
  "reqwest",
  "serde",
  "serde_json",

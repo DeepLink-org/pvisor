@@ -151,6 +151,7 @@ def main():
         primary_baseline="firecracker-block",
         preflight=args.preflight,
         samples=1 if args.preflight else args.samples,
+        physical_publication_health_required=True,
         arms=variants,
         patterns=["random-shared"],
         receipt=receipt,

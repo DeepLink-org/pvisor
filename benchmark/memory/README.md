@@ -193,6 +193,13 @@ and sampling work inside the group; external monitor and global ksmd are outside
 Compression also changes granularity and restore path, so this matrix alone does
 not isolate codec CPU. Physical mode never compresses payloads.
 
+Mapping evidence counts only writable private pool VMAs as guest COW mappings.
+Read-only validation/owner aliases are reported separately as
+`pool_verification_bytes` and `pool_verification_vmas`; their complete PSS and
+kernel costs still enter group totals. A reserved verification view does not
+prove any guest page was merged. Historical frozen reports keep their original
+fields and interpretation; new comparisons must use the same observer on both arms.
+
 Inputs must be frozen under a NEW `.data/` directory: `probe` is the release
 `pool_memory_case` example, `daemon` is `pvisor-daemon`, `firecracker` is stock,
 `kernel` is its reference ELF, `firmware` is libkrunfw, and `worker` is the static
@@ -284,6 +291,44 @@ comparison. `mise run test-py -- discover -s benchmark/memory -p test_pool_compa
 checks missing integrity acknowledgements, wrong digests, budget/swap failures,
 short scan windows, incomplete ownership and unexpected stock-Firecracker advice.
 
+An independent `--preflight --without-ksm --arms pvisor-off,pvisor-physical`
+subset is available when the administrator has left KSM disabled. It requires
+`run=0` throughout and uses the distinct `v4-ksm-off` condition schema. All four
+VMs, 64 MiB payloads, 60-second idle/30-second post-write windows, 58 integrity
+checks, budgets, placement and interference gates remain required. It cannot
+supply a formal cohort or a KSM/Firecracker comparison. No sysfs value is changed.
+`--embedded-fw` selects the probe's build-embedded kernel instead of a runtime
+library; independently frozen inputs must declare `embedded_fw: true` in their
+receipt and retain the exact kernel bytes, load/entry metadata and source/build
+provenance. Do not substitute a dummy firmware file or an installed old probe
+for a current-source embedded-FW build. Different firmware and host kernels
+remain separate from historical documentation measurements.
+Preparation preserves both policy switches in the generated semspec command.
+Current-source physical helpers use the runtime's authenticated `PhysicalClient`
+adapter rather than the legacy raw-client store. The
+[current-source qualification](DOCS_RETEST.md) records the completed preparation
+checks and preserves the incomplete attempts. The subsequent
+[repaired-pool results](REPAIRED_POOL_RESULTS.md) contain a complete six-condition
+off/physical N=1 preflight: 348 checks, zero interference and zero publication
+disable events in 12 physical VM logs. They report memory/CPU/readback trade-offs
+and write-after-sharing overhead, not a formal repeated or old/new comparison,
+and do not replace the published seven-arm or library cohorts.
+The subsequent [async-pool water-level retest](ASYNC_POOL_RESULTS.md) uses a
+fresh current-source release and an independently complete six-condition N=1
+subset. It retains a separate interfered attempt, reports idle/readback/post-write
+levels and CPU roles, and places r6 historical levels alongside without a version
+speedup claim. Static anonymous payloads do not exercise native immutable-file
+mapping, so this retest does not quantify the new READ/mmap path.
+The [post-cleanup retest](CLEANUP_POOL_RESULTS.md) independently rebuilds the
+cleaned implementation and completes the same six-condition N=1 protocol.
+Its pre-cleanup comparison is descriptive only; file-charge differences remain
+separate from PSS, and it supplies no causal cleanup speedup or DAX result.
+New static and library cohorts also require all four physical publisher logs
+and reject any `publication_disabled=true` transition, even after a reconnect.
+The result binds those log hashes, and analysis rechecks them. This prevents
+stopped publication from masquerading as lower scanning CPU. Older frozen
+cohorts retain their original contracts and bytes.
+
 `plot_pool.py` audits complete N=1 diagnostic cohorts. Historical cohorts with
 retired conditions require an explicit `--arms` selection of supported conditions.
 This produces a separate
@@ -315,10 +360,57 @@ outside this accounting. Whole-condition kernel peak and sampled idle peak are
 separate metrics. Formal analysis also rechecks all input/build/source receipts,
 frozen supporting harnesses and the hashes of monitor, PSS and guard observations.
 
+## Strict UKSM version regression A/B
+
+`version_compare.py` implements the separate
+[matched-version plan](UKSM_VERSION_AB_PLAN.md), not the seven-arm product
+comparison. Supply a prepared artifact directory with `preparation.json`,
+matched `A/inputs` and `B/inputs` receipts, source archives/manifests and guest
+supervisor bytes. The preparation must use the same source/build path,
+toolchain, FW, helper and workload; A changes only the common test entry,
+not its implementation. The supplied bytes are verified before each condition.
+
+Both receipts must record the identical nonempty `build_command` argv, including
+feature flags and target selection, and an identical `build_environment` mapping.
+Every key in `version_compare.BUILD_ENVIRONMENT_KEYS` must be present: use JSON
+`null` for unset flags, never omit them or infer defaults. The required controls
+cover Rust flags, compiler/wrappers, target linker, release/build-override profile
+variables, reproducibility, target directory, build concurrency and FW selection.
+Preparers must also record any additional build-affecting overrides they use;
+all recorded entries are compared without path normalization, since the build
+path is itself a matched control. Source manifests must bind the same `Cargo.lock`
+and repository `.cargo/config` / `.cargo/config.toml` bytes when present.
+Legacy receipts missing these controls are rejected for new strict comparisons;
+do not backfill or rewrite historical measurement receipts.
+
+```sh
+python3 benchmark/memory/version_compare.py --artifacts MATCHED_ARTIFACTS \
+  --output .data/uv-p0 --preflight --prepare
+# Execute the returned .input.json with semspec bench, then:
+python3 benchmark/memory/version_compare.py --artifacts MATCHED_ARTIFACTS \
+  --preflight-report COMPLETE_PREFLIGHT \
+  --output .data/uv-f0 --rounds 5 --prepare
+python3 benchmark/memory/version_compare.py --analyze COMPLETE_FORMAL
+```
+
+Preflight includes both off and physical modes for each version and content.
+The main matrix uses at least five adjacent randomized AB/BA physical pairs per
+content. It reuses the full KSM-disabled condition protocol, but has its own
+`pvisor-uksm-version-ab/v1` report and complete-matrix audit. All ordinary
+integrity, resource, placement, quiet-host and cleanup gates remain mandatory.
+Historical, incomplete and busy-host reports cannot be promoted into this
+experiment. Use NEW short workspace-owned `.data/` directories for long or
+background runs; turn-scoped scratch must not be their only evidence location.
+Archive completed runs under the owning benchmark's `.data/`, preserving raw
+bytes and hashes. Analysis reports paired differences/intervals and censored
+crossing brackets; an interval crossing zero is inconclusive, not proof of
+non-regression. An automatic non-inferiority PASS requires predeclared margins.
+
 ## Published curves and archived history
 
 The [bilingual technical analysis](../../docs/src/zh/lab-notes/vm-memory-performance-analysis.md)
-uses only the complete `q8` and `l4` preflights. It publishes idle charged-memory
+keeps its historical seven-arm section bound to the complete `q8` and `l4`
+preflights. It publishes idle charged-memory
 and PSS curves, with readback and CPU observations; post-write curves remain
 local. The public SVG files are byte-identical copies of each cohort's
 `derived/memory-curves.svg`. The additional library 0–5-second SVG is rendered
@@ -332,6 +424,38 @@ The documentation before cleanup is preserved in
 Original reports, failed executions, frozen sources and raw curves remain in their
 own directories. Historical and incomplete measurements are excluded from the
 current comparison. This documentation cleanup starts no new measurements.
+
+## Implementation curve comparison
+
+`compare_pool_plots.py` redraws, but never measures, the complete before/after
+cleanup off/physical cohorts. It rechecks the independent audits, frozen inputs
+and source evidence, worker/log/observation hashes and full six-condition grid.
+Idle, startup and post-write overlays retain raw samples, separate epochs and
+explicit N=1 labels; dashed/solid means before/after, teal/amber means off/physical.
+No smoothing, cross-cohort averaging or endpoint imputation is performed.
+
+Use Python with matplotlib installed and a NEW output directory:
+
+```sh
+python3 benchmark/memory/compare_pool_plots.py \
+  --before benchmark/memory/.data/async-file-retest-20261115-r2/curves \
+  --after benchmark/memory/.data/cleanup-retest-20261115-r1/curves \
+  --output benchmark/memory/.data/NEW-COMPARISON
+mise run test-py -- discover -s benchmark/memory -p test_compare_pool_plots.py
+```
+
+Inputs are local retained evidence, not provisioned by a fresh checkout. The
+optional `--publish docs/overrides/assets/benchmarks` copies SVGs only and refuses
+to overwrite existing files. PNGs, full source/output manifests and statistics
+remain local. The public engineering section is
+[the implementation comparison](../../docs/src/zh/lab-notes/vm-memory-performance-analysis.md#pool-implementation-comparison).
+
+Historical q8/l4 raw archives were unavailable on the replotting machine.
+Their published static/library/early SVG bytes are preserved and hash-checked,
+not digitized into synthetic samples. Published static-table levels provide a
+separately labelled historical reference, with different host kernel and
+unestablished firmware identity. No new seven-arm or library/DAX result is
+implied by the two-arm replot.
 
 ## PID-1 allocator reclaim and whole-VMM memory
 

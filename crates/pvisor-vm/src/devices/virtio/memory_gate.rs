@@ -1,8 +1,8 @@
 //! VM-local barrier for device RAM access, including retained descriptor slices.
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::{
-    Arc, Condvar, Mutex, OnceLock, Weak,
     atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
+    Arc, Condvar, Mutex, OnceLock, Weak,
 };
 use std::time::{Duration, Instant};
 use vm_memory::{GuestMemory, GuestMemoryMmap};
@@ -19,10 +19,29 @@ struct State {
     read_hints: Option<Arc<ReadHints>>,
 }
 
-/// Integer address ranges only: no RAM borrow, payload ownership or merge authority.
-/// At most 4096 page-aligned ranges (64 KiB of range storage) are retained.
+/// VM-local READ completion queues. Ordinary hints are integer ranges only:
+/// no RAM borrow, payload ownership or merge authority (4096 ranges, 64 KiB).
+/// The separate Linux file queue carries explicit immutable backing authority.
 #[derive(Default)]
-pub(crate) struct ReadHints(Mutex<VecDeque<(u64, usize)>>);
+pub(crate) struct ReadHints {
+    ranges: Mutex<VecDeque<(u64, usize)>>,
+    #[cfg(target_os = "linux")]
+    files: Mutex<VecDeque<ImmutableRead>>,
+    #[cfg(target_os = "linux")]
+    files_disabled: AtomicBool,
+}
+/// A completed READ from physically immutable native bytes, not a path/hash hint.
+/// The filesystem promises file contents and size remain stable for the VM's
+/// lifetime. The descriptor pins the inode while queued; mmap pins it afterward.
+/// A consumer must still validate RAM geometry and compare live bytes under
+/// the CPU/device barrier before replacing any mapping.
+#[cfg(target_os = "linux")]
+pub(crate) struct ImmutableRead {
+    pub(crate) file: Arc<std::fs::File>,
+    pub(crate) offset: u64,
+    pub(crate) address: u64,
+    pub(crate) length: usize,
+}
 pub(crate) const MAX_READ_HINT_RANGES: usize = 4096;
 impl ReadHints {
     pub(crate) fn submit(&self, address: u64, length: usize) {
@@ -37,7 +56,7 @@ impl ReadHints {
             return;
         }
         let length = (end - start) as usize;
-        let mut queue = self.0.lock().unwrap();
+        let mut queue = self.ranges.lock().unwrap();
         if let Some((previous, bytes)) = queue.back_mut() {
             let combined = bytes
                 .checked_add(length)
@@ -56,13 +75,64 @@ impl ReadHints {
     /// No queue lock may survive into the VM/device barrier.
     pub(crate) fn take(&self, pages: usize) -> Option<(u64, usize)> {
         let limit = pages.checked_mul(4096).filter(|n| *n != 0)?;
-        let mut queue = self.0.lock().unwrap();
+        let mut queue = self.ranges.lock().unwrap();
         let (address, length) = queue.front_mut()?;
         let count = (*length).min(limit);
         let result = (*address, count);
         *address += count as u64;
         *length -= count;
         if *length == 0 {
+            queue.pop_front();
+        }
+        Some(result)
+    }
+
+    /// At most 256 owned descriptors/ranges, independent of guest RAM size.
+    /// Overflow loses only acceleration; the ordinary READ/scanner still works.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn submit_file(&self, read: ImmutableRead) {
+        let mut queue = self.files.lock().unwrap();
+        if !self.file_mapping_enabled() {
+            return;
+        }
+        if queue.len() == 256 {
+            queue.pop_front();
+        }
+        queue.push_back(read);
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn file_mapping_enabled(&self) -> bool {
+        !self.files_disabled.load(Ordering::Acquire)
+    }
+
+    /// Lifetime VMA budget exhaustion ends only direct mapping. Ordinary
+    /// address hints and content discovery remain available.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn disable_file_mapping(&self) {
+        self.files_disabled.store(true, Ordering::Release);
+        self.files.lock().unwrap().clear();
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn take_file(&self, bytes: usize) -> Option<ImmutableRead> {
+        let limit = bytes & !4095;
+        if limit == 0 {
+            return None;
+        }
+        let mut queue = self.files.lock().unwrap();
+        let read = queue.front_mut()?;
+        let length = read.length.min(limit);
+        let result = ImmutableRead {
+            file: read.file.clone(),
+            offset: read.offset,
+            address: read.address,
+            length,
+        };
+        read.address += length as u64;
+        read.offset += length as u64;
+        read.length -= length;
+        if read.length == 0 {
             queue.pop_front();
         }
         Some(result)
@@ -116,11 +186,9 @@ impl SharedFreeReports {
     /// Called after remapping and releasing all retired pool references.
     pub(crate) fn complete(&self, report: &Arc<FreeReport>) -> std::io::Result<()> {
         let mut pending = self.0.lock().unwrap();
-        assert!(
-            pending
-                .as_ref()
-                .is_some_and(|current| Arc::ptr_eq(current, report))
-        );
+        assert!(pending
+            .as_ref()
+            .is_some_and(|current| Arc::ptr_eq(current, report)));
         *pending = None;
         report.done.store(true, Ordering::Release);
         report.event.write(1)
@@ -493,13 +561,63 @@ mod tests {
         for n in 0..=MAX_READ_HINT_RANGES {
             hints.submit(4096 + n as u64 * 8192, 4096);
         }
-        assert_eq!(hints.0.lock().unwrap().len(), MAX_READ_HINT_RANGES);
+        assert_eq!(hints.ranges.lock().unwrap().len(), MAX_READ_HINT_RANGES);
         assert_eq!(
             hints.take(1),
             Some((12288, 4096)),
             "oldest scheduling hint is evicted"
         );
     }
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn immutable_file_queue_bounds_descriptors_and_splits_without_losing_source_offsets() {
+        let hints = ReadHints::default();
+        let file = Arc::new(tempfile::tempfile().unwrap());
+        for index in 0..257 {
+            hints.submit_file(ImmutableRead {
+                file: file.clone(),
+                offset: index * 8192,
+                address: index * 16384,
+                length: 8192,
+            });
+        }
+        assert_eq!(hints.files.lock().unwrap().len(), 256);
+        assert_eq!(Arc::strong_count(&file), 257);
+        assert!(hints.take_file(4095).is_none());
+        let first = hints.take_file(4096).unwrap();
+        let tail = hints.take_file(8192).unwrap();
+        assert_eq!(
+            (first.address, first.offset, first.length),
+            (16384, 8192, 4096)
+        );
+        assert_eq!(
+            (tail.address, tail.offset, tail.length),
+            (20480, 12288, 4096)
+        );
+        assert_eq!(hints.files.lock().unwrap().len(), 255);
+        assert!(
+            hints.take(1).is_none(),
+            "integer hints and immutable authority stay separate"
+        );
+        hints.disable_file_mapping();
+        assert!(!hints.file_mapping_enabled());
+        assert!(hints.take_file(8192).is_none());
+        assert_eq!(
+            Arc::strong_count(&file),
+            3,
+            "queued file ownership is released"
+        );
+        hints.submit_file(ImmutableRead {
+            file: file.clone(),
+            offset: 0,
+            address: 4096,
+            length: 4096,
+        });
+        assert!(hints.take_file(4096).is_none());
+        hints.submit(4096, 4096);
+        assert_eq!(hints.take(1), Some((4096, 4096)), "ordinary hints survive");
+    }
+
     #[test]
     fn read_hint_installation_requires_drained_pager_and_is_vm_local() {
         let gate = Arc::new(MemoryGate::default());
@@ -518,10 +636,9 @@ mod tests {
         assert!(Arc::ptr_eq(&access.read_hints().unwrap(), &hints));
         let other = Arc::new(MemoryGate::default());
         assert!(other.enter().read_hints().is_none());
-        assert!(
-            gate.install_read_hints(Arc::new(ReadHints::default()))
-                .is_err()
-        );
+        assert!(gate
+            .install_read_hints(Arc::new(ReadHints::default()))
+            .is_err());
         drop(access);
         gate.close(Duration::ZERO).unwrap();
     }

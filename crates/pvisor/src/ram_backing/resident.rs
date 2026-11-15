@@ -295,6 +295,10 @@ impl LocalColdRamStore {
 impl pvisor_vm::api::ColdRamStore for LocalColdRamStore {
     type Object = LocalColdRamObject;
 
+    fn publication_ready(&mut self) -> bool {
+        true
+    }
+
     fn shared_mapping(&self, _: &Self::Object) -> Option<pvisor_vm::api::SharedRamMapping> {
         None
     }
@@ -306,6 +310,19 @@ impl pvisor_vm::api::ColdRamStore for LocalColdRamStore {
             owner: self.owner.clone(),
             content,
         })
+    }
+
+    fn put_batch(
+        &mut self,
+        blocks: &[pvisor_vm::api::ColdRamSample<'_>],
+    ) -> io::Result<Vec<io::Result<pvisor_vm::api::ColdRamDisposition<Self::Object>>>> {
+        Ok(blocks
+            .iter()
+            .map(|sample| {
+                self.put(sample.bytes)
+                    .map(pvisor_vm::api::ColdRamDisposition::Published)
+            })
+            .collect())
     }
 
     fn restore(&mut self, object: &Self::Object, output: &mut [u8]) -> io::Result<()> {
@@ -322,8 +339,23 @@ impl pvisor_vm::api::ColdRamStore for LocalColdRamStore {
         Ok(())
     }
 
+    fn release_batch(&mut self, objects: Vec<Self::Object>) -> io::Result<()> {
+        for object in &objects {
+            self.check_owner(object)?;
+        }
+        for object in objects {
+            self.release(object)?;
+        }
+        Ok(())
+    }
+
+    fn take_ready(&mut self) -> Vec<u64> {
+        Vec::new()
+    }
+
     fn stats(&mut self) -> io::Result<pvisor_vm::api::ColdRamPoolStats> {
         Ok(pvisor_vm::api::ColdRamPoolStats {
+            scope: pvisor_vm::api::ColdRamAccountingScope::Instance,
             encoded_bytes: self.pool.encoded_bytes() as u64,
             objects: self.pool.object_count() as u64,
             session_references: self.references,

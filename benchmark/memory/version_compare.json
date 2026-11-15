@@ -1,0 +1,3 @@
+{
+  "version-pairs": "$ python3 @REPO@/benchmark/memory/version_compare.py --artifacts @ARTIFACTS@ --output @OUTPUT@ --preflight-report @PREFLIGHT_REPORT@ --rounds 5"
+}

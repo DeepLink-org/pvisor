@@ -44,3 +44,6 @@ uuid = { workspace = true, features = ["v4", "serde"] }
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
 tower = { version = "0.5", features = ["util"] }
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+pvisor-vm.workspace = true

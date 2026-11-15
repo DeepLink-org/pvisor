@@ -387,6 +387,37 @@ THP 的内核直接保持基页；驻留页、完整字节与稀疏输出断言�
 
 冷 RAM pager 的状态机、采样/发布窗口、回收线程及 CPU/设备缺页恢复也在本 crate 内。`ColdRamStore` 是宿主存储适配契约：pVisor 负责实例本地 store 或受支持平台的 pool 授权、传输和诊断目录，VM 指针与映射状态不越过边界。`ColdRamOptions`、`ColdRamControl` 在所有平台都存在；不支持的后端返回明确错误，重复启动同一 VM 的 pager 会被拒绝。
 
+`ColdRamStore::put_batch` 在屏障外发布一批稳定副本，按输入顺序返回逐项结果；
+输入为 `ColdRamSample`，包含稳定副本与会话内非地址页编号；
+单批至多 256 项、总计 4 MiB，空批无副作用。只有 `Published` 取得一个引用，
+`Observed`、`Unmatched`、`Limited`、`Rejected` 均不取得引用或授权替换 RAM；
+`Limited` 包括容量不足或池锁暂时拥塞，均不作为低收益反馈。
+整批错误或结果数量不符是 runner 必须终止的协议错误。
+Linux pager 和 HVF 物理页 worker 使用该契约，物理模式仍分别限于每批
+256 个 4 KiB 页或 64 个 16 KiB 页。本地及 sealed 压缩 store 保留逐块编码语义。
+批量发现、hash 与传输由 store 负责，不把 VM 地址导出给 daemon，也不跳过
+屏障内的最终字节复核。HVF 无新对象且无旧 pin 的拒绝项不进入提交屏障。
+`release_batch` 只接收已经解除映射依赖的引用，错误可能发生在部分分块完成后；
+不得重试已经消费的句柄。`take_ready` 不做 I/O，只取走之前 store 调用接收的
+最多 256 个提示。页编号只在固定拓扑的单个 VM/store 会话内有效，不是宿主或
+guest 地址；忽略未知编号，旧提示也必须重新捕获、发布和复核，不能沿用旧快照。
+
+`publication_ready` 在 pager 锁和 CPU/设备屏障外检查可选发布是否可用；
+存储可以在这里批量刷新延后释放并尝试有界重连。不可用时不再捕获 RAM，
+并释放 snapshot scratch，但 Linux 的本地 COW 引用维护、free-page 确认与
+已有映射继续运行。物理 store 可将连接丢失隔离为无新引用的 `Limited`，
+前提是保留每个旧对象的确切 backing，并继续隔离不确定的远端引用。
+内容损坏、非法协议数据和不可确定的映射错误仍然致命，不能笼统忽略 I/O 错误。
+`ColdRamPoolStats::scope` 区分当前池、实例 store 和发布丢失后的本地 pin；
+本地 pin 字节不代表所有退役 backing 的实际保留内存，跨会话共享状态也未知。
+
+Linux 对同一个 `Arc<File>` 所有者缓存只读权限、大小封印和文件长度，并持有
+一个只读校验映射；替换 owner 必须重新验证，不能以可复用的裸 FD 数字作为键。
+每页仍检查对齐、范围以及完整 backing/live 字节，不在提交屏障中重复 pread/fcntl。
+只读校验映射不代表 guest RAM 已共享，其页表/PSS 成本必须纳入整组核算。
+物理页快照缓冲在活跃批次间复用，Linux 在进入屏障前准备，最多保留一批 1 MiB；
+空批会释放缓存，压缩模式不额外持有这份物理页 scratch。
+
 Linux x86_64 支持实验性的 runtime-owned userfaultfd pager，由默认关闭的 `VmSettings.cold_ram_compression` / `--vm-cold-ram-compression` 自动启动，使用 pVisor 的 `LocalColdRamStore`，不是 FUSE `vm.ram_compression`。`ColdRamControl::start_cold_pager` 使用相同 API；Linux 的缺页与静止窗口由 runtime 内部持有，外部 `install_ram_fault_handler`、`with_ram_quiesced`、`experimental_ram_residency` 及 `FrozenMemory::experimental_ram_blocks` 返回不支持。编译能力不代表权限：必须具备 syscall 或 `/dev/userfaultfd` 的内核缺页授权，缺少授权时启动失败，不回退或修改全局 sysctl。
 
 pager 仅接受 4 KiB 宿主页上的普通私有匿名可写 RAM；严格匹配身份与拓扑后排除 builder 授权的不可变 raw 固件，拒绝未知 raw、文件/COW、shared 和 hugetlb RAM，排除设备窗口。`tee`、`aws-nitro` 构建及已有 device prepare/dedup advice 被拒绝。实例本地及 daemon sealed 压缩使用 64 KiB 块，Linux daemon 物理池使用独立的 4 KiB 页；压缩模式每批最多暂存 4 MiB；两次 CPU 停驻/设备 lease 排空窗口分别捕获与复核，编码发布期间 guest 继续运行。持有校验对象后才 discard；refault 校验长度、checksum 与完整 `UFFD_COPY` 后唤醒访问。UFFD 压缩的 balloon 空闲页报告仍确认但不 discard；物理共享模式的协同回收见下文。此策略是驱逐/refault 探测，不是真正的读访问热度检测器，也不是普通 pause。
@@ -436,20 +467,98 @@ EOF、错误、取消或越界完成数不登记。提示只包含宿主地址�
 诊断 `file_hint_candidates_total` 统计被选为优先候选的次数，包含重访，
 不代表实际成功合并、文件命中数或内存节省。
 
+### 不可变文件 READ/mmap 的本地共享
+
+Linux 物理 pager 另行接收带原生 FD 的不可变 READ 完成记录，不把普通
+地址提示升级为共享权限。资格来自显式 `immutable_filesystem`，或 Overlay
+实际打开的、声明为 `LayerMutability::Immutable` 的物理 lower。
+upper、可变 lower、普通只读目录、虚拟文件以及逻辑 backend 的占位 inode
+均不授权此路径。旧 OPEN 在 copy-up 后仍绑定原 lower，而非重新打开 merged path。
+
+成功 READ 的完整 4 KiB 页带有源文件 offset 和宿主 RAM 范围；相邻 descriptor
+片段合并，短读尾页不映射。pager 在屏障外读取源数据，停 CPU 并排空 device lease
+后核对 RAM 范围、驻留状态和实时字节，再按连续相等范围建立 `MAP_PRIVATE`
+文件映射。此路径不计算内容 hash、不上传页、不申请 daemon pool token。
+多个 VM 使用同一原生 inode/offset 时由 host page cache 直接共享；
+内容相同但 inode 不同的文件不会因此自动合并，仍需后续统一不可变文件存储。
+
+已映射的干净文件页（包括没有 present PTE、可从原文件 refault 的页）不再进入
+内容采样；后台仍检查有界 pagemap 元数据。写入形成 present anonymous COW 后
+重新进入 UKSM-inspired 发现路径，不能笼统跳过所有 mmap。balloon 复用仍以匿名
+零映射替换文件范围，避免旧文件字节复活。映射自身固定 inode，READ 关闭、路径
+移除或 pool daemon 退出不影响其 refault；调用方仍须履行文件物理不可变的承诺。
+
+每 VM 最多排队 256 个 FD/range，每次唤醒最多准备 1 MiB、共享 4 ms 屏障工作预算；
+累计最多进行 4096 次文件范围映射以限制 VMA 分裂。过期、范围不符、内容已变化、
+预算不足、源读取失败或队列溢出只失去本次加速，不改变普通 READ 的结果。
+真正的映射 syscall 失败仍使 runner 失败关闭。`PVISOR_MEMORY_FILE_HINTS=0`
+同时关闭普通提示与该路径；压缩模式、macOS、Windows 不启用该路径。
+诊断 `pvisor-cold-file` 的 `mapped_bytes_total` 是累计映射流量，不是物理节省，
+`mapping_operations_total` 用于核对映射预算。
+到达映射上限后停止捕获原生 FD，清空待处理文件队列；普通地址提示继续工作。
+
+Linux/KVM 功能验收（不是性能 benchmark）使用 `immutable_read_case`：
+为新建物理池启动一个 caller-owned `pvisor-daemon memory-pool`，然后执行：
+
+```sh
+mise exec -- rustc --edition=2021 --target x86_64-unknown-linux-musl -C linker=rust-lld -O \
+  crates/pvisor-vm/src/probes/immutable_read_guest.rs -o target/immutable-read-guest
+mise exec -- cargo build --locked -p pvisor-vm --example immutable_read_case -j 1
+target/debug/examples/immutable_read_case target/immutable-read-guest KERNEL_BUNDLE POOL_SOCKET
+```
+
+`KERNEL_BUNDLE` 含 `kernel.bin` 和带 `guest_addr`/`entry_addr` 的 `kernel.json`；
+固件须支持 virtio-fs DAX。每个新 guest 限时 60 秒，依次检查不可变 rootfs
+的普通 mmap、关闭提示的同一路径及独立 DAX share（确认实际 DAX inode 属性）。
+检查 READ 后映射转换、完整字节、私有 COW 和宿主源文件不变，并断言只有普通
+不可变 READ 启用本地映射诊断。探针不依赖 Python rootfs，不替代多 VM 性能测量。
+
+下一步的 [UKSM 设计收敛目标](UKSM_DESIGN.md) 以固定原版的周期配额、采样步长、
+全局评估和成本 EMA 为基线，保留现有 hash 与批量通信优化。
+该目标尚未迁入运行时；以下内容描述当前实现，不能作为目标已完成的声明。
+
 物理页扫描借鉴 [UKSM 的区域分层设计](https://www.usenix.org/system/files/conference/fast18/fast18-xia.pdf)，
 Linux 与 Apple Silicon 共用私有 `cold_ram_scan.rs`，每个 RAM mapping 分成
 最多 2 MiB 的区域，区域不会跨越映射边界。四级配额按字节为每轮
 64 KiB / 256 KiB / 1 MiB / 2 MiB：Linux 4 KiB 页对应 16/64/256/512 页，
 macOS 16 KiB 页对应 4/16/64/128 页，初始最低级。至少采样 32 KiB
-（Linux 8 页、macOS 2 页）、成功合并比例达到 10% 且变化数低于合并数一半时升一级。
+（Linux 8 页、macOS 2 页）、扣除 COW/复核失败等变化后的净合并比例达到 10%
+且变化数低于合并数一半时升一级。
 观察到 COW、发布复核失败或共享页提前释放，会增加变化计数；变化数达到
 合并数一半时回最低级，其余低收益轮次降一级。已全部共享的区域也会降频。
 每个区域保留最低平均探测配额，带随机起点和互质步长的遍历在重复前覆盖
 区域所有页；这不保留逐页随机排列数组。按区域轮转，每次最多取 256 KiB
 （Linux 64 页、macOS 16 页），单批最多考察 16 MiB 的页索引
 （4096/1024 个），选择阶段保留 8 ms 软时间预算；即使 hint 阶段因调度暂停耗尽预算，
-也至少访问一个有界后台区域，避免整轮跳过后台扫描。完整轮次之间
-至少休息 250 ms。低优先级区域的实际发现延迟仍取决于 RAM 大小、冷却期
+也至少访问一个预算已到期的有界后台区域。软预算在有界访问之间检查；
+后端必须检查已领取访问内的全部页，不能在回调中超时退出而消耗未检查的后台配额。
+等待预算的区域保留未完成配额，不因提示或时间预算耗尽而跳过后台工作。首次实际采样后的两秒
+为一次性的快速发现窗口，每批至少休息与工作墙钟相同的时间；窗口结束后，
+所有批次至少休息工作墙钟的九倍，成功合并和 ready hint 不再续长全局快速窗口。
+区域升降级、提示优先级与后台覆盖保持不变；排队提示可绕过完整轮次的
+250 ms 安静等待，但不能绕过批次休息预算。无提示的稳态完整轮次仍至少休息
+250 ms。整批休息和轮次等待均锚定上一批完成的绝对时间；Linux 接收新 ready hint 后
+重新计算最早扫描期限，不继续沿用已失效的安静/层级等待，也不重新累计已完成的休息。
+独立的设备繁忙重试期限不会被提示提前。等待 I/O 也计入工作，不能将此解释为宿主 CPU 百分比保证。
+Linux 四层另外分别拥有工作/休息目标 0.2% / 2.5% / 5% / 10%：
+页面状态查询的墙钟成本记到实际访问层，其余复制、屏障和发布成本按本批
+各层采样页数分摊，无样本时按探测数分摊。每层独立推迟下一次可运行时间；
+高收益层可继续运行，不能花掉低收益层的预算。ready hint 只能在所属层
+预算到期后参与采样，等待期间不丢弃提示或消耗后台配额。
+单层附加休息最多一秒，防止响应被无限推迟；整批九倍工作墙钟的休息
+仍是独立下界，不会被这个单层上界放宽。因此层级比例是软目标，
+并非强制的宿主 CPU 百分比；每 VM worker 单独记账，不代表全宿主统一预算。
+Linux 用同一 worker 的独立 250 ms 维护期限轮转检查旧共享引用，每次最多
+16 MiB 页索引、每个 pagemap 查询最多 2 MiB，并保留 8 ms 软预算。
+仅有已固定引用的范围才读取 PTE 元数据；仅完整 native 页的 present-anonymous
+PTE 才证明 COW 并解除旧引用，缺失 PTE、仍共享的文件页和未知状态继续固定旧槽。
+维护不读 RAM、不复制/哈希/发布内容、不进入 CPU/设备屏障，也不解除页面冷却；
+引用在释放 pager 锁后批量交给 store。单纯维护唤醒不提前或续长发现扫描的绝对期限，
+其有界成本与发现预算分开，整组实际 CPU 仍须测量。完整轮转延迟随 RAM 大小、
+worker/IPC 调度变化，不是固定墙钟 SLA。
+HVF 的 COW 仍需在屏障内解除 shadow 后才能释放引用，不能照搬 Linux PTE
+证明；在该后端具备独立所有权维护前，不启用附加层级延后，保留原有整批节奏。
+低优先级区域的实际发现延迟仍取决于 RAM 大小、冷却期
 和 VM/IPC 调度；这些参数是当前策略常量，不是实测 CPU 百分比保证。
 512 MiB RAM 额外区域元数据不超过 32 KiB，不改变既有逐页状态大小。
 
@@ -458,10 +567,18 @@ macOS 16 KiB 页对应 4/16/64/128 页，初始最低级。至少采样 32 KiB
 任意连续 32 轮覆盖该区域所有页，
 首次探索、高收益区域和不足 2 MiB 的尾部保留原节奏。这样减少整区域
 元数据查询而不延长完整遍历的轮次上界；不是按无限指数退避跳过低收益区域。
-来自文件提示的成功反馈可直接提升区域并取消等待。上述轮次仍受实际
-工作耗时和 250 ms 休息影响，不等于固定墙钟 SLA。
+来自文件提示的成功反馈可直接提升区域并取消等待。首次观察和容量拒绝不再
+降低区域收益评价；真正未匹配的重访仍降低优先级。daemon ready hint 最多占
+半批，并按区域合并查询，后台仍保留探索机会；提示可提前结束短期观察冷却，
+剩余冷却超过 250 ms 的页不会提前解除冷却。上述轮次受实际工作耗时与退避影响，
+不是固定墙钟 SLA。
 
-这份 Rust 策略独立实现区域调度，没有移植 UKSM 内核补丁或 APH 部分页哈希。
+参考原实现的四层预算、成本反馈和净收益评价，参见固定版本
+[UKSM 0.1.2.6 / Linux 5.17 patch](https://github.com/dolohow/uksm/blob/acb96fbc9e04e7aa967e8e9af011494c77f58aed/v5.x/uksm-5.17.patch)。
+原版 `Full` 默认 governor 的最高 CPU 上限为 95%；本实现不照搬该值，也不声称
+与原版 governor 等价。原版使用 kernel task runtime 和每页成本 EMA 计算
+层级扫描量；这里继续使用有界字节配额及保守的用户态墙钟分摊，包含 IPC 等待。
+这份 Rust 策略是独立实现，没有移植 GPL 内核代码或 APH 部分页哈希。
 完整内容哈希、字节比较、两阶段发布及 COW 所有权契约继续决定能否合并。
 `PVISOR_EXPERIMENTAL_MEMORY_METRICS=1` 增加 `pvisor-shared-scan` 诊断，记录
 区域级别、探测、成功合并、COW 和变化计数；计数不等于净物理节省。
@@ -1058,6 +1175,9 @@ guest 物理写入产生 MMIO exit。宿主映射保留 MAP_PRIVATE 的 COW 保�
 返回 `Unsupported`。DAX 与 snapshot profile、restore、freeze/capture 互斥，
 不通过省略映射状态生成不可恢复快照。该阶段只提供显式不可变 share 的
 数据路径，不声明现有 CLI 工作负载或启动时间已经加快。
+独立 DAX 窗口始终排除在 RAM 扫描范围之外；guest 使用 `dax=never` 时，
+满足上述资格的普通 READ 页可改由本地文件映射共享。可写 merged rootfs
+没有因此获得 `FUSE_SETUPMAPPING` 或透明 DAX 支持。
 
 ## Guest 目录镜像
 

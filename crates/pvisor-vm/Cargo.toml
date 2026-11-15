@@ -90,6 +90,10 @@ name = "readonly_dax_case"
 path = "src/probes/readonly_dax_case.rs"
 
 [[example]]
+name = "immutable_read_case"
+path = "src/probes/immutable_read_case.rs"
+
+[[example]]
 name = "guest_exit_case"
 path = "src/probes/guest_exit_case.rs"
 
