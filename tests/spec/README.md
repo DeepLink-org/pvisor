@@ -100,6 +100,14 @@ Success normally deletes scenario resources; failure, XFAIL and `--keep` retain
 inputs, exact output streams and verdict metadata. Retaining evidence does not
 leave a workload intentionally running.
 
+Scenario directories stay under the host's `/tmp`: safe execution gives that
+path a private view, and moving a case outside it changes the tested policy.
+Keep `PVISOR_CASE_ARTIFACTS` under `/tmp` for those scenarios, not under the
+checkout or a runner's home directory. CI writes reports and setup logs to
+`RUNNER_TEMP` separately, then archives both roots without relocating resources
+or changing their permissions. The completed archive includes hidden files and
+symlink identities; the uploader never traverses the extracted OCI rootfs.
+
 On Linux the fixture is a child subreaper: it first terminates its process group,
 then kills and reaps its adopted descendants, including setsid/double-fork
 children. It never kills by command name or scans unrelated processes. Cleanup

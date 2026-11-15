@@ -66,6 +66,11 @@ file = "scripts/tasks/build.sh"
 description = "Scrut 功能规格；--feature 选择功能，--suite doc/stage/use/vm 选择历史 ID 域"
 file = "scripts/tasks/cases.sh"
 
+[tasks.archive-feature-evidence]
+description = "Archive owned CI evidence with original permissions and link identities"
+hide = true
+run = 'bash scripts/tasks/archive-feature-evidence.sh "$@"'
+
 [tasks.cases-feature]
 description = "单个 feature 的原生 Scrut 规格；保留显式 XFAIL，缺前提仍失败"
 file = "scripts/tasks/cases-feature.sh"

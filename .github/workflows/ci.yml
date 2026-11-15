@@ -52,11 +52,15 @@ jobs:
       FEATURE: ${{ matrix.feature }}
       CASE_GATE: ${{ github.event.inputs.case_gate || 'normal' }}
       PVISOR_CASE_KEEP: "1"
+      # --safe gives host /tmp a private view. Keep scenario paths in that
+      # namespace; RUNNER_TEMP lives under /home and has different semantics.
+      PVISOR_CASE_ARTIFACTS: /tmp/pvisor-feature-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.feature }}
     steps:
       - uses: actions/checkout@v4
       - name: Initialize feature evidence before prerequisite setup
         run: |
           mkdir -p "$RUNNER_TEMP/feature-evidence"
+          mkdir -m 700 "$PVISOR_CASE_ARTIFACTS"
           {
             uname -a
             printf 'feature=%s\ngate=%s\ncommit=%s\n' "$FEATURE" "$CASE_GATE" "$GITHUB_SHA"
@@ -145,7 +149,6 @@ jobs:
       - name: Run every discovered case of this feature
         shell: bash
         env:
-          PVISOR_CASE_ARTIFACTS: ${{ runner.temp }}/feature-evidence
           PVISOR_RUN_HOME: ${{ runner.temp }}/feature-runs
         run: |
           set -euo pipefail
@@ -154,14 +157,17 @@ jobs:
           if [[ "$CASE_GATE" == strict ]]; then task=cases-feature-strict; fi
           mise run "$task" -- "$FEATURE" \
             --subject-bin "$RUNNER_TEMP/feature-runtime/pvisor" \
-            --output "$PVISOR_CASE_ARTIFACTS/report.json" \
-            2>&1 | tee "$PVISOR_CASE_ARTIFACTS/task.log"
+            --output "$RUNNER_TEMP/feature-evidence/report.json" \
+            2>&1 | tee "$RUNNER_TEMP/feature-evidence/task.log"
+      - name: Archive feature evidence without changing OCI permissions
+        if: always()
+        run: mise run archive-feature-evidence
       - name: Upload feature report and preserved case resources
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: feature-${{ matrix.feature }}-linux-${{ github.event.inputs.case_gate || 'normal' }}
-          path: ${{ runner.temp }}/feature-evidence
+          path: ${{ runner.temp }}/feature-evidence.tar.gz
           if-no-files-found: error
           retention-days: 7
 

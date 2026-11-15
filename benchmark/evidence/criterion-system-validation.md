@@ -119,14 +119,14 @@ The integrated checkout also passed:
 - `mise run test-py`: 211 tests with 16 platform/environment skips.
 - Release-binary strict feature cases: Docker 2, Compose 2, config 4, isolation 3.
 - `mise run test-scripts`: includes 21 scenario resource/preservation tests and
-  four feature-capability/discovery tests.
+  11 feature-capability/discovery and evidence-archive tests.
 - Native Docker/Compose task partitions: 36 and 9 default tests passed.
 - `mise run docs-build -- --require-recorded`: 135 bilingual pairs and 272 HTML
   pages passed after independent review of the 27 changed translation pairs.
 
 Ignored and skipped tests are unexecuted coverage, not hardware acceptance.
 Formatting, Python/workflow lint, the standalone Criterion Rust formatter and
-all 80 task declarations were checked separately.
+all 81 task declarations were checked separately.
 
 Cleanup contracts include bounded observation of asynchronous descendant exit,
 explicit rejection of live processes and permission/I/O errors, and Darwin

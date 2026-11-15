@@ -29,4 +29,6 @@ if [[ "${2:-}" == --hardware ]]; then
   }
   extra=(--run-ignored only --test-threads 2)
 fi
-mise run test-rust -- pvisor-cli -- "${targets[@]}" -E "$filter" --no-tests fail "${extra[@]}"
+# Bash 3.2 treats an empty array as unset under nounset. Keep strict mode and
+# forward optional hardware arguments only when the array has elements.
+mise run test-rust -- pvisor-cli -- "${targets[@]}" -E "$filter" --no-tests fail ${extra[@]+"${extra[@]}"}
