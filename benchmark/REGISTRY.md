@@ -880,6 +880,15 @@ Design: 负载、对照、控制变量与有效样本判据。
   - 不访问公网，不代表真实模型 API 的延迟。
 - **历史入口：** `v1/network.py`、`ubuntu_vm_network.py`。
 
+### B-NETWORK-PROFILE-ENG：网络热路径的编译优化收益 {#b-network-profile-eng}
+
+- **入口：** `network/profile_ab.json` 登记 `network/profile_ab.py` 的独立随机配对工程协议；不启用未准备的 `network.json`，不更新历史用户页。
+- **角色：** engineering A/B；复现规则见 `network/README.md`，原始证据、冻结制品和报告保存在 `network/.data/`。
+- **问题与结论：** 真实 KVM guest 中，建连、小包、新连接 RPC、长连接 RPC、合成 DNS、定时小块流、单连接与并发上传/下载分别有多少延迟和有效吞吐；只将 `pvisor-overlaynet`、`smoltcp` 从 release 的 `opt-level="z"` 改为 `3` 是否改善它们。报告同轮配对中位数差异及 bootstrap 95% CI，不把全程序 performance profile 的效果归因于网络栈。
+- **设计：** 同源码、Cargo.lock、features、固件和静态 Rust worker，基线为原始 release，候选仅通过 Cargo package profile 覆盖上述两个 crate。宿主原生使用相同 worker，仅作绝对参考。服务只绑定 loopback，guest 通过合成 DNS 的 `localhost.localdomain` 映射和正常授权 host TCP connector 访问；预检要求宿主解析仅返回 loopback，不访问公网。一个新 VM 为一个独立样本，2 vCPU/256 MiB、固定四个逻辑 CPU 亲和性，服务使用另外两个逻辑 CPU；guest RAM 不冒充宿主硬限制。每轮三个条件 seeded 随机交替，3 轮预热、至少 30 轮正式运行；场景次序同轮相同且随机，不把同 VM 内的请求当独立样本。
+- **时钟与正确性：** worker 内的单调网络时钟排除 VM 启停、程序加载和准备；另保留完整进程耗时和宿主 CPU 观察但不混为网络指标。每条连接有限读写超时，逐字节校验位置相关 payload，上传由服务完整校验后回执，RPC 检查完整回显，DNS 检查事务 ID/回答，stream 检查内容与完整事件数。所有命令必须零退出，所有预定场景/样本齐全；任意失败使批次无效，保留已完成结果和失败日志，不剔除慢有效样本、不补跑选取较快批次。
+- **环境与边界：** 记录亲和性、源码和制品摘要、每轮 loadavg、CPU/内存/网络线程观察及并行 cargo/rustc 工作。正式测量发现外部构建即使整批无效并停止；不终止外部任务，不改宿主 sysctl、代理、DNS、CPU governor 或缓存。公网、TLS、丢包/WAN、多 VM peer 与跨机网络均未测。双峰先报告簇比例/中位数；30 样本的 P95 只作参考，不报告 P99。
+
 ### B-PEER-NET-ENG：同机直连转发的可靠性与热路径成本 {#b-peer-net-eng}
 
 - **JSON 入口状态：** 未准备 [network/peer.json](network/peer.json)（拒绝测量）。

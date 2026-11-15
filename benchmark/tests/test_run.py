@@ -131,3 +131,10 @@ class TableRunnerContracts(unittest.TestCase):
         for value in ("missing", "startup/timing.render"):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 RUN.resolve_entry(value)
+
+    def test_network_profile_requires_explicit_frozen_artifacts(self):
+        template = RUN.resolve_entry("network/profile_ab")
+        with patch.object(RUN, "load_prepare") as prepare:
+            with self.assertRaisesRegex(ValueError, "frozen --baseline/--candidate/--worker"):
+                RUN.run_table(template, "/semspec")
+            prepare.assert_not_called()

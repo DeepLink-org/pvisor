@@ -27,12 +27,15 @@ class WindowsContainerContractTests(unittest.TestCase):
             instance = store / "instances" / ("a" * 32)
             instance.mkdir(parents=True)
             (instance / "record.json").write_bytes(b'{"phase":"starting"}')
+            (instance / "owner.log").write_bytes(b"owner failure-" * 100)
             (instance / "boot.stderr").write_bytes(b"prefix-" + b"failure" * 100)
             (instance / "root.ext4").write_bytes(b"raw disk must not be copied")
             (store / "blobs").mkdir()
             (store / "blobs/payload").write_bytes(b"image bytes")
             items = contracts.snapshot_store(store, output, limit=32)
-            self.assertEqual(len(items), 2)
+            self.assertEqual(
+                {item["file"] for item in items}, {"record.json", "owner.log", "boot.stderr"}
+            )
             for item in items:
                 path = output / item["instance"] / item["file"]
                 self.assertEqual(path.read_bytes(), (instance / item["file"]).read_bytes()[-32:])

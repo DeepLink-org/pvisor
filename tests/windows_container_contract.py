@@ -26,7 +26,14 @@ def snapshot_store(store, destination, limit=1024 * 1024):
             or not instance.is_dir()
         ):
             continue
-        for name in ["record.json", "boot.stdout", "boot.stderr", "stdout.log", "stderr.log"]:
+        for name in [
+            "record.json",
+            "owner.log",
+            "boot.stdout",
+            "boot.stderr",
+            "stdout.log",
+            "stderr.log",
+        ]:
             path = instance / name
             if path.is_symlink() or not path.is_file():
                 continue
@@ -265,26 +272,30 @@ def main():
 
         env_file = args.output / "literal.env"
         env_file.write_text("GREETING=from-file\nOTHER=literal $HOME\n", encoding="utf-8")
-        out, _ = run(
-            "run",
-            "--rm",
-            "--cpus",
-            "2",
-            "-m",
-            "384m",
-            "-w",
-            "/created",
-            "--env-file",
-            str(env_file),
-            "-e",
-            "GREETING=from-cli",
-            "--entrypoint",
-            "/bin/sh",
-            args.image,
-            "-c",
-            'test "$PWD" = /created && test "$GREETING" = from-cli && printf "%s\\n" "$OTHER"',
-        )
-        assert out == b"literal $HOME\n"
+        # Fast exits must publish and deliver a terminal receipt every time,
+        # not merely leave the expected output before losing the owner pipe.
+        for _ in range(32):
+            out, _ = run(
+                "run",
+                "--rm",
+                "--cpus",
+                "2",
+                "-m",
+                "384m",
+                "-w",
+                "/created",
+                "--env-file",
+                str(env_file),
+                "-e",
+                "GREETING=from-cli",
+                "--entrypoint",
+                "/bin/sh",
+                args.image,
+                "-c",
+                'test "$PWD" = /created && test "$GREETING" = from-cli && printf "%s\\n" "$OTHER"',
+            )
+            assert out == b"literal $HOME\n"
+            assert listing() == [], "fast --rm returned before removing its instance"
         run("run", "-w", "C:\\not-a-guest-path", args.image, "true", code=125)
 
         box = background(

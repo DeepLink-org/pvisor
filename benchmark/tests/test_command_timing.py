@@ -179,6 +179,20 @@ class RegistryTests(unittest.TestCase):
                 )
                 self.assertTrue(path.with_suffix(".py").is_file())
                 continue
+            if row["status"] == "explicit-python-paired-network-profile":
+                self.assertEqual(row["benchmark_id"], "B-NETWORK-PROFILE-ENG")
+                self.assertEqual(row["role"], "engineering A/B")
+                self.assertEqual(row["entry"], "network/profile_ab.json")
+                self.assertEqual(
+                    table,
+                    {
+                        "paired-network-profile": "$ python3 @REPO@/benchmark/network/profile_ab.py "
+                        "--baseline @BASELINE@ --candidate @CANDIDATE@ --worker @WORKER@ "
+                        "--firmware @FIRMWARE@ --output @OUTPUT@"
+                    },
+                )
+                self.assertTrue(path.with_suffix(".py").is_file())
+                continue
             existing_python_tables = {
                 "explicit-python-paired-prepared-images": (
                     "B-LAZY-STARTUP",
