@@ -1075,6 +1075,11 @@ impl<S: ColdRamStore> Pager<S> {
             );
         }
         let started = std::time::Instant::now();
+        let metrics = std::env::var_os("PVISOR_EXPERIMENTAL_MEMORY_METRICS").is_some();
+        let mut classify_us = 0;
+        let mut backing_us = 0;
+        let mut remap_us = 0;
+        let mut retire_us = 0;
         let pages = self.replaced.len();
         let mut sparse_zero_bytes = 0;
         let mut copied_bytes = 0;
@@ -1083,6 +1088,7 @@ impl<S: ColdRamStore> Pager<S> {
         // Reuse bounded staging storage; never pass live guest mappings to writeback.
         let mut copy_buffer = Vec::new();
         while let Some(&index) = self.replaced.first() {
+            let classify_started = metrics.then(Instant::now);
             let range = self.pages.range(index);
             let region = self
                 .memory
@@ -1121,16 +1127,19 @@ impl<S: ColdRamStore> Pager<S> {
                         break;
                     }
                     let live = unsafe { std::slice::from_raw_parts(next.start as *const u8, 4096) };
-                    if live.iter().any(|&byte| byte != 0) {
+                    if live != [0; 4096] {
                         break;
                     }
                     count += 1;
                 }
+                classify_us += classify_started.map_or(0, |t| t.elapsed().as_micros());
+                let backing_started = metrics.then(Instant::now);
                 if zero_backing_range(backing.file(), offset, count * 4096)? {
                     sparse_zero_bytes += count * 4096;
                 } else {
                     copied_bytes += count * 4096;
                 }
+                backing_us += backing_started.map_or(0, |t| t.elapsed().as_micros());
             } else {
                 copy_buffer.clear();
                 copy_buffer.extend_from_slice(&bytes);
@@ -1145,7 +1154,7 @@ impl<S: ColdRamStore> Pager<S> {
                         break;
                     }
                     let live = unsafe { std::slice::from_raw_parts(next.start as *const u8, 4096) };
-                    if live.iter().all(|&byte| byte == 0) {
+                    if live == [0; 4096] {
                         break;
                     }
                     copy_buffer.extend_from_slice(live);
@@ -1153,10 +1162,14 @@ impl<S: ColdRamStore> Pager<S> {
                 }
                 // Do not replace mappings or retire pins until the entire run
                 // has been written successfully (including short-write retries).
+                classify_us += classify_started.map_or(0, |t| t.elapsed().as_micros());
+                let backing_started = metrics.then(Instant::now);
                 backing.file().write_all_at(&copy_buffer, offset)?;
+                backing_us += backing_started.map_or(0, |t| t.elapsed().as_micros());
                 copied_bytes += copy_buffer.len();
                 copied_runs += 1;
             }
+            let remap_started = metrics.then(Instant::now);
             let mapped = unsafe {
                 libc::mmap(
                     range.start as *mut libc::c_void,
@@ -1172,17 +1185,20 @@ impl<S: ColdRamStore> Pager<S> {
             if mapped == libc::MAP_FAILED {
                 return Err(io::Error::last_os_error());
             }
+            remap_us += remap_started.map_or(0, |t| t.elapsed().as_micros());
             remap_runs += 1;
+            let retire_started = metrics.then(Instant::now);
             for index in index..index + count {
                 if let Some(object) = self.pages[index].cold.take() {
                     self.retired.push(*object);
                 }
                 self.replaced.remove(&index);
             }
+            retire_us += retire_started.map_or(0, |t| t.elapsed().as_micros());
         }
-        if std::env::var_os("PVISOR_EXPERIMENTAL_MEMORY_METRICS").is_some() {
+        if metrics {
             eprintln!(
-                "pvisor-shared-reattach pages={pages} logical_bytes={} elapsed_us={} copied_bytes={copied_bytes} sparse_zero_bytes={sparse_zero_bytes} copied_runs={copied_runs} remap_runs={remap_runs}",
+                "pvisor-shared-reattach pages={pages} logical_bytes={} elapsed_us={} copied_bytes={copied_bytes} sparse_zero_bytes={sparse_zero_bytes} copied_runs={copied_runs} remap_runs={remap_runs} classify_us={classify_us} backing_us={backing_us} remap_us={remap_us} retire_us={retire_us}",
                 pages * 4096,
                 started.elapsed().as_micros()
             );

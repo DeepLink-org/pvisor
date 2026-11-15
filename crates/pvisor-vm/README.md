@@ -2021,3 +2021,11 @@ physical sharing or dirty history and never changes mapping authority. Failed
 reference reads are reported as unknown. Diagnostic reads can fault pages in
 and extend the real pause; `diagnostic_us` is separate from reattachment time.
 Use separate diagnostic runs, never treat these as uninstrumented latency data.
+
+Reattachment metrics also split `classify_us` (live-byte checks, run discovery
+and staging copies), `backing_us` (zero/pwrite), `remap_us` (mmap), and
+`retire_us` (reference retirement and tracked-page removal). Timers are enabled
+only with `PVISOR_EXPERIMENTAL_MEMORY_METRICS`; they cover successful runs,
+exclude the optional content census, and do not include later offload commit.
+The sum can be slightly below `elapsed_us` because loop overhead and per-run
+microsecond rounding are excluded. These timings do not identify cache ownership.
