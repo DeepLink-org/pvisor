@@ -388,7 +388,7 @@ jobs:
           } | tee "$CONTRACT_LOGS/environment.txt"
           if [[ "$SUITE" == bats ]]; then
             bats --version | tee -a "$CONTRACT_LOGS/environment.txt"
-            bats --tap tests/podman/system 2>&1 | tee "$CONTRACT_LOGS/bats.tap"
+            bats --tap --print-output-on-failure tests/podman/system 2>&1 | tee "$CONTRACT_LOGS/bats.tap"
           else
             go version | tee -a "$CONTRACT_LOGS/environment.txt"
             # Discover every active test; stable hashing assigns each exactly once.

@@ -69,7 +69,8 @@ pvisor run --rm alpine:3.20 echo hello
 在支持的 Unix 命令范围内，`alias docker=pvisor` 使用同一套 Session 运行时：
 根命令 `inspect` 返回元数据，`kill` 向当前执行发送信号，`export` 导出已停止容器的
 rootfs tar。未知命令直接报错，不会作为主机任务执行。原生任务使用显式的 `spawn`
-或 `pvisor -- COMMAND`；`inspect --files` 选择任务的文件系统视图。
+或 `pvisor [SESSION_OPTIONS] -- COMMAND`，也保留仅含选项的 `--config` / `--spec`
+文件执行入口；`inspect --files` 选择任务的文件系统视图。
 Shell alias 不会重定向 Docker SDK 的 socket，也不会替换子进程查找的可执行文件。
 
 #### Agent style stagebox

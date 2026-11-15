@@ -217,7 +217,37 @@ fn command_offset(args: &[OsString]) -> usize {
 
 fn normalize_default_spawn(mut args: Vec<OsString>, command: &clap::Command) -> Vec<OsString> {
     let offset = command_offset(&args);
-    if args.get(offset).is_some_and(|arg| arg == "--") {
+    // Native shorthand must be explicit: a workload separator, or a file-backed
+    // invocation with no positional command. Parse only the option prefix using
+    // spawn's own declarations; never scan a Docker/extension command's arguments
+    // or reinterpret an unsupported command (even after --config) as a host task.
+    let explicit_session = args.get(offset).is_some_and(|arg| {
+        if arg == "--" {
+            return true;
+        }
+        if !arg.to_str().is_some_and(|arg| arg.starts_with('-')) {
+            return false;
+        }
+        let end = args[offset..]
+            .iter()
+            .position(|arg| arg == "--")
+            .map_or(args.len(), |index| offset + index);
+        command.find_subcommand("spawn").is_some_and(|spawn| {
+            spawn
+                .clone()
+                .try_get_matches_from(
+                    std::iter::once(OsString::from("spawn"))
+                        .chain(args[offset..end].iter().cloned()),
+                )
+                .is_ok_and(|matches| {
+                    !matches.contains_id("command")
+                        && (end < args.len()
+                            || matches.contains_id("config")
+                            || matches.contains_id("spec"))
+                })
+        })
+    });
+    if explicit_session {
         args.insert(offset, "spawn".into());
     }
     // clap propagates globals by replacement across parser levels, not append.
@@ -551,6 +581,49 @@ mod feature_parser_tests {
             );
         }
     }
+    #[test]
+    fn root_session_options_require_a_boundary_or_file_backed_invocation() {
+        for args in [
+            vec![
+                "pvisor", "--name", "smoke", "--stdio", "capture", "--", "true",
+            ],
+            vec!["pvisor", "--timeout", "100ms", "--", "sleep", "10"],
+            vec!["pvisor", "--config", "./pvisor.toml"],
+            vec![
+                "pvisor",
+                "--spec",
+                "./run-spec.json",
+                "--result-file",
+                "./result.json",
+                "--stage",
+                "./stage",
+            ],
+        ] {
+            assert!(
+                matches!(parse(&args).command, Command::Spawn(_)),
+                "{args:?}"
+            );
+        }
+        let command = Cli::command();
+        for args in [
+            vec!["pvisor", "unknown-command", "--", "true"],
+            vec!["pvisor", "--config", "./docker", "images"],
+            vec![
+                "pvisor", "--config", "./docker", "run", "image", "--", "true",
+            ],
+            vec!["pvisor", "--name", "smoke", "unknown-command"],
+            vec!["pvisor", "--unknown-option", "--", "true"],
+        ] {
+            let normalized =
+                normalize_default_spawn(args.iter().map(OsString::from).collect(), &command);
+            assert_ne!(normalized[1], "spawn", "{args:?}");
+            assert!(
+                command.clone().try_get_matches_from(normalized).is_err(),
+                "{args:?}"
+            );
+        }
+    }
+
     #[test]
     fn stage_is_an_agent_command_immediately_after_spawn() {
         let mut command = Cli::command();

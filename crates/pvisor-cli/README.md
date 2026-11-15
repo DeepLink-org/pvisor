@@ -417,8 +417,11 @@ documented under [Windows container commands](#windows-container-commands).
 
 `pvisor run` creates a container, optionally with Linux staged binds as described
 below; `spawn` retains its existing Session stage/review/apply semantics.
-Unknown command names and leading Session options fail closed. Use explicit
-`spawn` for native task options, or `pvisor -- COMMAND` for a workload boundary.
+Unknown command names fail closed. Native tasks use explicit `spawn` or
+`pvisor [SESSION_OPTIONS] -- COMMAND`; options-only file-backed `--config` /
+`--spec` invocations remain supported. Leading options are parsed using spawn's
+declarations, but never reinterpret positional commands such as
+`pvisor --config ./docker images` as host workloads.
 This makes a literal `alias docker=pvisor` safe from accidental host-command fallback.
 Each container is a `Session<ContainerProfile>` with its own Linux VM and supervisor,
 started as the current host user. No

@@ -12,6 +12,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
+const MAX_SESSION_BYTES: u64 = 64 * 1024 * 1024;
+
 /// Durable continuation phase of a Session, independent of an Execution's live pause state.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -263,10 +265,19 @@ impl<Profile: serde::de::DeserializeOwned> Session<Profile> {
                 // read-only snapshot; multiple links would alias authority.
                 && metadata.nlink() <= 1
                 && metadata.mode() & 0o077 == 0
-                && metadata.len() <= 64 * 1024 * 1024,
+                && metadata.len() <= MAX_SESSION_BYTES,
             "Session record must be owned/private, regular, without hardlink aliases and at most 64 MiB"
         );
-        let session: Self = serde_json::from_reader(file.take(64 * 1024 * 1024 + 1))?;
+        // serde_json's reader is unbuffered; passing a File would issue a read
+        // syscall per byte on every lifecycle observation. Read the verified
+        // descriptor in bulk and enforce the bound even if it grows after stat.
+        let mut bytes = Vec::with_capacity(metadata.len() as usize);
+        file.take(MAX_SESSION_BYTES + 1).read_to_end(&mut bytes)?;
+        ensure!(
+            bytes.len() as u64 <= MAX_SESSION_BYTES,
+            "Session record exceeds 64 MiB"
+        );
+        let session: Self = serde_json::from_slice(&bytes)?;
         session.validate_root(root)?;
         Ok(Some(session))
     }
@@ -691,6 +702,54 @@ impl Session {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn session_record_bulk_read_preserves_complete_json_validation() {
+        use std::io::Write;
+
+        let root = tempfile::tempdir().unwrap();
+        let profile = serde_json::json!({"payload": "雪\t".repeat(16 * 1024)});
+        let session = Session::from_profile(
+            "session".into(),
+            root.path().into(),
+            String::new(),
+            SessionState::Created,
+            SessionKind::Container,
+            String::new(),
+            profile.clone(),
+        )
+        .unwrap();
+        session.write().unwrap();
+        let path = root
+            .path()
+            .join(super::super::super::session_execution::STATE);
+        let read = || Session::<serde_json::Value>::read_profile(root.path());
+        assert_eq!(read().unwrap().unwrap().profile(), &profile);
+
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap();
+        file.write_all(&vec![b' '; 16 * 1024]).unwrap();
+        assert_eq!(read().unwrap().unwrap().profile(), &profile);
+        file.write_all(b"{}").unwrap();
+        assert!(read().is_err(), "trailing JSON must not be ignored");
+
+        session.write().unwrap();
+        let alias = root.path().join("aliased.json");
+        std::fs::hard_link(&path, alias).unwrap();
+        assert!(read().is_err(), "bulk reads must retain authority checks");
+
+        session.write().unwrap();
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_len(MAX_SESSION_BYTES + 1)
+            .unwrap();
+        assert!(read().is_err(), "oversized records must not be read");
+    }
+
     fn fixture() -> (
         tempfile::TempDir,
         Session,

@@ -75,7 +75,8 @@ For the supported Unix command profile, `alias docker=pvisor` uses the same
 Session runtime: root `inspect` reports metadata, `kill` signals the current
 execution, and `export` writes a stopped container rootfs tar. Unknown commands
 fail rather than executing a host workload. Native tasks use explicit `spawn`
-or `pvisor -- COMMAND`; `inspect --files` selects a task filesystem view.
+or `pvisor [SESSION_OPTIONS] -- COMMAND`; options-only `--config` / `--spec`
+invocations remain supported. `inspect --files` selects a task filesystem view.
 A shell alias does not redirect SDK Docker sockets or subprocess executable lookup.
 
 #### Agent style stagebox
