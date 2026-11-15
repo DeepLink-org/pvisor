@@ -1,0 +1,249 @@
+"""Stage-driver policy and result oracles; native execution is mocked."""
+
+import json
+import os
+import stat
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+
+from tests import stage_chaos as chaos
+from tests.fixtures import workspace
+
+
+class SafetyTests(unittest.TestCase):
+    def test_owner_mode_and_symlink_rejected(self):
+        with workspace() as (root, _):
+            file = root / "binary"
+            file.write_text("frozen")
+            file.chmod(0o700)
+            real_lstat = Path.lstat
+
+            # /tmp is intentionally rejected; mock only ancestor metadata so the
+            # test workspace can exercise the leaf's real permissions/links.
+            def metadata(path):
+                if path == file or path == root / "link":
+                    return real_lstat(path)
+                return os.stat_result((stat.S_IFDIR | 0o755, 1, 1, 1, os.getuid(), 0, 0, 0, 0, 0))
+
+            with patch.object(Path, "lstat", metadata):
+                self.assertEqual(chaos.safe_ancestors(file), file)
+                file.chmod(0o720)
+                with self.assertRaises(ValueError):
+                    chaos.safe_ancestors(file)
+                file.chmod(0o700)
+                (root / "link").symlink_to(file)
+                with self.assertRaises(ValueError):
+                    chaos.safe_ancestors(root / "link")
+            with patch.object(
+                Path,
+                "lstat",
+                return_value=os.stat_result(
+                    (stat.S_IFDIR | 0o755, 1, 1, 1, os.getuid() + 10001, 0, 0, 0, 0, 0)
+                ),
+            ):
+                with self.assertRaises(ValueError):
+                    chaos.safe_ancestors(file)
+
+    def test_world_writable_sticky_ancestor_rejected(self):
+        with workspace() as (root, _):
+            real_lstat = Path.lstat
+
+            def metadata(path):
+                info = list(real_lstat(path))
+                if path == root.parent:
+                    info[stat.ST_MODE] |= stat.S_ISVTX | 0o777
+                return os.stat_result(info)
+
+            with (
+                patch.object(Path, "lstat", metadata),
+                self.assertRaisesRegex(ValueError, "unsafe writable ancestor"),
+            ):
+                chaos.safe_ancestors(root)
+
+    def test_fresh_directory_and_delete_guards(self):
+        with workspace() as (root, _):
+            # Ownership policy is independently tested above. Only bypass /tmp.
+            with patch.object(chaos, "safe_ancestors", side_effect=lambda path: Path(path)):
+                output = chaos.fresh_output(root / "evidence")
+                with self.assertRaises(FileExistsError):
+                    chaos.fresh_output(output)
+                case = output / "case-0000001"
+                case.mkdir(mode=0o700)
+                external = root / "external"
+                external.mkdir()
+                (external / "sentinel").write_text("untouched")
+                (case / "link").symlink_to(external, target_is_directory=True)
+                for unsafe in [root, external, output, output / "other"]:
+                    with self.assertRaises((AssertionError, FileNotFoundError)):
+                        chaos.delete_case(output, unsafe)
+                chaos.delete_case(output, case)
+                self.assertEqual((external / "sentinel").read_text(), "untouched")
+                case.symlink_to(external, target_is_directory=True)
+                with self.assertRaises(AssertionError):
+                    chaos.delete_case(output, case)
+                case.unlink()
+                case.mkdir(mode=0o755)
+                with self.assertRaises(AssertionError):
+                    chaos.delete_case(output, case)
+                (output / chaos.MARKER).unlink()
+                with self.assertRaises(AssertionError):
+                    chaos.delete_case(output, case)
+
+    def test_snapshot_no_follow_content_mode_and_identity(self):
+        with workspace() as (root, _):
+            tree = root / "tree"
+            tree.mkdir()
+            file = tree / "file"
+            file.write_text("one")
+            (tree / "link").symlink_to(root / "missing")
+            before = chaos.snapshot(tree)
+            self.assertEqual(before, chaos.snapshot(tree))
+            self.assertIn("inode", before["file"])
+            self.assertIn("ctime_ns", before["file"])
+            self.assertNotIn("atime_ns", before["file"])
+            self.assertEqual(before["link"]["link"], str(root / "missing"))
+            file.chmod(0o600)
+            self.assertNotEqual(before, chaos.snapshot(tree))
+            file.write_text("two")
+            self.assertNotEqual(before["file"]["sha256"], chaos.snapshot(tree)["file"]["sha256"])
+
+    def test_deadline_and_timeout_caps(self):
+        self.assertEqual(chaos.remaining_timeout(100, 80, now=0), 30)
+        self.assertEqual(chaos.remaining_timeout(100, 80, now=79), 1)
+        with self.assertRaises(chaos.BudgetExpired):
+            chaos.remaining_timeout(100, 80, now=80)
+        for seconds in ["nan", "inf", "0", "-1", "86401"]:
+            with self.assertRaises(SystemExit):
+                chaos.main(
+                    [
+                        "--binary",
+                        "unused",
+                        "--firmware",
+                        "unused",
+                        "--output",
+                        "unused",
+                        "--seed",
+                        "1",
+                        "--seconds",
+                        seconds,
+                    ]
+                )
+
+    def test_summary_counts_and_aborted_case_without_vm(self):
+        with workspace() as (root, _):
+
+            def driver(name):
+                options = chaos.parser().parse_args(
+                    [
+                        "--binary",
+                        str(root / "unused"),
+                        "--firmware",
+                        str(root / "unused"),
+                        "--output",
+                        str(root / name),
+                        "--seed",
+                        "17",
+                        "--seconds",
+                        "10",
+                        "--rounds",
+                        "2",
+                    ]
+                )
+                return chaos.Driver(options)
+
+            with patch.object(chaos, "safe_ancestors", side_effect=lambda path: Path(path)):
+                normal = driver("normal")
+                with (
+                    patch.object(normal, "setup"),
+                    patch.object(normal, "run_case", return_value="pass"),
+                    patch("builtins.print"),
+                ):
+                    self.assertEqual(normal.run(), 0)
+                summary = json.loads((normal.root / "summary.json").read_text())
+                self.assertEqual(summary["completed_rounds"], 2)
+                self.assertEqual(summary["round_counts"]["chain"], 1)
+                self.assertEqual(summary["round_counts"]["conflict"], 1)
+                self.assertFalse(summary["aborted"])
+                self.assertLessEqual(summary["active_elapsed"], summary["wall_elapsed"])
+                aborted = driver("aborted")
+                with (
+                    patch.object(aborted, "setup"),
+                    patch.object(
+                        aborted, "run_case", side_effect=chaos.BudgetExpired("case deadline")
+                    ),
+                    patch("builtins.print"),
+                ):
+                    self.assertEqual(aborted.run(), 1)
+                summary = json.loads((aborted.root / "summary.json").read_text())
+                self.assertTrue(summary["aborted"])
+                self.assertEqual(summary["completed_rounds"], 0)
+                self.assertEqual(summary["attempted_rounds"], 1)
+                self.assertEqual(summary["fault_injection"], "not_injected")
+                incomplete = driver("incomplete")
+                with (
+                    patch.object(incomplete, "setup"),
+                    patch.object(incomplete, "run_case", side_effect=["miss", "unknown_verified"]),
+                    patch("builtins.print"),
+                ):
+                    self.assertEqual(incomplete.run(), 2)
+                summary = json.loads((incomplete.root / "summary.json").read_text())
+                self.assertEqual(summary["completed_rounds"], 0)
+                self.assertEqual(summary["finished_rounds"], 2)
+                self.assertEqual(summary["outcomes"]["miss"], 1)
+                capped = driver("capped")
+                capped.last_progress -= 61
+                with patch("builtins.print") as progress:
+                    capped.progress()
+                    self.assertTrue(progress.call_args.kwargs["flush"])
+                capped.options.max_evidence_mib = 0
+                with self.assertRaises(chaos.BudgetExpired):
+                    capped.emit("oracle", actual="payload")
+                capped.events.close()
+
+    def test_time_budget_finishes_between_cases_without_fabricating_a_pass(self):
+        with workspace() as (root, _):
+            options = chaos.parser().parse_args(
+                [
+                    "--binary",
+                    "unused",
+                    "--firmware",
+                    "unused",
+                    "--output",
+                    str(root / "budget"),
+                    "--seed",
+                    "1",
+                    "--seconds",
+                    "10",
+                ]
+            )
+            with patch.object(chaos, "safe_ancestors", side_effect=lambda path: Path(path)):
+                driver = chaos.Driver(options)
+                with (
+                    patch.object(driver, "setup"),
+                    patch.object(driver, "run_case", return_value="pass") as run_case,
+                    patch("builtins.print"),
+                ):
+                    self.assertEqual(driver.run(), 0)
+                summary = json.loads((driver.root / "summary.json").read_text())
+                self.assertEqual(run_case.call_count, 1)
+                self.assertEqual(summary["completed_rounds"], 1)
+                self.assertFalse(summary["aborted"])
+                self.assertIn(
+                    '"event": "budget_complete"', (driver.root / "evidence.jsonl").read_text()
+                )
+
+    def test_completion_unknown_is_not_cancelled(self):
+        run = dict(state="cancelled", run_id="r", execution_id="a", finished_at_unix_ms=1)
+        completion = dict(result=dict(run), bundle_blake3="a" * 64)
+        self.assertTrue(chaos.committed_completion(run, completion))
+        self.assertFalse(chaos.committed_completion(run, None))
+        completion["result"]["execution_id"] = "another"
+        self.assertFalse(chaos.committed_completion(run, completion))
+        completion["result"]["execution_id"] = "a"
+        completion["result"]["failure"] = {"kind": "unknown"}
+        self.assertFalse(chaos.committed_completion(run, completion))
+
+
+if __name__ == "__main__":
+    unittest.main()

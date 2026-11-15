@@ -580,15 +580,7 @@ fn explicit_default_execution_remains_available() {
 }
 
 #[test]
-fn cli_has_two_binaries_and_integrates_cache() {
-    let manifest: toml::Value = toml::from_str(include_str!("../Cargo.toml")).unwrap();
-    let bins: Vec<_> = manifest["bin"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|bin| bin["name"].as_str().unwrap())
-        .collect();
-    assert_eq!(bins, ["pvisor", "pvisor-replay"]);
+fn cache_help_is_integrated_without_retired_service_commands() {
     let output = Command::new(env!("CARGO_BIN_EXE_pvisor"))
         .arg("cache")
         .arg("--help")

@@ -8,7 +8,7 @@
 # run_cli 0 compose up -d
 # Disabled: no Compose frontend. Local build contracts are active in 070-build.bats.
 # Buildx, remote/stdin contexts, ADD, secret/cache/SSH mounts, layer caching,
-# custom --ignorefile and Podman-specific flags remain unsupported; see REVIEW.md.
+# custom --ignorefile and Podman-specific flags remain unsupported; see README.md#coverage-and-limits.
 
 # Source: 035-logs.bats, 045-start.bats, 065-cp.bats, 120-load.bats,
 # 125-import.bats, 126-commit.bats, 130-kill.bats.

@@ -141,7 +141,7 @@ for macOS interactive testing, then inspect the Run with `pvisor review` and
 choose `pvisor apply` or `pvisor drop`.
 
 The tests use standard-library unittest in an isolated temporary directory. Run
-`PVISOR_TEST_ZCODE=1 mise run test-py -- tests/test_zcode_integration.py`;
+`PVISOR_TEST_ZCODE=1 mise run test-py -- tests.regression.test_zcode_integration`;
 `PVISOR_BIN` selects the CLI. `WORK_ROOT` still selects the workspace for example runs.
 The standard example runner still runs 01–04 unless 05 is selected explicitly.
 

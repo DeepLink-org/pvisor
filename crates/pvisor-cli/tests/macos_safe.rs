@@ -87,13 +87,12 @@ print('state-write-ok')
 }
 
 #[test]
+#[ignore = "requires macFUSE; run mise run test-macos-fuse"]
 fn filesystem_sandbox_stages_reviews_and_applies_on_macos() {
-    if !macfuse_is_installed() {
-        eprintln!(
-            "skipping macOS safe-profile smoke test: install macFUSE to exercise staged writes"
-        );
-        return;
-    }
+    assert!(
+        macfuse_is_installed(),
+        "required macFUSE installation is unavailable"
+    );
 
     let temporary = tempfile::Builder::new()
         .prefix("pvmac")
@@ -147,12 +146,6 @@ fn filesystem_sandbox_stages_reviews_and_applies_on_macos() {
         .arg(&outside)
         .arg(&outside_secret);
     let output = command.output().expect("run macOS safe profile");
-    if !output.status.success()
-        && String::from_utf8_lossy(&output.stderr).contains("file system is not available")
-    {
-        eprintln!("skipping macOS safe-profile smoke test: macFUSE is installed but unavailable");
-        return;
-    }
     assert!(
         output.status.success(),
         "stdout:\n{}\nstderr:\n{}",
@@ -247,11 +240,12 @@ fn filesystem_sandbox_stages_reviews_and_applies_on_macos() {
 }
 
 #[test]
+#[ignore = "requires macFUSE; run mise run test-macos-fuse"]
 fn deny_all_blocks_ip_and_host_unix_sockets_on_macos() {
-    if !macfuse_is_installed() {
-        eprintln!("skipping macOS Seatbelt network test: macFUSE is not installed");
-        return;
-    }
+    assert!(
+        macfuse_is_installed(),
+        "required macFUSE installation is unavailable"
+    );
 
     let temporary = tempfile::Builder::new()
         .prefix("pvmacnet")
@@ -316,12 +310,6 @@ raise SystemExit(0 if inet_code in denied and loopback_code == 0 and host_code i
         .arg(&outside_socket)
         .output()
         .expect("run macOS deny-all profile");
-    if !output.status.success()
-        && String::from_utf8_lossy(&output.stderr).contains("file system is not available")
-    {
-        eprintln!("skipping macOS deny-all test: macFUSE is installed but unavailable");
-        return;
-    }
     assert!(
         output.status.success(),
         "stdout:\n{}\nstderr:\n{}",
@@ -351,11 +339,12 @@ raise SystemExit(0 if inet_code in denied and loopback_code == 0 and host_code i
 }
 
 #[test]
+#[ignore = "requires macFUSE; run mise run test-macos-fuse"]
 fn required_sandbox_blocks_original_files_and_direct_sockets_but_allows_its_proxy() {
-    if !macfuse_is_installed() {
-        eprintln!("skipping required sandbox integration: macFUSE is not installed");
-        return;
-    }
+    assert!(
+        macfuse_is_installed(),
+        "required macFUSE installation is unavailable"
+    );
     let temporary = tempfile::Builder::new()
         .prefix("pvstrict")
         .tempdir_in("/tmp")

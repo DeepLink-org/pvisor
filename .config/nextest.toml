@@ -5,32 +5,46 @@ fail-fast = false
 status-level = "fail"
 final-status-level = "fail"
 
+[profile.rootless]
+# Keep capability-suite selection and results in the native runner.
+default-filter = 'binary(=rootless_local) | binary(=run_config_cli) | binary(=prepared_rootfs_cli)'
+retries = 0
+fail-fast = false
+
+[profile.rootless.junit]
+path = "junit.xml"
+
+[profile.macos-fuse]
+# Run with --run-ignored only; the Seatbelt-only macos_safe test stays default.
+default-filter = '''
+binary(=macos_safe) |
+(binary(=run_config_cli) & test(=safe_preset_reaches_the_run_and_reports_its_limits)) |
+(binary(=session_checkpoint_cli) &
+ (test(=inspect_launch_errors_clean_owned_mount_roots_and_preserve_the_proposal) |
+  test(=workspace_fork_copies_files_and_preimages_and_retains_source_checkpoint)))
+'''
+retries = 0
+fail-fast = false
+
 # The real-time TCP recovery contract needs both guest stacks and backend threads.
 [[profile.default.overrides]]
 filter = 'package(=pvisor-overlaynet) & binary(=peer_network) & test(=tcp_guests::tcp_duplex_recovers_from_loss_duplication_and_reordering)'
 threads-required = "num-test-threads"
 
-# These test process-output backpressure and draining a full durable FIFO, not
-# contention with unrelated tests. Concurrent execs/fsyncs on hosted macOS can
-# consume the existing one-second probe or ten-second drain budget. Reserve all
-# slots without changing production deadlines, queue capacity, or assertions.
+# Concurrent execs/fsyncs on hosted macOS can consume the one-second output probe
+# or ten-second FIFO drain budget. Reserve all slots for these deadline checks.
 [[profile.default.overrides]]
 filter = 'package(=pvisor-gateway) & (test(=injection::process::tests::large_output_does_not_deadlock_on_a_pipe) | test(=engine::tests::scheduling::one_bounded_fifo_reports_overload_and_shutdown_drains_accepted_tail))'
 threads-required = "num-test-threads"
 
-# This test bounds resolver readiness and cancellation to five seconds each.
-# On macOS, concurrent first execs of copied Mach-O frontends can remain in
-# _dyld_start longer than the readiness budget, before the resolver is invoked.
-# Reserve the runner's slots rather than weakening deadlines or skipping checks.
+# Concurrent cold Mach-O launches can stall before main on macOS and consume
+# the five-second resolver readiness budget.
 [[profile.default.overrides]]
 filter = 'package(=pvisor-cli) & binary(=command_extensions) & test(=session_pool_startup_remains_cancellable_while_the_companion_waits)'
 threads-required = "num-test-threads"
 
-# This checkout-local fixture temporarily mounts FUSE in the host mount namespace.
-# CI places the checkout under HOME; another safe Session staging HOME would
-# inherit that mount and correctly reject an unsupported nested mount. Reserve
-# all runner slots (across binaries), not just a group shared by selected tests.
-# Keep the fixture's literal-path/backing checks and production fail-closed rule.
+# This fixture mounts FUSE beneath the checkout. Reserve all slots so concurrent
+# Sessions staging HOME do not inherit it as an unsupported nested mount.
 [[profile.default.overrides]]
 filter = 'package(=pvisor-cli) & binary(=rootless_local) & test(=safe_shell_supports_nested_stages_without_exposing_their_backing)'
 threads-required = "num-test-threads"

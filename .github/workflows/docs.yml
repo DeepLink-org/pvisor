@@ -9,7 +9,9 @@ on:
       - 'tools/semspec/**'
       - 'scripts/*docs*.py'
       - 'scripts/check-reference.py'
-      - 'tests/test_docs.py'
+      - 'tests/unit/test_docs.py'
+      - 'tests/unit/test_semspec_tables.py'
+      - 'tests/fixtures.py'
       - 'mise.toml'
       - 'mise.lock'
       - 'tests/tasks.toml'
@@ -27,7 +29,9 @@ on:
       - 'tools/semspec/**'
       - 'scripts/*docs*.py'
       - 'scripts/check-reference.py'
-      - 'tests/test_docs.py'
+      - 'tests/unit/test_docs.py'
+      - 'tests/unit/test_semspec_tables.py'
+      - 'tests/fixtures.py'
       - 'mise.toml'
       - 'mise.lock'
       - 'tests/tasks.toml'
@@ -62,7 +66,7 @@ jobs:
           shared-key: docs-semspec
           workspaces: tools/semspec -> ../../target/semspec
       - name: Test documentation checks
-        run: mise run test-py -- tests/test_docs.py
+        run: mise run test-py -- tests.unit.test_docs tests.unit.test_semspec_tables
       - name: Build and check documentation
         run: mise run docs-build -- --require-recorded
       - uses: actions/upload-pages-artifact@v3

@@ -45,7 +45,7 @@ mise trust "$work/mise.toml"
   uv lock --offline
   mise run set-nightly-version -- g42.abcdef0
   cargo metadata --offline --locked --format-version 1 >/dev/null
-  # Match the locked dev-tool invocation that used to fail in both wheel jobs.
+  # Check the wheel builder's locked dev-tool invocation.
   uv run --offline --locked --only-group dev python - <<'PY'
 import tomllib
 from pathlib import Path

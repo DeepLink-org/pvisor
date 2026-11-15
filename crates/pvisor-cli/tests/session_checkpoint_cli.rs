@@ -148,14 +148,18 @@ fn filesystem_snapshot(
 }
 
 #[test]
+#[cfg_attr(
+    target_os = "macos",
+    ignore = "requires macFUSE; run mise run test-macos-fuse"
+)]
 fn inspect_launch_errors_clean_owned_mount_roots_and_preserve_the_proposal() {
     use std::os::unix::fs::PermissionsExt;
 
     #[cfg(target_os = "macos")]
-    if !Path::new("/Library/Filesystems/macfuse.fs").is_dir() {
-        eprintln!("skipping inspect integration: macFUSE is not installed");
-        return;
-    }
+    assert!(
+        Path::new("/Library/Filesystems/macfuse.fs").is_dir(),
+        "required macFUSE installation is unavailable"
+    );
     let root = tempfile::tempdir().unwrap();
     let record = managed_fixture(root.path());
     let stage = record.stage_dir();
@@ -465,12 +469,16 @@ fn workspace_ask_fork_rejection_is_inert_and_retryable() {
 }
 
 #[test]
+#[cfg_attr(
+    target_os = "macos",
+    ignore = "requires macFUSE; run mise run test-macos-fuse"
+)]
 fn workspace_fork_copies_files_and_preimages_and_retains_source_checkpoint() {
     #[cfg(target_os = "macos")]
-    if !Path::new("/Library/Filesystems/macfuse.fs").is_dir() {
-        eprintln!("skipping workspace fork integration: macFUSE is not installed");
-        return;
-    }
+    assert!(
+        Path::new("/Library/Filesystems/macfuse.fs").is_dir(),
+        "required macFUSE installation is unavailable"
+    );
     let temp = tempfile::tempdir().unwrap();
     let record = managed_fixture(temp.path());
     let stage = record.stage_dir();

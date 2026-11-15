@@ -1,0 +1,655 @@
+"""Bilingual docs cannot silently lose a page or drift in examples/revisions."""
+
+import os
+import runpy
+import subprocess
+import sys
+import unittest
+from types import SimpleNamespace
+from unittest import mock
+
+from tests.fixtures import ROOT, workspace
+
+check_translations = runpy.run_path(str(ROOT / "scripts/check-docs.py"))["check_translations"]
+reference = runpy.run_path(str(ROOT / "scripts/check-reference.py"))
+
+
+def table_preprocessor():
+    """Load the process adapter without requiring the site's Python dependencies."""
+
+    class Preprocessor:
+        def __init__(self, md):
+            self.md = md
+
+    context = mock.Mock()
+    context.from_markdown.return_value = SimpleNamespace(
+        config={"root_dir": "/workspace/docs", "docs_dir": "src/zh"},
+        page=SimpleNamespace(path="page.md"),
+    )
+    modules = {
+        "markdown": SimpleNamespace(Extension=object),
+        "markdown.preprocessors": SimpleNamespace(Preprocessor=Preprocessor),
+        "zensical.extensions.context": SimpleNamespace(ContextPreprocessor=context),
+    }
+    with mock.patch.dict(sys.modules, modules):
+        extension = runpy.run_path(str(ROOT / "docs/semspec_tables.py"))
+    return extension["TablePreprocessor"](None)
+
+
+class LiveTableTests(unittest.TestCase):
+    def test_live_mode_selects_best_effort_and_forwards_warnings(self):
+        lines = ['{{ table("missing.json") }}']
+        preprocessor = table_preprocessor()
+        with (
+            mock.patch.dict(os.environ, {"PVISOR_DOCS_LIVE": "1", "SEMSPEC_BIN": "/semspec"}),
+            mock.patch(
+                "subprocess.run",
+                return_value=SimpleNamespace(
+                    returncode=0,
+                    stdout="warning placeholder\n| valid | 2 |\n",
+                    stderr="missing table: missing.json",
+                ),
+            ) as run,
+            self.assertLogs("<run_path>", level="WARNING") as warnings,
+        ):
+            result = preprocessor.run(lines)
+        self.assertEqual(result[:2], ["warning placeholder", "| valid | 2 |"])
+        self.assertIn("missing.json", warnings.output[0])
+        self.assertEqual(
+            run.call_args.args[0],
+            [
+                "/semspec",
+                "filter",
+                "--source",
+                "/workspace/docs/src/zh/page.md",
+                "--stdin",
+                "--best-effort",
+            ],
+        )
+
+    def test_renderer_failures_leave_page_text_in_live_mode_but_fail_strict_mode(self):
+        lines = ["# Page", "", '{{ table("missing.json") }}', "", "Body"]
+        preprocessor = table_preprocessor()
+        errors = [FileNotFoundError("<renderer>"), subprocess.TimeoutExpired("semspec", 30)]
+        for live in ("0", "1"):
+            for error in errors:
+                with (
+                    self.subTest(live=live, error=type(error).__name__),
+                    mock.patch.dict(os.environ, {"PVISOR_DOCS_LIVE": live}),
+                    mock.patch("subprocess.run", side_effect=error),
+                ):
+                    if live == "1":
+                        with self.assertLogs("<run_path>", level="WARNING"):
+                            rendered = preprocessor.run(lines)
+                        self.assertEqual(rendered[-len(lines) :], lines)
+                        self.assertIn("!!! warning", rendered[0])
+                        self.assertNotIn("<renderer>", "\n".join(rendered))
+                    else:
+                        with self.assertRaises(type(error)):
+                            preprocessor.run(lines)
+        for live in ("0", "1"):
+            with (
+                self.subTest(live=live, error="render"),
+                mock.patch.dict(os.environ, {"PVISOR_DOCS_LIVE": live}),
+                mock.patch(
+                    "subprocess.run",
+                    return_value=SimpleNamespace(returncode=2, stdout="", stderr="invalid table"),
+                ) as run,
+            ):
+                if live == "1":
+                    with self.assertLogs("<run_path>", level="WARNING"):
+                        self.assertEqual(preprocessor.run(lines)[-len(lines) :], lines)
+                else:
+                    with self.assertRaisesRegex(RuntimeError, "invalid table"):
+                        preprocessor.run(lines)
+                    self.assertNotIn("--best-effort", run.call_args.args[0])
+
+
+def write_locale_configs(docs):
+    for locale in ("en", "zh"):
+        suffix = "zh/" if locale == "zh" else ""
+        (docs / f"zensical.{locale}.toml").write_text(
+            f'[project]\ndocs_dir = "src/{locale}"\nsite_dir = "site/{suffix}"\n'
+            f'site_url = "https://example.org/pvisor/{suffix}"\n'
+            'nav = ["index.md", "start/what-is-pvisor.md"]\n'
+            "[project.extra]\nalternate = [\n"
+            '{lang = "en", link = "https://example.org/pvisor/"},\n'
+            '{lang = "zh", link = "https://example.org/pvisor/zh/"}]\n'
+        )
+
+
+def _make_generated_site(tmp_path, resources):
+    import json
+
+    write_locale_configs(tmp_path)
+    site = tmp_path / "site"
+    site.mkdir()
+    for locale in ("en", "zh"):
+        suffix = "zh/" if locale == "zh" else ""
+        for route in ("", "start/what-is-pvisor/", "why/", "start/first-run/"):
+            source_path = "why/index.md" if route == "why/" else route.rstrip("/") + ".md"
+            source = tmp_path / "src" / locale / (source_path if route else "index.md")
+            source.parent.mkdir(parents=True, exist_ok=True)
+            source.write_text("# Example {#shared}\n")
+            dest = site / suffix / route / "index.html"
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_text(
+                f'<html lang="{locale}"><h1 id="shared">Example</h1>'
+                '<div class="admonition tip">Tip</div><pre>example</pre>'
+                + "".join(
+                    f'<a class="md-select__link" href="https://example.org/pvisor/{"zh/" if lang == "zh" else ""}{route}">{lang}</a>'
+                    for lang in ("en", "zh")
+                )
+                + f'<a class="md-nav__link" href="/pvisor/{suffix}">Home</a></html>'
+            )
+        (site / suffix / "search.json").write_text(
+            json.dumps(
+                {
+                    "config": {"lang": [locale]},
+                    "items": [
+                        {"location": "#shared"},
+                        {"location": "start/what-is-pvisor/#shared"},
+                    ],
+                }
+            )
+        )
+    checker = runpy.run_path(str(ROOT / "scripts/check-docs.py"))["check"]
+    resources.enter_context(mock.patch.dict(checker.__globals__, {"ROOT": site}))
+    resources.enter_context(
+        mock.patch.dict(
+            checker.__globals__,
+            {"check_translations": lambda **kwargs: check_translations(tmp_path, **kwargs)},
+        )
+    )
+    return tmp_path, checker
+
+
+class DocsTests(unittest.TestCase):
+    def test_exhausted_watches_stop_before_touching_site_and_close_probe(self):
+        import ctypes
+        import errno
+
+        probe = runpy.run_path(str(ROOT / "scripts/check-docs.py"))["check_build_resources"]
+        with workspace() as (tmp_path, resources):
+            (tmp_path / "src/zh").mkdir(parents=True)
+            (tmp_path / "site").mkdir()
+            page = tmp_path / "site/index.html"
+            page.write_text("existing complete site")
+            libc = mock.Mock()
+            libc.inotify_init1.return_value = 37
+
+            def exhausted(*args):
+                ctypes.set_errno(errno.ENOSPC)
+                return -1
+
+            libc.inotify_add_watch.side_effect = exhausted
+            resources.enter_context(mock.patch("ctypes.CDLL", return_value=libc))
+            resources.enter_context(mock.patch("sys.platform", "linux"))
+            close = resources.enter_context(mock.patch("os.close"))
+            with self.assertRaisesRegex(SystemExit, "Existing site preserved"):
+                probe(tmp_path)
+            close.assert_called_once_with(37)
+            self.assertEqual(page.read_text(), "existing complete site")
+
+    def test_reference_field_parser_honors_wire_names_and_skips(self):
+        source = """pub struct Example {
+    #[serde(rename = "max_size")]
+    pub budget: Option<u64>,
+    #[serde(rename = "path")]
+    #[serde(skip)]
+    pub internal: String,
+    #[serde(alias = "old")]
+    pub current: Vec<String>,
+}"""
+        assert reference["fields"](source, "Example") == {
+            "max_size": "Option<u64>",
+            "current": "Vec<String>",
+        }
+        with self.assertRaisesRegex(ValueError, "unsupported field syntax"):
+            reference["fields"](source.replace("pub budget", "budget"), "Example")
+
+    def test_config_reference_covers_serialized_fields(self):
+        assert reference["check"]() >= 98
+
+    def test_reference_check_rejects_incomplete_or_stale_tables(self):
+        for mutation in ["missing", "type"]:
+            with self.subTest(mutation=mutation):
+                with workspace() as (tmp_path, resources):
+                    import shutil
+
+                    for source, _, _ in reference["GROUPS"]:
+                        target = tmp_path / source
+                        target.parent.mkdir(parents=True, exist_ok=True)
+                        shutil.copyfile(ROOT / source, target)
+                    for locale in ("en", "zh"):
+                        target = tmp_path / f"docs/src/{locale}/reference/config.md"
+                        target.parent.mkdir(parents=True)
+                        text = (ROOT / target.relative_to(tmp_path)).read_text()
+                        if mutation == "missing":
+                            text = text.replace(
+                                "| `vm.cpus` | `u16` |", "| `removed.cpus` | `u16` |"
+                            )
+                        else:
+                            text = text.replace("| `vm.cpus` | `u16` |", "| `vm.cpus` | `u32` |")
+                        target.write_text(text)
+                    with self.assertRaisesRegex(SystemExit, "config reference drift"):
+                        reference["check"](tmp_path)
+
+    def test_bilingual_docs_guard(self):
+        with workspace() as (tmp_path, resources):
+            article = "---\nstatus: todo\nsearch:\n  exclude: true\n---\n# Title {#shared}\nS-DOC-001\n\n```sh\npvisor -- true\n```\n"
+            for locale in ("en", "zh"):
+                folder = tmp_path / "src" / locale
+                folder.mkdir(parents=True)
+                (folder / "guide.md").write_text(article)
+            english = tmp_path / "src/en/guide.md"
+            assert check_translations(tmp_path, record=True) == 1
+            assert check_translations(tmp_path) == 1
+
+            english.unlink()
+            with self.assertRaisesRegex(SystemExit, "missing en translation"):
+                check_translations(tmp_path, record=True)
+            for old, new, message in (
+                ("status: todo", "status: ready", "page status"),
+                ("exclude: true", "exclude: false", "search exclusion"),
+                ("{#shared}", "{#other}", "explicit anchors"),
+                ("S-DOC-001", "S-DOC-002", "semantic case IDs"),
+                ("pvisor -- true", "pvisor -- false", "executable examples"),
+            ):
+                english.write_text(article.replace(old, new))
+                with self.assertRaisesRegex(SystemExit, message):
+                    check_translations(tmp_path, record=True)
+            english.write_text(article + "\nUpdated prose\n")
+            assert check_translations(tmp_path) == 1  # pending revisions warn, not fail, locally
+            with self.assertRaisesRegex(SystemExit, "bilingual revision changed"):
+                check_translations(tmp_path, strict=True)
+            assert check_translations(tmp_path, record=True) == 1
+            assert check_translations(tmp_path) == 1
+
+    def test_asset_migration_keeps_old_git_paths_free_of_symlinks(self):
+        for path in ["docs/src/assets", "docs/src/stylesheets"]:
+            with self.subTest(path=path):
+                assert not (ROOT / path).is_symlink()
+                assert (ROOT / "docs/overrides/assets/examples/json/run-bundle.json").is_file()
+                assert (ROOT / "docs/overrides/assets/stylesheets/extra.css").is_file()
+
+    def test_benchmarks_group_measurements_and_evidence_backed_scenarios(self):
+        for locale in ["zh", "en"]:
+            with self.subTest(locale=locale):
+                import tomllib
+
+                labels = {
+                    "zh": ("基准测试", "性能测试", "场景分析"),
+                    "en": ("Benchmarks", "Performance tests", "Scenario analysis"),
+                }
+                section_label, performance_label, scenario_label = labels[locale]
+                config = tomllib.loads((ROOT / f"docs/zensical.{locale}.toml").read_text())
+                groups = next(
+                    section[section_label]
+                    for section in config["project"]["nav"]
+                    if section_label in section
+                )
+                assert [label for group in groups for label in group] == [
+                    performance_label,
+                    scenario_label,
+                ]
+                scenarios = next(
+                    group[scenario_label] for group in groups if scenario_label in group
+                )
+                assert [path for entry in scenarios for path in entry.values()] == [
+                    "benchmarks/agent-tasks.md",
+                    "benchmarks/compare-rl-infra.md",
+                    "benchmarks/isolation-tests.md",
+                    "benchmarks/replay-fidelity.md",
+                ]
+                performance = next(
+                    group[performance_label] for group in groups if performance_label in group
+                )
+                assert not set(path for entry in performance for path in entry.values()) & set(
+                    path for entry in scenarios for path in entry.values()
+                )
+                check_public_assets = runpy.run_path(str(ROOT / "benchmark/public_assets.py"))[
+                    "check_public_assets"
+                ]
+                check_public_assets(ROOT)
+                for filename in ("task-scenarios.csv", "compare-rl-infra.csv"):
+                    for locale in ("zh", "en"):
+                        assert not (ROOT / "docs/src" / locale / "benchmarks" / filename).exists()
+
+    def test_native_locale_configs_keep_matching_navigation_without_legacy_redirects(self):
+        import tomllib
+
+        def pages(node):
+            if isinstance(node, str):
+                return [node]
+            if isinstance(node, list):
+                return [path for child in node for path in pages(child)]
+            return [path for child in node.values() for path in pages(child)]
+
+        configs = {
+            locale: tomllib.loads((ROOT / f"docs/zensical.{locale}.toml").read_text())["project"]
+            for locale in ("zh", "en")
+        }
+        assert {path.name for path in (ROOT / "docs").glob("zensical*.toml")} == {
+            "zensical.zh.toml",
+            "zensical.en.toml",
+        }
+        published_root = "https://deeplink-org.github.io/pvisor/"
+        expected_sections = {
+            "zh": [
+                "首页",
+                "快速开始",
+                "用户指南",
+                "基本概念",
+                "基准测试",
+                "系统设计",
+                "参与开发",
+            ],
+            "en": [
+                "Home",
+                "Quick start",
+                "User guide",
+                "Basic concepts",
+                "Benchmarks",
+                "System design",
+                "Contributing",
+            ],
+        }
+        for locale, config in configs.items():
+            assert [label for section in config["nav"] for label in section] == expected_sections[
+                locale
+            ]
+            assert config["nav"][0][expected_sections[locale][0]] == "index.md"
+            for section in config["nav"][1:]:
+                for groups in section.values():
+                    for group in groups:
+                        for entries in group.values():
+                            if isinstance(entries, str):
+                                assert entries.endswith(".md")
+                                continue
+                            assert isinstance(entries, list)
+                            assert entries
+                            assert all(
+                                isinstance(path, str)
+                                for entry in entries
+                                for path in entry.values()
+                            )
+            concepts = config["nav"][3][expected_sections[locale][3]]
+            security_label = "安全" if locale == "zh" else "Security"
+            security = next(
+                section[security_label] for section in concepts if security_label in section
+            )
+            assert "security/index.md" in pages(security)
+            quickstart = config["nav"][1][expected_sections[locale][1]]
+            assert pages(quickstart) == [
+                "start/installation.md",
+                "start/first-run.md",
+                "start/infrastructure.md",
+            ]
+            guide = config["nav"][2][expected_sections[locale][2]]
+            assert {
+                "guides/index.md",
+                "guides/infrastructure/index.md",
+                "guides/daemon/index.md",
+                "guides/executors/index.md",
+                "guides/policies/files.md",
+                "reference/cli.md",
+            } <= set(pages(guide))
+            assert {
+                "concepts/sessions.md",
+                "concepts/staging.md",
+                "concepts/lifecycle.md",
+                "concepts/resource-optimization.md",
+                "concepts/resource-reuse.md",
+            } <= set(pages(concepts))
+            assert {"reference/sessions.md", "guides/infrastructure/lifecycle.md"} <= set(
+                pages(guide)
+            )
+            design = config["nav"][5][expected_sections[locale][5]]
+            experiments_label = "实验设计" if locale == "zh" else "Experimental design"
+            experiments = next(
+                group[experiments_label] for group in design if experiments_label in group
+            )
+            assert "design/experimental/index.md" in pages(experiments)
+            assert all(path.startswith("design/experimental/") for path in pages(experiments))
+            lab_label = "实验记录" if locale == "zh" else "Lab notes"
+            lab = next(group[lab_label] for group in design if lab_label in group)
+            assert "lab-notes/index.md" in pages(lab)
+            assert all(path.startswith("lab-notes/") for path in pages(lab))
+        assert pages(configs["zh"]["nav"]) == pages(configs["en"]["nav"])
+        for locale, config in configs.items():
+            assert config["docs_dir"] == f"src/{locale}"
+            assert config["site_dir"] == ("site/zh" if locale == "zh" else "site")
+            assert config["site_url"] == published_root + ("zh/" if locale == "zh" else "")
+            assert config["theme"]["language"] == locale
+            assert config["plugins"]["search"]["lang"] == [locale]
+            assert {alt["lang"]: alt["link"] for alt in config["extra"]["alternate"]} == {
+                lang: published_root + ("zh/" if lang == "zh" else "") for lang in ("en", "zh")
+            }
+            navigation = pages(config["nav"])
+            assert len(navigation) == len(set(navigation))
+            for path in navigation:
+                assert (ROOT / "docs" / config["docs_dir"] / path).is_file()
+            assert "redirects" not in config["plugins"]
+            assert "redirect_maps" not in (ROOT / f"docs/zensical.{locale}.toml").read_text()
+
+    def test_generated_site_check_rejects_success_without_articles(self):
+        with workspace() as (tmp_path, resources):
+            for locale in ("zh", "en"):
+                source = tmp_path / "src" / locale
+                source.mkdir(parents=True)
+                (source / "index.md").write_text("# Example\n")
+            write_locale_configs(tmp_path)
+            site = tmp_path / "site"
+            site.mkdir()
+            checker = runpy.run_path(str(ROOT / "scripts/check-docs.py"))["check"]
+            resources.enter_context(mock.patch.dict(checker.__globals__, {"ROOT": site}))
+            resources.enter_context(
+                mock.patch.dict(
+                    checker.__globals__,
+                    {"check_translations": lambda **kwargs: check_translations(tmp_path, **kwargs)},
+                )
+            )
+            with self.assertRaisesRegex(SystemExit, "article not rendered: en/index.md"):
+                checker()
+
+    def test_generated_site_accepts_english_at_root_and_chinese_under_zh(self):
+        with workspace() as (tmp_path, resources):
+            generated_site = _make_generated_site(tmp_path, resources)
+            docs, checker = generated_site
+            assert not (docs / "zensical.toml").exists()
+            checker()
+            page = runpy.run_path(str(ROOT / "scripts/check-docs.py"))["Page"]
+            assert page(docs / "site/index.html").language == "en"
+            assert page(docs / "site/zh/index.html").language == "zh"
+            assert not (docs / "site/en").exists()
+
+    def test_generated_site_derives_published_root_from_locale_urls(self):
+        with workspace() as (tmp_path, resources):
+            generated_site = _make_generated_site(tmp_path, resources)
+            docs, checker = generated_site
+            for config in docs.glob("zensical.*.toml"):
+                config.write_text(
+                    config.read_text().replace("example.org/pvisor/", "docs.example.net/manual/")
+                )
+            for page in (docs / "site").rglob("*.html"):
+                page.write_text(
+                    page.read_text()
+                    .replace("example.org/pvisor/", "docs.example.net/manual/")
+                    .replace("/pvisor/", "/manual/")
+                )
+            checker()
+
+    def test_generated_site_rejects_invalid_native_output(self):
+        for mutation, message in [
+            ("root_config", "only the two native locale configurations"),
+            ("missing_nav", "en: navigation page missing"),
+            ("duplicate_nav", "en: navigation lists the same article more than once"),
+            ("mismatched_nav", "locale navigation article paths do not match"),
+            ("redirect_plugin", "legacy redirect plugin is forbidden"),
+            ("redirect_maps", "legacy redirect plugin is forbidden"),
+            ("redirect_page", "meta refresh redirect is forbidden"),
+            ("root_redirect", "meta refresh redirect is forbidden"),
+            ("root_source", "root homepage must be generated"),
+            ("site_dir", "site_dir must publish English at root"),
+            ("english_prefix", "site_url must be the published site root"),
+            ("root_old_entry", "missing current zh language entry"),
+            ("site_url", "site_url must be an absolute published locale URL"),
+            ("alternate", "alternate links must use absolute published locale URLs"),
+            ("raw_data", "raw .data evidence included"),
+            ("language", "html lang=zh, expected en"),
+            ("root_language", "html lang=zh, expected en"),
+            ("search_language", "missing native locale search index"),
+            ("search_target", "search result leaves locale"),
+            ("search_escape", "search result leaves locale"),
+            ("search_anchor", "search result anchor missing"),
+            ("selector_origin", "language selector leaves published site"),
+            ("selector_relative", "language selector must use an absolute published URL"),
+            ("selector_article", "language selector loses current article"),
+            ("navigation_locale", "navigation changes language"),
+            ("zh_navigation_locale", "navigation changes language"),
+            ("breadcrumb_locale", "breadcrumb leaves current language"),
+            ("missing_link", "missing a missing/"),
+            ("unpublished_asset", "img leaves published site"),
+            ("missing_anchor", "missing anchor #missing"),
+            ("callout", "missing rendered callout"),
+            ("code_block", "missing rendered code block"),
+        ]:
+            with self.subTest(mutation=mutation, message=message):
+                with workspace() as (tmp_path, resources):
+                    generated_site = _make_generated_site(tmp_path, resources)
+                    import json
+
+                    docs, checker = generated_site
+                    config = docs / "zensical.en.toml"
+                    article = docs / "site/start/what-is-pvisor/index.html"
+                    entry = docs / "site/index.html"
+
+                    def replace(path, old, new):
+                        text = path.read_text()
+                        assert old in text
+                        path.write_text(text.replace(old, new))
+
+                    if mutation == "root_config":
+                        (docs / "zensical.toml").write_text("[project]\n")
+                    elif mutation in ("missing_nav", "duplicate_nav", "mismatched_nav"):
+                        target = {
+                            "missing_nav": "missing.md",
+                            "duplicate_nav": "index.md",
+                            "mismatched_nav": "extra.md",
+                        }[mutation]
+                        if mutation == "mismatched_nav":
+                            (docs / "src/en/extra.md").write_text("# Example\n")
+                            (docs / "src/zh/extra.md").write_text("# Example\n")
+                        replace(
+                            config,
+                            '"start/what-is-pvisor.md"]',
+                            f'"start/what-is-pvisor.md", "{target}"]',
+                        )
+                    elif mutation in ("redirect_plugin", "redirect_maps"):
+                        table = (
+                            "project.plugins.redirects.redirect_maps"
+                            if mutation == "redirect_plugin"
+                            else "project.redirect_maps"
+                        )
+                        with config.open("a") as stream:
+                            stream.write(f'\n[{table}]\n"old.md" = "index.md"\n')
+                    elif mutation in ("redirect_page", "root_redirect"):
+                        page = article if mutation == "redirect_page" else entry
+                        with page.open("a") as stream:
+                            stream.write('<meta http-equiv="Refresh" content="0; url=en/">')
+                    elif mutation == "root_source":
+                        (docs / "index.html").write_bytes(entry.read_bytes())
+                    elif mutation == "site_dir":
+                        replace(config, 'site_dir = "site/"', 'site_dir = "site/en"')
+                    elif mutation == "english_prefix":
+                        replace(
+                            config,
+                            'site_url = "https://example.org/pvisor/"',
+                            'site_url = "https://example.org/pvisor/en/"',
+                        )
+                    elif mutation == "root_old_entry":
+                        replace(
+                            entry,
+                            'href="https://example.org/pvisor/zh/"',
+                            'href="https://example.org/pvisor/legacy/"',
+                        )
+                    elif mutation == "site_url":
+                        replace(
+                            config,
+                            'site_url = "https://example.org/pvisor/"',
+                            'site_url = "/pvisor/"',
+                        )
+                    elif mutation == "alternate":
+                        replace(
+                            config,
+                            'link = "https://example.org/pvisor/zh/"',
+                            'link = "/pvisor/zh/"',
+                        )
+                    elif mutation == "raw_data":
+                        (docs / "site/.data").mkdir()
+                    elif mutation == "language":
+                        replace(article, 'lang="en"', 'lang="zh"')
+                    elif mutation == "root_language":
+                        replace(entry, 'lang="en"', 'lang="zh"')
+                    elif mutation.startswith("search_"):
+                        search = docs / "site/search.json"
+                        index = json.loads(search.read_text())
+                        if mutation == "search_language":
+                            index["config"]["lang"] = ["zh"]
+                        elif mutation == "search_escape":
+                            index["items"][0]["location"] = "../"
+                        else:
+                            index["items"][0]["location"] = (
+                                "zh/" if mutation == "search_target" else "#missing"
+                            )
+                        search.write_text(json.dumps(index))
+                    elif mutation.startswith("selector_"):
+                        old = 'href="https://example.org/pvisor/zh/start/what-is-pvisor/"'
+                        new = {
+                            "selector_origin": 'href="https://elsewhere.org/pvisor/zh/start/what-is-pvisor/"',
+                            "selector_relative": 'href="/pvisor/zh/start/what-is-pvisor/"',
+                            "selector_article": 'href="https://example.org/pvisor/zh/"',
+                        }[mutation]
+                        replace(article, old, new)
+                    elif mutation == "navigation_locale":
+                        replace(article, 'href="/pvisor/"', 'href="/pvisor/zh/"')
+                    elif mutation == "zh_navigation_locale":
+                        replace(
+                            docs / "site/zh/start/what-is-pvisor/index.html",
+                            'href="/pvisor/zh/"',
+                            'href="/pvisor/"',
+                        )
+                    elif mutation == "breadcrumb_locale":
+                        replace(
+                            article,
+                            'class="md-nav__link" href="/pvisor/"',
+                            'class="md-path__link" href="/pvisor/zh/"',
+                        )
+                    elif mutation in ("missing_link", "missing_anchor"):
+                        with article.open("a") as stream:
+                            stream.write(
+                                '<a href="'
+                                + ("missing/" if mutation == "missing_link" else "#missing")
+                                + '">Broken</a>'
+                            )
+                    elif mutation == "unpublished_asset":
+                        (docs / "unpublished.svg").write_text("<svg/>")
+                        with article.open("a") as stream:
+                            stream.write('<img src="../../../unpublished.svg">')
+                    elif mutation == "callout":
+                        replace(
+                            docs / "site/why/index.html",
+                            'class="admonition tip"',
+                            'class="plain"',
+                        )
+                    elif mutation == "code_block":
+                        replace(
+                            docs / "site/start/first-run/index.html",
+                            "<pre>example</pre>",
+                            "example",
+                        )
+                    else:
+                        raise AssertionError(mutation)
+                    with self.assertRaisesRegex(SystemExit, message):
+                        checker()

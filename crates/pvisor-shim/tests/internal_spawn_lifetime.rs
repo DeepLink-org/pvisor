@@ -1,35 +1,34 @@
-//! Regression coverage for the internal-spawn parent-death contract.
+//! Parent-death signals follow the spawning thread.
 //!
-//! Internal shim children that arm `PR_SET_PDEATHSIG` (the VM runner and the
-//! sandbox holder) must be forked from the dedicated spawner thread. Forking
-//! from a pooled worker thread instead ties their death signal to that
-//! thread's idle exit: a healthy VM runner and its sandbox were observed
-//! dying with exit status 143 exactly ~11 s after creation, when the
-//! `spawn_blocking` thread that forked the runner hit its keep-alive.
-//!
-//! The control case reproduces the mechanism directly (a pdeath-armed child
-//! forked on a short-lived pool thread dies as soon as the thread idles
-//! out); the fix case asserts the same child forked through
-//! [`pvisor_shim::child::fork_internal`] survives the pool thread's exit.
-//!
-//! Custom harness: the binary re-execs itself in child mode, which the
-//! libtest harness would reject as unknown arguments.
+//! A pooled-thread child must receive SIGTERM on thread exit; a child spawned
+//! through `fork_internal` must remain responsive. The owning libtest test
+//! invokes the ignored probe through a private readiness socket.
 
 #[cfg(target_os = "linux")]
 mod linux {
-    use std::io::{BufRead, BufReader};
+    use std::fs::File;
+    use std::io::{Read, Write};
+    use std::os::fd::{AsFd, OwnedFd};
+    use std::os::unix::net::UnixStream;
     use std::os::unix::process::ExitStatusExt;
     use std::process::{Child, Command, Stdio};
+    use std::sync::mpsc;
     use std::time::{Duration, Instant};
 
-    const CHILD_MARKER: &str = "pvisor-chaos-pdeath-child";
+    const PARENT_PID: &str = "PVISOR_SHIM_TEST_PARENT_PID";
     const POOL_KEEP_ALIVE: Duration = Duration::from_millis(100);
+    const DEADLINE: Duration = Duration::from_secs(3);
 
-    /// Child mode: arm the parent-death signal exactly like the shim's
-    /// internal children, report readiness, then sleep. Killed by SIGTERM
-    /// when the parent *thread* that forked us exits; exits 86 when the
-    /// parent was already gone (the production fork/prctl race check).
-    pub fn child_main(parent_pid: &str) {
+    /// Arm pdeath while the spawning thread is still alive, then acknowledge
+    /// pings. The socket is supplied as stdin, separate from libtest's output.
+    #[test]
+    #[ignore = "subprocess-only probe; invoked by internal_children_follow_the_forking_thread_lifetime"]
+    fn parent_death_probe() {
+        let expected: libc::pid_t = std::env::var(PARENT_PID)
+            .expect("probe must be launched by its owning test")
+            .parse()
+            .unwrap();
+        let mut channel = File::from(std::io::stdin().as_fd().try_clone_to_owned().unwrap());
         unsafe {
             assert_eq!(
                 libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM, 0, 0, 0),
@@ -37,85 +36,121 @@ mod linux {
                 "arm PR_SET_PDEATHSIG"
             );
         }
-        let expected: libc::pid_t = parent_pid.parse().expect("parent pid argument");
         if unsafe { libc::getppid() } != expected {
             std::process::exit(86);
         }
-        println!("READY");
-        std::thread::sleep(Duration::from_secs(30));
-        std::process::exit(0);
+        channel.write_all(b"R").unwrap();
+        let mut ping = [0];
+        while channel.read_exact(&mut ping).is_ok() {
+            channel.write_all(&ping).unwrap();
+        }
     }
 
-    fn child_command() -> Command {
+    fn child_command() -> (Command, UnixStream) {
         let exe = std::env::current_exe().expect("current test binary");
+        let (channel, child_channel) = UnixStream::pair().unwrap();
+        channel.set_read_timeout(Some(DEADLINE)).unwrap();
+        channel.set_write_timeout(Some(DEADLINE)).unwrap();
         let mut command = Command::new(exe);
         command
-            .arg(CHILD_MARKER)
-            .arg(std::process::id().to_string())
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
+            .args([
+                "--exact",
+                "linux::parent_death_probe",
+                "--ignored",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env(PARENT_PID, std::process::id().to_string())
+            .stdin(Stdio::from(OwnedFd::from(child_channel)))
+            .stdout(Stdio::null())
             .stderr(Stdio::inherit());
-        command
+        (command, channel)
     }
 
-    /// Wait for the child's READY line so the assertion phase never races
-    /// the child's own startup.
-    fn await_ready(child: &mut Child) {
-        let stdout = child.stdout.take().expect("piped child stdout");
-        let mut line = String::new();
-        BufReader::new(stdout)
-            .read_line(&mut line)
-            .expect("read child READY line");
-        assert_eq!(line.trim(), "READY", "child did not arm cleanly: {line:?}");
+    struct Probe {
+        child: Child,
+        channel: UnixStream,
     }
 
-    fn exited_by_sigterm(child: &mut Child, budget: Duration) -> bool {
-        let deadline = Instant::now() + budget;
-        while Instant::now() < deadline {
-            if let Some(status) = child.try_wait().expect("poll child") {
-                return status.signal() == Some(libc::SIGTERM);
-            }
-            std::thread::sleep(Duration::from_millis(25));
+    impl Probe {
+        fn expect_byte(&mut self, expected: u8) {
+            let mut byte = [0];
+            self.channel.read_exact(&mut byte).expect("probe response");
+            assert_eq!(byte, [expected]);
         }
-        false
+
+        fn exited_by_sigterm(&mut self) -> bool {
+            let deadline = Instant::now() + DEADLINE;
+            while Instant::now() < deadline {
+                if let Some(status) = self.child.try_wait().expect("poll child") {
+                    return status.signal() == Some(libc::SIGTERM);
+                }
+                std::thread::sleep(Duration::from_millis(25));
+            }
+            false
+        }
+
+        fn assert_running(&mut self) {
+            self.channel.write_all(b"P").expect("ping surviving child");
+            self.expect_byte(b'P');
+            assert!(
+                self.child.try_wait().unwrap().is_none(),
+                "child forked via the dedicated thread died with the pool thread"
+            );
+        }
+    }
+
+    impl Drop for Probe {
+        fn drop(&mut self) {
+            // Also reap on assertion failure; never leave an owned probe behind.
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+        }
     }
 
     /// Fork the child on a blocking-pool thread of a runtime whose pool
-    /// threads idle-exit after `POOL_KEEP_ALIVE`, keep the runtime alive
-    /// past that deadline, then hand the child back with the runtime gone.
-    fn fork_from_short_lived_pool(direct: bool) -> Child {
+    /// threads idle-exit after `POOL_KEEP_ALIVE`. Observe actual thread exit
+    /// before tearing down the runtime, rather than guessing with a sleep.
+    fn fork_from_short_lived_pool(direct: bool) -> Probe {
+        let (stopped, receiver) = mpsc::channel();
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_time()
             .thread_keep_alive(POOL_KEEP_ALIVE)
+            .on_thread_stop(move || {
+                let _ = stopped.send(());
+            })
             .build()
             .expect("build short-lived-pool runtime");
-        let mut child = runtime.block_on(async {
+        let probe = runtime.block_on(async {
             tokio::task::spawn_blocking(move || {
-                if direct {
-                    child_command().spawn().expect("spawn on pool thread")
+                let (mut command, channel) = child_command();
+                let child = if direct {
+                    command.spawn().expect("spawn on pool thread")
                 } else {
-                    pvisor_shim::child::fork_internal(child_command())
+                    pvisor_shim::child::fork_internal(command)
                         .expect("spawn via dedicated fork thread")
-                }
+                };
+                let mut probe = Probe { child, channel };
+                // Hold the spawning pool thread alive until pdeath is armed.
+                probe.expect_byte(b'R');
+                probe
             })
             .await
             .expect("blocking task join")
         });
-        await_ready(&mut child);
-        // Outlive the pool keep-alive: a pooled forking thread has exited
-        // by the end of this sleep, while the shim process still runs.
-        std::thread::sleep(POOL_KEEP_ALIVE * 6);
+        receiver
+            .recv_timeout(DEADLINE)
+            .expect("blocking pool thread did not idle-exit");
         drop(runtime);
-        child
+        probe
     }
 
-    pub fn entry() {
-        // Control: a pdeath child forked directly on a pooled thread dies
-        // with SIGTERM once that thread idles out. This proves the harness
-        // reproduces the original failure mechanism.
+    #[test]
+    fn internal_children_follow_the_forking_thread_lifetime() {
+        // Control: parent-thread exit must deliver the configured death signal.
         let mut pooled_child = fork_from_short_lived_pool(true);
         assert!(
-            exited_by_sigterm(&mut pooled_child, Duration::from_secs(3)),
+            pooled_child.exited_by_sigterm(),
             "control child on a pooled thread was not parent-death killed; \
              the reproduction mechanism itself failed"
         );
@@ -123,27 +158,9 @@ mod linux {
         // Fix: the same child forked via the dedicated spawner thread
         // survives the pool thread's exit (and the runtime's teardown).
         let mut dedicated_child = fork_from_short_lived_pool(false);
-        std::thread::sleep(Duration::from_secs(2));
-        assert!(
-            dedicated_child
-                .try_wait()
-                .expect("poll dedicated child")
-                .is_none(),
-            "child forked via the dedicated thread died with the pool thread"
-        );
-        dedicated_child.kill().expect("kill dedicated child");
-        let status = dedicated_child.wait().expect("reap dedicated child");
+        dedicated_child.assert_running();
+        dedicated_child.child.kill().expect("kill dedicated child");
+        let status = dedicated_child.child.wait().expect("reap dedicated child");
         assert_eq!(status.signal(), Some(libc::SIGKILL));
     }
-}
-
-fn main() {
-    let args: Vec<String> = std::env::args().collect();
-    #[cfg(target_os = "linux")]
-    if args.get(1).map(String::as_str) == Some("pvisor-chaos-pdeath-child") {
-        linux::child_main(args.get(2).expect("parent pid argument"));
-        return;
-    }
-    #[cfg(target_os = "linux")]
-    linux::entry();
 }
