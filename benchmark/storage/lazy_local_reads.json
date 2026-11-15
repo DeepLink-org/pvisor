@@ -1,1 +1,6 @@
-{"local-reads":"$ python3 @REPO@/benchmark/storage/local_reads.py --binary @BINARY@ --inputs @INPUTS@ --output @OUTPUT@"}
+{
+  "engine": "criterion",
+  "entry": "storage/lazy_local_reads.json",
+  "implementation": "../criterion/src/storage/mod.rs",
+  "config_env": "PVISOR_STORAGE_CONFIG"
+}

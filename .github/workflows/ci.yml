@@ -2,6 +2,13 @@ name: CI
 
 on:
   workflow_call:
+  workflow_dispatch:
+    inputs:
+      case_gate:
+        description: "normal preserves declared XFAIL; strict requires every case to PASS"
+        type: choice
+        options: [normal, strict]
+        default: normal
   push:
     branches: [main, develop, next]
   pull_request:
@@ -19,6 +26,181 @@ env:
   RUST_BACKTRACE: 1
 
 jobs:
+  feature-inventory:
+    name: Discover product features
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      features: ${{ steps.discover.outputs.features }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: discover
+        name: Discover feature directories, not case ID allowlists
+        run: |
+          echo "features=$(python3 scripts/tasks/feature-matrix.py)" >> "$GITHUB_OUTPUT"
+
+  feature-cases:
+    name: Feature ${{ matrix.feature }} / Scrut / Linux / ${{ github.event.inputs.case_gate || 'normal' }}
+    needs: [feature-inventory, cli-test]
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix: ${{ fromJSON(needs.feature-inventory.outputs.features) }}
+    env:
+      FEATURE: ${{ matrix.feature }}
+      CASE_GATE: ${{ github.event.inputs.case_gate || 'normal' }}
+      PVISOR_CASE_KEEP: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Initialize feature evidence before prerequisite setup
+        run: |
+          mkdir -p "$RUNNER_TEMP/feature-evidence"
+          {
+            uname -a
+            printf 'feature=%s\ngate=%s\ncommit=%s\n' "$FEATURE" "$CASE_GATE" "$GITHUB_SHA"
+          } > "$RUNNER_TEMP/feature-evidence/environment.txt"
+      - uses: ./.github/actions/setup-build-env
+        with:
+          tools: python rust jq github:nextest-rs/nextest
+          setup: none
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ci-feature-cases
+      - uses: actions/download-artifact@v4
+        with:
+          name: podman-runtime
+          path: ${{ runner.temp }}/feature-runtime
+      - name: Extract frozen product (no hardware checks)
+        shell: bash
+        run: |
+          set -euo pipefail
+          tar -xzf "$RUNNER_TEMP/feature-runtime/podman-runtime.tgz" -C "$RUNNER_TEMP/feature-runtime"
+          test -x "$RUNNER_TEMP/feature-runtime/pvisor"
+      - name: Require rootless namespaces for this feature (never skip)
+        if: matrix.userns
+        shell: bash
+        run: |
+          set -euo pipefail
+          exec > >(tee "$RUNNER_TEMP/feature-evidence/namespaces.log") 2>&1
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends util-linux
+          if sysctl kernel.unprivileged_userns_clone >/dev/null 2>&1; then
+            sudo sysctl -w kernel.unprivileged_userns_clone=1
+          fi
+          if sysctl kernel.apparmor_restrict_unprivileged_userns >/dev/null 2>&1; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+          unshare --user --map-root-user --mount --net /bin/true
+      - name: Require FUSE for this feature (never skip)
+        if: matrix.fuse
+        shell: bash
+        run: |
+          set -euo pipefail
+          exec > >(tee "$RUNNER_TEMP/feature-evidence/fuse.log") 2>&1
+          sudo apt-get install -y -qq --no-install-recommends fuse3
+          test -c /dev/fuse
+          [[ -r /dev/fuse && -w /dev/fuse ]]
+          command -v fusermount3
+      - name: Require KVM and rootfs for this feature (never skip)
+        if: matrix.kvm
+        shell: bash
+        run: |
+          set -euo pipefail
+          exec > >(tee "$RUNNER_TEMP/feature-evidence/kvm.log") 2>&1
+          sudo chown "$(id -u):$(id -g)" /dev/kvm
+          [[ -r /dev/kvm && -w /dev/kvm ]]
+          test -s "$RUNNER_TEMP/feature-runtime/libkrunfw.so.5"
+          # These Linux contracts deliberately use host rootfs, not macOS.
+          echo 'PVISOR_CASE_ROOTFS=/' >> "$GITHUB_ENV"
+      - name: Prepare VM SDK inputs
+        if: matrix.vm_sdk
+        run: |
+          test -x /usr/bin/python3
+          {
+            echo 'PVISOR_CASE_VM_PYTHON=/usr/bin/python3'
+            echo 'PVISOR_CASE_IMAGE=mirror.gcr.io/library/ubuntu:24.04'
+            echo 'PVISOR_CASE_AGENT=/usr/bin/true'
+            echo "PVISOR_CASE_VM_LIBRARY_DIR=$RUNNER_TEMP/feature-runtime"
+          } >> "$GITHUB_ENV"
+          # J02 checks launch metadata/trajectory, not model conversations.
+          mise exec -- rustup target add x86_64-unknown-linux-musl
+      - name: Require replay companion
+        if: matrix.feature == 'replay'
+        run: test -x "$RUNNER_TEMP/feature-runtime/pvisor-replay"
+      - name: Prepare OCI runtime prerequisites
+        if: matrix.oci
+        shell: bash
+        run: |
+          set -euo pipefail
+          exec > >(tee "$RUNNER_TEMP/feature-evidence/oci-prerequisites.log") 2>&1
+          sudo apt-get install -y -qq --no-install-recommends crun runc
+          crun --version
+          runc --version
+          {
+            echo 'PVISOR_CASE_CONTAINER_RUNTIME=crun'
+            echo 'PVISOR_CASE_CONTAINER_IMAGE=mirror.gcr.io/library/ubuntu:24.04'
+          } >> "$GITHUB_ENV"
+      - name: Run every discovered case of this feature
+        shell: bash
+        env:
+          PVISOR_CASE_ARTIFACTS: ${{ runner.temp }}/feature-evidence
+          PVISOR_RUN_HOME: ${{ runner.temp }}/feature-runs
+        run: |
+          set -euo pipefail
+          mkdir -p "$PVISOR_CASE_ARTIFACTS"
+          task=cases-feature
+          if [[ "$CASE_GATE" == strict ]]; then task=cases-feature-strict; fi
+          mise run "$task" -- "$FEATURE" \
+            --subject-bin "$RUNNER_TEMP/feature-runtime/pvisor" \
+            --output "$PVISOR_CASE_ARTIFACTS/report.json" \
+            2>&1 | tee "$PVISOR_CASE_ARTIFACTS/task.log"
+      - name: Upload feature report and preserved case resources
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: feature-${{ matrix.feature }}-linux-${{ github.event.inputs.case_gate || 'normal' }}
+          path: ${{ runner.temp }}/feature-evidence
+          if-no-files-found: error
+          retention-days: 7
+
+  feature-native:
+    name: Feature ${{ matrix.feature }} / Cargo / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        feature: [docker-cli, docker-compose]
+    env:
+      FEATURE: ${{ matrix.feature }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-build-env
+        with:
+          native-firmware: "true"
+          static-musl: "true"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ci-feature-native
+      - run: mise run smoke
+      - name: Run only this feature's conventional Cargo regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/feature-native"
+          mise run test-feature-native -- "$FEATURE" 2>&1 | tee "$RUNNER_TEMP/feature-native/task.log"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: feature-${{ matrix.feature }}-cargo-${{ matrix.os }}
+          path: ${{ runner.temp }}/feature-native
+          if-no-files-found: error
+          retention-days: 7
+
   agent-plugins:
     name: Agent plugin contracts / ${{ matrix.os }} / Node ${{ matrix.node }}
     runs-on: ${{ matrix.os }}
@@ -67,8 +249,8 @@ jobs:
       - run: mise run lint-rust
       - run: mise run lint-api-docs
 
-  semspec:
-    name: semspec / ${{ matrix.os }}
+  spec-fixtures:
+    name: Scrut fixtures / ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 10
     strategy:
@@ -83,13 +265,8 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: tools/semspec -> ../../target/semspec
-      - run: mise run fmt-semspec
-      - run: mise run lint-semspec
-      - run: mise run test-semspec
-      - run: mise run semspec -- --spec-dir docs/src/zh/reference lint
-      - run: mise run semspec -- lint docs/src/zh/cases
-      - run: mise run semspec -- --spec-dir tools/semspec/semantics lint
+          workspaces: . -> target
+      - run: mise run test-spec-fixtures
       # Human review must approve STAGE, its vocabulary and engine before enabling reviewed release gates.
 
   python:
@@ -100,7 +277,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup-build-env
         with:
-          tools: python uv ruff jq rust
+          tools: python uv ruff jq rust github:nextest-rs/nextest
           setup: python
       - run: mise tasks validate
       - run: mise run fmt-py -- --check
@@ -111,6 +288,8 @@ jobs:
       - name: Python process and integration regressions
         run: mise run test-py-regression
       - run: mise run test-benchmark-tools
+      - name: Criterion measurement contract smoke
+        run: mise run benchmark -- --smoke --criterion-output "$RUNNER_TEMP/.data/criterion-contracts"
       - uses: actions/setup-node@v4
         with:
           node-version: "24"
@@ -282,7 +461,11 @@ jobs:
         run: sysctl kern.hv_support
 
       - name: Run ${{ matrix.shard }} tests
+        if: matrix.shard != 'cli'
         run: mise run test-rust -- ${{ matrix.packages }}
+      - name: Run CLI tests outside the dedicated Docker and Compose jobs
+        if: matrix.shard == 'cli'
+        run: mise run test-rust -- pvisor-cli -- -E 'not (binary(=docker_cli) | binary(=docker_p0_cli) | binary(=docker_staged_cli) | binary(=docker_staged_native) | binary(=compose_cli))'
 
   cli-test:
     name: Rust Test / Linux / cli
@@ -332,7 +515,24 @@ jobs:
       # staged binaries. Contract jobs reuse this exact build on separate VMs.
       - name: Archive static CLI for contract jobs
         run: |
-          tar -C target/x86_64-unknown-linux-musl/debug -czf "$RUNNER_TEMP/podman-runtime.tgz" pvisor pvisor-daemon
+          # Retain matching firmware for the native SDK driver, which is built
+          # separately from the product's embedded-kernel static executables.
+          mise exec -- python3 - <<'PY'
+          import os
+          import shutil
+          import sys
+          from pathlib import Path
+          sys.path.insert(0, "scripts/packaging")
+          import firmware
+          resolved = firmware.resolve_firmware(
+              "x86_64-unknown-linux-musl", target_dir=os.environ["CARGO_TARGET_DIR"])
+          if resolved.library_name is None:
+              raise SystemExit("CI requires the repository-built firmware library")
+          destination = Path("target/x86_64-unknown-linux-musl/debug/libkrunfw.so.5")
+          shutil.copyfile(resolved.path, destination)
+          PY
+          tar -C target/x86_64-unknown-linux-musl/debug -czf "$RUNNER_TEMP/podman-runtime.tgz" \
+            pvisor pvisor-replay pvisor-daemon libkrunfw.so.5 libkrunfw.SOURCE
       - uses: actions/upload-artifact@v4
         with:
           name: podman-runtime
@@ -341,10 +541,10 @@ jobs:
           retention-days: 7
 
       - name: Run CLI tests
-        run: mise run test -- pvisor-cli
+        run: mise run test -- pvisor-cli -- -E 'not (binary(=docker_cli) | binary(=docker_p0_cli) | binary(=docker_staged_cli) | binary(=docker_staged_native) | binary(=compose_cli))'
 
   podman-contracts:
-    name: CLI contracts / ${{ matrix.suite }}
+    name: Feature docker-cli / ${{ matrix.suite }} / Linux KVM
     needs: cli-test
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -385,39 +585,7 @@ jobs:
           RUST_LOG: error
           CONTRACT_LOGS: ${{ runner.temp }}/podman-contracts
         shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p "$CONTRACT_LOGS"
-          {
-            uname -a
-            "$PVISOR_BINARY" --version
-            printf 'suite=%s\nPVISOR_TEST_IMAGE=%s\n' "$SUITE" "$PVISOR_TEST_IMAGE"
-          } | tee "$CONTRACT_LOGS/environment.txt"
-          if [[ "$SUITE" == bats ]]; then
-            bats --version | tee -a "$CONTRACT_LOGS/environment.txt"
-            bats --tap --print-output-on-failure tests/podman/system 2>&1 | tee "$CONTRACT_LOGS/bats.tap"
-          else
-            go version | tee -a "$CONTRACT_LOGS/environment.txt"
-            # Discover every active test; stable hashing assigns each exactly once.
-            # Compile all files on every shard so shared helpers remain available.
-            go test -list '^Test' tests/podman/e2e/*.go > "$CONTRACT_LOGS/discovered.txt"
-            python3 - <<'PY'
-          import hashlib
-          import os
-          import re
-          from pathlib import Path
-
-          logs = Path(os.environ["CONTRACT_LOGS"])
-          tests = [s for s in (logs / "discovered.txt").read_text().splitlines() if re.fullmatch(r"Test\w+", s)]
-          index = int(os.environ["SUITE"].removeprefix("go-"))
-          selected = [s for s in tests if int.from_bytes(hashlib.sha256(s.encode()).digest(), "big") % 2 == index]
-          if not selected:
-              raise SystemExit("empty contract shard")
-          (logs / "selected.txt").write_text("\n".join(selected) + "\n")
-          (logs / "filter.txt").write_text("^(" + "|".join(selected) + ")$")
-          PY
-            go test -json -count=1 -timeout=20m -run "$(cat "$CONTRACT_LOGS/filter.txt")" tests/podman/e2e/*.go 2>&1 | tee "$CONTRACT_LOGS/go.jsonl"
-          fi
+        run: mise run test-feature-contracts -- docker-cli "$SUITE"
       - name: Capture host diagnostics on contract failure
         if: failure()
         shell: bash
@@ -473,7 +641,7 @@ jobs:
         run: mise run test -- pvisor pvisor-cli -- --features pvisor/gateway,pvisor-cli/gateway
 
   pvisor-isolation-regression:
-    name: pVisor isolation and documented cases / Linux
+    name: Host isolation hardware and filesystem examples / Linux
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
@@ -545,38 +713,6 @@ jobs:
           WORK_ROOT: ${{ runner.temp }}/pvisor-filesystem-examples
         run: mise run examples -- 01-filesystem-isolation 02-changeset-management
 
-      - name: Run documented cases
-        run: |
-          mise run cases -- \
-            --case S-DOC-001,S-DOC-002,S-DOC-003,S-DOC-004,S-DOC-005,S-DOC-006 \
-            --case S-DOC-008,S-DOC-009,S-DOC-010,S-DOC-011 \
-            --case S-DOC-013,S-DOC-014,S-DOC-015 \
-            --case S-DOC-018,S-DOC-020 \
-            --case S-DOC-030,S-DOC-031,S-DOC-032 \
-            --case S-DOC-034,S-DOC-035,S-DOC-036,S-DOC-039 \
-            --case S-DOC-041,S-DOC-042 \
-            --case S-DOC-043,S-DOC-044,S-DOC-045 \
-            --case S-DOC-048
-
-      - name: Run the CLI learning path (all cases must PASS)
-        run: mise run cases -- --suite use
-
-      - name: Upload learning-path report
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: pvisor-learning-report
-          path: target/pvisor-learning-report.json
-          if-no-files-found: error
-
-      - name: Upload case report
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: pvisor-case-report
-          path: target/pvisor-case-report.json
-          if-no-files-found: ignore
-
   examples:
     name: pVisor network and Gateway examples
     runs-on: ubuntu-latest
@@ -602,7 +738,7 @@ jobs:
   ci:
     name: CI
     if: always()
-    needs: [agent-plugins, checks, python, firmware, native-components, rust-test, cli-test, podman-contracts, gateway-features, pvisor-isolation-regression, examples, semspec, windows]
+    needs: [agent-plugins, checks, python, firmware, native-components, rust-test, cli-test, podman-contracts, gateway-features, pvisor-isolation-regression, examples, spec-fixtures, windows, feature-inventory, feature-cases, feature-native]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

@@ -74,3 +74,23 @@ path = "src/bin/pvisor.rs"
 [[bin]]
 name = "pvisor-replay"
 path = "src/bin/pvisor-replay.rs"
+
+[[test]]
+name = "docker_cli"
+path = "../../tests/spec/docker-cli/regression/docker_cli.rs"
+
+[[test]]
+name = "docker_p0_cli"
+path = "../../tests/spec/docker-cli/regression/docker_p0_cli.rs"
+
+[[test]]
+name = "docker_staged_cli"
+path = "../../tests/spec/docker-cli/regression/docker_staged_cli.rs"
+
+[[test]]
+name = "docker_staged_native"
+path = "../../tests/spec/docker-cli/regression/docker_staged_native.rs"
+
+[[test]]
+name = "compose_cli"
+path = "../../tests/spec/docker-compose/regression/compose_cli.rs"

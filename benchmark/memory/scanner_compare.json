@@ -1,3 +1,6 @@
 {
-  "paired-memory": "$ python3 @REPO@/benchmark/memory/scanner_compare.py --build @BUILD@ --rootfs @ROOTFS@ --firmware @FIRMWARE@ --output @OUTPUT@ --samples @SAMPLES@"
+  "engine": "criterion",
+  "entry": "memory/scanner_compare.json",
+  "implementation": "../criterion/src/memory/mod.rs",
+  "config_env": "PVISOR_MEMORY_CONFIG"
 }

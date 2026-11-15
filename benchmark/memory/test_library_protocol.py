@@ -7,7 +7,6 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from library_compare import verify_inputs
 from library_evidence import file_mapping_stats
 from library_protocol import (
     VARIANTS,
@@ -17,8 +16,9 @@ from library_protocol import (
     validate_docker_views,
     validate_library,
 )
-from prepare_pool import tree_manifest
-from scanner_compare import digest, save
+from scanner_evidence import digest, save
+from tree_evidence import tree_manifest
+from tree_evidence import verify_library_inputs as verify_inputs
 
 
 class LibraryProtocolTests(unittest.TestCase):

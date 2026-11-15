@@ -1,3 +1,6 @@
 {
-  "paired-network-profile": "$ python3 @REPO@/benchmark/network/profile_ab.py --baseline @BASELINE@ --candidate @CANDIDATE@ --worker @WORKER@ --firmware @FIRMWARE@ --output @OUTPUT@"
+  "engine": "criterion",
+  "entry": "network/profile_ab.json",
+  "implementation": "../criterion/src/network/mod.rs",
+  "config_env": "PVISOR_BENCH_BASELINE"
 }

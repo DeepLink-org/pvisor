@@ -6,11 +6,9 @@ on:
     paths:
       - 'docs/**'
       - 'benchmark/**'
-      - 'tools/semspec/**'
       - 'scripts/*docs*.py'
       - 'scripts/check-reference.py'
       - 'tests/unit/test_docs.py'
-      - 'tests/unit/test_semspec_tables.py'
       - 'tests/fixtures.py'
       - 'mise.toml'
       - 'mise.lock'
@@ -26,11 +24,9 @@ on:
     paths:
       - 'docs/**'
       - 'benchmark/**'
-      - 'tools/semspec/**'
       - 'scripts/*docs*.py'
       - 'scripts/check-reference.py'
       - 'tests/unit/test_docs.py'
-      - 'tests/unit/test_semspec_tables.py'
       - 'tests/fixtures.py'
       - 'mise.toml'
       - 'mise.lock'
@@ -59,14 +55,10 @@ jobs:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup-build-env
         with:
-          tools: python uv rust
+          tools: python uv
           setup: python
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: docs-semspec
-          workspaces: tools/semspec -> ../../target/semspec
       - name: Test documentation checks
-        run: mise run test-py -- tests.unit.test_docs tests.unit.test_semspec_tables
+        run: mise run test-py -- tests.unit.test_docs
       - name: Build and check documentation
         run: mise run docs-build -- --require-recorded
       - uses: actions/upload-pages-artifact@v3

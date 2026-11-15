@@ -418,17 +418,10 @@ Local raw record `docs/src/assets/benchmarks/.data/reference-env-20261004/follow
 
 ### macOS / HVF
 
-Prepare the release CLI, Alpine rootfs and both firmware directories, then run:
-
-```bash
-python3 benchmark/pvisor/vm_ready.py \
-  --binary target/release/pvisor \
-  --rootfs target/guest-init-benchmark/rootfs \
-  --official target/firmware-official-compare-20261003/official \
-  --trimmed target/firmware-official-compare-20261003/trimmed \
-  --output target/vm-startup-new \
-  --samples 100 --warmups 5 --profile-samples 20
-```
+The frozen Python-coordinated protocol used a release CLI, Alpine rootfs and
+official/trimmed firmware directories, with 100 samples, five warmups and
+20 independent profile samples. Exact commands remain with the archived
+harness; these observations are not Criterion samples.
 
 The output directory must not exist. The harness uses the Python standard library and existing percentile/Bundle validation helpers. Main and diagnostic batches are separate, warmups are excluded, and outputs include `results.json`, incrementally flushed `samples.jsonl`, input hashes and per-trial stdout/stderr. Its schema is `pvisor-vm-readiness/v1`; do not mix it with `startup.py` command-completion measurements.
 
@@ -438,16 +431,11 @@ The measured harness snapshot is retained in `review_project/06-evidence/vm-star
 
 ### Linux / KVM {#linux-reproduce}
 
-Use a prepared guest root and firmware directory with a new output directory. The script reuses first-output timing and run validation, copying the CLI and firmware to pin artifact identity.
-
-```bash
-python3 benchmark/pvisor/linux_vm_ready.py \
-  --binary target/release/pvisor \
-  --rootfs / \
-  --firmware /path/to/libkrunfw-5.5.0-directory \
-  --output target/vm-startup-linux-new \
-  --samples 100 --warmups 5
-```
+The frozen Linux protocol used host root `/`, fixed firmware and release CLI,
+100 samples and five warmups. Its Python coordinator measured first output,
+validated each run and copied the CLI and firmware to pin artifact identity.
+Exact commands remain in the batch harness. Current startup entry points are
+documented in the [startup guide](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/startup/README.md).
 
 Local raw record `docs/src/assets/benchmarks/.data/startup-linux-20261003.tsv`. Per-trial stdout/stderr, warmup logs and fixed binaries remain in local `target/local-vm-validation-20261003/startup-linux-100/`. Changing artifacts or rootfs requires a new measurement batch with earlier records retained.
 

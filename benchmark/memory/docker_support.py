@@ -12,7 +12,7 @@ import time
 import uuid
 from pathlib import Path
 
-from scanner_compare import digest, save
+from scanner_evidence import digest, save
 
 
 def group_pids(group):
@@ -305,7 +305,7 @@ class ContainerProcess:
 
 
 def verify_inputs(root, receipt):
-    from prepare_pool import tree_manifest
+    from tree_evidence import tree_manifest
 
     if any(digest(root / name) != value for name, value in receipt["hashes"].items()):
         raise ValueError("frozen Docker inputs changed")

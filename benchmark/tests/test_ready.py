@@ -1,244 +1,252 @@
-"""Ready timing stops on receipt, while correctness still requires normal exit."""
+"""Read-only contracts for retained Ready/Exit cohorts; Rust observes new runs."""
 
+import importlib.util
 import json
-import os
+import shlex
 import sys
 import unittest
+from copy import deepcopy
 from pathlib import Path
-from unittest.mock import patch
 
 from tests.fixtures import workspace
 
-# The shared observer and its evidence auditor are tested separately.
-
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "startup"))
-import audit as AUDIT  # noqa: E402
-import timing as READY  # noqa: E402
+SPEC = importlib.util.spec_from_file_location("ready_archive_audit", ROOT / "startup/audit.py")
+AUDIT = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(AUDIT)
 
 
-class ReadyContracts(unittest.TestCase):
-    def capture(self, root, code, timeout=2):
-        return READY.capture(
-            [sys.executable, "-c", code], root, os.environ.copy(), root / "output.log", timeout
+def frozen_ready_batch(root, backend="pvisor-vm"):
+    """Construct historical evidence; never execute the recorded subject/argv."""
+    root.mkdir(parents=True, exist_ok=True)
+    subject = ["/frozen/pvisor", "spawn", "--vm"]
+    protocol = dict(
+        subject=subject,
+        scope=AUDIT.COMMON.READY_EXIT_SCOPE,
+        measurement_engine="python-perf_counter_ns",
+        ready="exact REFERENCE_READY line received",
+        guest_cpus=2,
+        guest_memory_mib=128,
+        backends=[backend],
+        assets=None,
+        input_before=None,
+        kernel=None,
+        cache="host cache retained",
+    )
+    AUDIT.COMMON.save(root / "protocol.json", protocol)
+    samples = []
+    phases = (
+        [("preflight", 0)] + [("warmup", i) for i in range(3)] + [("sample", i) for i in range(60)]
+    )
+    for i, (phase, index) in enumerate(phases):
+        trial = root / f"trials/{i:05d}"
+        # Large non-formal durations prove preflight/warmup exclusion.
+        duration = (index + 1) * 1_000_000 if phase == "sample" else 500_000_000
+        start = (i + 1) * 1_000_000_000
+        AUDIT.COMMON.save(
+            trial / "timing.json",
+            dict(
+                command=subject,
+                phase=phase,
+                index=index,
+                start_ns=start,
+                ready_ns=start + duration,
+                end_ns=start + duration + 1_000_000,
+                ready_duration_ns=duration,
+                exit_duration_ns=duration + 1_000_000,
+                exit_code=0,
+            ),
         )
+        (trial / "stdout").write_text(
+            'REFERENCE_READY\nREFERENCE_RESULT {"mode":"ready","correctness":"passed"}\n'
+        )
+        (trial / "stderr").touch()
+        AUDIT.COMMON.save(trial / "condition.json", dict(backend=backend, validated=True))
+        AUDIT.COMMON.save(
+            trial / "stage/run-bundle.json",
+            dict(
+                run=dict(
+                    state="completed", exit_code=0, executor=dict(isolation="virtual_machine")
+                ),
+                safety=dict(filesystem_changes_staged=True),
+            ),
+        )
+        if phase == "sample":
+            samples.append(dict(ready_ns=duration, exit_ns=duration + 1_000_000))
+    result = AUDIT.summarize_pairs(samples)
+    AUDIT.COMMON.save(
+        root / "timing.samples.json",
+        dict(engine="python-perf_counter_ns", unit="nanosecond", samples=samples, result=result),
+    )
+    label = AUDIT.LABELS[backend]
+    command = shlex.join(
+        ["python3", str(ROOT / "startup" / (backend.replace("-", "_") + "_timing.py")), str(root)]
+    )
+    template, resolved = {label: "$ " + command}, {label: result}
+    evidence = dict(
+        format=1,
+        cwd=str(root),
+        template=str(root / "in.json"),
+        commands=[dict(kind="script-row", command=command, raw=result, value=result)],
+        cells=[],
+        rows=[dict(row=label, command=command, expression=command, columns=list(AUDIT.FIELDS))],
+    )
+    AUDIT.COMMON.save(root / "in.json", template)
+    AUDIT.COMMON.save(root / "in.bench.json", evidence)
+    AUDIT.COMMON.save(root / "in.render.json", resolved)
+    # Synthetic frozen source, not a current measurement harness.
+    AUDIT.COMMON.save(root / "harness/source.json", {"historical": True})
+    manifest = dict(
+        status="prepared",
+        batch=root.name,
+        cwd=str(root),
+        role="user-facing",
+        metric_scope=AUDIT.COMMON.READY_EXIT_SCOPE,
+        entry="startup/" + backend.replace("-", "_") + "_timing.json",
+        conditions=[backend],
+        benchmark_id="B-STARTUP",
+        measurement_engine="python-perf_counter_ns",
+        python_version="historical-test",
+        runs=60,
+        warmup=3,
+        rows={label: backend},
+        cpu_affinity=[0, 1],
+        source_commit_scope="binary source is not attested",
+        artifacts={str(root / "protocol.json"): AUDIT.COMMON.digest(root / "protocol.json")},
+        harness={"source.json": AUDIT.COMMON.digest(root / "harness/source.json")},
+        input_sha256=AUDIT.COMMON.digest(root / "in.json"),
+    )
+    AUDIT.COMMON.save(root / "manifest.json", manifest)
+    return manifest, evidence, resolved, template
 
-    def test_ready_excludes_exit_delay_and_keeps_output(self):
-        with workspace() as (root, resources):
-            result = self.capture(
-                root, "import time; print('REFERENCE_READY', flush=True); time.sleep(.25)"
-            )
-            self.assertGreater(result["end_ns"] - result["ready_ns"], 200_000_000)
-            self.assertEqual(result["ready_duration_ns"], result["ready_ns"] - result["start_ns"])
-            self.assertEqual(result["exit_duration_ns"], result["end_ns"] - result["start_ns"])
-            self.assertEqual((root / "output.log").read_text(), "REFERENCE_READY\n")
-            self.assertEqual(json.loads((root / "output.timing.json").read_text()), result)
 
-    def test_missing_duplicate_partial_and_failed_exit_reject_data(self):
-        for code in (
-            "print('not ready')",
-            "print('REFERENCE_READY\\nREFERENCE_READY')",
-            "print('REFERENCE_READY suffix')",
-            "print('REFERENCE_READY', end='')",
-            "print('REFERENCE_READY'); raise SystemExit(7)",
-        ):
-            with self.subTest(code=code), workspace() as (root, resources):
-                with self.assertRaises(ValueError):
-                    self.capture(root, code)
-                self.assertTrue((root / "output.log").read_bytes())
-                self.assertIn("error", json.loads((root / "output.timing.json").read_text()))
-
-    def test_timeout_after_ready_kills_owned_child(self):
-        with workspace() as (root, resources):
-            code = (
-                "import subprocess, time; "
-                "child=subprocess.Popen(['sleep','10']); "
-                f"open({str(root / 'child.pid')!r},'w').write(str(child.pid)); "
-                "print('REFERENCE_READY',flush=True); time.sleep(10)"
-            )
-            with self.assertRaises(TimeoutError):
-                self.capture(root, code, timeout=0.2)
-            pid = int((root / "child.pid").read_text())
-            path = Path(f"/proc/{pid}/stat")
-            if path.exists():
-                self.assertEqual(path.read_text().split()[2], "Z")
-            self.assertIn("error", json.loads((root / "output.timing.json").read_text()))
-
-    def test_statistics_use_formal_samples_and_sample_sd(self):
-        result = READY.summarize([1_000_000, 3_000_000, 5_000_000])
-        self.assertEqual(result, dict(zip(READY.READY_FIELDS, [3, 3, 3, 2, 1, 5])))
+class ReadyArchiveContracts(unittest.TestCase):
+    def test_statistics_use_nanoseconds_and_sample_sd(self):
+        result = AUDIT.ARCHIVE.summarize_ready([1_000_000, 3_000_000, 5_000_000])
+        self.assertEqual(result, dict(zip(AUDIT.ARCHIVE.READY_FIELDS, [3, 3, 3, 2, 1, 5])))
         for invalid in ([1], [True, 2], [0, 2], [1.1, 2]):
-            with self.assertRaises(ValueError):
-                READY.summarize(invalid)
+            with self.subTest(invalid=invalid), self.assertRaises(ValueError):
+                AUDIT.ARCHIVE.summarize_ready(invalid)
 
     def test_paired_summary_rejects_unpaired_and_reversed_durations(self):
         valid = [
-            {"ready_ns": 1_000_000, "exit_ns": 3_000_000},
-            {"ready_ns": 3_000_000, "exit_ns": 5_000_000},
+            dict(ready_ns=1_000_000, exit_ns=3_000_000),
+            dict(ready_ns=3_000_000, exit_ns=5_000_000),
         ]
-        result = READY.summarize_pairs(valid)
-        self.assertEqual(result["N"], 2)
-        self.assertEqual(result["Ready median ms"], 2)
-        self.assertEqual(result["Exit median ms"], 4)
-        for bad in (
+        result = AUDIT.summarize_pairs(valid)
+        self.assertEqual(
+            (result["N"], result["Ready median ms"], result["Exit median ms"]), (2, 2, 4)
+        )
+        for invalid in (
             [{"ready_ns": 1}],
-            [{"ready_ns": 2, "exit_ns": 1}],
-            [{"ready_ns": True, "exit_ns": 3}],
+            [dict(ready_ns=2, exit_ns=1)],
+            [dict(ready_ns=True, exit_ns=3)],
             [valid[0]],
         ):
-            with self.assertRaises(ValueError):
-                READY.summarize_pairs(bad)
+            with self.subTest(invalid=invalid), self.assertRaises(ValueError):
+                AUDIT.summarize_pairs(invalid)
 
-    def test_row_returns_once_after_three_warmups_and_sixty_samples(self):
+    def test_complete_archive_recomputes_formal_samples_without_running_subjects(self):
         with workspace() as (root, resources):
-            (root / "trials/00000").mkdir(parents=True)
-            (root / "trials/00000/timing.json").write_text("{}")
-            (root / "manifest.json").write_text(
-                json.dumps(
-                    dict(
-                        status="prepared", metric_scope=READY.COMMON.READY_EXIT_SCOPE, artifacts={}
-                    )
-                )
-            )
-            with patch.object(
-                READY,
-                "run_trial",
-                side_effect=lambda batch, phase, index: {
-                    "ready_ns": (index + 1) * 1_000_000,
-                    "exit_ns": (index + 1) * 2_000_000,
-                },
-            ) as trial:
-                result = READY.measure(root)
-            self.assertEqual(result["N"], 60)
-            self.assertEqual(result["Ready median ms"], 30.5)
-            self.assertEqual(result["Exit median ms"], 61)
-            self.assertEqual(len(result), 11)
-            self.assertEqual(
-                [(call.args[1], call.args[2]) for call in trial.call_args_list],
-                [("warmup", i) for i in range(3)] + [("sample", i) for i in range(60)],
-            )
-            self.assertEqual(
-                len(json.loads((root / "timing.samples.json").read_text())["samples"]), 60
-            )
+            args = frozen_ready_batch(root)
+            before = {p: p.read_bytes() for p in root.rglob("*") if p.is_file()}
+            self.assertEqual(set(AUDIT.audit_timing(root, *args)), {"pvisor-vm"})
+            self.assertEqual(args[2]["pVisor VM"]["Ready median ms"], 30.5)
+            self.assertEqual(args[2]["pVisor VM"]["Exit median ms"], 31.5)
+            self.assertEqual({p: p.read_bytes() for p in before}, before)
+            self.assertEqual(json.loads((root / "audit.json").read_text())["status"], "passed")
 
-    def test_failed_sample_cannot_write_summary(self):
+    def test_trial_tampering_is_rejected_including_nonformal_trials(self):
+        mutations = [
+            ("command", ["/different/subject"]),
+            ("phase", "wrong"),
+            ("index", 100),
+            ("exit_code", 7),
+            ("start_ns", True),
+            ("ready_ns", 0),
+            ("end_ns", 0),
+            ("ready_duration_ns", 1),
+            ("exit_duration_ns", 1),
+        ]
         with workspace() as (root, resources):
-            (root / "trials/00000").mkdir(parents=True)
-            (root / "trials/00000/timing.json").write_text("{}")
-            (root / "manifest.json").write_text(
-                json.dumps(
-                    dict(
-                        status="prepared", metric_scope=READY.COMMON.READY_EXIT_SCOPE, artifacts={}
-                    )
-                )
-            )
-            with patch.object(
-                READY, "run_trial", side_effect=[1, 1, 1, 1, ValueError("incorrect output")]
-            ):
-                with self.assertRaisesRegex(ValueError, "incorrect output"):
-                    READY.measure(root)
-            self.assertFalse((root / "timing.samples.json").exists())
+            args = frozen_ready_batch(root)
+            for trial in ("00000", "00001", "00004"):
+                path = root / "trials" / trial / "timing.json"
+                original = path.read_bytes()
+                for key, value in mutations:
+                    with self.subTest(trial=trial, key=key):
+                        record = json.loads(original)
+                        record[key] = value
+                        AUDIT.COMMON.save(path, record)
+                        with self.assertRaises(ValueError):
+                            AUDIT.audit_timing(root, *args)
+                path.write_bytes(original)
 
-    def test_audit_recomputes_all_samples_and_rejects_tampering(self):
-        import shlex
-        from copy import deepcopy
-
+    def test_output_bundle_inventory_and_summary_tampering_is_rejected(self):
         with workspace() as (root, resources):
-            subject = ["/frozen/pvisor", "run"]
-            protocol = dict(
-                subject=subject,
-                scope=READY.COMMON.READY_EXIT_SCOPE,
-                measurement_engine="python-perf_counter_ns",
-                ready="exact REFERENCE_READY line received",
-                guest_cpus=2,
-                guest_memory_mib=128,
-            )
-            READY.COMMON.save(root / "protocol.json", protocol)
-            phases = (
-                [("preflight", 0)]
-                + [("warmup", i) for i in range(3)]
-                + [("sample", i) for i in range(60)]
-            )
-            samples = []
-            for i, (phase, index) in enumerate(phases):
-                trial = root / f"trials/{i:05d}"
-                duration = (index + 1) * 1_000_000
-                start = (i + 1) * 1_000_000_000
-                READY.COMMON.save(
-                    trial / "timing.json",
-                    dict(
-                        command=subject,
-                        phase=phase,
-                        index=index,
-                        start_ns=start,
-                        ready_ns=start + duration,
-                        end_ns=start + duration + 1_000_000,
-                        ready_duration_ns=duration,
-                        exit_duration_ns=duration + 1_000_000,
-                        exit_code=0,
-                    ),
-                )
-                (trial / "stdout").write_text(
-                    'REFERENCE_READY\nREFERENCE_RESULT {"mode":"ready","correctness":"passed"}\n'
-                )
-                (trial / "stderr").touch()
-                READY.COMMON.save(
-                    trial / "stage/run-bundle.json",
-                    dict(
-                        run=dict(
-                            state="completed",
-                            exit_code=0,
-                            executor=dict(isolation="virtual_machine"),
-                        ),
-                        safety=dict(filesystem_changes_staged=True),
-                    ),
-                )
-                if phase == "sample":
-                    samples.append({"ready_ns": duration, "exit_ns": duration + 1_000_000})
-            result = READY.summarize_pairs(samples)
-            READY.COMMON.save(
-                root / "timing.samples.json",
-                dict(
-                    engine="python-perf_counter_ns",
-                    unit="nanosecond",
-                    samples=samples,
-                    result=result,
+            args = frozen_ready_batch(root)
+            changes = [
+                ("trials/00000/stdout", b"REFERENCE_READY"),
+                ("trials/00001/stdout", b"REFERENCE_READY\nREFERENCE_READY\n"),
+                ("trials/00004/stderr", b"Kernel panic - not syncing"),
+                ("trials/00004/condition.json", b'{"backend":"pvisor-vm","validated":false}'),
+                (
+                    "trials/00004/stage/run-bundle.json",
+                    b'{"run":{"state":"failed","exit_code":0,"executor":{"isolation":"virtual_machine"}},'
+                    b'"safety":{"filesystem_changes_staged":true}}',
                 ),
-            )
-            command = shlex.join(["python3", str(ROOT / "startup/pvisor_vm_timing.py"), str(root)])
-            evidence = dict(
-                commands=[dict(kind="script-row", command=command, raw=result, value=result)],
-                cells=[],
-                rows=[
-                    dict(
-                        row="pVisor VM",
-                        command=command,
-                        expression=command,
-                        columns=list(READY.FIELDS),
-                    )
-                ],
-            )
-            manifest = dict(
-                metric_scope=READY.COMMON.READY_EXIT_SCOPE,
-                entry="startup/pvisor_vm_timing.json",
-                conditions=["pvisor-vm"],
-                benchmark_id="B-STARTUP",
-                measurement_engine="python-perf_counter_ns",
-                runs=60,
-                warmup=3,
-                rows={"pVisor VM": "pvisor-vm"},
-            )
-            template = {"pVisor VM": "$ " + command}
-            resolved = {"pVisor VM": result}
-            resources.enter_context(patch("audit.audit_startup"))
-            AUDIT.audit_timing(root, manifest, evidence, resolved, template)
-            changed = deepcopy(resolved)
-            changed["pVisor VM"]["Ready mean ms"] += 0.01
-            with self.assertRaisesRegex(ValueError, "resolved row"):
-                AUDIT.audit_timing(root, manifest, evidence, changed, template)
+                ("timing.samples.json", b"{}"),
+            ]
+            for name, altered in changes:
+                path = root / name
+                original = path.read_bytes()
+                with self.subTest(name=name):
+                    path.write_bytes(altered)
+                    with self.assertRaises(ValueError):
+                        AUDIT.audit_timing(root, *args)
+                path.write_bytes(original)
             (root / "trials/00001/timing.json").unlink()
             with self.assertRaisesRegex(ValueError, "missing Ready"):
-                AUDIT.audit_timing(root, manifest, evidence, resolved, template)
+                AUDIT.audit_timing(root, *args)
+
+    def test_protocol_argv_and_resolved_rows_are_not_interchangeable(self):
+        with workspace() as (root, resources):
+            args = frozen_ready_batch(root)
+            for position, key, value in [
+                (0, "measurement_engine", "criterion-rust"),
+                (0, "runs", 59),
+                (0, "conditions", ["unknown"]),
+                (3, "pVisor VM", args[3]["pVisor VM"] + " --extra"),
+                (2, "pVisor VM", args[2]["pVisor VM"] | {"Ready mean ms": 0}),
+                (1, "rows", []),
+            ]:
+                altered = deepcopy(args)
+                altered[position][key] = value
+                with self.subTest(position=position, key=key), self.assertRaises(ValueError):
+                    AUDIT.audit_timing(root, *altered)
+            protocol = root / "protocol.json"
+            protocol.write_text(protocol.read_text() + "\n")
+            with self.assertRaisesRegex(ValueError, "checksum"):
+                AUDIT.audit_timing(root, *args)
+
+    def test_frozen_source_and_input_digests_are_checked_before_accepting_archive(self):
+        from update import validate_batch
+
+        with workspace() as (root, resources):
+            frozen_ready_batch(root)
+            for name, message in (
+                ("harness/source.json", "frozen harness changed"),
+                ("in.json", "benchmark input changed"),
+            ):
+                path = root / name
+                original = path.read_bytes()
+                with self.subTest(name=name):
+                    path.write_bytes(original + b"\n")
+                    with self.assertRaisesRegex(ValueError, message):
+                        validate_batch(root)
+                path.write_bytes(original)
 
 
 if __name__ == "__main__":

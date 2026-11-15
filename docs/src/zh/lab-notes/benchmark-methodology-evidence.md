@@ -42,20 +42,18 @@ macOS/HVF 与 Linux/KVM 的数据融入对应主题的 benchmark 文档并同时
 
 ## 从现有测量入口开始
 
-```bash
-mise run benchmark -- smoke --output benchmark/process/.data/candidate
-mise run benchmark -- nightly --output benchmark/process/.data/nightly-new
-mise run benchmark-compare -- benchmark/process/.data/candidate/in.bench.json benchmark/process/.data/main/in.bench.json
-mise run benchmark -- startup/timing --output benchmark/startup/.data/measurement
-```
+Rust/Criterion 的测量与比较命令见[当前 benchmark 手册](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/README.md)。
+下述历史进程与启动协议保留各自冻结的 harness、输入记录及比较收据；
+其 `in.bench.json` 文件不是 Criterion 比较根目录，不能传给当前
+`benchmark-compare` 命令。
 
-进程回归门禁使用 semspec bench 与 Python `perf_counter_ns` 命令计时器，准备及正确性 hooks 位于计时区间之外：smoke 为 2 次预热/10 个样本，nightly 为 10 次预热/50 个样本；分别测量原生启动、最小 host Run、status 和 review。`benchmark-compare` 接受配置与 harness 一致且通过校验的 `in.bench.json`；基线需使用同一套件另测到 `.data/main`。
+此处记录的进程批次使用 Python `perf_counter_ns` 命令计时器，准备及正确性 hooks 位于计时区间之外：smoke 为 2 次预热/10 个样本，nightly 为 10 次预热/50 个样本；分别测量原生启动、最小 host Run、status 和 review。比较要求配置与 harness 一致且通过校验的 `in.bench.json`，基线须单独测量。
 
 启动事件时钟表每条件固定 3 次预热/60 个样本，同次启动记录 Ready 与正常 Exit。它不替代已退役的启动/资源矩阵，也不复现其历史采样设置。预构建二进制、rootfs、镜像和内核的准备要求见[当前 benchmark 手册](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/README.md)。每个显式输出目录必须全新；失败保留证据并阻止发布。构建与输入准备不计入这些时钟。
 
 ## 解释与归档
 
-同机、同套件、同输入比较 candidate 与 baseline。`benchmark-compare` 默认以 15% 为回归阈值，检测到回归时返回非零退出码。保存原始样本、摘要、完整参数、输入摘要与提交号；区分冷镜像、热磁盘缓存与热页缓存，记录后台负载和电源状态。
+同机、同套件、同输入比较 candidate 与 baseline。已记录的进程比较采用 15% 回归阈值，检测到回归时返回非零退出码。比较输入与收据随归档 harness 保留，与当前 Criterion 基线分开。保存原始样本、摘要、完整参数、输入摘要与提交号；区分冷镜像、热磁盘缓存与热页缓存，记录后台负载和电源状态。
 
 2026-10-04 首版提供文件系统、网络、apply、并发密度、受控 Agent 工具闭环、机器审查流程、隔离和回放前缀数据。真实模型成功率、人工监督分钟数、云端延迟与 macOS 新工作负载仍未测；每页单独解释范围。
 
@@ -106,7 +104,7 @@ wall 是一项命令从启动到退出的总成本，worker 是内部工具运�
 
 本轮 `mise run lint` 通过；`mise run test` 为 Rust 1,075 项通过 / 8 项跳过、Python 84 项通过 / 16 项跳过。新增 benchmark 测试单独运行 19 项通过；STAGE 语义规格 14/14 PASS，人工审阅状态仍为 UNREVIEWED，不等同于人类批准。大规模 syscall trace 与非崩溃 apply ledger 保留在本机 target 原始目录，公开归档保留报告、Bundle、诊断和崩溃 ledger。
 
-用 `python3 benchmark/pvisor/summarize_product_v1.py <batch>/report.json --output-csv /tmp/summary.csv` 重算；公开本地原始记录 `docs/src/assets/benchmarks/.data/product-v1-20261004/summary.csv`按批次分组。
+使用批次冻结的汇总脚本重算；本地原始记录 `docs/src/assets/benchmarks/.data/product-v1-20261004/summary.csv` 按批次分组。已记录的 Python 协调测量保留原采样与时钟，独立于当前 Rust/Criterion 入口。
 
 本轮性能针对固定制品，不能代表之后的并行改动或其他发行构建；源码并非干净提交。全仓 lint/test 校验的是当时工作树，固定 CLI 的功能另由 benchmark 与 STAGE 规格验证。
 
@@ -132,30 +130,9 @@ Firecracker 私有 user/network namespace 内提供 TAP 和静态 NIC；QEMU `-m
 
 需要 Linux x86_64、KVM、FUSE、user/network namespaces，Firecracker 1.13.1、QEMU、curl、zstd、e2fsprogs、sfdisk，以及宿主 Python/Node/Rust/GCC/Git/rg/Claude/Codex。使用新的输出目录；下载和工具安装需要网络。准备脚本只修改输出目录中的普通文件，无宿主服务或块设备更改。先用 `--samples 1 --warmups 0` 探测，再运行正式批次。fixture 只包含项目与负载输入，不是系统根目录。
 
-```bash
-python3 benchmark/pvisor/prepare_ubuntu_reference.py \
-  --output target/ubuntu-reference-new
-python3 benchmark/pvisor/ubuntu_baselines.py \
-  --assets target/ubuntu-reference-new --fixture target/ubuntu-reference-new/fixture \
-  --binary /absolute/path/to/frozen/pvisor --output target/ubuntu-ready-new \
-  --backends native,pvisor-staged,pvisor-vm-hostroot,firecracker-ubuntu,firecracker-ubuntu-firstboot \
-  --modes ready --samples 30 --warmups 3
-python3 benchmark/pvisor/ubuntu_baselines.py \
-  --assets target/ubuntu-reference-new --fixture target/ubuntu-reference-new/fixture \
-  --binary /absolute/path/to/frozen/pvisor --output target/ubuntu-workflows-new \
-  --backends native,pvisor-staged,pvisor-vm-hostroot,firecracker-ubuntu \
-  --modes env,filesystem,tools,claude,codex --samples 10 --warmups 3
-python3 benchmark/pvisor/ubuntu_baselines.py \
-  --assets target/ubuntu-reference-new --fixture target/ubuntu-reference-new/fixture \
-  --binary /absolute/path/to/frozen/pvisor --output target/ubuntu-clients-new \
-  --backends firecracker-ubuntu --modes claude,codex --samples 10 --warmups 3
-uv run --no-project --with matplotlib python benchmark/pvisor/render_ubuntu_baselines.py \
-  --report target/ubuntu-ready-new/report.json \
-  --report target/ubuntu-workflows-new/report.json \
-  --report target/ubuntu-clients-new/report.json \
-  --replace-cohort claude/firecracker-ubuntu --replace-cohort codex/firecracker-ubuntu \
-  --assets target/ubuntu-reference-new --output /tmp/full-ubuntu-report-new
-```
+冻结批次保留准备、测量与绘图命令，Ready、工作流与客户端分别存报告。绘图选择独立
+补测的 Firecracker Claude/Codex 批次，不与此前失效的客户端观测合并。复核这些历史
+结果需要归档 harness 与制品收据；当前 checkout 不是它们的测量入口。
 
 本地原始记录 `docs/src/assets/benchmarks/.data/full-ubuntu-20261004/samples.csv` · 本地原始记录 `docs/src/assets/benchmarks/.data/full-ubuntu-20261004/summary.tsv` · [方法与复现](../benchmarks/index.md#full-ubuntu)
 
@@ -169,15 +146,7 @@ QEMU 10.2.2 的 q35 与 microvm 使用 Firecracker 已测的同一完整 Ubuntu 
 
 网络由各 QEMU 进程内的用户态 NAT/DNS 提供；Firecracker 组需要单独的 QEMU `-machine none` 辅助进程，其耗时与 RSS 已计入。因此不能把全部差值当成 VMM 或 block device 的开销。磁盘每次从相同模板克隆，3 次预热、每格 N=10，运行前另做一次功能预检；要求与 Firecracker 相同的 OS 服务就绪、工具校验及正常零退出。`reboot=t` 与 `-no-reboot` 配合，不用宿主强制杀进程冒充成功。
 
-补测在同一宿主上独立执行，不与旧样本合并；图中的 pVisor/Firecracker 是之前的独立批次。N=10 只适合初版预算，不保证尾延迟。完整命令、日志、OS 证明及制品摘要随数据归档。以下命令复用前面准备好的官方 Ubuntu：
-
-```bash
-python3 benchmark/pvisor/ubuntu_baselines.py \
-  --assets target/ubuntu-reference-new --fixture target/ubuntu-reference-new/fixture \
-  --binary /absolute/path/to/frozen/pvisor --output target/ubuntu-qemu-new \
-  --backends qemu-ubuntu,qemu-microvm-ubuntu \
-  --modes ready,tools,claude,codex --samples 10 --warmups 3
-```
+补测在同一宿主上独立执行，不与旧样本合并；图中的 pVisor/Firecracker 是之前的独立批次。N=10 只适合初版预算，不保证尾延迟。完整命令、日志、OS 证明及制品摘要随数据归档。q35/microvm 选择复用官方 Ubuntu 输入，覆盖 Ready、工具与 Claude/Codex，每格十次采样、三次预热。
 
 
 补测 本地原始记录 `docs/src/assets/benchmarks/.data/full-ubuntu-qemu-20261004/manifest.tsv`全部通过。关闭 PIC/PIT 的前提已通过 本地原始记录 `docs/src/assets/benchmarks/.data/full-ubuntu-qemu-20261004/qemu-cpu-capabilities.tsv`核对：guest 模型暴露 `tsc-deadline`。这是能力核查，不是性能样本。
@@ -243,27 +212,11 @@ native/staged 为约 0.17/0.22 GiB，Docker 含 daemon 约 0.27 GiB，VM 为约 
 
 从已安装工具构建 rootfs，再导入相同 Docker 镜像、制作 ext4。Fedora 44 自动工具布局为 Python 3.14/Node 24；其他系统可传 `--tools-rootfs` 等价预制 base。需要 KVM、FUSE、Docker rootless、Firecracker、QEMU、Claude/Codex、Rust musl target、GCC/e2fsprogs；内核构建需要干净 Linux 6.12.109 源码。只复制工具与假凭据，不复制登录认证。
 
-先按 rootless Docker 官方方式启动本用户的私有 daemon，使用短 socket 路径；将下例 `12345` 替换成该 daemon 的实际宿主 PID，选择允许的两个物理核心。脚本核对 owner/socket 后只绑定该 daemon，不修改系统 Docker。所有输出目录须为新目录；先用 `--samples 1 --warmups 0` 试跑。内核/工具下载、内核编译、镜像准备不计入任务时间，离线准备和每次克隆成本另有记录。
-
-```bash
-bash benchmark/pvisor/prepare_reference_kernel.sh \
-  /absolute/path/to/clean/linux-6.12.109 target/reference-kernel-new
-python3 benchmark/pvisor/prepare_reference_env.py \
-  --binary /absolute/path/to/pinned/pvisor --output target/reference-env-new \
-  --kernel-elf target/reference-kernel-new/vmlinux \
-  --kernel-bzimage target/reference-kernel-new/arch/x86/boot/bzImage \
-  --kernel-config target/reference-kernel-new/.config \
-  --docker-host unix:///tmp/pvisor-reference-docker/docker.sock
-python3 benchmark/pvisor/reference_baselines.py \
-  --assets target/reference-env-new --binary /absolute/path/to/pinned/pvisor \
-  --output target/reference-results-new \
-  --docker-host unix:///tmp/pvisor-reference-docker/docker.sock \
-  --docker-root-pid 12345 --cpu-affinity 0,1 --memory-mib 16384 \
-  --samples 30 --warmups 3
-uv run --no-project --with matplotlib python benchmark/pvisor/render_reference_baselines.py \
-  --report target/reference-results-new/report.json \
-  --assets target/reference-env-new --output /tmp/reference-report-new
-```
+已记录的协议使用本用户的私有 rootless daemon，核对 owner/socket 后只将该 daemon
+绑定到两个物理核心，不修改系统 Docker。每个输出目录都是新目录；先单样本、零预热
+预检，再以 CPU 0,1、VM 配置内存 16 GiB 做 30 次采样、三次预热。内核/工具下载、
+内核编译、镜像准备不计入任务时间，离线准备和每次克隆成本另有记录。实际准备、
+测量与绘图命令保存在冻结归档中。
 
 归档 schema 为 `pvisor-reference-environment/v1`，不冒充旧 smoke schema。含逐样本、命令、固定脚本、guest/tool 版本、失败、最小化实际工具回传及 Run Bundle 隔离/资源证明；不复制数 GB rootfs 或继承宿主环境的凭据。固定 rootfs、工具、内核与 pVisor 摘要在报告中。自动部署脚本与复现入口见[benchmark 目录](https://github.com/DeepLink-org/pvisor/tree/555e750105e8072e0b85030dfb36226c66dae206/benchmark/pvisor)。
 

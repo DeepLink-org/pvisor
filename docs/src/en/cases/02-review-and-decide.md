@@ -10,19 +10,7 @@ Before accepting an edited report, compare staged content with the original. `in
 
 **Violation**: The edit reaches the original or review omits it.
 
-<!-- semspec: case id=S-USE-005 -->
-```bash
-journey_setup
-printf original > report.txt
-pvisor spawn --stage "$CASE_ROOT/draft" -- /bin/sh -c 'printf proposed > report.txt'
-assert_content report.txt original
-pvisor inspect "$CASE_ROOT/draft" -- /bin/cat report.txt > "$CASE_ROOT/view.txt"
-assert_content "$CASE_ROOT/view.txt" proposed
-pvisor review "$CASE_ROOT/draft" --diff > "$CASE_ROOT/review.txt"
-journey_contains "$CASE_ROOT/review.txt" report.txt
-pvisor review "$CASE_ROOT/draft" --json > "$CASE_ROOT/review.json"
-json_paths "$CASE_ROOT/review.json" report.txt
-```
+Execution and assertions: [Scrut S-USE-005](https://github.com/DeepLink-org/pvisor/blob/main/tests/spec/stage/S-USE-005.md).
 
 ### S-USE-006: Accept selected files
 
@@ -32,20 +20,7 @@ When an Agent edits a report and an experiment, accept only the report and disca
 
 **Violation**: Selective apply commits everything or drop removes the Session record.
 
-<!-- semspec: case id=S-USE-006 -->
-```bash
-journey_setup
-pvisor spawn --stage "$CASE_ROOT/draft" -- /bin/sh -c 'printf accepted > report.txt; printf scratch > scratch.txt'
-pvisor apply "$CASE_ROOT/draft" --path report.txt
-assert_content report.txt accepted
-assert_absent scratch.txt
-pvisor review "$CASE_ROOT/draft" --json > "$CASE_ROOT/review.json"
-json_paths "$CASE_ROOT/review.json" scratch.txt
-pvisor drop "$CASE_ROOT/draft"
-assert_absent scratch.txt
-pvisor review "$CASE_ROOT/draft" --json > "$CASE_ROOT/review.json"
-json_paths "$CASE_ROOT/review.json"
-```
+Execution and assertions: [Scrut S-USE-006](https://github.com/DeepLink-org/pvisor/blob/main/tests/spec/stage/S-USE-006.md).
 
 ### S-USE-007: Refuse an apply conflict
 
@@ -55,17 +30,7 @@ If you edit the same file during review, apply must protect your new content and
 
 **Violation**: The old proposal overwrites the human edit or disappears on failure.
 
-<!-- semspec: case id=S-USE-007 -->
-```bash
-journey_setup
-printf base > report.txt
-pvisor spawn --stage "$CASE_ROOT/draft" -- /bin/sh -c 'printf agent > report.txt'
-printf human > report.txt
-expect_refused pvisor apply "$CASE_ROOT/draft" --all
-assert_content report.txt human
-pvisor inspect "$CASE_ROOT/draft" -- /bin/cat report.txt > "$CASE_ROOT/view.txt"
-assert_content "$CASE_ROOT/view.txt" agent
-```
+Execution and assertions: [Scrut S-USE-007](https://github.com/DeepLink-org/pvisor/blob/main/tests/spec/stage/S-USE-007.md).
 
 ### S-USE-008: Stop a Session before deciding
 
@@ -75,22 +40,6 @@ For a stuck task, kill it, confirm it has stopped, then discard files. Do not ap
 
 **Violation**: Live apply succeeds, the task remains alive after kill, or writes escape staging.
 
-<!-- semspec: case id=S-USE-008 -->
-```bash
-journey_setup
-pvisor spawn --stage "$CASE_ROOT/live" -- /bin/sh -c 'printf ready > ready.txt; exec /bin/sleep 30' > "$CASE_ROOT/live.log" 2>&1 &
-runner=$!
-trap 'kill "$runner" 2>/dev/null || true; wait "$runner" 2>/dev/null || true' EXIT
-journey_wait_file "$CASE_ROOT/live/upper/ready.txt" "$runner"
-expect_refused pvisor apply "$CASE_ROOT/live" --all
-pvisor kill "$CASE_ROOT/live"
-expect_refused wait "$runner"
-trap - EXIT
-pvisor status "$CASE_ROOT/live" --json > "$CASE_ROOT/status.json"
-json_expect "$CASE_ROOT/status.json" /run/state '"cancelled"'
-json_expect "$CASE_ROOT/status.json" /live false
-pvisor drop "$CASE_ROOT/live"
-assert_absent ready.txt
-```
+Execution and assertions: [Scrut S-USE-008](https://github.com/DeepLink-org/pvisor/blob/main/tests/spec/stage/S-USE-008.md).
 
 [Learning path](index.md) · [3. Save a proposal and explore a branch](03-checkpoint-and-fork.md)

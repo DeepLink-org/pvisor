@@ -10,19 +10,7 @@ Agent 会修改代码时，先加 `--stage`，再用 `review` 和 `inspect` 看�
 
 **违反示例**：写入穿透原件或 review 漏报改动。
 
-<!-- semspec: case id=S-USE-005 -->
-```bash
-journey_setup
-printf original > report.txt
-pvisor spawn --stage "$CASE_ROOT/draft" -- /bin/sh -c 'printf proposed > report.txt'
-assert_content report.txt original
-pvisor inspect "$CASE_ROOT/draft" -- /bin/cat report.txt > "$CASE_ROOT/view.txt"
-assert_content "$CASE_ROOT/view.txt" proposed
-pvisor review "$CASE_ROOT/draft" --diff > "$CASE_ROOT/review.txt"
-journey_contains "$CASE_ROOT/review.txt" report.txt
-pvisor review "$CASE_ROOT/draft" --json > "$CASE_ROOT/review.json"
-json_paths "$CASE_ROOT/review.json" report.txt
-```
+运行与断言：[Scrut S-USE-005](https://github.com/DeepLink-org/pvisor/blob/main/tests/spec/stage/S-USE-005.md)。
 
 ### S-USE-006：只接受需要的文件
 
@@ -32,20 +20,7 @@ Agent 同时修改正文和实验文件时，可以只接受正文，再丢弃�
 
 **违反示例**：选择性 apply 提交所有文件，或 drop 删除记录。
 
-<!-- semspec: case id=S-USE-006 -->
-```bash
-journey_setup
-pvisor spawn --stage "$CASE_ROOT/draft" -- /bin/sh -c 'printf accepted > report.txt; printf scratch > scratch.txt'
-pvisor apply "$CASE_ROOT/draft" --path report.txt
-assert_content report.txt accepted
-assert_absent scratch.txt
-pvisor review "$CASE_ROOT/draft" --json > "$CASE_ROOT/review.json"
-json_paths "$CASE_ROOT/review.json" scratch.txt
-pvisor drop "$CASE_ROOT/draft"
-assert_absent scratch.txt
-pvisor review "$CASE_ROOT/draft" --json > "$CASE_ROOT/review.json"
-json_paths "$CASE_ROOT/review.json"
-```
+运行与断言：[Scrut S-USE-006](https://github.com/DeepLink-org/pvisor/blob/main/tests/spec/stage/S-USE-006.md)。
 
 ### S-USE-007：宿主已修改时拒绝覆盖
 
@@ -55,17 +30,7 @@ json_paths "$CASE_ROOT/review.json"
 
 **违反示例**：用旧提案覆盖人类的新改动，或失败时丢掉提案。
 
-<!-- semspec: case id=S-USE-007 -->
-```bash
-journey_setup
-printf base > report.txt
-pvisor spawn --stage "$CASE_ROOT/draft" -- /bin/sh -c 'printf agent > report.txt'
-printf human > report.txt
-expect_refused pvisor apply "$CASE_ROOT/draft" --all
-assert_content report.txt human
-pvisor inspect "$CASE_ROOT/draft" -- /bin/cat report.txt > "$CASE_ROOT/view.txt"
-assert_content "$CASE_ROOT/view.txt" agent
-```
+运行与断言：[Scrut S-USE-007](https://github.com/DeepLink-org/pvisor/blob/main/tests/spec/stage/S-USE-007.md)。
 
 ### S-USE-008：终止任务后再决定
 
@@ -75,22 +40,6 @@ assert_content "$CASE_ROOT/view.txt" agent
 
 **违反示例**：live apply 成功，kill 后仍在运行或文件穿透。
 
-<!-- semspec: case id=S-USE-008 -->
-```bash
-journey_setup
-pvisor spawn --stage "$CASE_ROOT/live" -- /bin/sh -c 'printf ready > ready.txt; exec /bin/sleep 30' > "$CASE_ROOT/live.log" 2>&1 &
-runner=$!
-trap 'kill "$runner" 2>/dev/null || true; wait "$runner" 2>/dev/null || true' EXIT
-journey_wait_file "$CASE_ROOT/live/upper/ready.txt" "$runner"
-expect_refused pvisor apply "$CASE_ROOT/live" --all
-pvisor kill "$CASE_ROOT/live"
-expect_refused wait "$runner"
-trap - EXIT
-pvisor status "$CASE_ROOT/live" --json > "$CASE_ROOT/status.json"
-json_expect "$CASE_ROOT/status.json" /run/state '"cancelled"'
-json_expect "$CASE_ROOT/status.json" /live false
-pvisor drop "$CASE_ROOT/live"
-assert_absent ready.txt
-```
+运行与断言：[Scrut S-USE-008](https://github.com/DeepLink-org/pvisor/blob/main/tests/spec/stage/S-USE-008.md)。
 
 [返回学习路线](index.md) · [3. 保存提案，探索另一条分支](03-checkpoint-and-fork.md)

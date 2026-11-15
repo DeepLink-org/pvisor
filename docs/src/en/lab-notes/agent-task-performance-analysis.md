@@ -141,17 +141,8 @@ Real-model SWE-bench Lite, actual tokens, complex multi-tool tasks and output va
 
 ## Reproduction and evidence {#run}
 
-Run from the repository root with a new output directory. This dynamic firmware entry requires the GNU/Linux CLI; static musl builds use a different firmware entry. This host has Linux, KVM/FUSE/user namespaces, Python 3.14, Rust/GCC, Git/rg, Node 24/npm and Podman/crun. The agent suite also needs the Claude/Codex CLIs.
+The recorded Python-coordinated protocol used the GNU/Linux CLI's dynamic firmware entry, distinct from the static musl entry. Its host had Linux, KVM/FUSE/user namespaces, Python 3.14, Rust/GCC, Git/rg, Node 24/npm and Podman/crun, with Claude/Codex CLIs for the agent suite. The agent selection requested three samples without warmups after a separate one-sample preflight. These are historical measurements, not Criterion samples.
 
-```bash
-python3 benchmark/pvisor/product_v1.py \
-  --binary /absolute/path/to/gnu-linux/pvisor \
-  --firmware /absolute/path/to/libkrunfw-directory \
-  --replay-binary /absolute/path/to/pvisor-replay \
-  --output target/product-benchmark-new \
-  --suites agent --samples 3 --warmups 0
-```
-
-Start with `--samples 1 --warmups 0` to check prerequisites. Workloads and correctness assertions live in `benchmark/pvisor/v1/`. Reports pin binaries, firmware and harness source with hashes. Failed operations never enter performance distributions. Effective sample counts are stated per page; P95/P99 from small samples describe this batch rather than production tail probabilities.
+Workloads, correctness assertions and exact commands are retained in each batch's frozen harness. Reports pin binaries, firmware and harness source with hashes. Failed operations never enter performance distributions. Effective sample counts are stated per page; P95/P99 from small samples describe this batch rather than production tail probabilities. Current measurement entry points are in the [benchmark guide](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/README.md).
 
 [Environment, artifacts and method](../benchmarks/index.md#product-v1) · Local raw record `docs/src/assets/benchmarks/.data/product-v1-20261004/manifest.tsv` · Local raw record `docs/src/assets/benchmarks/.data/product-v1-20261004/samples.csv` · Local raw record `docs/src/assets/benchmarks/.data/product-v1-20261004/evidence.tar.gz`. Reports retain dirty source status; executable SHA256 identifies the measured artifact. The archive excludes large rootfs/binaries and reproducible workspace payloads, while retaining input hashes and each batch's harness.

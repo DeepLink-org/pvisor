@@ -10,17 +10,7 @@ Before resuming an Agent conversation, use prepare-only to check that prefix par
 
 **Violation**: prepare-only executes historical commands.
 
-<!-- semspec: case id=S-USE-015 -->
-```bash
-journey_setup
-cat > trajectory.json <<'JSON'
-{"trajectory_format":"mini-swe-agent-1.1","info":{"mini_version":"2.4.6"},"messages":[{"role":"assistant","content":"historical action","extra":{"response":{},"actions":[{"tool_call_id":"call-1","command":"printf historical > marker"}]}},{"role":"tool","content":"old observation","extra":{"returncode":0}}]}
-JSON
-pvisor replay --agent mini-swe-agent --trajectory ./trajectory.json --after-step 1 --prepare-only --state-dir "$CASE_ROOT/replay-state" --output-dir "$CASE_ROOT/replay-output" > "$CASE_ROOT/prepared.json"
-assert_absent marker
-json_expect "$CASE_ROOT/prepared.json" /phase '"prepared"'
-json_expect "$CASE_ROOT/prepared.json" /replayed_tool_calls 0
-```
+Execution and assertions: [Scrut S-USE-015](https://github.com/DeepLink-org/pvisor/blob/main/tests/spec/replay/S-USE-015.md).
 
 ### S-USE-016: Check full execution checkpoint capabilities
 
@@ -30,22 +20,6 @@ The host Session in this example does not support CPU/RAM save and restore; comp
 
 **Violation**: An execution option is ignored or a refusal changes the Session.
 
-<!-- semspec: case id=S-USE-016 -->
-```bash
-journey_setup
-pvisor spawn --stage "$CASE_ROOT/source" -- /bin/sh -c 'printf proposal > report.txt'
-pvisor status "$CASE_ROOT/source" --json > "$CASE_ROOT/status.json"
-json_expect "$CASE_ROOT/status.json" /checkpoint_capability/execution false
-snapshot before "$CASE_ROOT/source"
-expect_refused pvisor checkpoint create "$CASE_ROOT/source" --kind execution > "$CASE_ROOT/error.txt" 2>&1
-journey_contains "$CASE_ROOT/error.txt" CAPABILITY_UNSUPPORTED
-expect_refused pvisor suspend "$CASE_ROOT/source" > "$CASE_ROOT/error.txt" 2>&1
-journey_contains "$CASE_ROOT/error.txt" CAPABILITY_UNSUPPORTED
-expect_refused pvisor resume "$CASE_ROOT/source" > "$CASE_ROOT/error.txt" 2>&1
-journey_contains "$CASE_ROOT/error.txt" CAPABILITY_UNSUPPORTED
-expect_refused pvisor fork "$CASE_ROOT/source" --state execution > "$CASE_ROOT/error.txt" 2>&1
-journey_contains "$CASE_ROOT/error.txt" CAPABILITY_UNSUPPORTED
-assert_unchanged before "$CASE_ROOT/source"
-```
+Execution and assertions: [Scrut S-USE-016](https://github.com/DeepLink-org/pvisor/blob/main/tests/spec/vm/S-USE-016.md).
 
 [Learning path](index.md)

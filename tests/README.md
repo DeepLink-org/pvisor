@@ -11,9 +11,11 @@ toolchain; native runners own discovery, selection and results.
 2. Keep tests with the owner of the behavior. Private state stays inside its
    crate; external API contracts use the public interface. Each behavior has
    one primary regression.
-3. Use native runners: nextest/libtest, unittest, Node, Bats, Go and semspec.
+3. Use native runners: nextest/libtest, unittest, Node, Bats, Go and Scrut.
    Let their discovery rules include new tests. Shared fixtures own resources
-   and inputs, never testcase lists or verdicts.
+   and inputs, not testcase catalogs or Markdown parsing. The product scenario
+   fixture preserves explicit XFAIL/XPASS semantics that Scrut lacks; native
+   Scrut still owns execution discovery, matching and the final test result.
 4. Isolate effects. Each test owns its workspace and processes, bounds waits
    and output, synchronizes readiness, and cleans up on failure. Preserve
    diagnostics before removing failed resources.
@@ -23,7 +25,7 @@ toolchain; native runners own discovery, selection and results.
    tests are unexecuted coverage.
 6. Keep failures meaningful. Preserve independent oracles and positive controls.
    A fix must not weaken assertions, deadlines, claims or xfail annotations.
-   Semspec execution and human approval are separate.
+   Specification execution and human approval are separate.
 
 ## Layers and ownership
 
@@ -33,10 +35,10 @@ toolchain; native runners own discovery, selection and results.
 | Rust contracts and integration | `crates/*/tests/` | Public APIs, durable records, CLI and cross-component workflows |
 | Python unit | `tests/unit/` | Logic, formats, policy and adapter decisions with external operations mocked |
 | Python process regression | `tests/regression/` | Real children, toolchains, PTYs and process-lifecycle boundaries |
+| Feature specifications and regressions | `tests/spec/<feature>/` | Native Scrut product contracts and their co-located executable regressions; see [specification layout](spec/README.md) |
 | Script regression | `tests/tasks.toml`, `tests/tasks/` | Task arguments, prerequisite refusal, signing, publication and cleanup |
 | Hardware acceptance | `tests/hardware/`, explicit native Rust gates | Real mounts, hypervisors, guest execution and restoration |
 | Product scenarios | `examples/pvisor/`, `tests/podman/` | End-to-end user workflows and supported CLI compatibility |
-| Semantic specifications | `docs/src/zh/cases/`, `docs/src/zh/reference/` | Executable product promises with human review |
 
 Regression describes a test's purpose; a unit test can prevent a regression too.
 Rust's `--lib` selects a Cargo target, whose private-state tests may use
@@ -44,7 +46,11 @@ processes or mounts. Related contracts can share a test binary through ordinary
 Rust modules. Keep separate binaries where process-global state needs isolation.
 
 Python uses standard unittest discovery through package `__init__.py` files.
-`test-py` discovers `unit/` and `regression/`; CI runs those disjoint subsets.
+`test-py` discovers `unit/`, `regression/` and packaged feature regressions;
+`test-py-unit` includes the Docker feature's mocked command-adapter tests.
+Native Scrut resource contracts run through `test-spec-fixtures`, included in
+`test-scripts`, rather than silently requiring Scrut in the Python-only suite.
+CI runs the unit and process subsets separately.
 `fixtures.py` and `packaging_fixtures.py` contain shared resource/input helpers.
 Import helpers rather than another module's TestCase.
 
@@ -55,7 +61,7 @@ have explicit names outside the default `test*.py` pattern.
 
 | Command | Scope |
 | --- | --- |
-| `mise run test` | Rust, script regressions, Python, benchmark-tool tests, semspec Python tests and API doctests |
+| `mise run test` | Rust, script regressions, Python, benchmark-tool tests and API doctests |
 | `mise run test -- pvisor-core` | One Rust package; package arguments select Rust only |
 | `mise run test -- pvisor-cli -- --test apply_cli` | One native Rust integration target |
 | `mise run test -- pvisor-core -- --lib` | One library test target |
@@ -65,13 +71,20 @@ have explicit names outside the default `test*.py` pattern.
 | `mise run test-scripts` | Task and shell regressions |
 | `mise run test-doc` | Cargo doctests for the API crates |
 | `mise run test-benchmark-tools` | Benchmark tooling correctness, without performance measurements |
-| `mise run test-semspec` | The semspec implementation |
+| `mise run test-spec-fixtures` | Native Scrut parsing, preserved claims, isolation, failures, cleanup and report inventory |
 | `mise run test-home-demo` | Homepage explanatory model through Node |
 | `mise run test-agent-plugins` | Plugin contracts through Node |
 | `mise run test-agent-plugins-native` | Plugin workflows through the real CLI |
 | `mise run fw -- test` | Firmware bundle and ABI checks |
 | `mise run examples -- SCENARIO` | A product example |
 | `mise run cases -- --suite stage` | STAGE semantic specifications |
+| `mise run cases-feature FEATURE` | Discover every `S-*.md` in one feature; declared XFAIL remains visible and accepted, missing prerequisites fail |
+| `mise run cases-feature-strict FEATURE` | Same inventory, every case must PASS; no XFAIL/SKIP/XPASS acceptance |
+| `mise run test-feature-native docker-cli` | Cargo Docker targets, excluding Compose tests embedded in `docker_cli` |
+| `mise run test-feature-native docker-compose` | Cargo `compose_cli` and Compose tests embedded in `docker_cli` |
+| `mise run test-feature-native FEATURE --hardware` | Explicit ignored native VM contracts; Linux/KVM or Apple Silicon/HVF with firmware and prepared fixtures |
+| `mise run test-feature-contracts docker-cli bats` | Real runtime Bats contracts with `PVISOR_BINARY` and private `CONTRACT_LOGS` |
+| `mise run test-feature-contracts docker-cli go-0` / `go-1` | Discover all Go tests, assign each once by stable hash, fail on an empty shard |
 
 Pass selections to the native runner:
 
@@ -106,9 +119,9 @@ The VM filesystem, VM terminal and ZCode Python regressions are opt-in through
 ConPTY is Windows-only. Their default skips do not establish acceptance.
 
 Rust contracts and Host workflows cover selective apply, conflicts, drop,
-completion publication and cancellation. The Linux isolation job runs selected
-DOC cases and the USE suite; STAGE specifications have an explicit separate
-entry. Passing implementation tests does not approve a semantic claim.
+completion publication and cancellation. Product scenarios run in independent
+feature jobs rather than a historical DOC ID allowlist or a combined USE job.
+Passing implementation tests does not approve a semantic claim.
 
 ## CI and evidence
 
@@ -116,6 +129,58 @@ entry. Passing implementation tests does not approve a semantic claim.
 [Windows](../.github/workflows/windows-vm.yml) owns native WHP checks;
 [documentation](../.github/workflows/docs.yml) owns the bilingual site build.
 These workflows and `mise.toml` define the executed selections.
+
+### Product feature jobs
+
+| Feature | CI job / task | Runner and coverage |
+| --- | --- | --- |
+| `config`, `docker-cli`, `docker-compose`, `replay`, `session` | `Feature <feature> / Scrut / Linux / normal`, `cases-feature <feature>` | Ubuntu; no KVM/FUSE/userns prerequisite, replay also requires its companion binary |
+| `checkpoint`, `gateway`, `isolation`, `resources`, `stage` | Same independently named Scrut jobs | Linux with read/write FUSE and verified rootless namespaces |
+| `network` | Same independently named Scrut job | Linux with namespaces, KVM and host rootfs; no FUSE prerequisite |
+| `container` | Same independently named Scrut job | Linux with namespaces, crun/runc and the declared image; no KVM/FUSE prerequisite |
+| `vm` | Same independently named Scrut job | Linux with namespaces, FUSE, KVM, matching firmware, host rootfs and guest Python/SDK driver |
+| `docker-cli` | `Feature docker-cli / Cargo / <os>`, `test-feature-native docker-cli` | Ubuntu and hosted macOS; conventional non-ignored native tests only |
+| `docker-compose` | `Feature docker-compose / Cargo / <os>`, `test-feature-native docker-compose` | Ubuntu and hosted macOS; Compose owns embedded `docker_cli` Compose tests as well as `compose_cli` |
+| `docker-cli` | `Feature docker-cli / bats`, `/ go-0`, `/ go-1`, `test-feature-contracts` | Independent Linux/KVM black-box runtime shards using the frozen CLI artifact |
+| Windows VM/container boundary | `Windows` reusable workflow: `WHP / smoke`, `/ vm-cli`, `/ containers` | Native Windows 2025/WHP with its repository-built firmware, guest and root-disk artifacts; not Unix Scrut/Bats acceptance |
+
+The inventory job discovers feature directories containing `S-*.md`, and Scrut
+task selection discovers the cases. New IDs require no workflow allowlist.
+`ci-feature-matrix` declares capabilities at the feature boundary. A new
+feature is discovered automatically without hardware assumptions; if its cases
+need hardware, add its prerequisite declaration rather than accepting skips.
+Feature Scrut concurrency is capped at three runners, native Cargo at two;
+Bats and the two Go shards retain their independent 30-minute budgets.
+Each Scrut job downloads the frozen Linux product built by `cli-test`, prepares
+real Host/KVM prerequisites and uploads its own report, log and case resources.
+The artifact includes `pvisor-replay`, the matching repository-built firmware
+library and its source receipt, as well as the static CLI and daemon.
+Linux VM/SDK cases explicitly use host rootfs `/` and `/usr/bin/python3`;
+image cases use `mirror.gcr.io/library/ubuntu:24.04`. The `container` feature
+installs both crun and runc and selects crun. J02 explicitly supplies
+`/usr/bin/true` as its guest command: it checks launch/trajectory metadata,
+not model conversations or an external SDK service.
+The VM-control driver remains built by `cases` only when the selection needs
+it, and receives the frozen artifact's firmware directory explicitly.
+The required `CI` aggregate includes inventory, feature execution and native
+feature jobs, alongside the independent fixture and hardware gates.
+
+Normal gates preserve declared XFAIL, never SKIP. The USE learning-path
+contracts remain all-PASS even when selected by feature. Run
+`cases-feature-strict` for an all-PASS gate across all selected cases, or choose
+`strict` in CI's manual `case_gate` input. Strict execution is not review
+approval; `--require-reviewed` still refuses. Failure of capability setup fails
+the job, rather than relabeling missing hardware as successful coverage.
+
+Hosted macOS executes conventional Cargo and Scrut fixture tests, not product
+Scrut or ignored VM/macFUSE acceptance. A capable Apple Silicon Mac can run the
+explicit hardware tasks; Linux-only filesystem contracts remain Linux-only.
+Windows uses its native CLI/core/VM/ConPTY contracts and real WHP drivers,
+not Bash/FUSE product scenarios. Ignored Cargo hardware tests and dedicated
+restore probes are unexecuted unless explicitly selected on a capable host.
+`test-feature-native --hardware` is an opt-in native selection, not a claim
+that default Cargo jobs exercised it; Docker staged tests need a local rootfs,
+and Compose edge cases additionally need the images named in their runbook.
 
 Record inputs, artifact identities, selected cases, exit/timeout results and
 cleanup status. Keep logs and domain evidence in ignored output directories or
@@ -128,8 +193,8 @@ machine paths and debugging transcripts belong in execution artifacts.
 Keep brief historical outcomes in [chaos campaign summaries](CHAOS_HISTORY.md):
 scope, result, unresolved issues, cleanup and evidence location. Keep raw logs
 out of the repository root and tracked Markdown.
-Only maintainers may approve/revoke semspec or edit its review ledgers and
-approved snapshots; see [the design](../tools/semspec/DESIGN.md).
+Only maintainers may approve/revoke specifications or edit historical review
+ledgers and approved snapshots; see [the specification rules](spec/README.md).
 
 ## Specialized workflows
 

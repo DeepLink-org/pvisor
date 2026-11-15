@@ -16,7 +16,7 @@
 
 注册条目：`benchmark/REGISTRY.md` 的 B-FS-ENG。冻结基线为
 `1a4a8dfb` 加各批独立保存的源码/差分和 release 制品。
-正式执行器为 `semspec bench`，不使用测试耗时作为性能。
+性能来自目标操作的独立测量，不使用测试耗时作为性能。
 Linux x86_64/KVM、2 vCPU/512 MiB guest，host CPU0,1 affinity、200% quota、
 2 GiB MemoryMax、MemorySwapMax=0；宿主其他进程及全局 swap 不受此预算控制。
 宿主 backing 未清缓存；无外部干扰过滤，保留慢值。每 VM 内三轮以一个

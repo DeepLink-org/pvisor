@@ -4,7 +4,7 @@ site_name = "PolicyVisor"
 site_description = "在本机以暂存工作区运行 Agent，审查文件改动后只保留需要的部分；同时提供推理、评测与 Agentic RL 后训练的执行环境。Apache-2.0，支持 Linux x86_64 与 Apple Silicon macOS。"
 site_url = "https://deeplink-org.github.io/pvisor/zh/"
 docs_dir = "src/zh"
-watch = ["src/zh/benchmarks", "semspec_tables.py"]
+watch = ["src/zh/benchmarks"]
 site_dir = "site/zh"
 cache_dir = ".cache/zh"
 dev_addr = "127.0.0.1:3000"
@@ -199,7 +199,7 @@ nav = [
       { "复现 Run 生命周期" = "community/examples.md" },
     ] },
     { "测试与语义规格" = [
-      { "测试与 semspec" = "community/testing.md" },
+      { "测试与 Scrut" = "community/testing.md" },
       { "pVisor Session 用户场景与回归示例" = "reference/cases.md" },
       { "暂存、应用与丢弃规格（未审核草稿）" = "cases/06-stage-apply.md" },
     ] },
@@ -274,8 +274,6 @@ alternate_style = true
 [project.markdown_extensions."def_list"]
 
 [project.markdown_extensions."tables"]
-
-[project.markdown_extensions."docs.semspec_tables"]
 
 [project.markdown_extensions."toc"]
 permalink = true

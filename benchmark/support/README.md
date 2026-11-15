@@ -1,16 +1,25 @@
 # Shared benchmark support
 
-These modules support the active JSON experiments listed in
-[registry.csv](../registry.csv); requirements and publication rules live in
-[REGISTRY.md](../REGISTRY.md). They retain input/provenance validation, bounded
-namespace isolation, framed counting proxies, payload byte oracles and resource
-observers. Historical campaign loops and publication entry points are retired.
-Keep correctness checks and failure retention intact when changing these helpers.
+The active [registry](../registry.csv) entries run native Rust/Criterion and do
+not import or execute these Python modules. Publication requirements remain in
+[REGISTRY.md](../REGISTRY.md).
 
-`startup/common.py` and the memory coordinators add this directory explicitly to
-their import path. Image adapters copy these helper sources into each batch's
-frozen harness. A retained historical batch continues to use its own frozen
-sources; do not rewrite its paths, manifests or hashes to match current modules.
+Retained callers are separate from that measurement chain:
+
+- `startup/audit.py` reads `reference_inputs.py` and `firecracker_kernels.py`
+  to verify saved input and kernel identities.
+- `lazy_startup.py` and `lazy_image_v2.py` supply independent image/protocol
+  fixtures and their correctness tests.
+- `resource_budget.py` and `prepare_reference_budget.py` support private,
+  explicitly owned resource-budget diagnostics, not Criterion sampling.
+- `memory_scale.py`, `memory_savings.py`, `firecracker_ksm.py` and
+  `linux_cold_runtime.py` retain SDK diagnostic/oracle contracts and their tests.
+  The active allocator, scanner, pool and library experiments use native workers
+  and native preparation instead.
+
+Keep correctness checks and failure retention intact. A retained batch uses its
+own frozen sources; never rewrite its paths, manifests or hashes to match the
+current checkout.
 
 Prepare a stock/custom Firecracker kernel receipt without starting a VM:
 
@@ -37,4 +46,4 @@ owning experiment and retain it for scoped cleanup. Affinity is not a cpuset
 placement guarantee. Kernel and runtime capability checks remain separate.
 
 Run the helper contracts with `mise run test-py -- discover -s benchmark/support`.
-The default `mise run test-py` includes these contracts and all active benchmark suites.
+The default Python test task includes these fixture and diagnostic contracts.

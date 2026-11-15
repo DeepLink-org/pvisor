@@ -135,8 +135,8 @@ Example, from startup latency:
   Anchor churn breaks lab-note links and is not a formatting cleanup.
 - Do not put a benchmark registry ID (`B-*`) or an internal switch name on a
   user page; link to the topic page or the runner manual instead.
-- Run `python3 benchmark/docs.py check` after touching a `{{ table(...) }}`
-  macro, `benchmark/docs.json` or a `*.render.json` file.
+- Run `python3 benchmark/docs.py check` after changing an inline benchmark table,
+  `benchmark/docs.json` or a `*.render.json` file.
 
 ```bash
 mise run docs-serve         # native English preview on 127.0.0.1:3001
@@ -154,46 +154,23 @@ tables for labels and nested arrays for sections and groups, without repeated
 Python build wrapper, source copy, temporary configuration, HTML rewriting,
 custom search index or custom HTTP server is involved.
 
-`docs.semspec_tables` is a Python-Markdown preprocessor registered in both native
-configurations. A standalone `{{ table("file.render.json") }}` line loads a JSON
-table relative to its article and becomes ordinary Markdown before HTML rendering;
-the source file retains the placeholder. The adapter calls `semspec filter --source
-PATH --stdin`; annotated case cells also become ordinary Markdown with NOT RUN
-or a recorded verdict. It never supplies `--execute`. `SEMSPEC_RESULTS` may
-explicitly select a saved case/experiment report; missing and stale evidence are
-visible and do not become PASS. Other SSGs can use `filter --format json` for
-Markdown, source byte edits, dependencies and diagnostics. `mise run docs-build` and `mise run docs-serve`
-build the standalone semspec CLI and set `SEMSPEC_BIN` and `PYTHONPATH` for the
-extension. The documentation recipes therefore also require the Rust toolchain.
-Rendering reads completed results only. Run `mise run semspec -- bench path/to/in.json`
-explicitly to execute a template and create `in.render.json` plus raw evidence in
-`in.bench.json`. See [semspec's table format](../tools/semspec/README.md#executable-benchmark-tables).
-Fixed historical benchmark tables are written directly in Markdown, retaining
-their measured values, statistical scope and source links. Tables updated by
-benchmark publication and the generated measurement-coverage table use JSON;
-their bindings are registered in
+All benchmark tables are ordinary Markdown, retaining their measured values,
+statistical scope and source links. There is no custom table preprocessor,
+subprocess renderer or executable table macro. Documentation builds do not
+compile a Rust test tool or run experiments.
+
+Six inline tables are still bound to retained JSON and CSV in
 [`benchmark/docs.json`](../benchmark/docs.json). Run
-`python3 benchmark/docs.py check` before building. Historical tables retain
-their original statistics and claims; only explicit live bindings are updated
-by `python3 benchmark/docs.py publish BATCH`. Links/code in dynamic JSON
-tables opt into `markdown: true`, with `row_names: false` when the first column
-is already present. Semspec validates optional alignments and displayed headers.
+`python3 benchmark/docs.py check` before building: it checks exact inline rows,
+the data inventory and published CSV consistency. Changes to JSON do not
+silently update the website. Explicitly update and review both language tables
+when publishing accepted results. Historical audit/publication helpers do not
+convert new Criterion cohorts into old clock protocols.
 
-Native `watch` entries track article-side benchmark tables for preview rebuilds.
-Both projects use `theme.custom_dir = "overrides"`; Zensical also watches that
-theme directory, covering shared benchmark CSV, SVG and provenance assets.
-Add table data outside the source and theme directories to `watch` explicitly.
-`docs-build` also uses Zensical's `--clean` to discard cached table expansions.
-
-`docs-serve` sets `PVISOR_DOCS_LIVE=1` and renders tables with semspec's
-`--best-effort`: missing, malformed and unresolved tables display warnings while
-valid tables and page text remain available. Errors also appear in the terminal.
-After creating a previously missing table, save its referring Markdown page to
-trigger another render if Zensical has not yet registered the new file for watching.
-Renderer launch errors or
-timeouts leave the page text available with a warning. Preview preflight and
-semspec build failures warn and continue with an existing renderer when available.
-`docs-build` explicitly disables live mode and retains strict checks.
+Both projects use `theme.custom_dir = "overrides"`; Zensical watches source and
+theme directories, including shared CSV, SVG and provenance assets. `docs-build`
+uses `--clean`. Preview preflight failures warn and preserve local iteration;
+the strict documentation build still rejects invalid sources or data.
 
 Zensical has one theme language and search index per project. Keep exactly two
 native configurations: `zensical.zh.toml` and `zensical.en.toml`, building
@@ -266,7 +243,7 @@ their product homepages. `docs/overrides/assets/` holds shared static resources
 that Zensical publishes natively in each project. The `docs/` root holds site
 infrastructure — the two locale TOML files, `translations.json`, `overrides/`,
 and this file. Keep each document next to what it serves: tool and
-specification documents live with their tool (for example `tools/semspec/DESIGN.md`),
+specification documents live with their feature (for example `tests/spec/README.md`),
 and user-facing protocol pages belong in the site's `reference/` tree, not at the
 `docs/` root. `docs/site/` is generated output; never edit it by hand.
 
@@ -575,7 +552,7 @@ only warn locally, so you can build and review; CI runs
 versions are reviewed and recorded. These mechanical checks detect drift; they
 do not prove that translated prose has the same meaning. Review commands, numbers,
 versions, claims and limitations before recording. This revision file is not a
-semspec approval ledger and never replaces human semantic approval.
+specification approval ledger and never replaces human semantic approval.
 
 Maintain matching navigation paths in `zensical.zh.toml` and `zensical.en.toml`.
 The English root homepage and Chinese `/zh/` homepage link to both languages. Update incoming links and navigation
@@ -683,7 +660,7 @@ charter and conduct reporting channel are not yet established.
 
 **Acceptance criteria**
 
-- Describe the human role in semspec approval.
+- Describe the human role in specification approval.
 - Announce the maintainer list, charter and conduct channel on this page once established.
 
 ### design/replay.md

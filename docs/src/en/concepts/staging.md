@@ -48,4 +48,4 @@ To preserve current candidates and try another approach, use [workspace checkpoi
 
 See [Staging and storage](../reference/cli.md#暂存与存储) for writes to HOME, the VM root and other locations, and [Known limitations](../security/known-limitations.md) for platform behavior such as macOS symbolic links.
 
-See the [semantic specifications (unreviewed drafts)](../cases/06-stage-apply.md) for complete Stage / Apply / Drop behavior, including comparison of applying everything with direct execution. See [Testing and semspec](../community/testing.md) for the distinction between test results and human approval.
+See the [semantic specifications (unreviewed drafts)](../cases/06-stage-apply.md) for complete Stage / Apply / Drop behavior, including comparison of applying everything with direct execution. See [Testing and Scrut](../community/testing.md) for the distinction between test results and human approval.

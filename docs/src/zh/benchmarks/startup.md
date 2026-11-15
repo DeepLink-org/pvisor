@@ -24,7 +24,16 @@ Ready 截止到校验后的首条 shell 标记。Firecracker 在校验标记和�
 
 八个条件于 2026-10-11 测量，3 次预热后各 60 个正式样本。输入为已准备 rootfs、VM 的 2 vCPU / 128 MiB、热缓存和 CPU 0,1 亲和性。Python `perf_counter_ns` 在进程创建前开始，收到完整的 `REFERENCE_READY` 行时停止：包含进程创建、管道读取和观察者调度，不包含解释器启动和输入准备。全部样本还须通过输出、Run Bundle 和输入不变的校验。
 
-{{ table("startup-timing.ready.render.json") }}
+|  | N | Ready 中位数 ms | Ready 均值 ms | Ready 标准差 ms | Ready 最小 ms | Ready 最大 ms |
+| --- | --- | --- | --- | --- | --- | --- |
+| Native | 60 | 0.48 | 0.48 | 0.02 | 0.45 | 0.55 |
+| pVisor host | 60 | 33.52 | 50.48 | 29.70 | 30.58 | 128.65 |
+| pVisor staged | 60 | 50.59 | 52.77 | 17.87 | 46.18 | 188.29 |
+| pVisor VM | 60 | 130.71 | 130.10 | 6.16 | 119.00 | 149.99 |
+| Docker | 60 | 105.03 | 105.57 | 7.22 | 90.52 | 126.04 |
+| Firecracker | 60 | 287.13 | 287.07 | 5.89 | 269.08 | 301.73 |
+| QEMU | 60 | 663.25 | 667.53 | 28.73 | 631.38 | 742.13 |
+| QEMU microvm | 60 | 260.10 | 259.53 | 9.57 | 243.28 | 288.39 |
 
 pVisor VM 的 Ready 中位数为 130.71 ms，位于 Docker rootless 的 105.03 ms 与参考 VM 的 260–663 ms 之间。host 与 staged 跳过内核和设备路径，分别为 33.52 ms 和 50.59 ms。
 

@@ -4,7 +4,7 @@ site_name = "PolicyVisor"
 site_description = "Run a coding agent in a staged workspace, review its file changes, and apply only the paths you keep. Apache-2.0; runs locally on Linux x86_64 and Apple Silicon macOS."
 site_url = "https://deeplink-org.github.io/pvisor/"
 docs_dir = "src/en"
-watch = ["src/en/benchmarks", "semspec_tables.py"]
+watch = ["src/en/benchmarks"]
 site_dir = "site"
 cache_dir = ".cache/en"
 dev_addr = "127.0.0.1:3001"
@@ -199,7 +199,7 @@ nav = [
       { "Reproduce the Run lifecycle" = "community/examples.md" },
     ] },
     { "Testing and semantic specifications" = [
-      { "Testing and semspec" = "community/testing.md" },
+      { "Testing and Scrut" = "community/testing.md" },
       { "pVisor Session scenarios and regression examples" = "reference/cases.md" },
       { "Staging, apply and drop specifications (unreviewed draft)" = "cases/06-stage-apply.md" },
     ] },
@@ -274,8 +274,6 @@ alternate_style = true
 [project.markdown_extensions."def_list"]
 
 [project.markdown_extensions."tables"]
-
-[project.markdown_extensions."docs.semspec_tables"]
 
 [project.markdown_extensions."toc"]
 permalink = true

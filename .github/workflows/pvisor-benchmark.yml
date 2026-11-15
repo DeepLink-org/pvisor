@@ -9,7 +9,6 @@ on:
       - 'crates/**'
       - 'vendor/**'
       - 'benchmark/**'
-      - 'tools/semspec/**'
       - 'mise.toml'
       - 'mise.lock'
       - 'tests/tasks.toml'
@@ -27,7 +26,6 @@ on:
       - 'crates/**'
       - 'vendor/**'
       - 'benchmark/**'
-      - 'tools/semspec/**'
       - 'mise.toml'
       - 'mise.lock'
       - 'tests/tasks.toml'
@@ -129,7 +127,7 @@ jobs:
           setup: none
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: tools/semspec -> ../../target/semspec
+          workspaces: benchmark/criterion -> ../../target
           shared-key: pvisor-benchmark-harness
       - uses: actions/download-artifact@v4
         with:
@@ -156,9 +154,12 @@ jobs:
       # this same host with the same harness, sampling and regression threshold.
       - name: Benchmark main
         if: steps.baseline.outputs.supported == 'true'
-        env:
-          PVISOR_BENCHMARK_OUTPUT: ${{ runner.temp }}/.data/pvisor-benchmark/main
-        run: mise run benchmark -- smoke --binary "$RUNNER_TEMP/benchmark-runtimes/main/pvisor"
+        run: >-
+          mise run benchmark -- smoke
+          --binary "$RUNNER_TEMP/benchmark-runtimes/main/pvisor"
+          --output "$RUNNER_TEMP/.data/pvisor-benchmark/main/smoke"
+          --criterion-output "$RUNNER_TEMP/.data/pvisor-benchmark/criterion"
+          -- --save-baseline main
       - name: Stop baseline Host listener before switching binaries
         if: steps.baseline.outputs.supported == 'true'
         shell: bash
@@ -166,22 +167,27 @@ jobs:
           pkill -f "^${RUNNER_TEMP}/benchmark-runtimes/main/pvisor --pvisor-internal-host$" || [[ $? == 1 ]]
       - name: Benchmark candidate
         env:
-          PVISOR_BENCHMARK_OUTPUT: ${{ runner.temp }}/.data/pvisor-benchmark/candidate
-        run: mise run benchmark -- smoke --binary "$RUNNER_TEMP/benchmark-runtimes/candidate/pvisor"
+          HAS_BASELINE: ${{ steps.baseline.outputs.supported }}
+        run: |
+          args=(--save-baseline candidate)
+          if [[ "$HAS_BASELINE" == true ]]; then args=(--baseline main); fi
+          mise run benchmark -- smoke \
+            --binary "$RUNNER_TEMP/benchmark-runtimes/candidate/pvisor" \
+            --output "$RUNNER_TEMP/.data/pvisor-benchmark/candidate/smoke" \
+            --criterion-output "$RUNNER_TEMP/.data/pvisor-benchmark/criterion" \
+            -- "${args[@]}"
 
       - name: Compare reports
+        if: steps.baseline.outputs.supported == 'true'
         shell: bash
         run: |
           set -euo pipefail
-          candidate="${RUNNER_TEMP}/.data/pvisor-benchmark/candidate/smoke/in.bench.json"
-          baseline="${RUNNER_TEMP}/.data/pvisor-benchmark/main/smoke/in.bench.json"
           output="${RUNNER_TEMP}/.data/pvisor-benchmark/comparison"
-          if [[ -f "$baseline" ]]; then
-            mise run benchmark-compare -- "$candidate" "$baseline" "$output"
-          else
-            mise run benchmark-compare -- "$candidate" "" "$output"
-          fi
-          cat "$output/report.md" >> "$GITHUB_STEP_SUMMARY"
+          status=0
+          mise run benchmark-compare -- "$RUNNER_TEMP/.data/pvisor-benchmark/criterion" \
+            --candidate new --output "$output" || status=$?
+          if [[ -f "$output/report.md" ]]; then cat "$output/report.md" >> "$GITHUB_STEP_SUMMARY"; fi
+          exit "$status"
 
       - name: Diagnose failed benchmark outside measurement
         if: failure()
@@ -195,48 +201,12 @@ jobs:
             sudo apt-get update
             sudo apt-get install -y strace
           fi
-          python3 - <<'PY'
-          import json
-          import os
-          import subprocess
-          from pathlib import Path
-
-          def diagnose(argv, spec, env, stdout, stderr, timeout):
-              try:
-                  result = subprocess.run(
-                      argv, cwd=spec["cwd"], env=env,
-                      stdout=stdout, stderr=stderr, timeout=timeout, check=False,
-                  )
-                  return {"exit_code": result.returncode, "timeout": False}
-              except subprocess.TimeoutExpired:
-                  return {"exit_code": None, "timeout": True}
-              except OSError as error:
-                  return {"error": str(error)}
-
-          for cohort in ("main", "candidate"):
-              batch = Path(os.environ["BENCHMARK_DATA"]) / cohort / "smoke"
-              if not (batch / "commands.json").is_file():
-                  print(f"No prepared {cohort} batch; no commands to diagnose")
-                  continue
-              commands = json.loads((batch / "commands.json").read_text())
-              output = batch / "diagnostics"
-              output.mkdir()
-              for name in ("host-run", "status", "review"):
-                  spec = commands[name]
-                  env = {**os.environ, **spec["env"], "PVISOR_STARTUP_PROFILE": "1"}
-                  # Diagnostic Runs must not alter the measured store or samples.
-                  if name == "host-run":
-                      env["PVISOR_RUN_HOME"] = str(output / "host-run-runs")
-                  outcomes = {}
-                  with (output / f"{name}.profile.stdout").open("wb") as stdout, (output / f"{name}.profile.stderr").open("wb") as stderr:
-                      outcomes["profile"] = diagnose(spec["argv"], spec, env, stdout, stderr, 15)
-                  with (output / f"{name}.stdout").open("wb") as stdout, (output / f"{name}.stderr").open("wb") as stderr:
-                      outcomes["strace"] = diagnose(
-                          ["strace", "-f", "-ttt", "-T", "-yy", "-o", str(output / f"{name}.strace"), "--", *spec["argv"]],
-                          spec, env, stdout, stderr, 30,
-                      )
-                  (output / f"{name}.outcomes.json").write_text(json.dumps(outcomes, indent=2) + "\n")
-          PY
+          for cohort in main candidate; do
+            batch="$BENCHMARK_DATA/$cohort/smoke"
+            if [[ -f "$batch/commands.json" ]]; then
+              mise run benchmark -- --diagnose "$batch"
+            fi
+          done
 
       - name: Retain build provenance
         if: always()

@@ -7,8 +7,8 @@ import unittest
 from pathlib import Path
 
 from docker_support import belongs, group_pids, validate_case
-from pool_compare import validate_observation
-from scanner_compare import save
+from pool_evidence import validate_observation
+from scanner_evidence import save
 
 
 class DockerEvidenceTests(unittest.TestCase):

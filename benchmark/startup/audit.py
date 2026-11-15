@@ -1,5 +1,6 @@
 """Audit the current paired event protocol, samples, output and prepared inputs."""
 
+import importlib.util
 import json
 import shlex
 import sys
@@ -7,7 +8,24 @@ from pathlib import Path
 
 from hooks import validate_output
 from subjects import LABELS, NAMES
-from timing import COMMON, FIELDS, ROOT, RUNS, TIMEOUT, WARMUP, summarize_pairs
+
+# This is a read-only auditor for retained Python-clock cohorts, not a sampling
+# entry point. Do not import timing.py: current execution belongs to Criterion.
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def _load(name, filename):
+    spec = importlib.util.spec_from_file_location(name, ROOT / filename)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+COMMON = _load("startup_archive_common", "common.py")
+ARCHIVE = _load("startup_archive_statistics", "archive.py")
+RUNS, WARMUP, TIMEOUT = 60, 3, 30
+FIELDS = (*ARCHIVE.READY_FIELDS, *ARCHIVE.EXIT_FIELDS[1:])
+summarize_pairs = ARCHIVE.summarize_pairs
 
 
 def audit_startup(directory, manifest, results):

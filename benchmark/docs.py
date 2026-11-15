@@ -1,7 +1,8 @@
-"""Check dynamic documentation tables and publish audited user benchmark results.
+"""Check inline documentation tables against retained data and audited results.
 
 Fixed historical tables live in Markdown. Publication only updates
 explicit live bindings, never historical tables or narrative conclusions.
+Retained evidence auditing uses benchmark/archive.py, not the sampling runtime.
 """
 
 import argparse
@@ -22,7 +23,7 @@ MACRO = re.compile(r"\{\{ table\((.*?)\) \}\}")
 
 
 def article_tables(path):
-    # Ignore illustrative fenced macros, like semspec render itself.
+    # Reject old build-time macros, excluding literal fenced examples.
     text = re.sub(r"(?ms)^(`{3,}|~{3,})[^\n]*\n.*?^\1[^\n]*$", "", path.read_text())
     return [json.loads("[" + match[1] + "]") for match in MACRO.finditer(text)]
 
@@ -125,10 +126,10 @@ def check_inventory():
             raise ValueError("duplicate article")
         paths.add(path)
         tables = page["tables"]
-        macros = article_tables(path)
-        actual = [(path.parent / args[0]).resolve() for args in macros]
+        if article_tables(path):
+            raise ValueError(f"build-time table macros are retired; inline the table: {path}")
         expected = [(REPO / "docs/src" / page["locale"] / t["json"]).resolve() for t in tables]
-        if sorted(actual) != sorted(expected) or len(actual) != len(set(actual)):
+        if len(expected) != len(set(expected)):
             raise ValueError(f"table bindings differ: {path}")
         for table, target in zip(tables, expected):
             if table["kind"] not in ("published", "coverage"):
@@ -147,9 +148,17 @@ def check_inventory():
                         and value.startswith("$ ")
                     ):
                         raise ValueError(f"unresolved/non-scalar public data: {target}")
-            args = macros[actual.index(target)]
-            if (args[1] if len(args) == 2 else {}) != table["options"]:
-                raise ValueError(f"render options differ: {path}")
+
+            # These retained tables use one fixed layout, not an executable
+            # rendering language. Check their exact inline rows against JSON;
+            # updating an evidence file alone cannot silently change the site.
+            def line(cells):
+                return "| " + " | ".join(str(cell) for cell in cells) + " |"
+
+            required = [line(["", *columns]), line(["---"] * (len(columns) + 1))]
+            required += [line([name, *row.values()]) for name, row in data.items()]
+            if "\n".join(required) not in path.read_text():
+                raise ValueError(f"inline table differs from retained data: {path}")
         for source in page["source_csv"]:
             if not is_public_csv(Path(source).name):
                 raise ValueError(f"static or intermediate CSV belongs in local evidence: {source}")
@@ -266,7 +275,7 @@ if __name__ == "__main__":
     try:
         if args.action == "check":
             pages, tables = check_inventory()
-            print(f"{pages} articles, {tables} dynamic JSON tables verified")
+            print(f"{pages} articles, {tables} inline tables verified against retained JSON")
         else:
             print("\n".join(str(path) for path in publish_docs(args.batch.resolve())))
     except (ValueError, KeyError, OSError) as error:

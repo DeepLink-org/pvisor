@@ -1,3 +1,6 @@
 {
-  "same-stage-cold-warm-paired": "$ python3 @HARNESS@/stage_lazy_compare.py --measure @BATCH@"
+  "engine": "criterion",
+  "entry": "startup/stage_lazy_compare.json",
+  "implementation": "../criterion/src/startup/images/mod.rs",
+  "config_env": "PVISOR_BENCH_OUTPUT"
 }

@@ -2126,7 +2126,7 @@ rglob 之后也等待 1.2 秒。候选 VM 结果如下，单位 ms；tmpfs 已�
 
 验证：Core **97 项（5 跳过）**、overlayfs **12 项**、VM **294 项（2 跳过）**、
 基准 **25 项**通过；三个相关包的 all-targets Clippy 和基准 Ruff 通过。
-没有修改或批准 semspec ledger/snapshot。完整样本和失败，不只成功摘要，
+完整样本和失败，不只成功摘要，
 保存在下列证据中；macOS、启动、网络和完整 Agent 闭环不由这些数字推算。
 
 本地原始记录 `docs/src/assets/benchmarks/.data/filesystem-kernel-20261005/full-same-source.tsv` ·
@@ -2224,18 +2224,10 @@ virtiofsd 不能据此认定会消除这些开销。VM profile 缺少 final reco
 较宽 executor 子集另有 9 项 VM control 测试失败，保留在验证归档中，本次
 没有修改 control 实现，也不将这些检查算作通过。
 
-从同一源码构建两份 GNU/Linux 制品，仅在两次构建之间应用待测修改；
-输出目录必须是新目录。先以 `--samples 1 --warmups 0` 预检。
-
-```bash
-python3 benchmark/pvisor/filesystem_ab.py \
-  --assets target/reference-env-final-20261004 \
-  --baseline /absolute/path/to/pvisor-before \
-  --candidate /absolute/path/to/pvisor-after \
-  --firmware /absolute/path/to/libkrunfw-directory \
-  --output target/filesystem-ab-new \
-  --cpu-affinity 0,1 --samples 30 --warmups 3
-```
+已记录的 A/B 协议从同一源码构建两份 GNU/Linux 制品，仅在两次构建之间应用待测修改；
+使用独立输出目录，先单样本、零预热预检，再在 CPU 0,1 上执行 30 次采样、三次预热。
+Python 协调器及实际制品、输入参数保存在批次冻结 harness 中；这些不是 Criterion
+样本，也不是当前 checkout 的执行命令。
 
 本地原始记录 `docs/src/assets/benchmarks/.data/filesystem-ab-20261005/samples.csv` ·
 本地原始记录 `docs/src/assets/benchmarks/.data/filesystem-ab-20261005/summary.tsv` ·
@@ -2441,14 +2433,8 @@ VM 主批次使用 host rootfs `/` 和 2 vCPU/1 GiB，并提供宿主只读视�
 ## 来源与复现 {#run}
 
 批次归档约定见[实验记录索引](index.md)。
-
-```bash
-python3 benchmark/pvisor/product_v1.py \
-  --binary /absolute/path/to/gnu-linux/pvisor \
-  --firmware /absolute/path/to/libkrunfw-directory \
-  --replay-binary /absolute/path/to/pvisor-replay \
-  --output target/product-benchmark-new \
-  --suites filesystem --samples 30 --warmups 3
-```
+历史 filesystem 选择通过 Python 协调器请求 30 次采样、三次预热，使用固定的
+GNU/Linux CLI、动态 firmware 与 replay 制品。实际命令保存在批次 harness 中；
+当前 Rust/Criterion 入口不复现该批次的采样协议。
 
 harness 环境、预检与失败分类约定同[端到端任务分析的复现节](agent-task-performance-analysis.md#run)；本地原始记录批次同为 product-v1-20261004，当轮制品 SHA256 是身份依据。
