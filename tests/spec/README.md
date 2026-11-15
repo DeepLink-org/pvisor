@@ -103,10 +103,19 @@ leave a workload intentionally running.
 On Linux the fixture is a child subreaper: it first terminates its process group,
 then kills and reaps its adopted descendants, including setsid/double-fork
 children. It never kills by command name or scans unrelated processes. Cleanup
-is bounded; inability to release owned children is a gate failure. On other Unix
-systems cleanup covers the owned process group only: cases must not detach or
+is bounded; inability to release owned children is a gate failure. On macOS
+cleanup covers the owned process group only: cases must not detach or
 daemonize children there. Such detached lifecycle acceptance requires a native
 resource owner rather than a claim that the generic fixture cleans it up.
+
+Both Linux and macOS observe the scenario anchor with `waitid(WNOWAIT)` and
+retain its identity until process-group signals finish. macOS uses the native
+libc interface because Python does not expose `os.waitid` there. Darwin's
+zombie-only `killpg` EPERM is accepted only when the direct child is still
+waitable and exited, and a bounded query of that exact group contains the anchor
+and exclusively zombie members. A live member, missing anchor, lost ownership,
+failed query or genuine permission error fails cleanup; these are not skipped
+tests. Mocked ABI/error regressions supplement, not replace, native macOS CI.
 
 An explicit prerequisite refusal (`exit 77`) is always a failed Scrut gate, even
 on an XFAIL platform. Unexpected signals, missing commands and timeouts are not

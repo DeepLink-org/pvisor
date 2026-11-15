@@ -1,5 +1,7 @@
 """Contract tests for scenario resources and native Scrut integration."""
 
+import ctypes
+import errno
 import hashlib
 import importlib.util
 import json
@@ -13,6 +15,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 SPEC = Path(__file__).resolve().parents[2]
 FIXTURE = SPEC / "fixture.py"
@@ -23,6 +26,159 @@ def load(name, path):
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+class ProcessOwnershipTests(unittest.TestCase):
+    def setUp(self):
+        self.fixture = load("ownership_fixture", FIXTURE)
+        self.process = mock.Mock(pid=32123, returncode=None)
+
+    def test_darwin_waitid_uses_native_abi_without_reaping(self):
+        fixture = self.fixture
+        info_type = fixture.DarwinSiginfo
+        self.assertEqual(ctypes.sizeof(info_type), 104)
+        self.assertEqual(info_type.pid.offset, 12)
+        self.assertEqual(info_type.status.offset, 20)
+        self.assertEqual(info_type.reserved.offset, 48)
+        for pid in (0, self.process.pid):
+            with self.subTest(pid=pid):
+
+                def observe(kind, child, pointer, flags):
+                    self.assertEqual((kind, child, flags), (1, self.process.pid, 0x25))
+                    self.assertIsInstance(pointer._obj, info_type)
+                    pointer._obj.pid = pid
+                    return 0
+
+                waitid = mock.Mock(side_effect=observe)
+                with (
+                    mock.patch.object(fixture.sys, "platform", "darwin"),
+                    mock.patch.object(
+                        fixture.ctypes, "CDLL", return_value=mock.Mock(waitid=waitid)
+                    ),
+                ):
+                    self.assertEqual(fixture.child_exited(self.process), pid != 0)
+                self.assertEqual(
+                    waitid.argtypes,
+                    [ctypes.c_int, ctypes.c_uint, ctypes.POINTER(info_type), ctypes.c_int],
+                )
+                self.process.wait.assert_not_called()
+
+    def test_darwin_waitid_errors_do_not_become_an_exit_observation(self):
+        fixture = self.fixture
+        with (
+            mock.patch.object(fixture.sys, "platform", "darwin"),
+            mock.patch.object(
+                fixture.ctypes, "CDLL", return_value=mock.Mock(waitid=mock.Mock(return_value=-1))
+            ),
+            mock.patch.object(fixture.ctypes, "get_errno", return_value=errno.ECHILD),
+            self.assertRaises(ChildProcessError),
+        ):
+            fixture.child_exited(self.process)
+        self.process.wait.assert_not_called()
+
+    def test_darwin_zombie_only_eperm_keeps_anchor_until_last_signal(self):
+        fixture = self.fixture
+        events = []
+
+        def killpg(pid, signum):
+            self.assertEqual(pid, self.process.pid)
+            self.assertIsNone(self.process.returncode)
+            events.append(signum)
+            if signum == signal.SIGKILL:
+                raise PermissionError(errno.EPERM, "zombie-only group")
+
+        def reap(*, timeout):
+            self.assertEqual(events, [signal.SIGTERM, signal.SIGKILL])
+            self.assertEqual(timeout, 3)
+            self.process.returncode = -signal.SIGTERM
+
+        self.process.wait.side_effect = reap
+        with (
+            mock.patch.object(fixture.sys, "platform", "darwin"),
+            mock.patch.object(fixture, "child_exited", return_value=True),
+            mock.patch.object(fixture.os, "killpg", side_effect=killpg),
+            mock.patch.object(fixture.time, "sleep"),
+            mock.patch.object(
+                fixture.subprocess,
+                "run",
+                return_value=subprocess.CompletedProcess([], 0, "32123 32123 Z\n32124 32123 Z+\n"),
+            ) as query,
+        ):
+            fixture.stop_group(self.process)
+        args, kwargs = query.call_args
+        self.assertEqual(args[0], ["ps", "-g", "32123", "-o", "pid=,pgid=,stat="])
+        self.assertEqual(kwargs["env"]["COMMAND_MODE"], "unix2003")
+        self.assertEqual(kwargs["stdin"], subprocess.DEVNULL)
+        self.assertEqual(kwargs["timeout"], 2)
+        self.assertTrue(kwargs["check"])
+        self.process.wait.assert_called_once_with(timeout=3)
+
+    def test_eperm_requires_exited_owned_anchor_and_no_live_group_members(self):
+        fixture = self.fixture
+        for output in (
+            "",
+            "32123 32123 R\n",
+            "32123 32123 Z\n32124 32123 S\n",
+            "32123 32123 Z\n32124 32123 T\n",
+            "32124 32123 Z\n",
+            "32123 99999 Z\n",
+            "unparseable\n",
+        ):
+            with (
+                self.subTest(output=output),
+                mock.patch.object(fixture.sys, "platform", "darwin"),
+                mock.patch.object(fixture, "child_exited", return_value=True),
+                mock.patch.object(
+                    fixture.os, "killpg", side_effect=PermissionError(errno.EPERM, "denied")
+                ),
+                mock.patch.object(
+                    fixture.subprocess,
+                    "run",
+                    return_value=subprocess.CompletedProcess([], 0, output),
+                ),
+                self.assertRaises(PermissionError),
+            ):
+                fixture.signal_owned_group(self.process, signal.SIGKILL)
+        for platform, exited in (("darwin", False), ("linux", True)):
+            with (
+                self.subTest(platform=platform, exited=exited),
+                mock.patch.object(fixture.sys, "platform", platform),
+                mock.patch.object(fixture, "child_exited", return_value=exited),
+                mock.patch.object(
+                    fixture.os, "killpg", side_effect=PermissionError(errno.EPERM, "denied")
+                ),
+                mock.patch.object(fixture.subprocess, "run") as query,
+                self.assertRaises(PermissionError),
+            ):
+                fixture.signal_owned_group(self.process, signal.SIGKILL)
+            query.assert_not_called()
+        self.process.wait.assert_not_called()
+
+    def test_group_query_failure_is_a_hard_cleanup_failure(self):
+        fixture = self.fixture
+        for error in (
+            subprocess.CalledProcessError(1, "ps"),
+            subprocess.TimeoutExpired("ps", 2),
+        ):
+            with (
+                self.subTest(error=error),
+                mock.patch.object(fixture.sys, "platform", "darwin"),
+                mock.patch.object(fixture, "child_exited", return_value=True),
+                mock.patch.object(
+                    fixture.os, "killpg", side_effect=PermissionError(errno.EPERM, "denied")
+                ),
+                mock.patch.object(fixture.subprocess, "run", side_effect=error),
+                self.assertRaises(type(error)),
+            ):
+                fixture.signal_owned_group(self.process, signal.SIGTERM)
+        self.process.wait.assert_not_called()
+
+    def test_already_reaped_anchor_is_never_signalled(self):
+        fixture = self.fixture
+        self.process.returncode = 0
+        with mock.patch.object(fixture.os, "killpg") as killpg, self.assertRaises(RuntimeError):
+            fixture.stop_group(self.process)
+        killpg.assert_not_called()
 
 
 class FixtureTests(unittest.TestCase):

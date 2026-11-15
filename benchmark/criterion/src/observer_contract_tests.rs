@@ -5,7 +5,61 @@
 #[path = "startup/observer.rs"]
 mod observer;
 
-use std::{collections::BTreeMap, fs, time::Duration};
+use std::{
+    collections::BTreeMap,
+    fs,
+    time::{Duration, Instant},
+};
+
+fn process_is_gone(error: &std::io::Error) -> bool {
+    // procfs can open the entry before exit and return ESRCH when reading it.
+    // Both this and ENOENT prove absence; permission/I/O errors do not.
+    error.kind() == std::io::ErrorKind::NotFound || error.raw_os_error() == Some(libc::ESRCH)
+}
+
+fn wait_for_nonlive_state(pid: u32, timeout: Duration) -> bool {
+    let deadline = Instant::now() + timeout;
+    loop {
+        match fs::read_to_string(format!("/proc/{pid}/stat")) {
+            Ok(stat) => {
+                if stat.rsplit_once(')').unwrap().1.split_whitespace().next() == Some("Z") {
+                    return true;
+                }
+            }
+            Err(error) if process_is_gone(&error) => return true,
+            Err(error) => panic!("cannot inspect descendant {pid}: {error}"),
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
+#[test]
+fn process_absence_does_not_accept_permission_or_io_errors() {
+    for code in [libc::ENOENT, libc::ESRCH] {
+        assert!(process_is_gone(&std::io::Error::from_raw_os_error(code)));
+    }
+    for code in [libc::EPERM, libc::EACCES, libc::EIO] {
+        assert!(!process_is_gone(&std::io::Error::from_raw_os_error(code)));
+    }
+}
+
+#[test]
+fn exit_state_wait_does_not_accept_a_live_process() {
+    let mut child = std::process::Command::new("/bin/sleep")
+        .arg("30")
+        .spawn()
+        .unwrap();
+    let pid = child.id();
+    let accepted_live = wait_for_nonlive_state(pid, Duration::from_millis(20));
+    // Clean up even if the helper incorrectly accepted a live process.
+    child.kill().unwrap();
+    child.wait().unwrap();
+    assert!(!accepted_live);
+    assert!(wait_for_nonlive_state(pid, Duration::from_secs(1)));
+}
 
 fn capture(
     directory: &std::path::Path,
@@ -78,14 +132,19 @@ fn timeout_after_ready_kills_owned_descendant_and_retains_partial_output() {
         Duration::from_millis(200),
     );
     assert!(result.is_err());
-    let pid = fs::read_to_string(directory.path().join("child.pid")).unwrap();
-    // An orphan may remain a zombie until the system reaper runs; it must not run.
-    if let Ok(stat) = fs::read_to_string(format!("/proc/{}/stat", pid.trim())) {
-        assert_eq!(
-            stat.split_once(") ").unwrap().1.split_whitespace().next(),
-            Some("Z")
-        );
-    }
+    let pid = fs::read_to_string(directory.path().join("child.pid"))
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    // SIGKILL submission and reaping the direct child do not synchronize the
+    // descendant's kernel exit. Wait for that state transition, not another
+    // capture attempt or another signal. A surviving process still fails.
+    // Orphan zombies are permitted because their reaping belongs to system init.
+    assert!(
+        wait_for_nonlive_state(pid, Duration::from_secs(3)),
+        "owned descendant {pid} remained live after cleanup"
+    );
     assert_eq!(
         fs::read(directory.path().join("stdout")).unwrap(),
         b"REFERENCE_READY\n"

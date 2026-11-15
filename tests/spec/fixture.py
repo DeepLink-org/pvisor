@@ -18,21 +18,94 @@ HERE = Path(__file__).resolve().parent
 PROJECT = HERE.parents[1]
 
 
-def stop_group(process):
-    """Always terminate owned descendants, including after normal Bash exit."""
+class DarwinSiginfo(ctypes.Structure):
+    """Darwin's 104-byte LP64 siginfo_t; si_pid is at byte offset 12.
+
+    ABI: https://github.com/apple-oss-distributions/xnu/blob/main/bsd/sys/signal.h
+    """
+
+    _fields_ = [
+        ("signo", ctypes.c_int),
+        ("error", ctypes.c_int),
+        ("code", ctypes.c_int),
+        ("pid", ctypes.c_int),
+        ("uid", ctypes.c_uint),
+        ("status", ctypes.c_int),
+        ("address", ctypes.c_void_p),
+        ("value", ctypes.c_void_p),
+        ("band", ctypes.c_long),
+        ("reserved", ctypes.c_ulong * 7),
+    ]
+
+
+def child_exited(process):
+    """Observe our direct child without releasing its PID/PGID identity."""
+    if process.returncode is not None:
+        raise RuntimeError("scenario anchor was reaped before group cleanup")
+    if sys.platform == "darwin":
+        # CPython does not expose os.waitid on macOS. Darwin's option values
+        # differ from Linux: P_PID=1, WNOHANG=1, WEXITED=4, WNOWAIT=0x20.
+        # ABI: https://github.com/apple-oss-distributions/xnu/blob/main/bsd/sys/wait.h
+        # An errno is a hard ownership failure.
+        waitid = ctypes.CDLL(None, use_errno=True).waitid
+        waitid.argtypes = [ctypes.c_int, ctypes.c_uint, ctypes.POINTER(DarwinSiginfo), ctypes.c_int]
+        waitid.restype = ctypes.c_int
+        info = DarwinSiginfo()
+        if waitid(1, process.pid, ctypes.byref(info), 0x01 | 0x04 | 0x20) != 0:
+            error = ctypes.get_errno()
+            raise OSError(error, os.strerror(error))
+        if info.pid not in (0, process.pid):
+            raise RuntimeError(f"waitid returned an unexpected child: {info.pid}")
+        return info.pid == process.pid
+    return os.waitid(os.P_PID, process.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT) is not None
+
+
+def darwin_group_only_zombies(process):
+    """Prove EPERM describes an exited owned group, not lost permissions."""
+    if not child_exited(process):
+        return False
+    # Darwin's Unix-2003 -g selects exactly this process group, including
+    # no-tty members. Do not infer ownership from a global process listing.
+    result = subprocess.run(
+        ["ps", "-g", str(process.pid), "-o", "pid=,pgid=,stat="],
+        env={**os.environ, "COMMAND_MODE": "unix2003"},
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=2,
+        check=True,
+    )
+    members = [line.split() for line in result.stdout.splitlines()]
+    if not members or any(len(row) != 3 for row in members):
+        return False
+    # The unreaped direct child pins the group identity across this query.
+    # A missing anchor or live/stopped member is not a successful cleanup.
+    return any(pid == str(process.pid) for pid, _, _ in members) and all(
+        pgid == str(process.pid) and state.startswith("Z") for _, pgid, state in members
+    )
+
+
+def signal_owned_group(process, signum):
     try:
-        os.killpg(process.pid, signal.SIGTERM)
-    except ProcessLookupError:
-        process.wait()
-        return
-    # On Linux the caller observes exit with WNOWAIT, retaining the group
-    # leader's PID until both signals are sent. Do not reap that anchor early.
-    time.sleep(0.05)
-    try:
-        os.killpg(process.pid, signal.SIGKILL)
+        os.killpg(process.pid, signum)
     except ProcessLookupError:
         pass
-    process.wait()
+    except PermissionError:
+        # Darwin killpg can return EPERM if every member is already a zombie.
+        # Never swallow EPERM for a live group or an unproven/recycled identity.
+        if sys.platform != "darwin" or not darwin_group_only_zombies(process):
+            raise
+
+
+def stop_group(process):
+    """Always terminate owned descendants, including after normal Bash exit."""
+    child_exited(process)  # Verify direct-child ownership before any signal.
+    signal_owned_group(process, signal.SIGTERM)
+    # WNOWAIT retains the anchor's PID on both Linux and Darwin until both
+    # signals and any zombie-only EPERM checks have completed.
+    time.sleep(0.05)
+    signal_owned_group(process, signal.SIGKILL)
+    process.wait(timeout=3)
 
 
 def adopt_detached_children():
@@ -161,19 +234,9 @@ def main(argv=None):
             )
             deadline = time.monotonic() + args.timeout
             while True:
-                if sys.platform == "linux":
-                    # Keep the exited anchor waitable until group cleanup so
-                    # its PID/PGID cannot be reused for an unrelated process.
-                    exited = os.waitid(os.P_PID, process.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT)
-                    if exited is not None:
-                        break
-                    time.sleep(min(0.05, max(0.001, deadline - time.monotonic())))
-                else:
-                    try:
-                        process.wait(timeout=min(0.1, max(0.001, deadline - time.monotonic())))
-                        break
-                    except subprocess.TimeoutExpired:
-                        pass
+                if child_exited(process):
+                    break
+                time.sleep(min(0.05, max(0.001, deadline - time.monotonic())))
                 if time.monotonic() >= deadline:
                     timed_out = True
                     break
