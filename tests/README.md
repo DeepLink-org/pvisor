@@ -142,7 +142,9 @@ new `--output` directory and matching firmware/root-disk template beside the
 binary. Unavailable WHP, timeouts and failed assertions fail the campaign; this
 is a hardware acceptance driver, not part of ordinary unit tests or a benchmark.
 CI runs it twice against the same built binary with separate fresh stores.
-Failure evidence includes allowlisted instance records and boot/workload logs,
+Each round repeats the fast two-vCPU foreground command 32 times, requiring
+its exact output, successful exit and auto-removal on every launch.
+Failure evidence includes allowlisted instance records and owner/boot/workload logs,
 bounded to the last 1 MiB per file with sizes/offsets recorded. Raw ext4 disks and
 image blobs are excluded from uploads. Cleanup failures cannot produce a PASS.
 `test_windows_container_contract.py` checks these evidence/oracle rules without
