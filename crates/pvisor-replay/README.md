@@ -14,6 +14,13 @@ An unresolved start remains ambiguous after run failure and blocks retry in
 that state directory; use a new sandbox and run ID rather than silently
 repeating uncertain side effects.
 
+Replay observations require object payloads; tool start/finish receipts also
+require a string call ID (including empty IDs accepted by native adapters).
+Admission and diagnostic reads reject malformed
+receipts with an ambiguous-execution error rather than panicking or silently
+ignoring an uncertain operation. Rejection does not repair complete records:
+explicit owner restoration is required, and failed admission releases its locks.
+
 Artifact-publication failures report completed operations from the latest run's
 durable finish receipts, including separate operations that reuse a native ID.
 Fully resolved terminal runs allow an explicit rerun into a fresh output root;
@@ -77,6 +84,23 @@ for native startup; this tolerates cold starts but is not a readiness handshake,
 so startup starvation beyond that budget can still fail the test. Its independent
 alarm exceeds the wall deadline plus the longest termination grace.
 
+The ignored `slow_progress_then_idle_cancellation_drains_and_allows_a_fresh_process`
+check exercises real lifecycle timers for about three minutes. In both pipe and
+redirected-stdout modes, a native child emits stdout/stderr progress at 20-second
+intervals before stalling with pending stdin. The 30-second idle watchdog must
+refresh on both streams, then cancel, deliver stdin EOF, capture cooperative
+shutdown output and reap the child/group. A fresh process must then succeed.
+The child has an independent 150-second alarm; the owner has a 120-second wall
+deadline per mode. Run it explicitly with:
+
+```sh
+mise run test -- pvisor-replay -- --lib --run-ignored only \
+  -E 'test(slow_progress_then_idle_cancellation_drains_and_allows_a_fresh_process)'
+```
+
+This is a low-load timer/cleanup contract, not live-agent continuation coverage
+or a throughput benchmark.
+
 The Linux leader-exit fixture covers incomplete stdin delivery when a descendant
 keeps the read end open, both with and without inherited stdout/stderr. A native
 pipe handshake establishes the descendant before the leader exits. The executor
@@ -85,3 +109,24 @@ or a timeout, and kill the remaining group. The test temporarily adopts orphaned
 children as a subreaper, verifies SIGKILL, reaps its descendant, and restores the
 prior subreaper setting. An independent ten-second descendant alarm bounds a
 broken cleanup path; the asserted completion budget is three seconds.
+
+`process::generated_tests` adds a finite full-duplex matrix without a shell or
+interpreter. A native child emits 128 KiB+1 stdout and 64 KiB+1 stderr before
+consuming stdin, closes stderr, receives stdin through EOF and echoes the exact
+received bytes to stdout. The parent checks independently held input bytes,
+bounded channel-tail windows (including zero and pipe/read-chunk boundaries),
+redirected stdout, log size/permissions and ordinary nonzero exits. A deliberate
+early stdin-close error is followed by a fresh healthy native process; that
+composition does not reclassify the already-covered stdin-close path as a new
+defect. Each child has a five-second wall deadline and independent eight-second
+alarm, with no descendants. The generated check does not intentionally expire
+deadlines; timeout/cancellation coverage remains in the separate existing tests.
+
+Default coverage is 20 seeds. `PVISOR_CHAOS_FIRST_SEED` and
+`PVISOR_CHAOS_SEED_COUNT` select a checked finite interval (1–4096 seeds per
+invocation). Every seed runs four child lifecycles sequentially, with input at
+most 1 MiB+1 and bounded output. Failed private `replay5-*` fixtures retain seed,
+PID, received-input and log evidence; success cleanup follows reaping/group
+checks and assertions. This is process supervision coverage, not replay
+exactly-once execution, live-agent acceptance or an adversarial process escape
+test.

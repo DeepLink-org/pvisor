@@ -1,0 +1,28 @@
+[package]
+name = "pvisor-containers"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Native WHP container lifecycle and OCI image catalog"
+
+[dependencies]
+anyhow.workspace = true
+dirs.workspace = true
+flate2.workspace = true
+fs2.workspace = true
+pvisor-guest.workspace = true
+reqwest = { workspace = true, features = ["blocking", "json", "rustls-tls"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+sha2.workspace = true
+tempfile.workspace = true
+uuid = { workspace = true, features = ["v4"] }
+
+[target.'cfg(windows)'.dependencies]
+pvisor-vm = { workspace = true, features = ["blk", "net"] }
+pvisor-overlaynet.workspace = true
+tokio = { workspace = true, features = ["net", "io-util"] }
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_IO", "Win32_System_Ioctl", "Win32_System_JobObjects", "Win32_System_Pipes", "Win32_System_Threading", "Win32_System_Memory", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Console"] }
+
+[dev-dependencies]
+syn = { version = "2", features = ["full", "visit"] }

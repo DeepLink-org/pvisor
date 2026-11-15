@@ -132,6 +132,7 @@ pub enum PortConfig {
 pub enum PortConfig {
     HostConsole,
     ConsoleOutputFile { path: PathBuf },
+    NamedOutputFile { name: String, path: PathBuf },
     NamedPipe { name: String, pipe_name: String },
 }
 

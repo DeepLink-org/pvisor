@@ -8,6 +8,8 @@ use std::{
 
 pub(super) const KEY: &std::ffi::CStr = c"user.containers.override_stat";
 
+pub(super) use super::inode_metadata::DIRECTORY;
+
 fn path(file: &File) -> CString {
     CString::new(format!("/proc/self/fd/{}", file.as_raw_fd())).unwrap()
 }

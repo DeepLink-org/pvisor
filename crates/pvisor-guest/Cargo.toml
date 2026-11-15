@@ -11,6 +11,9 @@ serde_json.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
 libc.workspace = true
+flate2.workspace = true
+tar.workspace = true
+sha2.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

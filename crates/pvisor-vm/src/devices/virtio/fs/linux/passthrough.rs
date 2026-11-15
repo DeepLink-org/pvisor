@@ -1,23 +1,25 @@
 use super::managed;
+use super::statx::{LinuxStatx, STATX_ATTR_DAX, STATX_BASIC_STATS, STATX_MNT_ID};
 // Copyright 2019 The Chromium OS Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-use std::collections::btree_map;
 use std::collections::BTreeMap;
+use std::collections::btree_map;
 use std::convert::TryInto;
 use std::ffi::{CStr, CString};
 use std::fs::File;
 use std::io;
-use std::mem::{self, size_of, MaybeUninit};
+use std::mem::{self, MaybeUninit, size_of};
 use std::os::unix::fs::MetadataExt;
 use std::os::unix::io::{AsRawFd, FromRawFd, RawFd};
+use std::path::Path;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
-use caps::{has_cap, CapSet, Capability};
+use caps::{CapSet, Capability, has_cap};
 use nix::request_code_read;
 
 use vm_memory::ByteValued;
@@ -234,51 +236,6 @@ fn stat(f: &File) -> io::Result<libc::stat64> {
         Err(io::Error::last_os_error())
     }
 }
-
-// Linux exposes the statx ABI through libc on glibc targets, but musl's libc
-// bindings do not consistently expose it for every supported version.  Keep a
-// local definition of the ABI and invoke the syscall directly so this code is
-// independent of the C library's headers.
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Default)]
-struct LinuxStatxTimestamp {
-    tv_sec: i64,
-    tv_nsec: u32,
-    _reserved: i32,
-}
-
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Default)]
-struct LinuxStatx {
-    stx_mask: u32,
-    stx_blksize: u32,
-    stx_attributes: u64,
-    stx_nlink: u32,
-    stx_uid: u32,
-    stx_gid: u32,
-    stx_mode: u16,
-    _spare0: u16,
-    stx_ino: u64,
-    stx_size: u64,
-    stx_blocks: u64,
-    stx_attributes_mask: u64,
-    stx_atime: LinuxStatxTimestamp,
-    stx_btime: LinuxStatxTimestamp,
-    stx_ctime: LinuxStatxTimestamp,
-    stx_mtime: LinuxStatxTimestamp,
-    stx_rdev_major: u32,
-    stx_rdev_minor: u32,
-    stx_dev_major: u32,
-    stx_dev_minor: u32,
-    stx_mnt_id: u64,
-    stx_dio_mem_align: u32,
-    stx_dio_offset_align: u32,
-    _spare3: [u64; 12],
-}
-
-const STATX_BASIC_STATS: u32 = 0x0000_07ff;
-const STATX_MNT_ID: u32 = 0x0000_1000;
-const STATX_ATTR_DAX: u64 = 0x0020_0000;
 
 fn buffered_write_file_eligible(file: &File, exported: bool) -> io::Result<bool> {
     buffered_write_fd_eligible(file.as_raw_fd(), exported)
@@ -603,6 +560,7 @@ pub struct PassthroughFs {
     my_gid: Option<libc::gid_t>,
     cap_fowner: bool,
 
+    symlinks: Option<super::inode_metadata::Catalog>,
     cfg: Config,
 }
 
@@ -787,17 +745,24 @@ impl PassthroughFs {
     /// Validate the actual open description without treating native placeholder
     /// identity or private hardlink count as immutable content evidence.
     pub(in crate::devices::virtio::fs) fn logical_data_fd_eligible(
-        &self, lease: &HandleLease, size: u64,
+        &self,
+        lease: &HandleLease,
+        size: u64,
         profile: &pvisor_overlay_core::profile::Profile,
     ) -> bool {
         let file = lease.0.file.read().unwrap();
         profile.add("open_qualification_fgetfl_executions", 1);
         // SAFETY: the existing I/O admission/read guard pins this description.
         let flags = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GETFL) };
-        if flags < 0 || flags & libc::O_ACCMODE != libc::O_RDONLY
-            || flags & (libc::O_DIRECT | libc::O_PATH) != 0 { return false; }
+        if flags < 0
+            || flags & libc::O_ACCMODE != libc::O_RDONLY
+            || flags & (libc::O_DIRECT | libc::O_PATH) != 0
+        {
+            return false;
+        }
         profile.add("open_qualification_fstat_executions", 1);
-        file.metadata().is_ok_and(|m| m.is_file() && m.len() == size && m.nlink() != 0)
+        file.metadata()
+            .is_ok_and(|m| m.is_file() && m.len() == size && m.nlink() != 0)
         // Native link count may include the projection's private object alias.
         // Content identity/immutability comes from the separate logical lease,
         // never this FD's device/inode or its placeholder bytes.
@@ -1089,6 +1054,15 @@ impl PassthroughFs {
             my_uid,
             my_gid,
             cap_fowner,
+            symlinks: cfg
+                .managed
+                .then(|| {
+                    super::inode_metadata::Catalog::new(
+                        Path::new(&cfg.root_dir),
+                        managed::DIRECTORY,
+                    )
+                })
+                .transpose()?,
             cfg,
         })
     }
@@ -1199,6 +1173,9 @@ impl PassthroughFs {
                     + 1
             };
             for entry in &entries[start..] {
+                if self.reserved_name(inode, &entry.name) {
+                    continue;
+                }
                 if add_entry(DirEntry {
                     ino: entry.ino,
                     offset: entry.offset,
@@ -1211,89 +1188,104 @@ impl PassthroughFs {
             }
             return Ok(());
         }
-        let mut buf = vec![0; size as usize];
+        let mut offset = offset;
+        loop {
+            let mut buf = vec![0; size as usize];
 
-        {
-            // Since we are going to work with the kernel offset, we have to acquire the file lock
-            // for both the `lseek64` and `getdents64` syscalls to ensure that no other thread
-            // changes the kernel offset while we are using it.
-            let dir = data.file.write().unwrap();
+            {
+                // Since we are going to work with the kernel offset, we have to acquire the file lock
+                // for both the `lseek64` and `getdents64` syscalls to ensure that no other thread
+                // changes the kernel offset while we are using it.
+                let dir = data.file.write().unwrap();
 
-            // Safe because this doesn't modify any memory and we check the return value.
-            let res =
-                unsafe { libc::lseek64(dir.as_raw_fd(), offset as libc::off64_t, libc::SEEK_SET) };
-            if res < 0 {
-                return Err(io::Error::last_os_error());
+                // Safe because this doesn't modify any memory and we check the return value.
+                let res = unsafe {
+                    libc::lseek64(dir.as_raw_fd(), offset as libc::off64_t, libc::SEEK_SET)
+                };
+                if res < 0 {
+                    return Err(io::Error::last_os_error());
+                }
+
+                // Safe because the kernel guarantees that it will only write to `buf` and we check the
+                // return value.
+                let res = unsafe {
+                    libc::syscall(
+                        libc::SYS_getdents64,
+                        dir.as_raw_fd(),
+                        buf.as_mut_ptr() as *mut LinuxDirent64,
+                        size as libc::c_int,
+                    )
+                };
+                if res < 0 {
+                    return Err(io::Error::last_os_error());
+                }
+                buf.resize(res as usize, 0);
+
+                // Explicitly drop the lock so that it's not held while we fill in the fuse buffer.
+                mem::drop(dir);
             }
 
-            // Safe because the kernel guarantees that it will only write to `buf` and we check the
-            // return value.
-            let res = unsafe {
-                libc::syscall(
-                    libc::SYS_getdents64,
-                    dir.as_raw_fd(),
-                    buf.as_mut_ptr() as *mut LinuxDirent64,
-                    size as libc::c_int,
-                )
-            };
-            if res < 0 {
-                return Err(io::Error::last_os_error());
-            }
-            buf.resize(res as usize, 0);
+            let mut rem = &buf[..];
+            let mut visible = false;
+            let mut next_offset = offset;
+            while !rem.is_empty() {
+                // We only use debug asserts here because these values are coming from the kernel and we
+                // trust them implicitly.
+                debug_assert!(
+                    rem.len() >= size_of::<LinuxDirent64>(),
+                    "not enough space left in `rem`"
+                );
 
-            // Explicitly drop the lock so that it's not held while we fill in the fuse buffer.
-            mem::drop(dir);
+                let (front, back) = rem.split_at(size_of::<LinuxDirent64>());
+
+                let dirent64 = LinuxDirent64::from_slice(front)
+                    .expect("unable to get LinuxDirent64 from slice");
+
+                let namelen = dirent64.d_reclen as usize - size_of::<LinuxDirent64>();
+                debug_assert!(namelen <= back.len(), "back is smaller than `namelen`");
+
+                let name = &back[..namelen];
+                let term = name
+                    .iter()
+                    .position(|&a| a == 0)
+                    .expect("LinuxDirent64 name not NUL-terminated");
+                let name = &name[..term];
+                next_offset = dirent64.d_off as u64;
+                let res = if name == b"." || name == b".." || self.reserved_name(inode, name) {
+                    // We don't want to report the "." and ".." entries. However, returning `Ok(0)` will
+                    // break the loop so return `Ok` with a non-zero value instead.
+                    Ok(1)
+                } else {
+                    visible = true;
+                    add_entry(DirEntry {
+                        ino: dirent64.d_ino,
+                        offset: dirent64.d_off as u64,
+                        type_: u32::from(dirent64.d_ty),
+                        name,
+                    })
+                };
+
+                debug_assert!(
+                    rem.len() >= dirent64.d_reclen as usize,
+                    "rem is smaller than `d_reclen`"
+                );
+
+                match res {
+                    Ok(0) => break,
+                    Ok(_) => rem = &rem[dirent64.d_reclen as usize..],
+                    Err(e) => return Err(e),
+                }
+            }
+
+            if visible || buf.is_empty() {
+                return Ok(());
+            }
+            // A buffer containing only hidden entries is not end-of-directory.
+            if next_offset == offset {
+                return Err(io::Error::from_raw_os_error(libc::EIO));
+            }
+            offset = next_offset;
         }
-
-        let mut rem = &buf[..];
-        while !rem.is_empty() {
-            // We only use debug asserts here because these values are coming from the kernel and we
-            // trust them implicitly.
-            debug_assert!(
-                rem.len() >= size_of::<LinuxDirent64>(),
-                "not enough space left in `rem`"
-            );
-
-            let (front, back) = rem.split_at(size_of::<LinuxDirent64>());
-
-            let dirent64 =
-                LinuxDirent64::from_slice(front).expect("unable to get LinuxDirent64 from slice");
-
-            let namelen = dirent64.d_reclen as usize - size_of::<LinuxDirent64>();
-            debug_assert!(namelen <= back.len(), "back is smaller than `namelen`");
-
-            let name = &back[..namelen];
-            let term = name
-                .iter()
-                .position(|&a| a == 0)
-                .expect("LinuxDirent64 name not NUL-terminated");
-            let name = &name[..term];
-            let res = if name.starts_with(CURRENT_DIR_CSTR) || name.starts_with(PARENT_DIR_CSTR) {
-                // We don't want to report the "." and ".." entries. However, returning `Ok(0)` will
-                // break the loop so return `Ok` with a non-zero value instead.
-                Ok(1)
-            } else {
-                add_entry(DirEntry {
-                    ino: dirent64.d_ino,
-                    offset: dirent64.d_off as u64,
-                    type_: u32::from(dirent64.d_ty),
-                    name,
-                })
-            };
-
-            debug_assert!(
-                rem.len() >= dirent64.d_reclen as usize,
-                "rem is smaller than `d_reclen`"
-            );
-
-            match res {
-                Ok(0) => break,
-                Ok(_) => rem = &rem[dirent64.d_reclen as usize..],
-                Err(e) => return Err(e),
-            }
-        }
-
-        Ok(())
     }
 
     fn do_open(
@@ -1380,6 +1372,36 @@ impl PassthroughFs {
         Err(ebadf())
     }
 
+    fn reserved_name(&self, parent: Inode, name: &[u8]) -> bool {
+        self.cfg.managed && parent == fuse::ROOT_ID && name == managed::DIRECTORY.to_bytes()
+    }
+
+    fn guard_name(&self, parent: Inode, name: &CStr) -> io::Result<()> {
+        if self.cfg.managed && (name.to_bytes().is_empty() || name.to_bytes().contains(&b'/')) {
+            return Err(io::Error::from_raw_os_error(libc::EINVAL));
+        }
+        if self.reserved_name(parent, name.to_bytes()) {
+            Err(io::Error::from_raw_os_error(libc::EPERM))
+        } else {
+            Ok(())
+        }
+    }
+
+    fn managed_attributes(&self, file: &File, native: libc::stat64) -> io::Result<libc::stat64> {
+        if let Some(symlinks) = &self.symlinks {
+            if native.st_mode & libc::S_IFMT == libc::S_IFLNK {
+                let mut native = native;
+                native.st_uid = 0;
+                native.st_gid = 0;
+                Ok(symlinks.attributes(file, native)?.unwrap_or(native))
+            } else {
+                managed::attributes(file, native)
+            }
+        } else {
+            Ok(native)
+        }
+    }
+
     fn managed_created(
         &self,
         ctx: Context,
@@ -1398,7 +1420,6 @@ impl PassthroughFs {
             .get(&entry.inode)
             .cloned()
             .ok_or_else(ebadf)?;
-        let _guard = managed::lock(&data.file)?;
         let mut attr = stat(&data.file)?;
         attr.st_uid = ctx.uid;
         attr.st_gid = if parent_attr.st_mode & libc::S_ISGID != 0 {
@@ -1411,7 +1432,19 @@ impl PassthroughFs {
         {
             attr.st_mode |= libc::S_ISGID;
         }
-        managed::store(&data.file, &attr)?;
+        if attr.st_mode & libc::S_IFMT == libc::S_IFLNK {
+            self.symlinks
+                .as_ref()
+                .unwrap()
+                .update(&data.file, attr, |st| {
+                    st.st_uid = attr.st_uid;
+                    st.st_gid = attr.st_gid;
+                    Ok(())
+                })?;
+        } else {
+            let _guard = managed::lock(&data.file)?;
+            managed::store(&data.file, &attr)?;
+        }
         entry.attr = attr;
         Ok(())
     }
@@ -1426,16 +1459,13 @@ impl PassthroughFs {
             .ok_or_else(ebadf)?;
 
         let native = stat(&data.file)?;
-        let st = if self.cfg.managed {
-            managed::attributes(&data.file, native)?
-        } else {
-            native
-        };
+        let st = self.managed_attributes(&data.file, native)?;
 
         Ok((st, self.cfg.attr_timeout))
     }
 
     fn do_unlink(&self, parent: Inode, name: &CStr, flags: libc::c_int) -> io::Result<()> {
+        self.guard_name(parent, name)?;
         let data = self
             .inodes
             .read()
@@ -1571,11 +1601,7 @@ impl FileSystem for PassthroughFs {
         let f = unsafe { File::from_raw_fd(fd) };
 
         let (native, mnt_id) = statx(&f)?;
-        let st = if self.cfg.managed {
-            managed::attributes(&f, native)?
-        } else {
-            native
-        };
+        let st = self.managed_attributes(&f, native)?;
 
         // Safe because this doesn't modify any memory and there is no need to check the return
         // value because this system call always succeeds. We need to clear the umask here because
@@ -1643,6 +1669,17 @@ impl FileSystem for PassthroughFs {
     }
 
     fn lookup(&self, _ctx: Context, parent: Inode, name: &CStr) -> io::Result<Entry> {
+        if self.reserved_name(parent, name.to_bytes()) {
+            return Err(io::Error::from_raw_os_error(libc::ENOENT));
+        }
+        self.guard_name(parent, name)?;
+        // Keep raw FUSE requests at the managed root inside the attachment,
+        // even if a client sends a parent lookup normally handled by its VFS.
+        let name = if self.cfg.managed && parent == fuse::ROOT_ID && name == c".." {
+            c"."
+        } else {
+            name
+        };
         let p = self
             .inodes
             .read()
@@ -1667,11 +1704,7 @@ impl FileSystem for PassthroughFs {
         let f = unsafe { File::from_raw_fd(fd) };
 
         let (native, mnt_id) = statx(&f)?;
-        let st = if self.cfg.managed {
-            managed::attributes(&f, native)?
-        } else {
-            native
-        };
+        let st = self.managed_attributes(&f, native)?;
 
         let mut attr_flags: u32 = 0;
 
@@ -1763,6 +1796,7 @@ impl FileSystem for PassthroughFs {
         umask: u32,
         extensions: Extensions,
     ) -> io::Result<Entry> {
+        self.guard_name(parent, name)?;
         if extensions.secctx.is_some() {
             unimplemented!("SECURITY_CTX is not supported and should not be used by the guest");
         }
@@ -1832,14 +1866,9 @@ impl FileSystem for PassthroughFs {
         F: FnMut(DirEntry, Entry) -> io::Result<usize>,
     {
         self.do_readdir(inode, handle, size, offset, |dir_entry| {
-            // Safe because the kernel guarantees that the buffer is nul-terminated. Additionally,
-            // the kernel will pad the name with '\0' bytes up to 8-byte alignment and there's no
-            // way for us to know exactly how many padding bytes there are. This would cause
-            // `CStr::from_bytes_with_nul` to return an error because it would think there are
-            // interior '\0' bytes. We trust the kernel to provide us with properly formatted data
-            // so we'll just skip the checks here.
-            let name = unsafe { CStr::from_bytes_with_nul_unchecked(dir_entry.name) };
-            let entry = self.lookup(ctx, inode, name)?;
+            // do_readdir exposes bytes without the getdents NUL/padding.
+            let name = CString::new(dir_entry.name).map_err(|_| einval())?;
+            let entry = self.lookup(ctx, inode, &name)?;
             let lookup_inode = entry.inode;
             let result = add_entry(dir_entry, entry);
             if !matches!(&result, Ok(written) if *written != 0) {
@@ -1883,6 +1912,7 @@ impl FileSystem for PassthroughFs {
         umask: u32,
         extensions: Extensions,
     ) -> io::Result<(Entry, Option<Handle>, OpenOptions)> {
+        self.guard_name(parent, name)?;
         if extensions.secctx.is_some() {
             unimplemented!("SECURITY_CTX is not supported and should not be used by the guest");
         }
@@ -2046,7 +2076,42 @@ impl FileSystem for PassthroughFs {
             .ok_or_else(ebadf)?;
 
         if self.cfg.managed {
-            let native = stat(&inode_data.file)?;
+            let mut native = stat(&inode_data.file)?;
+            if native.st_mode & libc::S_IFMT == libc::S_IFLNK {
+                native.st_uid = 0;
+                native.st_gid = 0;
+                if valid.intersects(SetattrValid::MODE | SetattrValid::SIZE) {
+                    return Err(io::Error::from_raw_os_error(libc::EOPNOTSUPP));
+                }
+                if valid.intersects(SetattrValid::UID | SetattrValid::GID) {
+                    self.symlinks.as_ref().unwrap().update(
+                        &inode_data.file,
+                        native,
+                        |previous| {
+                            let authorized =
+                                ctx.uid == 0 || (ctx.uid == u32::MAX && ctx.gid == u32::MAX);
+                            if !authorized
+                                && (ctx.uid != previous.st_uid
+                                    || (valid.contains(SetattrValid::UID)
+                                        && attr.st_uid != previous.st_uid)
+                                    || (valid.contains(SetattrValid::GID)
+                                        && attr.st_gid != previous.st_gid
+                                        && attr.st_gid != ctx.gid))
+                            {
+                                return Err(io::Error::from_raw_os_error(libc::EPERM));
+                            }
+                            if valid.contains(SetattrValid::UID) {
+                                previous.st_uid = attr.st_uid;
+                            }
+                            if valid.contains(SetattrValid::GID) {
+                                previous.st_gid = attr.st_gid;
+                            }
+                            Ok(())
+                        },
+                    )?;
+                    valid.remove(SetattrValid::UID | SetattrValid::GID);
+                }
+            }
             if !matches!(native.st_mode & libc::S_IFMT, libc::S_IFREG | libc::S_IFDIR)
                 && valid.intersects(SetattrValid::UID | SetattrValid::GID)
             {
@@ -2228,11 +2293,26 @@ impl FileSystem for PassthroughFs {
             }
 
             // Safe because this doesn't modify any memory and we check the return value.
-            let res = match data {
-                Data::Handle(fd) => unsafe { libc::futimens(fd, tvs.as_ptr()) },
-                Data::ProcPath(ref p) => unsafe {
-                    libc::utimensat(self.proc_self_fd.as_raw_fd(), p.as_ptr(), tvs.as_ptr(), 0)
-                },
+            let res = if self.cfg.managed
+                && stat(&inode_data.file)?.st_mode & libc::S_IFMT == libc::S_IFLNK
+            {
+                // Operate on the pinned link, including dangling links; never
+                // change the target through /proc/self/fd's magic symlink.
+                unsafe {
+                    libc::utimensat(
+                        inode_data.file.as_raw_fd(),
+                        c"".as_ptr(),
+                        tvs.as_ptr(),
+                        libc::AT_EMPTY_PATH | libc::AT_SYMLINK_NOFOLLOW,
+                    )
+                }
+            } else {
+                match data {
+                    Data::Handle(fd) => unsafe { libc::futimens(fd, tvs.as_ptr()) },
+                    Data::ProcPath(ref p) => unsafe {
+                        libc::utimensat(self.proc_self_fd.as_raw_fd(), p.as_ptr(), tvs.as_ptr(), 0)
+                    },
+                }
             };
             if res < 0 {
                 return Err(io::Error::last_os_error());
@@ -2254,6 +2334,8 @@ impl FileSystem for PassthroughFs {
         newname: &CStr,
         flags: u32,
     ) -> io::Result<()> {
+        self.guard_name(olddir, oldname)?;
+        self.guard_name(newdir, newname)?;
         let old_inode = self
             .inodes
             .read()
@@ -2298,6 +2380,7 @@ impl FileSystem for PassthroughFs {
         umask: u32,
         extensions: Extensions,
     ) -> io::Result<Entry> {
+        self.guard_name(parent, name)?;
         if extensions.secctx.is_some() {
             unimplemented!("SECURITY_CTX is not supported and should not be used by the guest");
         }
@@ -2356,6 +2439,7 @@ impl FileSystem for PassthroughFs {
         newparent: Inode,
         newname: &CStr,
     ) -> io::Result<Entry> {
+        self.guard_name(newparent, newname)?;
         let data = self
             .inodes
             .read()
@@ -2399,14 +2483,12 @@ impl FileSystem for PassthroughFs {
         name: &CStr,
         extensions: Extensions,
     ) -> io::Result<Entry> {
+        self.guard_name(parent, name)?;
         // Set security context on symlink.
         if extensions.secctx.is_some() {
             unimplemented!("SECURITY_CTX is not supported and should not be used by the guest");
         }
 
-        if self.cfg.managed && (ctx.uid != 0 || ctx.gid != 0) {
-            return Err(io::Error::from_raw_os_error(libc::EOPNOTSUPP));
-        }
         let (_uid, _gid) = self.set_creds(ctx.uid, ctx.gid)?;
         let data = self
             .inodes
@@ -2420,7 +2502,12 @@ impl FileSystem for PassthroughFs {
         let res =
             unsafe { libc::symlinkat(linkname.as_ptr(), data.file.as_raw_fd(), name.as_ptr()) };
         if res == 0 {
-            self.lookup(ctx, parent, name)
+            let mut entry = self.lookup(ctx, parent, name)?;
+            if let Err(error) = self.managed_created(ctx, parent, &mut entry, 0o777) {
+                self.forget(ctx, entry.inode, 1);
+                return Err(error);
+            }
+            Ok(entry)
         } else {
             Err(io::Error::last_os_error())
         }
@@ -2493,11 +2580,7 @@ impl FileSystem for PassthroughFs {
             .ok_or_else(ebadf)?;
 
         let native = stat(&data.file)?;
-        let st = if self.cfg.managed {
-            managed::attributes(&data.file, native)?
-        } else {
-            native
-        };
+        let st = self.managed_attributes(&data.file, native)?;
         let mode = mask as i32 & (libc::R_OK | libc::W_OK | libc::X_OK);
 
         if mode == libc::F_OK {
@@ -2930,6 +3013,10 @@ impl PassthroughFs {
 }
 
 #[cfg(test)]
+#[path = "managed_tests.rs"]
+mod managed_regressions;
+
+#[cfg(test)]
 mod tests {
     use super::super::super::filesystem::root_context;
     use super::*;
@@ -3097,9 +3184,11 @@ mod tests {
         );
         assert!(fs.getxattr(ctx, entry.inode, managed::KEY, 0).is_err());
         match fs.listxattr(ctx, entry.inode, 65536).unwrap() {
-            ListxattrReply::Names(names) => assert!(!names
-                .windows(managed::KEY.to_bytes().len())
-                .any(|w| w == managed::KEY.to_bytes())),
+            ListxattrReply::Names(names) => assert!(
+                !names
+                    .windows(managed::KEY.to_bytes().len())
+                    .any(|w| w == managed::KEY.to_bytes())
+            ),
             _ => panic!("expected names"),
         }
         assert!(fs.capture_state().is_err());
@@ -3133,12 +3222,12 @@ mod tests {
             .unwrap();
         std::os::unix::fs::symlink("data", root.path().join("link")).unwrap();
         let link = fs.lookup(ctx, fuse::ROOT_ID, c"link").unwrap();
-        assert_eq!(
-            fs.setattr(ctx, link.inode, forged, None, SetattrValid::UID)
-                .unwrap_err()
-                .raw_os_error(),
-            Some(libc::EOPNOTSUPP)
-        );
+        let changed = fs
+            .setattr(ctx, link.inode, forged, None, SetattrValid::UID)
+            .unwrap()
+            .0;
+        assert_eq!(changed.st_uid, 123);
+        assert_eq!(fs.getattr(ctx, entry.inode, None).unwrap().0.st_uid, 999);
     }
 
     fn buffered_write_fixture(flags: i32) -> (tempfile::TempDir, PassthroughFs, HandleLease) {
@@ -3271,10 +3360,12 @@ mod tests {
                     .send(fs_ref.buffered_write_eligible(lease_ref))
                     .unwrap();
             });
-            assert!(qualification_result
-                .recv_timeout(Duration::from_secs(2))
-                .unwrap()
-                .unwrap());
+            assert!(
+                qualification_result
+                    .recv_timeout(Duration::from_secs(2))
+                    .unwrap()
+                    .unwrap()
+            );
             drop(native_write);
         });
     }
@@ -3535,10 +3626,11 @@ mod tests {
         let qualified_directory = fs.qualify_readonly_open(fuse::ROOT_ID, directory, true, &later);
         assert!(qualified_directory.data_identity.is_none() && !qualified_directory.local_flush);
         fs.releasedir(ctx, fuse::ROOT_ID, 0, directory).unwrap();
-        assert!(fs
-            .qualify_readonly_open(inode + 100, ro, true, &later)
-            .data_identity
-            .is_none());
+        assert!(
+            fs.qualify_readonly_open(inode + 100, ro, true, &later)
+                .data_identity
+                .is_none()
+        );
         for (node, handle) in [
             (inode, ro),
             (replacement, replacement_handle),
@@ -3819,10 +3911,11 @@ mod tests {
         fs.init(FsOptions::SUBMOUNTS).unwrap();
         let ctx = root_context();
         for name in [c"directory", c"symlink"] {
-            assert!(fs
-                .regular_lookup_attributes(fuse::ROOT_ID, name)
-                .unwrap()
-                .is_none());
+            assert!(
+                fs.regular_lookup_attributes(fuse::ROOT_ID, name)
+                    .unwrap()
+                    .is_none()
+            );
             let entry = fs.lookup(ctx, fuse::ROOT_ID, name).unwrap();
             assert_ne!(entry.attr.st_mode & libc::S_IFMT, libc::S_IFREG);
             fs.forget(ctx, entry.inode, 1);
@@ -3847,10 +3940,11 @@ mod tests {
         )
         .unwrap();
         host.init(FsOptions::SUBMOUNTS).unwrap();
-        assert!(host
-            .regular_lookup_attributes(fuse::ROOT_ID, c"proc")
-            .unwrap()
-            .is_none());
+        assert!(
+            host.regular_lookup_attributes(fuse::ROOT_ID, c"proc")
+                .unwrap()
+                .is_none()
+        );
         let proc = host.lookup(ctx, fuse::ROOT_ID, c"proc").unwrap();
         assert_ne!(proc.attr_flags & fuse::ATTR_SUBMOUNT, 0);
         host.forget(ctx, proc.inode, 1);

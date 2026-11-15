@@ -1,6 +1,21 @@
+[profile.windows-ci]
+# Preserve each test's own deadlines; this is a final watchdog for deadlocks.
+slow-timeout = { period = "60s", terminate-after = 3 }
+fail-fast = false
+status-level = "fail"
+final-status-level = "fail"
+
 # The real-time TCP recovery contract needs both guest stacks and backend threads.
 [[profile.default.overrides]]
 filter = 'package(=pvisor-overlaynet) & binary(=peer_network) & test(=tcp_guests::tcp_duplex_recovers_from_loss_duplication_and_reordering)'
+threads-required = "num-test-threads"
+
+# These test process-output backpressure and draining a full durable FIFO, not
+# contention with unrelated tests. Concurrent execs/fsyncs on hosted macOS can
+# consume the existing one-second probe or ten-second drain budget. Reserve all
+# slots without changing production deadlines, queue capacity, or assertions.
+[[profile.default.overrides]]
+filter = 'package(=pvisor-gateway) & (test(=injection::process::tests::large_output_does_not_deadlock_on_a_pipe) | test(=engine::tests::scheduling::one_bounded_fifo_reports_overload_and_shutdown_drains_accepted_tail))'
 threads-required = "num-test-threads"
 
 # This test bounds resolver readiness and cancellation to five seconds each.

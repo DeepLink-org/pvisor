@@ -41,12 +41,13 @@ grep -Fq 'https://security.ubuntu.com/ubuntu noble-security' "$source_list"
 printf '%s\n' "$1" >> "$APT_TEST_ROOT/operations"
 if [[ "$1" == "$APT_TEST_FAIL" ]]; then exit 42; fi
 if [[ "$1" == install ]]; then
-  found=0
+  found=0 filesystem=0
   for package in "$@"; do
     [[ "$package" != gcc-mingw-w64-x86-64 ]]
     if [[ "$package" == gcc-mingw-w64-x86-64-posix ]]; then found=1; fi
+    if [[ "$package" == e2fsprogs ]]; then filesystem=1; fi
   done
-  [[ "$found" == 1 ]]
+  [[ "$found" == 1 && "$filesystem" == 1 ]]
 fi
 SH
 chmod +x "$work/bin/"*

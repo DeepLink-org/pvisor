@@ -163,6 +163,155 @@ fn canonical_leaf_approval_cannot_override_an_explicit_deny() {
 }
 
 #[test]
+fn scoped_approval_is_request_scoped_without_poisoning_the_source_policy() {
+    use pvisor_core::{NetworkPolicyLayer, PolicyScope};
+
+    let limit = NetworkBandwidthLimit {
+        host: None,
+        port: Some(443),
+        bytes_per_second: 256,
+    };
+    for fallback in [
+        NetworkCapability::Ambient,
+        NetworkCapability::AllowList {
+            hosts: vec!["existing.example".into(), "fallback.example".into()],
+            rules: vec![],
+        },
+        NetworkCapability::Policy {
+            default_action: NetworkDefaultAction::Allow,
+            allow: vec![],
+            deny: vec![rule("fallback-denied.example")],
+            limits: vec![limit.clone()],
+        },
+    ] {
+        for default_action in [NetworkDefaultAction::Allow, NetworkDefaultAction::Deny] {
+            let config = NetworkConfig {
+                capability: Some(NetworkCapability::Scoped {
+                    layers: vec![(
+                        PolicyScope::Session,
+                        NetworkPolicyLayer {
+                            default_action: Some(default_action),
+                            allow: vec![rule("existing.example")],
+                            deny: vec![rule("blocked.example")],
+                            limits: vec![limit.clone()],
+                        },
+                    )],
+                    fallback: Box::new(fallback.clone()),
+                }),
+                ..Default::default()
+            };
+            let policy = NetworkPolicy::compile(&config).unwrap();
+            let input = request("new.example");
+            let original_decision = policy.preflight(&input);
+            assert!(policy.preflight(&request("existing.example")).is_ok());
+            let approved = policy.one_time_grant(&input).unwrap();
+            assert!(approved.preflight(&input).is_ok());
+            for host in [
+                "existing.example",
+                "fallback.example",
+                "other.example",
+                "blocked.example",
+                "fallback-denied.example",
+            ] {
+                assert!(
+                    approved.preflight(&request(host)).is_err(),
+                    "request-scoped grant authorized {host}: {config:?}"
+                );
+            }
+            assert_eq!(
+                approved.preflight(&request("blocked.example")),
+                Err(DenyReason::ExplicitDeny)
+            );
+            if matches!(fallback, NetworkCapability::Policy { .. }) {
+                assert_eq!(
+                    approved.preflight(&request("fallback-denied.example")),
+                    Err(DenyReason::ExplicitDeny)
+                );
+            }
+            let mut changed = input.clone();
+            changed.port = Some(80);
+            assert!(approved.preflight(&changed).is_err());
+            changed = input.clone();
+            changed.transport = NetworkTransport::Http;
+            assert!(approved.preflight(&changed).is_err());
+            changed = input.clone();
+            changed.resolved_ip = Some("127.0.0.1".parse().unwrap());
+            assert_eq!(
+                approved.preflight(&changed),
+                Err(DenyReason::ResolvedAddressNotAllowed)
+            );
+            assert_eq!(
+                approved.matching_limits("new.example", Some(443), &[]),
+                policy.matching_limits("new.example", Some(443), &[])
+            );
+            // A denied approval must not poison the existing immutable policy.
+            assert!(policy.one_time_grant(&request("blocked.example")).is_err());
+            assert!(policy.preflight(&request("existing.example")).is_ok());
+            assert_eq!(policy.preflight(&input), original_decision);
+        }
+    }
+}
+
+#[test]
+fn scoped_approval_retains_deny_precedence_in_every_scope_and_fallback() {
+    use pvisor_core::{NetworkPolicyLayer, PolicyScope};
+
+    for denied_at in [0, 1, 2, 3] {
+        let input = request("new.example");
+        let layers = [PolicyScope::Session, PolicyScope::Workspace]
+            .into_iter()
+            .enumerate()
+            .map(|(index, scope)| {
+                (
+                    scope,
+                    NetworkPolicyLayer {
+                        default_action: Some(NetworkDefaultAction::Allow),
+                        allow: vec![rule("new.example")],
+                        deny: if index == denied_at {
+                            vec![rule("new.example")]
+                        } else {
+                            vec![]
+                        },
+                        ..Default::default()
+                    },
+                )
+            })
+            .collect();
+        let fallback = if denied_at == 3 {
+            NetworkCapability::Deny
+        } else {
+            NetworkCapability::Policy {
+                default_action: NetworkDefaultAction::Allow,
+                allow: vec![rule("new.example")],
+                deny: if denied_at == 2 {
+                    vec![rule("new.example")]
+                } else {
+                    vec![]
+                },
+                limits: vec![],
+            }
+        };
+        let policy = NetworkPolicy::compile(&NetworkConfig {
+            capability: Some(NetworkCapability::Scoped {
+                layers,
+                fallback: Box::new(fallback),
+            }),
+            ..Default::default()
+        })
+        .unwrap();
+        let original = policy.preflight(&input);
+        assert!(original.is_err(), "denied at {denied_at}");
+        for _ in 0..2 {
+            assert!(
+                policy.one_time_grant(&input).is_err(),
+                "denied at {denied_at}"
+            );
+            assert_eq!(policy.preflight(&input), original);
+        }
+    }
+}
+
+#[test]
 fn approval_request_hosts_cannot_be_interpreted_as_multi_destination_rules() {
     // Fixed-seed, bounded cases exercise both policy grammars that widen a host.
     let mut seed = 0xc1_2026_u32;

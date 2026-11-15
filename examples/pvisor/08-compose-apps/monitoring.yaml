@@ -1,0 +1,37 @@
+services:
+  init:
+    image: alpine:3.20
+    cpus: 1
+    mem_limit: 128m
+    command: [sh, -c, "mkdir -p /prometheus/data && chown 65534:65534 /prometheus/data"]
+    volumes: [samples:/prometheus]
+  prometheus:
+    image: prom/prometheus:v3.5.0
+    cpus: 1
+    mem_limit: 256m
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus/data
+      - --storage.tsdb.retention.time=1d
+    volumes:
+      - samples:/prometheus
+      - "./prometheus.yml:/etc/prometheus/prometheus.yml:ro"
+    depends_on:
+      init: {condition: service_completed_successfully}
+  grafana:
+    image: grafana/grafana:11.6.0
+    cpus: 1
+    mem_limit: 512m
+    environment:
+      GF_SECURITY_ADMIN_USER: composeadmin
+      GF_SECURITY_ADMIN_PASSWORD: ${CASE_ADMIN_PASSWORD:?required}
+      GF_SERVER_ROOT_URL: http://127.0.0.1:${CASE_HTTP_PORT:?required}/
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      GF_ANALYTICS_CHECK_FOR_PLUGIN_UPDATES: "false"
+    ports: ["127.0.0.1:${CASE_HTTP_PORT:?required}:3000"]
+    volumes: [dashboards:/var/lib/grafana]
+    depends_on: [prometheus]
+volumes:
+  samples: {}
+  dashboards: {}

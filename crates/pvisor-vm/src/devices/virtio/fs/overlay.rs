@@ -8,16 +8,18 @@ use std::ffi::{CStr, CString, OsStr};
 use std::io;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::MetadataExt;
+#[cfg(target_os = "linux")]
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, RwLock};
 use std::time::Duration;
 
+use pvisor_overlay_core::{BackingIdentity, BackingResolution, OverlayCore};
 use pvisor_overlay_core::{
     backend,
     service::{FilesystemService, OpenBacking, UpperNamespaceMutation},
 };
-use pvisor_overlay_core::{BackingIdentity, BackingResolution, OverlayCore};
 
 use super::super::linux_errno::linux_error;
 use super::bindings;
@@ -988,6 +990,8 @@ pub struct OverlayFs {
     negative_entry_cache_roots: Vec<PathBuf>,
     negative_entry_cache_protected_prefixes: Vec<PathBuf>,
     virtual_metadata: bool,
+    #[cfg(target_os = "linux")]
+    socket_metadata: Option<super::linux::inode_metadata::Catalog>,
     snapshot_config: Config,
     roots: Vec<PathBuf>,
     layers: Vec<Arc<PassthroughFs>>,
@@ -1561,6 +1565,15 @@ impl OverlayFs {
             negative_entry_cache_roots: Vec::new(),
             negative_entry_cache_protected_prefixes: Vec::new(),
             virtual_metadata,
+            #[cfg(target_os = "linux")]
+            socket_metadata: virtual_metadata
+                .then(|| {
+                    super::linux::inode_metadata::Catalog::new(
+                        &roots[0],
+                        c".wh..pvisor-socket-metadata",
+                    )
+                })
+                .transpose()?,
             profile,
             operation_lock: RwLock::new(()),
             mutation_lock: Mutex::new(()),
@@ -2213,8 +2226,50 @@ impl OverlayFs {
                 };
                 attr.st_mode = mode as _;
             }
+            if attr.st_mode & libc::S_IFMT == libc::S_IFSOCK {
+                if let Some(catalog) = &self.socket_metadata {
+                    let file = std::fs::OpenOptions::new()
+                        .read(true)
+                        .custom_flags(libc::O_PATH | libc::O_NOFOLLOW)
+                        .open(path)?;
+                    if let Some(identity) = catalog.attributes(&file, *attr)? {
+                        *attr = identity;
+                    }
+                }
+            }
         }
         Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
+    fn store_private_identity(&self, path: &Path, attr: &bindings::stat64) -> io::Result<()> {
+        if attr.st_mode & libc::S_IFMT == libc::S_IFSOCK {
+            // Older host kernels reject user xattrs on sockets. Keep the native
+            // socket, but persist its guest identity under Core's reserved
+            // whiteout namespace, keyed by pinned device/inode/birth time.
+            let file = std::fs::OpenOptions::new()
+                .read(true)
+                .custom_flags(libc::O_PATH | libc::O_NOFOLLOW)
+                .open(path)?;
+            self.socket_metadata
+                .as_ref()
+                .ok_or_else(|| io::Error::other("private socket catalog missing"))?
+                .update(&file, *attr, |stored| {
+                    stored.st_uid = attr.st_uid;
+                    stored.st_gid = attr.st_gid;
+                    stored.st_mode = attr.st_mode;
+                    Ok(())
+                })?;
+            Ok(())
+        } else {
+            let identity = format!("{}:{}:0{:o}", attr.st_uid, attr.st_gid, attr.st_mode);
+            pvisor_overlay_core::sys::set_xattr(
+                path,
+                OsStr::new("user.containers.override_stat"),
+                identity.as_bytes(),
+                0,
+            )
+        }
     }
 
     fn clear_directory_cache(&self) {
@@ -3037,7 +3092,7 @@ impl FileSystem for OverlayFs {
                 "cannot replace a negotiated read-only flush-elision session by restoring state",
             ));
         }
-        use super::snapshot::{invalid, FsSnapshot};
+        use super::snapshot::{FsSnapshot, invalid};
         let FsSnapshot::Overlay(state) = state else {
             return Err(invalid("overlay filesystem type mismatch"));
         };
@@ -3642,7 +3697,7 @@ impl FileSystem for OverlayFs {
         if let Some(previous) = previous {
             if valid.contains(SetattrValid::MODE) {
                 let owner_access = match previous.st_mode & libc::S_IFMT {
-                    libc::S_IFREG => Some(0o600),
+                    libc::S_IFREG | libc::S_IFSOCK => Some(0o600),
                     libc::S_IFDIR => Some(0o700),
                     _ => None,
                 };
@@ -3662,6 +3717,7 @@ impl FileSystem for OverlayFs {
         #[cfg(target_os = "linux")]
         if let Some(previous) = previous {
             if valid.intersects(SetattrValid::MODE | SetattrValid::UID | SetattrValid::GID)
+                || previous.st_mode & libc::S_IFMT == libc::S_IFSOCK
                 || pvisor_overlay_core::sys::get_xattr(
                     &self.core.upper_path(&path),
                     OsStr::new("user.containers.override_stat"),
@@ -3690,14 +3746,7 @@ impl FileSystem for OverlayFs {
                 {
                     attr.st_mode &= !(libc::S_ISUID | libc::S_ISGID);
                 }
-                let value = format!("{}:{}:0{:o}", attr.st_uid, attr.st_gid, attr.st_mode);
-                pvisor_overlay_core::sys::set_xattr(
-                    &self.core.upper_path(&path),
-                    OsStr::new("user.containers.override_stat"),
-                    value.as_bytes(),
-                    0,
-                )
-                .map_err(linux_error)?;
+                self.store_private_identity(&self.core.upper_path(&path), &attr)?;
             }
         }
         #[cfg(target_os = "macos")]
@@ -3749,16 +3798,61 @@ impl FileSystem for OverlayFs {
     ) -> io::Result<Entry> {
         let _operation = self.write_operation()?;
         let path = self.child(parent, name)?;
+        #[cfg(target_os = "linux")]
+        let virtual_parent = if self.virtual_metadata
+            && matches!(mode & libc::S_IFMT, libc::S_IFREG | libc::S_IFSOCK)
+        {
+            Some(self.entry(ctx, &self.path(parent)?, parent)?.attr)
+        } else {
+            None
+        };
+        #[cfg(target_os = "linux")]
+        let (native_ctx, native_mode, native_umask) = if virtual_parent.is_some() {
+            // Like CREATE/MKDIR, unprivileged node types keep native backing
+            // accessible to its host owner, with guest identity stored below.
+            // FIFO/device nodes retain the original checks: Linux does not
+            // support our user-xattr identity record on those native types.
+            (self.private_create_context(ctx), (mode & libc::S_IFMT) | 0o600, 0)
+        } else {
+            (ctx, mode, umask)
+        };
+        #[cfg(target_os = "macos")]
+        let (native_ctx, native_mode, native_umask) = (ctx, mode, umask);
         let (upper_parent, upper_name) = self.upper_parent(ctx, &path)?;
         let created = self.layers[0].mknod(
-            ctx,
+            native_ctx,
             upper_parent,
             &upper_name,
-            mode,
+            native_mode,
             rdev,
-            umask,
+            native_umask,
             extensions,
         );
+        #[cfg(target_os = "linux")]
+        let created = created.and_then(|created| {
+            if let Some(parent_attr) = virtual_parent {
+                let gid = if parent_attr.st_mode & libc::S_ISGID != 0 {
+                    parent_attr.st_gid
+                } else {
+                    ctx.gid
+                };
+                let guest_mode = (created.attr.st_mode & libc::S_IFMT) | (mode & !umask & 0o7777);
+                let mut identity = created.attr;
+                identity.st_uid = ctx.uid;
+                identity.st_gid = gid;
+                identity.st_mode = guest_mode;
+                if let Err(error) =
+                    self.store_private_identity(&self.core.upper_path(&path), &identity)
+                {
+                    // No guest lookup has been published. Do not leave a
+                    // host-owned node behind after essential metadata failed.
+                    let _ = self.layers[0].unlink(native_ctx, upper_parent, &upper_name);
+                    self.layers[0].forget(ctx, created.inode, 1);
+                    return Err(linux_error(error));
+                }
+            }
+            Ok(created)
+        });
         if upper_parent != fuse::ROOT_ID {
             self.layers[0].forget(ctx, upper_parent, 1);
         }
@@ -4723,8 +4817,8 @@ impl FileSystem for OverlayFs {
 
 #[cfg(test)]
 mod tests {
-    use crate::env::fs::shared_open_qualification_enabled;
     use super::super::filesystem::root_context;
+    use crate::env::fs::shared_open_qualification_enabled;
     include!("overlay_correctness_tests.rs");
     #[cfg(target_os = "linux")]
     mod mutation_regressions {
@@ -5010,6 +5104,122 @@ mod tests {
                 std::fs::Permissions::from_mode(0o700),
             )
             .unwrap();
+        }
+
+        #[test]
+        fn private_mknod_preserves_guest_identity_without_host_setid() {
+            use std::os::unix::fs::{FileTypeExt, MetadataExt};
+            let (temp, fs, root) = fixture(Some(b"0:4242:042777"));
+            assert!(fs.virtual_metadata);
+            let guest = Context {
+                uid: 70,
+                gid: 70,
+                pid: 123,
+            };
+            for (name, kind) in [(c"socket", libc::S_IFSOCK), (c"regular", libc::S_IFREG)] {
+                let created = fs
+                    .mknod(
+                        guest,
+                        fuse::ROOT_ID,
+                        name,
+                        kind | 0o666,
+                        0,
+                        0o027,
+                        Extensions::default(),
+                    )
+                    .unwrap();
+                assert_eq!(created.attr.st_uid, 70);
+                assert_eq!(
+                    created.attr.st_gid, 4242,
+                    "inherit the guest parent's setgid group"
+                );
+                assert_eq!(created.attr.st_mode, kind | 0o640);
+                let path = temp
+                    .path()
+                    .join("upper")
+                    .join(OsStr::from_bytes(name.to_bytes()));
+                let native = std::fs::symlink_metadata(&path).unwrap();
+                assert_eq!(native.uid(), unsafe { libc::geteuid() });
+                assert_eq!(native.mode() & 0o7777, 0o600);
+                assert_eq!(native.file_type().is_socket(), kind == libc::S_IFSOCK);
+                let observed = fs.getattr(guest, created.inode, None).unwrap().0;
+                assert_eq!(observed.st_uid, 70);
+                assert_eq!(observed.st_gid, 4242);
+                assert_eq!(observed.st_mode, kind | 0o640);
+                let stranger = Context {
+                    uid: 71,
+                    gid: 71,
+                    ..guest
+                };
+                assert_eq!(
+                    fs.access(stranger, created.inode, libc::W_OK as u32)
+                        .unwrap_err()
+                        .raw_os_error(),
+                    Some(libc::EACCES)
+                );
+                fs.forget(guest, created.inode, 1);
+            }
+            drop(fs);
+            let reopened = parent_cache_fixture(temp.path());
+            for (name, kind) in [(c"socket", libc::S_IFSOCK), (c"regular", libc::S_IFREG)] {
+                let entry = reopened.lookup(root, fuse::ROOT_ID, name).unwrap();
+                assert_eq!(entry.attr.st_uid, 70);
+                assert_eq!(entry.attr.st_gid, 4242);
+                assert_eq!(entry.attr.st_mode, kind | 0o640);
+            }
+        }
+
+        #[test]
+        fn private_socket_catalog_preserves_aliases_modes_and_namespace_secrecy() {
+            use std::os::unix::fs::{FileTypeExt, MetadataExt};
+            let (temp, fs, root) = fixture(Some(b"0:0:040755"));
+            // The general fixture denies some paths, which deliberately disables
+            // every hardlink operation. This case exercises an unrestricted
+            // private image while keeping Core's reserved-name guards.
+            let mut config = fs.snapshot_config.clone();
+            config.access_policy = Default::default();
+            drop(fs);
+            let fs = OverlayFs::new(config.clone(), Arc::new(InodeAllocator::new())).unwrap();
+            fs.init(FsOptions::empty()).unwrap();
+            let guest = Context { uid: 70, gid: 70, pid: 123 };
+            let socket = fs.mknod(guest, fuse::ROOT_ID, c"socket",
+                libc::S_IFSOCK | 0o644, 0, 0, Extensions::default()).unwrap();
+            let alias = fs.link(root, socket.inode, fuse::ROOT_ID, c"alias").unwrap();
+            assert_eq!((alias.attr.st_uid, alias.attr.st_gid), (70, 70));
+            let mut requested = socket.attr;
+            requested.st_uid = 88;
+            requested.st_gid = 99;
+            requested.st_mode = libc::S_IFSOCK | 0o640;
+            fs.setattr(root, socket.inode, requested, None,
+                SetattrValid::UID | SetattrValid::GID | SetattrValid::MODE).unwrap();
+            let observed = fs.getattr(root, alias.inode, None).unwrap().0;
+            assert_eq!((observed.st_uid, observed.st_gid, observed.st_mode),
+                (88, 99, libc::S_IFSOCK | 0o640));
+            let native = std::fs::symlink_metadata(temp.path().join("upper/socket")).unwrap();
+            assert!(native.file_type().is_socket());
+            assert_eq!(native.uid(), unsafe { libc::geteuid() });
+            assert_eq!(native.mode() & 0o7777, 0o600);
+            assert!(pvisor_overlay_core::sys::get_xattr(
+                &temp.path().join("upper/socket"),
+                OsStr::new("user.containers.override_stat"),
+            ).is_err(), "socket identities must not require native user xattrs");
+            let name = c".wh..pvisor-socket-metadata";
+            assert!(fs.lookup(root, fuse::ROOT_ID, name).is_err());
+            assert!(fs.mkdir(root, fuse::ROOT_ID, name, 0o700, 0, Extensions::default()).is_err());
+            let handle = fs.opendir(root, fuse::ROOT_ID, 0).unwrap().0.unwrap();
+            fs.readdir(root, fuse::ROOT_ID, handle, 4096, 0, |entry| {
+                assert!(!entry.name.starts_with(b".wh."));
+                Ok(1)
+            }).unwrap();
+            fs.releasedir(root, fuse::ROOT_ID, 0, handle).unwrap();
+            fs.rename(root, fuse::ROOT_ID, c"alias", fuse::ROOT_ID, c"moved", 0).unwrap();
+            fs.unlink(root, fuse::ROOT_ID, c"socket").unwrap();
+            drop(fs);
+            let reopened = OverlayFs::new(config, Arc::new(InodeAllocator::new())).unwrap();
+            reopened.init(FsOptions::empty()).unwrap();
+            let moved = reopened.lookup(root, fuse::ROOT_ID, c"moved").unwrap();
+            assert_eq!((moved.attr.st_uid, moved.attr.st_gid, moved.attr.st_mode),
+                (88, 99, libc::S_IFSOCK | 0o640));
         }
 
         fn truncate_detached(replace: bool) {
@@ -6952,7 +7162,7 @@ mod tests {
         body: &[u8],
     ) -> (vm_memory::GuestMemoryMmap, vm_memory::GuestAddress, usize) {
         use super::super::descriptor_utils::{
-            create_descriptor_chain, DescriptorType, OwnedDescriptorChain,
+            DescriptorType, OwnedDescriptorChain, create_descriptor_chain,
         };
         use vm_memory::{Bytes, GuestAddress, GuestMemoryMmap};
         let mem = GuestMemoryMmap::from_ranges(&[(GuestAddress(0), 0x10000)]).unwrap();
@@ -7834,7 +8044,7 @@ mod tests {
         use pvisor_overlay_core::backend::{
             BackendAttachment, FileAttr, FileType, ReadOnlyBackend,
         };
-        use std::sync::mpsc::{channel, Receiver, Sender};
+        use std::sync::mpsc::{Receiver, Sender, channel};
         struct Source {
             root: PathBuf,
             entered: Sender<()>,

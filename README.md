@@ -67,7 +67,9 @@ Expect `hello`. The command runs in a separate Linux VM and removes its containe
 after exit. First use downloads the image. Follow the
 [Docker walkthrough](https://deeplink-org.github.io/pvisor/start/first-run/#docker-style)
 to keep a sandbox running, execute another command, inspect it, and clean up.
-This experimental command subset supports neither Docker Engine API nor Compose.
+The experimental command subset includes image-based
+[`pvisor compose`](crates/pvisor-cli/README.md#compose-command-profile-experimental);
+it does not implement the Docker Engine API or the full Compose specification.
 
 #### Agent style stagebox
 

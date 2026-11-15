@@ -61,6 +61,9 @@ VM entry still terminates dependent runners; it is not automatic recovery.
 Container logs remain cumulative across restarts, while startup errors include
 only the current generation's stderr (up to 32 KiB), not earlier workload or
 pool-loss diagnostics.
+Container stop-signal names/numbers use `pvisor-guest::control::parse_signal`,
+shared with the Windows frontend; host signal numbering does not select the
+Linux guest signal.
 Session commands use `pvisor`; `pvisor-daemon` owns cache and sandbox services and its optional
 pool. Replay is a
 Session frontend, not a runtime dependency. Cross-node placement and distributed scheduling
@@ -273,15 +276,16 @@ or sync lock files. These locks exclude the same mutators as execution without
 initializing anything in a project that contains its own stage (for example
 `./experiment`). Execution retains its diagnostic-owner and mutation lock APIs.
 
-Explicit project-scope stage preparation initializes the Session-directory and
+New staged workspace preparation initializes the Session-directory and
 ExecutionSession observation locks while holding the new Execution lease, before
-publishing the Run record. The Execution lease is already created by launch.
-Ordinary spawn without that explicit scope does not gain lock-initialization side
-effects. Stages missing any required lock fail preview closed with an
-existing-lock error; preview never initializes the missing locks. Recreate such a stage
-with the explicit launch contract. Ordinary workspace records keep their
-recorded target contract for execution, but preview still requires existing lock
-inodes. This limitation is not treated as a successful empty preview.
+publishing the Run record. This includes ordinary workspace stages without an
+explicit project scope, so their first preview does not require a prior review.
+The Execution lease is already created by launch. Unstaged Sessions do not
+initialize these observation locks. Existing stages missing any required lock
+still fail preview closed with an existing-lock error; preview never initializes
+or repairs missing locks. Recreate such a stage to obtain the launch-time locks.
+Ordinary workspace records retain their recorded apply target; initializing locks
+does not grant rootstage project authority or change target validation.
 
 Dry-run does not recover pending intent, create ledgers, consume upper/preimages
 or create scope/target directories. Reads can update atime; file/directory contents,
@@ -399,6 +403,17 @@ cancellation and disconnection are handled by the owner. No user-wide Session
 listener or per-command worker is required. Once the Execution has published
 terminal status, owner escalation allows the runtime's bounded RAM/macFUSE
 resource teardown to finish before forced exit and Session completion publication.
+
+For macOS Host staging with macFUSE 5.4.0's FSKit backend, a dead or
+unresponsive filesystem server can leave pending requests, mount inspection
+and unmount commands blocked in kernel I/O
+([upstream #1201](https://github.com/macfuse/macfuse/issues/1201)).
+A process timeout or delivered signal does not prove mount detachment.
+A pending unmount can temporarily hide its entry from the cached mount table,
+so absence there is not cleanup proof
+([upstream #1228](https://github.com/macfuse/macfuse/issues/1228)).
+If teardown leaves completion uncommitted, treat the Session outcome as `Unknown`;
+retained files alone do not authorize apply or drop.
 
 Each running Session publishes `live_control` in its host-only Run record before
 executor entry. It contains the canonical path, device/inode, protocol
@@ -1166,6 +1181,56 @@ records used by the top-level container commands. The CLI owns Docker argument p
 and terminal adapters. This profile does not convert ordinary Sessions or alter
 `spawn`, native Session staging, capture or existing daemon APIs. Linux containers
 can opt into generation-scoped staged binds through the extension below.
+`docker::compose::Project` owns the bounded, image-based Compose loader and
+project lifecycle. The frontend only parses arguments and renders output.
+Project mutations serialize with a private per-project lease; the normal
+catalog and container generation locks remain authoritative. Membership and
+resolved-configuration hashes are published with container records; ordinary
+containers and legacy records have no membership. Project default networks
+likewise record ownership. Names alone never authorize adoption or cleanup.
+User-defined network allocation reserves both container and service DNS names
+atomically. Local Compose build definitions feed the existing isolated builder;
+build-only services use project/service tags.
+The builder stages completed OCI sources on the build workspace's filesystem
+before streaming into the selected pool, allowing an image store on another
+filesystem without cross-device rootfs renames.
+Changed runtime configuration or local image IDs trigger selective replacement. All replacement candidates are
+admitted before stopping old members; pending ownership prevents direct starts
+and lets retry complete interrupted promotion. Named volumes and inherited image
+anonymous mounts survive recreation; container writable uppers do not. Partial
+multi-service failure retains resources rather than attempting rollback.
+The private `compose-volumes.json` catalog records project/key ownership and
+source device/inode identity under
+the container catalog lock. Default down retains volumes; explicit down -v
+only selects current file declarations with matching ownership, refuses foreign
+references and never deletes undeclared historical or external volumes.
+`--remove-orphans` does not enlarge named-volume deletion scope. Resolved Compose
+configuration escapes literal dollars on export to avoid repeated interpolation
+when loaded again. YAML mapping fragments resolve before interpolation and strict
+field validation, retaining explicit-key and merge-sequence precedence.
+Compose resolves command/entrypoint null, empty and argument-list overrides
+against the pinned image at admission, then passes the complete argv through the
+existing Create override path; ordinary `run` semantics are unchanged. Empty
+effective executables fail before project network/volume creation.
+Container
+admission rechecks managed mount sources under the same lock, preventing a
+volume resolved before concurrent deletion from publishing a stale reference.
+Compose owner health checks retain generation-fenced private observations and
+execute tracked guest processes with timeout/cancellation cleanup. CLI readiness
+waits consume those observations rather than spawning probe-only frontends.
+Short dependencies and `service_started` only order process startup; a process
+that has already exited does not block its dependent. Health and successful
+completion conditions still gate downstream start on current observations.
+`--wait` separately checks running/healthy/completed readiness. Health state alone
+never restarts or stops a workload. Compose `start` reports an already-observed
+nonzero exit as failure, without waiting for later workload exits.
+Single-file binds use private single-inode hard-link projections, not parent
+directory shares or file copies. They require link permission and the store's
+filesystem; read-only VMM adapters deny guest mutation even after remount.
+Their internal empty mountpoint directories can be reused across cold launches
+of the same container; symlinks, files and nonempty directories fail bootstrap.
+See the [Compose command profile](../pvisor-cli/README.md#compose-command-profile-experimental)
+for supported fields, naming, environment resolution, orphan handling and limits.
 `Store::pull_with_progress` and `create_with_progress` emit synchronous OCI
 preparation observations for frontend rendering; existing `pull`/`create` callers
 remain silent. Download counts use received compressed bytes, and layer readiness
@@ -2427,3 +2492,59 @@ docker::tests::managed_shared_pool_acceptance_is_independent_of_compression`)
 also uses this runner. These checks start no VM; they do not exercise Linux reattachment or FUSE.
 Use the standard runner when it is installed, and validate Linux-specific
 `shared_backing_` tests separately before any real workload experiment.
+### Existing immutable OCI pool objects
+
+Filesystem object publication detects an existing regular object before writing
+a temporary duplicate. It preserves create-if-absent conflicts, syncs the existing
+file and its parent directory, and leaves publisher content verification in place.
+Missing objects retain atomic no-clobber publication; concurrent losers still
+validate the winning bytes. Corrupt objects are rejected, never silently repaired.
+This reduces duplicate writes, not the number of durability barriers.
+
+### Bounded image publication experiments
+
+The private diagnostic control `PVISOR_IMAGE_PUBLISH_WORKERS=1..8` limits
+immutable content upload workers per image publication. Unset retains eight.
+Invalid values fail publication; the setting is not a process-wide or host-wide
+I/O limit. Concurrent images each have their own worker bound. All workers are
+joined before metadata/COMMIT/HEAD publication, and content verification,
+no-clobber writes and durability barriers remain unchanged. This control does
+not change extraction or the number of concurrent image imports.
+
+### Experimental batched local content directory barriers
+
+`PVISOR_IMAGE_BATCH_DIRECTORY_SYNC=1` coalesces directory barriers for local
+Pool content uploads only. Every new or reused object still receives a file
+sync and publisher digest verification. Each publication owns its directory
+set, joins all upload workers, and syncs unique directories child-first, including
+ancestors up to the pool parent, before writing metadata/COMMIT/HEAD. A failed
+barrier aborts publication; no destructor commits. Unreachable objects may remain
+and retries verify them. Ordinary filesystem/S3 publication and metadata writes
+retain their original barriers. Default is unchanged. This does not claim power
+loss safety from process-interruption tests alone; host crash validation remains
+a separate requirement before enabling the optimization by default.
+
+Import benchmarks measure OCI preparation through publication, not VM boot or
+replay completion. Report these phases separately; import timing improvements
+do not establish equivalent improvements in end-to-end startup latency.
+
+### Shared-pool disconnect fairness
+
+Physical-pool candidate retirement uses serialized cleanup passes with at most
+256 candidates under the shared pool lock per batch. Live page and statistics
+requests can run between batches; the five-second RPC deadline is unchanged.
+Actual shared references remain pinned until peer-exit proof, as before.
+
+### Physical-pool publication backpressure candidate
+
+Duplicate-page publication is optional: when the shared owner lock is busy,
+return a complete rejection before changing slots or references. The caller
+keeps the original page and the existing session remains valid. Required
+restore/release operations and the five-second absolute RPC deadline are
+unchanged. Transport failure still terminates a dependent runner.
+
+Slow publication/owner-lock diagnostics and RPC error opcode/byte counters
+identify contention without logging page contents. This is a targeted candidate
+for pressure qualification, not evidence that the 80-VM deadline failure is
+resolved. A protocol test holds the owner lock and checks that rejection leaves
+an existing shared reference restorable and releasable.

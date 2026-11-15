@@ -12,7 +12,7 @@ use std::os::unix::io::AsRawFd;
 #[cfg(feature = "blk")]
 use imago::io_buffers::{IoVector, IoVectorMut};
 #[cfg(all(feature = "blk", windows))]
-use imago::{FormatReadPlanStep, Mapping, StorageExt};
+use imago::{Mapping, StorageExt};
 use vm_memory::VolatileSlice;
 
 #[cfg(unix)]
@@ -527,13 +527,25 @@ impl DiskProperties {
         }
 
         let file = self.file.lock().unwrap();
-        let plan = file.plan_read(offset, full_length)?;
-        if plan
-            .steps()
-            .iter()
-            .any(|step| !planned_read_step_supported(step))
-        {
-            return Ok(None);
+        // Resolve the complete range before touching guest buffers: a special
+        // format mapping must fall back without partially overwriting output.
+        let mut steps = Vec::new();
+        let mut image_offset = offset;
+        let mut remaining_len = full_length;
+        while remaining_len > 0 {
+            let (mapping, mapped_len) = file.get_mapping_sync(image_offset, remaining_len)?;
+            let len = if matches!(mapping, Mapping::Eof { .. }) {
+                remaining_len
+            } else {
+                std::cmp::min(mapped_len, remaining_len)
+            };
+            if len == 0 || !matches!(mapping, Mapping::Raw { .. } | Mapping::Zero { .. } | Mapping::Eof { .. }) {
+                return Ok(None);
+            }
+            steps.push((mapping, len));
+            image_offset = image_offset.checked_add(len)
+                .ok_or_else(|| Error::new(ErrorKind::InvalidData, "read mapping overflow"))?;
+            remaining_len -= len;
         }
 
         let ptr_guards = bufs
@@ -553,22 +565,19 @@ impl DiskProperties {
             .collect::<Vec<_>>();
         let mut remaining = IoVectorMut::from(buffers);
 
-        for step in plan.steps() {
-            let Some(len) = planned_read_step_len(step) else {
-                return Ok(None);
-            };
+        for (step, len) in steps {
             let (mut chunk, rest) = remaining.split_at(len);
             remaining = rest;
 
             match step {
-                FormatReadPlanStep::Raw {
+                Mapping::Raw {
                     storage,
                     offset: storage_offset,
                     ..
                 } => self
                     .windows_formatted_io_runtime
-                    .block_on(storage.readv(chunk, *storage_offset))?,
-                FormatReadPlanStep::Zero { .. } | FormatReadPlanStep::Eof { .. } => {
+                    .block_on(storage.readv(chunk, storage_offset))?,
+                Mapping::Zero { .. } | Mapping::Eof { .. } => {
                     chunk.fill(0);
                 }
                 _ => return Ok(None),
@@ -662,26 +671,6 @@ fn volatile_slices_len(bufs: &[VolatileSlice]) -> Result<u64> {
             .checked_add(slice.len() as u64)
             .ok_or_else(|| Error::new(ErrorKind::InvalidData, "volatile slice length overflow"))
     })
-}
-
-#[cfg(all(feature = "blk", windows))]
-fn planned_read_step_supported(step: &FormatReadPlanStep<'_, Box<dyn imago::DynStorage>>) -> bool {
-    matches!(
-        step,
-        FormatReadPlanStep::Raw { .. }
-            | FormatReadPlanStep::Zero { .. }
-            | FormatReadPlanStep::Eof { .. }
-    )
-}
-
-#[cfg(all(feature = "blk", windows))]
-fn planned_read_step_len(step: &FormatReadPlanStep<'_, Box<dyn imago::DynStorage>>) -> Option<u64> {
-    match step {
-        FormatReadPlanStep::Raw { len, .. }
-        | FormatReadPlanStep::Zero { len, .. }
-        | FormatReadPlanStep::Eof { len, .. } => Some(*len),
-        _ => None,
-    }
 }
 
 //--------------------------------------------------------------------------------------------------

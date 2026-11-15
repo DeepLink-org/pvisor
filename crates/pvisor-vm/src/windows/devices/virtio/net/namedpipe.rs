@@ -4,7 +4,7 @@ use std::io;
 use std::os::windows::ffi::OsStrExt;
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
 use std::ptr;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Condvar};
 use std::thread::{self, JoinHandle};
 
 use crate::utils::event::{EventSource, EventToken};
@@ -21,7 +21,7 @@ use windows_sys::Win32::Storage::FileSystem::{
 use windows_sys::Win32::System::Pipes::{
     SetNamedPipeHandleState, WaitNamedPipeW, PIPE_READMODE_MESSAGE, PIPE_WAIT,
 };
-use windows_sys::Win32::System::Threading::{CreateEventW, SetEvent, WaitForMultipleObjects};
+use windows_sys::Win32::System::Threading::{CreateEventW, SetEvent, WaitForMultipleObjects, WaitForSingleObject};
 use windows_sys::Win32::System::IO::{
     CancelIoEx, CancelSynchronousIo, GetOverlappedResult, OVERLAPPED,
 };
@@ -35,8 +35,10 @@ const PIPE_CONNECT_TIMEOUT_MS: u32 = 5000;
 const PIPE_BUSY_RETRIES: usize = 10;
 
 pub struct NamedPipe {
+    framed: bool,
     handle: Arc<OwnedHandle>,
     rx_queue: Arc<Mutex<VecDeque<Vec<u8>>>>,
+    rx_space: Arc<Condvar>,
     rx_error: Arc<Mutex<Option<io::Error>>>,
     rx_event: Arc<EventFd>,
     stop_event: Arc<OwnedHandle>,
@@ -46,9 +48,17 @@ pub struct NamedPipe {
 impl NamedPipe {
     pub fn open(name: String) -> Result<Self, ConnectError> {
         let handle = open_message_pipe(&name).map_err(ConnectError::CreateSocket)?;
+        Self::with_handle(handle, false)
+    }
+    pub(crate) fn from_stream(file: std::fs::File) -> Result<Self, ConnectError> {
+        Self::with_handle(file.into(), true)
+    }
+    fn with_handle(handle: OwnedHandle, framed: bool) -> Result<Self, ConnectError> {
         let pipe = Self {
+            framed,
             handle: Arc::new(handle),
             rx_queue: Arc::new(Mutex::new(VecDeque::new())),
+            rx_space: Arc::new(Condvar::new()),
             rx_error: Arc::new(Mutex::new(None)),
             rx_event: Arc::new(EventFd::new(EFD_NONBLOCK).map_err(ConnectError::CreateSocket)?),
             stop_event: Arc::new(create_event().map_err(ConnectError::CreateSocket)?),
@@ -63,13 +73,15 @@ impl NamedPipe {
     fn spawn_reader(&mut self) {
         let handle = Arc::clone(&self.handle);
         let rx_queue = Arc::clone(&self.rx_queue);
+        let rx_space = Arc::clone(&self.rx_space);
         let rx_error = Arc::clone(&self.rx_error);
         let rx_event = Arc::clone(&self.rx_event);
         let stop_event = Arc::clone(&self.stop_event);
+        let framed = self.framed;
 
         let reader = thread::Builder::new()
             .name("virtio-net named-pipe reader".to_string())
-            .spawn(move || read_pipe_frames(handle, rx_queue, rx_error, rx_event, stop_event))
+            .spawn(move || read_pipe_frames(handle, rx_queue, rx_space, rx_error, rx_event, stop_event, framed))
             .expect("failed to spawn virtio-net named-pipe reader");
         self.reader.replace(reader);
     }
@@ -80,6 +92,7 @@ impl NetBackend for NamedPipe {
         let frame = {
             let mut rx_queue = self.rx_queue.lock().unwrap();
             let frame = rx_queue.pop_front();
+            self.rx_space.notify_one();
             if rx_queue.is_empty() {
                 if let Err(err) = self.rx_event.read() {
                     if err.kind() != io::ErrorKind::WouldBlock {
@@ -121,7 +134,13 @@ impl NetBackend for NamedPipe {
             return Err(WriteError::NothingWritten);
         }
 
-        let frame = &buf[hdr_len..];
+        let payload = &buf[hdr_len..];
+        let mut encoded = Vec::new();
+        let frame = if self.framed {
+            encoded.extend_from_slice(&(payload.len() as u32).to_be_bytes());
+            encoded.extend_from_slice(payload);
+            encoded.as_slice()
+        } else { payload };
         log::debug!("virtio-net named-pipe writing frame: bytes={}", frame.len());
         let bytes_written = overlapped_write(self.handle.as_raw_handle() as HANDLE, frame)
             .map_err(|err| {
@@ -161,6 +180,7 @@ impl Drop for NamedPipe {
         // also ask the kernel to cancel any still-pending operation before joining the thread.
         let _ = unsafe { CancelIoEx(self.handle.as_raw_handle() as HANDLE, ptr::null()) };
         let _ = unsafe { SetEvent(self.stop_event.as_raw_handle() as HANDLE) };
+        self.rx_space.notify_all();
         if let Some(reader) = self.reader.take() {
             let _ = unsafe { CancelSynchronousIo(reader.as_raw_handle() as HANDLE) };
             let _ = reader.join();
@@ -222,11 +242,14 @@ fn open_message_pipe(name: &str) -> io::Result<OwnedHandle> {
 fn read_pipe_frames(
     handle: Arc<OwnedHandle>,
     rx_queue: Arc<Mutex<VecDeque<Vec<u8>>>>,
+    rx_space: Arc<Condvar>,
     rx_error: Arc<Mutex<Option<io::Error>>>,
     rx_event: Arc<EventFd>,
     stop_event: Arc<OwnedHandle>,
+    framed: bool,
 ) {
     let max_frame_len = MAX_BUFFER_SIZE - vnet_hdr_len();
+    let mut pending = Vec::new();
 
     loop {
         let mut frame = vec![0u8; max_frame_len];
@@ -238,7 +261,24 @@ fn read_pipe_frames(
             Ok(Some(0)) => continue,
             Ok(Some(bytes_read)) => {
                 frame.truncate(bytes_read as usize);
-                rx_queue.lock().unwrap().push_back(frame);
+                if framed {
+                    pending.extend_from_slice(&frame);
+                    let mut offset = 0;
+                    while pending.len() - offset >= 4 {
+                        let length = u32::from_be_bytes(pending[offset..offset + 4].try_into().unwrap()) as usize;
+                        if !(14..=max_frame_len).contains(&length) {
+                            *rx_error.lock().unwrap() = Some(io::Error::new(io::ErrorKind::InvalidData, "invalid Ethernet stream length"));
+                            wake_rx_event(&rx_event);
+                            return;
+                        }
+                        if pending.len() - offset < length + 4 { break; }
+                        if !enqueue_frame(&rx_queue, &rx_space, &stop_event, &rx_event, pending[offset + 4..offset + length + 4].to_vec()) { return; }
+                        offset += length + 4;
+                    }
+                    pending.drain(..offset);
+                } else {
+                    if !enqueue_frame(&rx_queue, &rx_space, &stop_event, &rx_event, frame) { return; }
+                }
                 wake_rx_event(&rx_event);
                 continue;
             }
@@ -261,6 +301,19 @@ fn read_pipe_frames(
             }
         }
     }
+}
+
+fn enqueue_frame(queue: &Mutex<VecDeque<Vec<u8>>>, space: &Condvar, stop: &OwnedHandle, event: &EventFd, frame: Vec<u8>) -> bool {
+    let mut queue = queue.lock().unwrap();
+    while queue.len() >= 256 {
+        if unsafe { WaitForSingleObject(stop.as_raw_handle().cast(), 0) } == WAIT_OBJECT_0 { return false; }
+        queue = space.wait_timeout(queue, std::time::Duration::from_millis(20)).unwrap().0;
+    }
+    let was_empty = queue.is_empty();
+    queue.push_back(frame);
+    drop(queue);
+    if was_empty { wake_rx_event(event); }
+    true
 }
 
 fn overlapped_read_cancelable(
@@ -446,6 +499,57 @@ mod tests {
     };
 
     use super::*;
+
+    fn byte_pipe_pair() -> (std::fs::File, NamedPipe) {
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows_sys::Win32::System::Pipes::PIPE_TYPE_BYTE;
+        let name = unique_pipe_name();
+        let handle = unsafe { CreateNamedPipeW(wide_null(&name).as_ptr(), PIPE_ACCESS_DUPLEX,
+            PIPE_TYPE_BYTE | PIPE_WAIT, 1, 65536, 65536, 0, ptr::null()) };
+        assert_ne!(handle, INVALID_HANDLE_VALUE);
+        let server = unsafe { std::fs::File::from_raw_handle(handle.cast()) };
+        let client = std::fs::OpenOptions::new().read(true).write(true)
+            .custom_flags(FILE_FLAG_OVERLAPPED).open(&name).unwrap();
+        let connected = unsafe { ConnectNamedPipe(handle, ptr::null_mut()) };
+        assert!(connected != 0 || io::Error::last_os_error().raw_os_error() == Some(ERROR_PIPE_CONNECTED as i32));
+        (server, NamedPipe::from_stream(client).unwrap())
+    }
+
+    #[test]
+    fn byte_stream_preserves_split_headers_and_batches_and_bounds_idle_receive() {
+        use std::io::{Read, Write};
+        let (mut host, mut backend) = byte_pipe_pair();
+        let frame = vec![42; 14];
+        let mut encoded = (frame.len() as u32).to_be_bytes().to_vec();
+        encoded.extend_from_slice(&frame);
+        host.write_all(&encoded[..2]).unwrap();
+        host.write_all(&encoded[2..]).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while backend.rx_queue.lock().unwrap().is_empty() && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(1));
+        }
+        let mut buffer = vec![0; MAX_BUFFER_SIZE];
+        let length = backend.read_frame(&mut buffer).unwrap();
+        assert_eq!(&buffer[vnet_hdr_len()..length], &frame);
+
+        let mut transmitted = vec![0; vnet_hdr_len()];
+        transmitted.extend_from_slice(&frame);
+        backend.write_frame(vnet_hdr_len(), &mut transmitted).unwrap();
+        let mut received = vec![0; encoded.len()];
+        host.read_exact(&mut received).unwrap();
+        assert_eq!(received, encoded);
+
+        host.write_all(&encoded.repeat(300)).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while backend.rx_queue.lock().unwrap().len() < 256 && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(1));
+        }
+        assert_eq!(backend.rx_queue.lock().unwrap().len(), 256);
+        let (done, finished) = mpsc::channel();
+        let worker = thread::spawn(move || { drop(backend); done.send(()).unwrap(); });
+        finished.recv_timeout(Duration::from_secs(2)).unwrap();
+        worker.join().unwrap();
+    }
 
     #[test]
     fn named_pipe_backend_exchanges_frames() {

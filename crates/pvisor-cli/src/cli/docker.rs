@@ -11,6 +11,7 @@ use std::time::Duration;
 
 mod build;
 mod builder;
+mod compose;
 mod network;
 mod progress;
 
@@ -36,6 +37,8 @@ pub(super) enum DockerCommand {
     Build(build::Build),
     /// Manage local build cache.
     Builder(builder::BuilderArgs),
+    /// Manage image-based Compose projects without a Docker daemon.
+    Compose(compose::ComposeArgs),
     /// Create and run a new container in its own VM.
     #[command(disable_help_flag = true)]
     Run(Box<Run>),
@@ -267,61 +270,11 @@ pub(super) struct Exec {
     invocation: Vec<String>,
 }
 
-pub(super) fn memory(value: &str) -> Result<u32, String> {
-    let split = value
-        .find(|c: char| !c.is_ascii_digit())
-        .unwrap_or(value.len());
-    let number: u64 = value[..split].parse().map_err(|_| "invalid memory size")?;
-    let scale = match value[split..].to_ascii_lowercase().as_str() {
-        "" | "b" => 1,
-        "k" | "kb" => 1024,
-        "m" | "mb" => 1024 * 1024,
-        "g" | "gb" => 1024 * 1024 * 1024,
-        _ => return Err("unsupported memory suffix".into()),
-    };
-    let bytes = number.checked_mul(scale).ok_or("memory size overflow")?;
-    let mib = bytes.div_ceil(1024 * 1024);
-    if mib < 16 {
-        return Err("guest memory must be at least 16 MiB".into());
-    }
-    u32::try_from(mib).map_err(|_| "memory size overflow".into())
-}
+pub(super) use crate::container_args::environment;
+use crate::container_args::{PsRow, batch, ps_header, ps_row};
 
-pub(super) fn environment(
-    values: &[String],
-    files: &[PathBuf],
-) -> anyhow::Result<(BTreeMap<String, String>, Vec<String>)> {
-    let mut env = BTreeMap::new();
-    let mut unset = std::collections::BTreeSet::new();
-    let mut entries = Vec::new();
-    for file in files {
-        for line in std::fs::read_to_string(file)?.lines() {
-            let line = line.trim_start();
-            if !line.is_empty() && !line.starts_with('#') {
-                entries.push(line.to_owned());
-            }
-        }
-    }
-    entries.extend_from_slice(values);
-    for entry in entries {
-        let (key, value) = match entry.split_once('=') {
-            Some((key, value)) => (key, Some(value.to_owned())),
-            None => (entry.as_str(), std::env::var(&entry).ok()),
-        };
-        ensure!(
-            !key.is_empty() && !key.contains('\0'),
-            "invalid environment name"
-        );
-        if let Some(value) = value {
-            ensure!(!value.contains('\0'), "environment contains NUL");
-            env.insert(key.into(), value);
-            unset.remove(key);
-        } else {
-            env.remove(key);
-            unset.insert(key.to_owned());
-        }
-    }
-    Ok((env, unset.into_iter().collect()))
+pub(super) fn memory(value: &str) -> Result<u32, String> {
+    docker::parse_memory_limit(value).map_err(|error| error.to_string())
 }
 
 fn volume(value: &str, store: &Store) -> anyhow::Result<docker::Mount> {
@@ -356,7 +309,7 @@ fn volume(value: &str, store: &Store) -> anyhow::Result<docker::Mount> {
         Some(source) if source.starts_with('/') || source.starts_with('.') => {
             let path = PathBuf::from(source)
                 .canonicalize()
-                .context("bind source must be an existing directory")?;
+                .context("bind source must be an existing directory or ordinary file")?;
             (path, None)
         }
         Some(name) => (store.volume(name)?, Some(name.into())),
@@ -375,25 +328,7 @@ fn volume(value: &str, store: &Store) -> anyhow::Result<docker::Mount> {
 }
 
 fn port(value: &str) -> anyhow::Result<docker::Port> {
-    let value = value.strip_suffix("/tcp").unwrap_or(value);
-    ensure!(
-        !value.contains('/'),
-        "only TCP port publishing is supported"
-    );
-    let parts: Vec<_> = value.split(':').collect();
-    let (address, host, guest) = match parts.as_slice() {
-        [guest] => ("0.0.0.0", "0", *guest),
-        [host, guest] => ("0.0.0.0", if host.is_empty() { "0" } else { host }, *guest),
-        [address, host, guest] => (*address, if host.is_empty() { "0" } else { host }, *guest),
-        _ => bail!("invalid port mapping"),
-    };
-    let guest = guest.parse()?;
-    ensure!(guest != 0, "guest port must be nonzero");
-    Ok(docker::Port {
-        address: address.parse()?,
-        host: host.parse()?,
-        guest,
-    })
+    docker::parse_port_mapping(value)
 }
 
 pub(super) fn run(command: DockerCommand) -> anyhow::Result<i32> {
@@ -425,10 +360,14 @@ pub(super) fn run(command: DockerCommand) -> anyhow::Result<i32> {
     if let DockerCommand::Builder(args) = command {
         return builder::run(args);
     }
+    if let DockerCommand::Compose(args) = command {
+        return compose::run(args);
+    }
     let store = Store::discover()?;
     match command {
         DockerCommand::Build(_)
         | DockerCommand::Builder(_)
+        | DockerCommand::Compose(_)
         | DockerCommand::Network(_)
         | DockerCommand::Container { .. }
         | DockerCommand::Image { .. } => {
@@ -484,39 +423,30 @@ pub(super) fn run(command: DockerCommand) -> anyhow::Result<i32> {
             });
         }
         DockerCommand::Ps(args) => {
-            if !args.quiet {
-                println!("CONTAINER ID\tIMAGE\tCOMMAND\tSTATUS\tPORTS\tNAMES");
-            }
+            let mut output = io::stdout().lock();
+            ps_header(&mut output, args.quiet)?;
             for instance in store.instances(args.all)? {
-                let id = if args.no_trunc {
-                    &instance.id
-                } else {
-                    &instance.id[..12]
-                };
-                if args.quiet {
-                    println!("{id}");
-                } else {
-                    let status = if instance.state == "exited" {
-                        format!("Exited ({})", instance.exit_code.unwrap_or(125))
-                    } else if instance.state == "running" {
-                        "Up".into()
-                    } else {
-                        instance.state.clone()
-                    };
-                    let ports = instance
-                        .config
-                        .ports
-                        .iter()
-                        .map(|p| format!("{}:{}->{}/tcp", p.address, p.host, p.guest))
-                        .collect::<Vec<_>>()
-                        .join(", ");
-                    println!(
-                        "{id}\t{}\t{:?}\t{status}\t{ports}\t{}",
-                        instance.image.reference,
-                        instance.argv.join(" "),
-                        instance.name
-                    );
-                }
+                let ports = instance
+                    .config
+                    .ports
+                    .iter()
+                    .map(|p| format!("{}:{}->{}/tcp", p.address, p.host, p.guest))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                ps_row(
+                    &mut output,
+                    PsRow {
+                        id: &instance.id,
+                        image: &instance.image.reference,
+                        command: &instance.argv,
+                        state: &instance.state,
+                        exit_code: instance.exit_code,
+                        ports: &ports,
+                        name: &instance.name,
+                    },
+                    args.quiet,
+                    args.no_trunc,
+                )?;
             }
         }
         DockerCommand::Run(args) => {
@@ -824,20 +754,6 @@ impl Drop for Terminal {
             }
         }
     }
-}
-
-fn batch(
-    values: &[String],
-    mut action: impl FnMut(&str) -> anyhow::Result<()>,
-) -> anyhow::Result<i32> {
-    let mut code = 0;
-    for value in values {
-        if let Err(error) = action(value) {
-            eprintln!("Error: {error:#}");
-            code = 1;
-        }
-    }
-    Ok(code)
 }
 
 fn split_tag(reference: &str) -> (&str, &str) {

@@ -34,6 +34,7 @@ class ApplicationBoundaryTests(unittest.TestCase):
                 "pvisor-core",
                 "pvisor",
                 "pvisor-cli",
+                "pvisor-containers",
                 "pvisor-daemon",
                 "pvisor-shim",
                 "pvisor-replay",

@@ -7,6 +7,26 @@ use std::ffi::OsStr;
 use std::io::Read;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::MetadataExt;
+// Private tuning control for bounded publication experiments; default unchanged.
+fn publication_workers(value: Option<&std::ffi::OsStr>) -> anyhow::Result<usize> {
+    let Some(value) = value else {
+        return Ok(8);
+    };
+    let value = value
+        .to_str()
+        .context("PVISOR_IMAGE_PUBLISH_WORKERS must be UTF-8")?;
+    ensure!(
+        !value.is_empty() && value.bytes().all(|c| c.is_ascii_digit()),
+        "PVISOR_IMAGE_PUBLISH_WORKERS must be an integer in 1..=8"
+    );
+    let workers: usize = value.parse()?;
+    ensure!(
+        (1..=8).contains(&workers),
+        "PVISOR_IMAGE_PUBLISH_WORKERS must be in 1..=8"
+    );
+    Ok(workers)
+}
+
 impl PortableCache {
     pub(in crate::image::cache) fn publish_image(
         &self,
@@ -66,6 +86,8 @@ impl PortableCache {
         observed: Option<StoredObject>,
     ) -> anyhow::Result<(Response, Vec<u8>)> {
         ensure!(!self.read_only, "cannot publish to a read-only cache");
+        let worker_limit =
+            publication_workers(std::env::var_os("PVISOR_IMAGE_PUBLISH_WORKERS").as_deref())?;
         let platform = platform(architecture)?;
         crate::image::oci::digest_hex(&image.digest)?;
         let key = image_key(canonical);
@@ -362,14 +384,30 @@ impl PortableCache {
         }))?)?;
         // Bound upload workers; all staged data is immutable and source bytes
         // have already been verified. Reused packs are referenced, never rewritten.
+        let batch_directories = matches!(&self.storage, Storage::Pool(_))
+            && std::env::var_os("PVISOR_IMAGE_BATCH_DIRECTORY_SYNC").as_deref()
+                == Some(OsStr::new("1"));
+        let directories = std::sync::Mutex::new(std::collections::BTreeSet::new());
         let uploads = uploads.into_iter().collect::<Vec<_>>();
+        let publication_started = batch_directories.then(std::time::Instant::now);
         std::thread::scope(|scope| {
-            let workers = (0..uploads.len().min(8))
+            let workers = (0..uploads.len().min(worker_limit))
                 .map(|worker| {
                     let uploads = &uploads;
+                    let directories = &directories;
                     scope.spawn(move || -> anyhow::Result<()> {
-                        for (key, path) in uploads.iter().skip(worker).step_by(8) {
-                            self.put_verified(key, std::fs::read(path)?)?;
+                        for (key, path) in uploads.iter().skip(worker).step_by(worker_limit) {
+                            let bytes = std::fs::read(path)?;
+                            if batch_directories {
+                                let Storage::Pool(pool) = &self.storage else { unreachable!() };
+                                let expected_len = bytes.len();
+                                let expected_digest = hash(&bytes);
+                                pool.put_deferred(key, &bytes, directories)?;
+                                drop(bytes);
+                                let stored = self.storage.get(key)?.context("published object is missing")?;
+                                ensure!(stored.len() == expected_len && hash(&stored) == expected_digest,
+                                    "immutable cache object digest mismatch; repair requires administrative action");
+                            } else { self.put_verified(key, bytes)?; }
                         }
                         Ok(())
                     })
@@ -382,6 +420,25 @@ impl PortableCache {
             }
             Ok::<_, anyhow::Error>(())
         })?;
+        if batch_directories {
+            let upload_seconds = publication_started.unwrap().elapsed().as_secs_f64();
+            let sync_started = std::time::Instant::now();
+            let count = super::super::storage::flush_object_directories(&directories)?;
+            if std::env::var_os("PVISOR_IMAGE_PUBLICATION_PROFILE").as_deref()
+                == Some(OsStr::new("1"))
+            {
+                crate::diagnostics::diagnostic(format_args!(
+                    "pvisor-image-publication {}",
+                    serde_json::json!({
+                        "content_objects": uploads.len(), "directory_syncs": count,
+                        "upload_seconds": upload_seconds,
+                        "directory_sync_seconds": sync_started.elapsed().as_secs_f64(),
+                        "workers": worker_limit,
+                        "manifest_digest": image.digest,
+                    })
+                ));
+            }
+        }
         for (name, bytes) in metadata {
             self.put_verified(&format!("{}/{name}", handle.prefix()), bytes)?;
         }
@@ -460,4 +517,31 @@ fn provenance(
         })
         .collect::<anyhow::Result<Vec<_>>>()?;
     Ok((Some(config), Some(layers)))
+}
+
+#[cfg(test)]
+mod worker_tests {
+    use super::*;
+    #[test]
+    fn publication_worker_limit_is_bounded_and_defaults_to_eight() {
+        assert_eq!(publication_workers(None).unwrap(), 8);
+        for count in 1..=8 {
+            assert_eq!(
+                publication_workers(Some(OsStr::new(&count.to_string()))).unwrap(),
+                count
+            );
+        }
+        for invalid in [
+            "",
+            "0",
+            "9",
+            "-1",
+            "+2",
+            " 4",
+            "1.0",
+            "999999999999999999999999",
+        ] {
+            assert!(publication_workers(Some(OsStr::new(invalid))).is_err());
+        }
+    }
 }

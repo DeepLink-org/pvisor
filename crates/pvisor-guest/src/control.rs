@@ -7,8 +7,48 @@ use std::path::PathBuf;
 
 /// Explicit virtio-vsock port, separate from workload networking.
 pub const CONTROL_PORT: u32 = 1025;
+/// Named duplex console port for noninteractive command requests.
+pub const SERIAL_COMMAND_PORT: &str = "pvisor-command";
+/// Independent named console port for workload signals.
+pub const SERIAL_SIGNAL_PORT: &str = "pvisor-signal";
+/// Maximum simultaneously admitted operations on each host-only serial port.
+pub const SERIAL_MAX_REQUESTS: usize = 32;
 /// Maximum encoded control frame, including streamed output frames.
 pub const MAX_FRAME: usize = 1024 * 1024;
+
+/// Parse a Linux workload stop signal, independent of the host OS. Accepts
+/// numbers 1..=64 and TERM, KILL, INT, QUIT, HUP, USR1, USR2 or WINCH, optionally
+/// prefixed with SIG. The legacy empty spelling selects TERM. Other values fail
+/// without signalling a process.
+pub fn parse_signal(value: &str) -> io::Result<i32> {
+    let invalid = || {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("unsupported image stop signal {value}"),
+        )
+    };
+    if let Ok(number) = value.parse::<i32>() {
+        return if (1..=64).contains(&number) {
+            Ok(number)
+        } else {
+            Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "invalid signal",
+            ))
+        };
+    }
+    Ok(match value.strip_prefix("SIG").unwrap_or(value) {
+        "TERM" | "" => 15,
+        "KILL" => 9,
+        "INT" => 2,
+        "QUIT" => 3,
+        "HUP" => 1,
+        "USR1" => 10,
+        "USR2" => 12,
+        "WINCH" => 28,
+        _ => return Err(invalid()),
+    })
+}
 
 /// One operation on the current VM generation. Requests are length-bounded.
 #[derive(Debug, Serialize, Deserialize)]
@@ -199,6 +239,76 @@ pub enum StdinFrame {
     Eof {},
 }
 
+/// One request on a host-only serial control port. Both ends must use the
+/// matching supervisor protocol. IDs are nonzero and strictly increasing on
+/// each port; replies may interleave across concurrently admitted requests.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SerialRequest {
+    /// Per-port request identity, never a guest PID.
+    pub id: u64,
+    /// Operation admitted by this port's capability profile.
+    pub request: Request,
+}
+
+/// One serial response, attributed to exactly one admitted request.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SerialReply {
+    /// Identity copied from the corresponding SerialRequest.
+    pub id: u64,
+    /// Ordinary supervisor reply; process creation and reaping stay shared.
+    pub reply: Reply,
+}
+
+/// One bounded stdin chunk for an already admitted serial request. It does not
+/// allocate a new request ID. The sender waits for SerialInputAck before sending
+/// the next chunk, so a slow child cannot grow queues or block unrelated calls.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SerialInput {
+    /// Existing request identity.
+    pub input_id: u64,
+    /// Ordinary stdin bytes or explicit EOF; data is limited to 16 KiB.
+    pub input: StdinFrame,
+}
+/// Cancel an attachment that disconnected without explicit stdin EOF. Exec
+/// cleanup uses the existing process registry; main input is closed, not relaunched.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SerialCancel {
+    /// Existing request identity; unknown/completed identities have no effect.
+    pub cancel_id: u64,
+}
+/// Host serial frame. Request IDs increase; input and cancellation refer back
+/// to existing IDs and never change request admission order.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum SerialHostFrame {
+    /// Admit an operation.
+    Request(SerialRequest),
+    /// Deliver stdin.
+    Input(SerialInput),
+    /// Close an abandoned attachment.
+    Cancel(SerialCancel),
+}
+/// Return one stdin credit after forwarding the chunk to the ordinary adapter.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SerialInputAck {
+    /// Request whose next stdin frame may now be sent.
+    pub input_ack: u64,
+}
+/// Guest serial frame. Input credits are transport control, not operation replies.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum SerialGuestFrame {
+    /// Ordinary reply attributed to an operation.
+    Reply(SerialReply),
+    /// Release one stdin credit.
+    InputAck(SerialInputAck),
+}
+
 /// Guest reply. Output chunks are at most 16 KiB before JSON encoding.
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", deny_unknown_fields)]
@@ -275,6 +385,28 @@ pub fn read_frame<T: serde::de::DeserializeOwned>(reader: &mut impl Read) -> io:
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn linux_stop_signals_have_one_host_independent_parser() {
+        for (spelling, expected) in [
+            ("", 15),
+            ("TERM", 15),
+            ("SIGTERM", 15),
+            ("KILL", 9),
+            ("SIGINT", 2),
+            ("QUIT", 3),
+            ("HUP", 1),
+            ("USR1", 10),
+            ("SIGUSR2", 12),
+            ("WINCH", 28),
+            ("1", 1),
+            ("64", 64),
+        ] {
+            assert_eq!(parse_signal(spelling).unwrap(), expected);
+        }
+        for invalid in ["0", "65", "-1", "term", "SIGUNKNOWN", "15x"] {
+            assert!(parse_signal(invalid).is_err(), "{invalid}");
+        }
+    }
     #[test]
     fn frames_reject_oversize_and_unknown_operations() {
         assert!(read_frame::<Request>(&mut &((MAX_FRAME + 1) as u32).to_be_bytes()[..]).is_err());

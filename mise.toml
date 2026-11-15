@@ -26,7 +26,8 @@ target_dir = "{{ get_env(name='CARGO_TARGET_DIR', default=config_root ~ '/target
 # All native tasks and their subprocesses share the selected Rust toolchain.
 CARGO_TARGET_DIR = "{{ [config_root, vars.target_dir] | join_path | absolute }}"
 # Task inspection must also work before the project tools are installed.
-UV_PYTHON = { value = "{% if tools.python is defined %}{{ tools.python.path }}/bin/python3{% else %}python3{% endif %}", tools = true }
+# Standalone Python uses the installation root on Windows, bin/ on Unix.
+UV_PYTHON = { value = "{% if tools.python is defined %}{{ tools.python.path }}{% if os() == 'windows' %}/python.exe{% else %}/bin/python3{% endif %}{% else %}python3{% endif %}", tools = true }
 UV_PYTHON_DOWNLOADS = "never"
 # Windows supplies TEMP; Unix defaults to /tmp. Canonicalize macOS evidence paths
 # too (/var is a symlink to /private/var), while preserving an explicit TMPDIR.
@@ -495,7 +496,7 @@ mise run lint-workflows --
 
 [tasks.lint-api-docs]
 description = "严格验证已迁移 crate 的公开 API 文档"
-run = "RUSTDOCFLAGS='-D warnings' cargo doc --locked --no-deps -p pvisor-vm -p pvisor-overlayfs -p pvisor-journal"
+run = "RUSTDOCFLAGS='-D warnings' cargo doc --locked --no-deps -p pvisor-vm -p pvisor-overlayfs -p pvisor-journal -p pvisor-containers"
 
 [tasks.lint-py]
 description = "Python 静态检查"

@@ -195,6 +195,12 @@ impl Console {
             }
 
             log::trace!("VirtioConsoleControl cmd: {cmd:?}");
+            if cmd.event != control_event::VIRTIO_CONSOLE_DEVICE_READY
+                && cmd.id as usize >= self.ports.len()
+            {
+                log::warn!("Invalid console port {}", cmd.id);
+                continue;
+            }
             match cmd.event {
                 control_event::VIRTIO_CONSOLE_DEVICE_READY => {
                     log::debug!(
@@ -229,14 +235,10 @@ impl Console {
                         self.control.port_name(cmd.id, name)
                     }
 
-                    #[cfg(target_os = "windows")]
-                    {
-                        // The WHP/Linux virtio-console path may report the
-                        // port ready without a later PORT_OPEN event. Start
-                        // data queues once the guest has acknowledged the
-                        // port so early PID 1 handshakes can flow.
-                        ports_to_start.push(cmd.id as usize);
-                    }
+                    // PORT_READY acknowledges device discovery, not an open
+                    // guest endpoint. Linux discards receive buffers while a
+                    // named port is closed. Retain preloaded host bytes until
+                    // PORT_OPEN, matching the Unix console's lifecycle.
                 }
                 control_event::VIRTIO_CONSOLE_PORT_OPEN => {
                     let opened = match cmd.value {

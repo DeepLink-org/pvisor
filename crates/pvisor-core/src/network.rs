@@ -240,13 +240,29 @@ impl NetworkPolicy {
             };
             let mut layers = layers.clone();
             for (_, layer) in &mut layers {
-                layer.allow.push(grant.clone());
+                layer.default_action = Some(NetworkDefaultAction::Deny);
+                layer.allow = vec![grant.clone()];
             }
             let mut fallback = (**fallback).clone();
             match &mut fallback {
-                NetworkCapability::Ambient => {}
-                NetworkCapability::AllowList { rules, .. } => rules.push(grant),
-                NetworkCapability::Policy { allow, .. } => allow.push(grant),
+                NetworkCapability::Ambient => {
+                    fallback = NetworkCapability::AllowList {
+                        hosts: Vec::new(),
+                        rules: vec![grant],
+                    };
+                }
+                NetworkCapability::AllowList { hosts, rules } => {
+                    hosts.clear();
+                    *rules = vec![grant];
+                }
+                NetworkCapability::Policy {
+                    default_action,
+                    allow,
+                    ..
+                } => {
+                    *default_action = NetworkDefaultAction::Deny;
+                    *allow = vec![grant];
+                }
                 NetworkCapability::Deny => {
                     anyhow::bail!("denied network cannot be extended by audit")
                 }

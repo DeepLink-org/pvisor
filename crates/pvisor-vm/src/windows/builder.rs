@@ -22,6 +22,8 @@ pub(crate) struct Builder {
     firmware: Option<PathBuf>,
     shares: BTreeMap<String, Config>,
     implicit_init: bool,
+    ports: Vec<crate::vmm::resources::PortConfig>,
+    port_names: std::collections::BTreeSet<String>,
 }
 fn invalid(message: &str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, message)
@@ -62,7 +64,74 @@ impl Builder {
             firmware: None,
             shares: BTreeMap::new(),
             implicit_init: cfg!(feature = "init-blob"),
+            ports: Vec::new(),
+            port_names: Default::default(),
         })
+    }
+    pub(crate) fn raw_disk(&mut self, path: PathBuf, read_only: bool) -> io::Result<usize> {
+        #[cfg(feature = "blk")]
+        {
+            use crate::devices::virtio::block::{CacheType, ImageType, SyncMode};
+            use crate::vmm::vmm_config::block::BlockDeviceConfig;
+            if !path.is_absolute() || path.to_str().is_none() {
+                return Err(invalid("raw disk requires an absolute UTF-8 path"));
+            }
+            let metadata = std::fs::metadata(&path)?;
+            if !metadata.is_file() || metadata.len() == 0 || metadata.len() % 512 != 0 {
+                return Err(invalid("raw disk must be a nonempty sector-aligned regular file"));
+            }
+            let index = self.resources.block.list.len();
+            if index >= 26 {
+                return Err(invalid("too many raw disks"));
+            }
+            self.resources
+                .add_block_device(BlockDeviceConfig {
+                    block_id: format!("disk-{index}"),
+                    cache_type: CacheType::Writeback,
+                    disk_image_path: path.to_str().unwrap().to_owned(),
+                    disk_image_format: ImageType::Raw,
+                    is_disk_read_only: read_only,
+                    direct_io: false,
+                    sync_mode: SyncMode::Full,
+                })
+                .map_err(|e| io::Error::other(e.to_string()))?;
+            Ok(index)
+        }
+        #[cfg(not(feature = "blk"))]
+        {
+            let _ = (path, read_only);
+            Err(unsupported("raw disk attachment requires the blk feature"))
+        }
+    }
+    fn validate_port(&self, name: &str) -> io::Result<()> {
+        if name.is_empty() || name.len() > 64 || name.contains('\0') || self.port_names.contains(name) {
+            return Err(invalid("invalid or duplicate console port name"));
+        }
+        Ok(())
+    }
+    pub(crate) fn console_file(&mut self, name: String, path: PathBuf) -> io::Result<()> {
+        self.validate_port(&name)?;
+        if !path.is_absolute() || path.to_str().is_none() {
+            return Err(invalid("console output requires an absolute UTF-8 path"));
+        }
+        self.port_names.insert(name.clone());
+        self.ports.push(crate::vmm::resources::PortConfig::NamedOutputFile { name, path });
+        Ok(())
+    }
+    pub(crate) fn console_pipe(&mut self, name: String, path: PathBuf) -> io::Result<()> {
+        self.validate_port(&name)?;
+        let pipe_name = path.to_str().ok_or_else(|| invalid("pipe path must be UTF-8"))?;
+        if !pipe_name.starts_with(r"\\.\pipe\") || pipe_name.len() <= 9
+            || pipe_name.len() > 256 || pipe_name.contains('\0')
+        {
+            return Err(invalid("expected a Windows named pipe path"));
+        }
+        self.port_names.insert(name.clone());
+        self.ports.push(crate::vmm::resources::PortConfig::NamedPipe {
+            name,
+            pipe_name: pipe_name.to_owned(),
+        });
+        Ok(())
     }
     pub(crate) fn set_firmware_path(&mut self, path: PathBuf) -> io::Result<()> {
         if !path.is_absolute() {
@@ -70,6 +139,32 @@ impl Builder {
         }
         self.firmware = Some(crate::firmware_store::canonical_file(&path)?);
         Ok(())
+    }
+    pub(crate) fn network(&mut self, stream: NetworkStream, mac: [u8; 6], options: NetworkOptions) -> io::Result<()> {
+        #[cfg(feature = "net")]
+        {
+            use std::os::windows::io::AsRawHandle;
+            use windows_sys::Win32::Storage::FileSystem::{GetFileType, FILE_TYPE_PIPE};
+            if options.guest_dhcp {
+                return Err(unsupported("WHP uses supervisor static network configuration"));
+            }
+            if mac == [0; 6] || mac[0] & 1 != 0 || !self.resources.net.list.is_empty() {
+                return Err(invalid("network requires one unicast MAC and one attachment"));
+            }
+            if unsafe { GetFileType(stream.inner.as_raw_handle().cast()) } != FILE_TYPE_PIPE {
+                return Err(invalid("Windows network stream must be an owned overlapped byte pipe"));
+            }
+            self.resources.add_network_interface(crate::vmm::vmm_config::net::NetworkInterfaceConfig {
+                iface_id: "net0".into(),
+                backend: crate::devices::virtio::net::device::VirtioNetBackend::Stream(stream.inner),
+                mac, features: 0,
+            }).map_err(|e| io::Error::other(e.to_string()))
+        }
+        #[cfg(not(feature = "net"))]
+        {
+            let _ = (stream, mac, options);
+            Err(unsupported("network attachment requires the net feature"))
+        }
     }
     pub(crate) fn embedded_kernel(
         &mut self,
@@ -211,10 +306,10 @@ impl Builder {
                 shm_size: None,
             });
         }
+        let mut ports = vec![crate::vmm::resources::PortConfig::HostConsole];
+        ports.append(&mut self.ports);
         self.resources.virtio_consoles.push(
-            crate::vmm::resources::VirtioConsoleConfigMode::Explicit(vec![
-                crate::vmm::resources::PortConfig::HostConsole,
-            ]),
+            crate::vmm::resources::VirtioConsoleConfigMode::Explicit(ports),
         );
         let mut events = crate::polly::event_manager::EventManager::new()
             .map_err(|e| io::Error::other(format!("event manager: {e:?}")))?;

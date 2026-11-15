@@ -92,6 +92,10 @@ impl NetWorker {
             VirtioNetBackend::NamedPipe(name) => {
                 Box::new(NamedPipe::open(name)?) as Box<dyn NetBackend + Send>
             }
+            #[cfg(windows)]
+            VirtioNetBackend::Stream(file) => {
+                Box::new(NamedPipe::from_stream(file)?) as Box<dyn NetBackend + Send>
+            }
             VirtioNetBackend::Custom(backend) => backend,
         };
 

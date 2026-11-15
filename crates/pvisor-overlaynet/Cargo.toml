@@ -13,6 +13,8 @@ axum = { workspace = true, features = ["http1", "http2", "tokio"] }
 bytes.workspace = true
 futures-util = { workspace = true, features = ["async-await", "std"] }
 fs2.workspace = true
+tempfile.workspace = true
+socket2 = "0.6"
 libc.workspace = true
 http-body-util.workspace = true
 hyper.workspace = true
@@ -30,6 +32,5 @@ uuid = { workspace = true, features = ["v4"] }
 [dev-dependencies]
 h2.workspace = true
 proptest.workspace = true
-tempfile.workspace = true
 tokio = { workspace = true, features = ["macros", "rt", "test-util"] }
 tower = { version = "0.5", features = ["util"] }

@@ -196,8 +196,31 @@ failures are logged (to the runner diagnostics, i.e.
 
 VM task lifecycle: the runner is spawned detached at `Create` (it hosts the
 VMM for the whole task), waits on a start pipe for `Start`, and exits with
-the guest workload's exit code. The runner holds no end of the start pipe,
-so a shim exit delivers EOF and the runner terminates instead of leaking.
+the guest workload's exit code. Before `Start` the runner holds no end of
+the start pipe, so a shim exit delivers EOF and the runner terminates
+instead of leaking. After `Start` — the write end is consumed — the runner
+arms `PR_SET_PDEATHSIG(SIGTERM)` instead: a shim exit (or crash) delivers
+SIGTERM, whose handler unlinks the task's control and bridge sockets (the
+same cleanup as the runner-exit belt and braces) and exits. Without it a
+crashed shim would orphan the booted VM together with its bridge proxies,
+the pod network namespace they pin and the `/run` sockets. A fork/prctl
+race is closed by re-checking the spawning pid passed in the runner's
+environment: a parent that died before the prctl rejects the start.
+The sandbox holder arms the same `PR_SET_PDEATHSIG(SIGTERM)` (default
+disposition — it owns no task sockets), so a crashed shim also takes down
+the namespace holder instead of leaking the pod's namespaces for days.
+
+`PR_SET_PDEATHSIG` binds to the *thread* that forked the child, not to the
+process. Every internal child (VM runner, sandbox holder, init/exec
+parents) is therefore forked on the dedicated never-exiting
+`pvisor-internal-spawner` thread: forking from a pooled worker thread (for
+example a tokio `spawn_blocking` thread, which idle-exits within seconds)
+tied a healthy runner's death signal to that thread's lifetime — observed
+live as sandboxes dying with exit status 143 exactly when the forking
+pool thread hit its keep-alive, ~11 seconds after creation.
+`tests/internal_spawn_lifetime.rs` reproduces the mechanism (a pdeath
+child forked on a short-lived pool thread dies with the thread; the same
+child forked via the dedicated thread survives it).
 Non-terminal task IO rides the named virtio-console ports
 (`krun-stdin/stdout/stderr`); the guest supervisor waits for them, so
 `CloseIO` EOF and piped stdin reach the workload with runc-compatible
@@ -339,9 +362,16 @@ regression, not a mystery.
   deny-default allowlist is a valid deny-all policy, including during
   live updates. The gate belongs to the sandbox and is unlinked on
   sandbox shutdown, not on individual workload exit/delete, so workload
-  restarts retain their policy. The 3-second gate window only spans the
+  restarts retain their policy; when the shim crashes instead, the holder's
+  parent-death handler performs that unlink so killed policy sandboxes
+  leave no gate residue in `/run`. The 3-second gate window only spans the
   sidecar's Create, which kubelet issues milliseconds after the workload's
-  Start. The gate stays a live channel for the task's lifetime: a runner
+  Start. The boot-time read tolerates torn writes (the sidecar publishes
+  non-atomically): unparseable content is treated as not-yet-arrived and
+  retried for the whole window, and a gate that is still absent or
+  uncompilable at the deadline boots deny-all — an empty allowlist on a
+  real NIC — instead of no network, so the task is never stranded offline.
+  The gate stays a live channel for the task's lifetime: a runner
   thread applies its first read too, covering updates during initial VM setup,
   then hot-swaps the compiled overlaynet policy on every change (a rule set that fails to compile keeps the previous policy and is
   logged). The sidecar's own runtime API can only update nftables inside
@@ -397,6 +427,16 @@ pod namespaces (pause replacement, including shareProcessNamespace pods),
 and containers that join the shared namespaces unless their spec overrides
 them. Pod-level **VM** sandboxes are unsupported and return a clear error;
 per-container VMs use `io.pvisor.executor=vm`.
+
+containerd's startup restore probes a `sandboxer = "shim"` runtime's Task
+service with the *sandbox id* before it trusts the shim again; the Task
+service therefore also answers `State` and `Connect` for that id by
+reporting the holder process (running or stopped, mirroring how runc's
+pod-sandbox mode reports its pause task). Before this, every containerd
+restart made containerd publish synthetic exit-255 events for all pvisor
+sandboxes and kubelet killed the pods. Full containerd-restart survival
+additionally needs container-level reattach support and remains a known
+limitation (see the campaign notes in `CHAOS_TEST_SHIM_6H_20261110.md`).
 
 ## Limitations (deliberate)
 

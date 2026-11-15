@@ -11,8 +11,13 @@ mod egress;
 pub mod forward;
 pub mod headers;
 pub mod interception;
+#[cfg_attr(windows, path = "peer_windows.rs")]
 mod peer;
+#[cfg(unix)]
 mod peer_batch;
+mod peer_protocol;
+#[cfg(any(windows, test))]
+mod peer_udp;
 pub mod policy;
 mod resolver;
 pub mod server;

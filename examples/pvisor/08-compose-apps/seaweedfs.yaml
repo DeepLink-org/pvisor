@@ -1,0 +1,17 @@
+services:
+  seaweedfs:
+    image: chrislusf/seaweedfs:3.80
+    cpus: 1
+    mem_limit: 512m
+    command: [server, -s3, -dir=/data, -ip=127.0.0.1, -ip.bind=0.0.0.0,
+              -volume.max=5, -master.volumeSizeLimitMB=32, -s3.config=/etc/s3.json]
+    volumes: [objects:/data, "./s3.json:/etc/s3.json:ro"]
+  nginx:
+    image: nginx:1.28-alpine
+    cpus: 1
+    mem_limit: 128m
+    ports: ["127.0.0.1:${CASE_HTTP_PORT:?required}:80"]
+    volumes: ["./nginx-seaweed.conf:/etc/nginx/nginx.conf:ro"]
+    depends_on: [seaweedfs]
+volumes:
+  objects: {}

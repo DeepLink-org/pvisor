@@ -1,0 +1,44 @@
+services:
+  redis:
+    image: redis:7-alpine
+    cpus: 1
+    mem_limit: 128m
+    command: [redis-server, --appendonly, "yes", --requirepass, "${CASE_DB_PASSWORD:?required}"]
+    environment:
+      REDISCLI_AUTH: ${CASE_DB_PASSWORD:?required}
+    volumes: [queue:/data]
+    healthcheck:
+      test: [CMD, redis-cli, ping]
+      interval: 1s
+      timeout: 5s
+      retries: 30
+  worker:
+    image: mher/flower:2.0.1
+    cpus: 1
+    mem_limit: 256m
+    entrypoint: [celery]
+    command: [-A, tasks, worker, --loglevel=INFO, --concurrency=1]
+    working_dir: /data
+    environment:
+      CELERY_BROKER_URL: "redis://:${CASE_DB_PASSWORD:?required}@redis:6379/0"
+      CELERY_RESULT_BACKEND: "redis://:${CASE_DB_PASSWORD:?required}@redis:6379/1"
+    volumes: ["./tasks.py:/data/tasks.py:ro"]
+    depends_on:
+      redis: {condition: service_healthy}
+  flower:
+    image: mher/flower:2.0.1
+    cpus: 1
+    mem_limit: 256m
+    entrypoint: [celery]
+    command: [-A, tasks, flower, --port=5555]
+    working_dir: /data
+    environment:
+      CELERY_BROKER_URL: "redis://:${CASE_DB_PASSWORD:?required}@redis:6379/0"
+      CELERY_RESULT_BACKEND: "redis://:${CASE_DB_PASSWORD:?required}@redis:6379/1"
+      FLOWER_BASIC_AUTH: "composeadmin:${CASE_ADMIN_PASSWORD:?required}"
+    ports: ["127.0.0.1:${CASE_HTTP_PORT:?required}:5555"]
+    volumes: ["./tasks.py:/data/tasks.py:ro"]
+    depends_on:
+      redis: {condition: service_healthy}
+volumes:
+  queue: {}

@@ -15,6 +15,12 @@ path = "src/lib.rs"
 name = "containerd-shim-pvisor-v2"
 path = "src/main.rs"
 
+# Custom-harness regression test: re-execs itself in child mode with a
+# marker argument the libtest argument parser would reject.
+[[test]]
+name = "internal_spawn_lifetime"
+harness = false
+
 [dependencies]
 pvisor-guest.workspace = true
 pvisor-overlay-core.workspace = true
@@ -44,3 +50,4 @@ vm = ["pvisor-vm", "pvisor-vm/net", "pvisor-overlaynet", "pvisor-core"]
 
 [dev-dependencies]
 tempfile = { workspace = true }
+tokio = { workspace = true, features = ["rt", "time"] }

@@ -3354,6 +3354,8 @@ fn guest_config(
         process: None,
         mounts: Vec::new(),
         control: false,
+        serial_control: false,
+        root_disk: None,
     }
 }
 

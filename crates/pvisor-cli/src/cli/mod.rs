@@ -143,6 +143,7 @@ fn grouped_commands(command: &clap::Command) -> String {
                 "builder",
                 "container",
                 "image",
+                "compose",
             ],
         ),
         (

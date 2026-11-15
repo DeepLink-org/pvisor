@@ -35,4 +35,4 @@ sudo timeout --kill-after=10s 180s env DEBIAN_FRONTEND=noninteractive \
 sudo timeout --kill-after=10s 360s env DEBIAN_FRONTEND=noninteractive \
   apt-get "${apt_options[@]}" install -y --no-install-recommends \
   build-essential flex bison libelf-dev libssl-dev bc curl python3-pyelftools \
-  gcc-mingw-w64-x86-64-posix
+  gcc-mingw-w64-x86-64-posix e2fsprogs

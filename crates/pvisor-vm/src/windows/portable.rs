@@ -60,6 +60,15 @@ impl VmConfiguration for VmBuilder {
     fn guest_command(&mut self, command: GuestCommand) -> io::Result<()> {
         Err(unsupported("guest_command"))
     }
+    fn raw_disk(&mut self, path: PathBuf, read_only: bool) -> io::Result<usize> {
+        self.inner.raw_disk(path, read_only)
+    }
+    fn console_file(&mut self, name: String, path: PathBuf) -> io::Result<()> {
+        self.inner.console_file(name, path)
+    }
+    fn console_pipe(&mut self, name: String, path: PathBuf) -> io::Result<()> {
+        self.inner.console_pipe(name, path)
+    }
     fn filesystem(&mut self, tag: &str, path: &Path, shm_size: usize) -> io::Result<()> {
         self.inner.filesystem(tag, path, shm_size, false)
     }
@@ -92,7 +101,7 @@ impl VmConfiguration for VmBuilder {
             .virtual_file(tag, path, data.into(), mode, one_shot)
     }
     fn network(&mut self, stream: impl Into<NetworkStream>, mac: [u8; 6]) -> io::Result<()> {
-        Err(unsupported("network"))
+        self.inner.network(stream.into(), mac, NetworkOptions::default())
     }
     fn task_stdio(&mut self, stdin: i32, stdout: i32, stderr: i32) -> io::Result<()> {
         Err(unsupported("task_stdio"))
@@ -103,7 +112,7 @@ impl VmConfiguration for VmBuilder {
         mac: [u8; 6],
         options: NetworkOptions,
     ) -> io::Result<()> {
-        Err(unsupported("network_with_options"))
+        self.inner.network(stream.into(), mac, options)
     }
     fn vsock_port(&mut self, guest_port: u32, host_path: PathBuf, listen: bool) -> io::Result<()> {
         Err(unsupported("vsock_port"))

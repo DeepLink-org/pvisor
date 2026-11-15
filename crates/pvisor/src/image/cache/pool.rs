@@ -43,6 +43,14 @@ impl PoolStorage {
     ) -> anyhow::Result<Option<StoredObject>> {
         self.files.read(key, range, limit)
     }
+    pub(super) fn put_deferred(
+        &self,
+        key: &str,
+        bytes: &[u8],
+        directories: &std::sync::Mutex<std::collections::BTreeSet<PathBuf>>,
+    ) -> anyhow::Result<()> {
+        self.files.put_deferred(key, bytes, directories)
+    }
     pub(super) fn write(&self, key: &str, bytes: Vec<u8>, mode: PutMode) -> anyhow::Result<()> {
         self.files.write(key, bytes, mode)
     }

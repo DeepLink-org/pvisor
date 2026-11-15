@@ -22,6 +22,15 @@ An explicit process contract with `process.user = None` instead preserves an
 absent `HOME`: the host has already selected its defaults and applied environment
 removals. Explicit identity selection and launches that omit the process contract
 retain the passwd default; container launches explicitly select their identity.
+PID 1 also replaces Linux's unset `(none)` hostname with a DNS-safe
+`pvisor-<12 hex digits>` name derived from the guest boot ID, preserving any
+existing hostname. The fallback is distinct across cold boots and is never the
+reserved `localhost` name (which breaks MariaDB account bootstrap). A generated
+hosts file maps the hostname to loopback in addition to the conventional entries,
+avoiding libc resolver retries during common HTTP server startup. An exact
+supervisor-generated hosts template is refreshed on cold reboot; image-provided
+hosts files and user edits remain unchanged. Ordinary host processes cannot call this initializer
+to change the host UTS namespace.
 
 Before reading launch configuration or starting any child, PID 1 disables normal
 dump access and claims a host-generated 128-bit exit token on the root virtio-fs
@@ -135,6 +144,15 @@ loader paths, apply defaults, overlay explicit env, then remove the names in
 `pvisor.vm.env_unset`. Removed PATH/HOME/TMPDIR are not recreated by stage launch.
 `GuestConfig.mounts` declares additional shares, optionally populating an empty
 share from its image destination. Shares carry VMM tags, never host source paths.
+`source_file: true` instead binds the share's fixed ordinary `file` entry onto
+a regular guest target, creating a missing target but refusing symlink/directory
+targets. It cannot initialize a managed volume. The host must expose only the
+admitted inode in this share; mounting an entire host parent is not this contract.
+Cold launches may reuse the empty nonsymlink directory left beneath an internal
+file-share mountpoint in the container's writable upper. Existing files, symlinks
+and nonempty directories are refused rather than followed or covered.
+The underlying share and final file bind are read-only when requested; host-side
+write denial remains required because guest root can remount filesystems.
 
 One blocking PID-1 reaper handles the main workload, exec processes and adopted
 orphans. It observes exits before consuming them, serializes process registration
@@ -146,6 +164,34 @@ are cleaned up when their leader exits, including exec groups.
 
 ## Optional control adapter
 
+The Windows container profile uses two host-only virtio-console ports rather
+than vsock. `SerialRequest`/`SerialReply` wrap the ordinary supervisor protocol in
+monotonically increasing, nonzero request IDs. Responses may interleave; each
+request still uses the same process launcher and PID-1 reaper. At most 32
+operations execute on a port at once. Input frames carry the owning request ID;
+one 16 KiB chunk per request is allowed until its credit is returned. EOF and
+cancellation are separate, so a frontend disconnect cancels its exec while
+intentional EOF permits continued execution. Main input and execs use the same
+existing stdin/PTY adapter; the independent signal port admits stop, tracked
+signals and resize. An id-zero Ready receipt confirms workload creation before
+PID 1 reaps it, including immediate exits. Invalid or
+reused IDs close the port, and unsupported/busy requests return explicit errors.
+Host and embedded supervisor must be upgraded together.
+
+`GuestConfig.root_disk` builds an OCI filesystem on a private ext4 block device.
+Digest verification and extraction happen inside Linux, before mounting its
+pseudo-filesystems; NTFS is not used to approximate image permissions or links.
+A retained, successfully prepared container may relaunch with an empty layer
+list to reuse the disk without reapplying the image. The host owns preparation
+receipts and generation fencing; guest root is never authority to select a host
+disk or claim a different container. When static networking is configured, disk
+entry installs `/etc/resolv.conf` for its virtual gateway after extraction and
+on retained starts. Image resolver symlinks are replaced without following them;
+directory destinations fail launch. Offline disk entry leaves image DNS files
+unchanged. Other rootfs profiles keep their caller-provided resolver policy.
+Serial devices are opened before launch,
+masked from workload paths and protected by the launch capability bounding set.
+
 `GuestConfig.control` enables a vsock listener on port 1025; omission starts no
 listener. The adapter accepts only host-CID peers. Bounded
 frames support ping, main stdin attachment, process-group signals, exec and
@@ -156,6 +202,9 @@ PTY and supports initial dimensions; tracked native execs support live resizing 
 
 Both host and guest use `control`'s shared protocol definitions. Raw vsock
 accept is required: `UnixListener::accept` rejects AF_VSOCK peer addresses.
+`control::parse_signal` is the common host-independent parser for OCI stop
+signals and explicit container stop overrides on Unix and Windows. Signal
+numbers always refer to Linux guest signals, never host Win32 process signals.
 Protocol tests reject oversized and unknown-field frames; real VM tests remain
 necessary for terminal, mount, networking and process-lifecycle behavior.
 TCP tunnel completion and errors shut down companion transport operations and

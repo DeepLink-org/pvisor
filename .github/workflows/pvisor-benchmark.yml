@@ -185,7 +185,7 @@ jobs:
 
       - name: Diagnose failed benchmark outside measurement
         if: failure()
-        timeout-minutes: 2
+        timeout-minutes: 6
         env:
           BENCHMARK_DATA: ${{ runner.temp }}/.data/pvisor-benchmark
         shell: bash
@@ -201,6 +201,18 @@ jobs:
           import subprocess
           from pathlib import Path
 
+          def diagnose(argv, spec, env, stdout, stderr, timeout):
+              try:
+                  result = subprocess.run(
+                      argv, cwd=spec["cwd"], env=env,
+                      stdout=stdout, stderr=stderr, timeout=timeout, check=False,
+                  )
+                  return {"exit_code": result.returncode, "timeout": False}
+              except subprocess.TimeoutExpired:
+                  return {"exit_code": None, "timeout": True}
+              except OSError as error:
+                  return {"error": str(error)}
+
           for cohort in ("main", "candidate"):
               batch = Path(os.environ["BENCHMARK_DATA"]) / cohort / "smoke"
               if not (batch / "commands.json").is_file():
@@ -209,21 +221,21 @@ jobs:
               commands = json.loads((batch / "commands.json").read_text())
               output = batch / "diagnostics"
               output.mkdir()
-              for name in ("status", "review"):
+              for name in ("host-run", "status", "review"):
                   spec = commands[name]
+                  env = {**os.environ, **spec["env"], "PVISOR_STARTUP_PROFILE": "1"}
+                  # Diagnostic Runs must not alter the measured store or samples.
+                  if name == "host-run":
+                      env["PVISOR_RUN_HOME"] = str(output / "host-run-runs")
+                  outcomes = {}
                   with (output / f"{name}.profile.stdout").open("wb") as stdout, (output / f"{name}.profile.stderr").open("wb") as stderr:
-                      subprocess.run(
-                          spec["argv"], cwd=spec["cwd"],
-                          env={**os.environ, **spec["env"], "PVISOR_STARTUP_PROFILE": "1"},
-                          stdout=stdout, stderr=stderr, timeout=15, check=True,
-                      )
+                      outcomes["profile"] = diagnose(spec["argv"], spec, env, stdout, stderr, 15)
                   with (output / f"{name}.stdout").open("wb") as stdout, (output / f"{name}.stderr").open("wb") as stderr:
-                      subprocess.run(
+                      outcomes["strace"] = diagnose(
                           ["strace", "-f", "-ttt", "-T", "-yy", "-o", str(output / f"{name}.strace"), "--", *spec["argv"]],
-                          cwd=spec["cwd"],
-                          env={**os.environ, **spec["env"], "PVISOR_STARTUP_PROFILE": "1"},
-                          stdout=stdout, stderr=stderr, timeout=30, check=True,
+                          spec, env, stdout, stderr, 30,
                       )
+                  (output / f"{name}.outcomes.json").write_text(json.dumps(outcomes, indent=2) + "\n")
           PY
 
       - name: Retain build provenance

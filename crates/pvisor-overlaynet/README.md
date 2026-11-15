@@ -97,6 +97,22 @@ drivers are not implemented.
 mise run test -- pvisor-overlaynet
 ```
 
+`tests/stream_recovery.rs` uses the public router and an accepting in-memory
+sink, without opening sockets or contacting an upstream. A delayed body error,
+a separately cancelled pending body and intervening healthy requests must retain
+independent admission ownership. After cleanup, all 128 slots must be available
+again, overload must return 429, and dropping the held bodies must restore service.
+The ordinary case uses paused Tokio time. Its explicitly ignored real-timer
+counterpart holds the delayed error for 90 seconds:
+
+```sh
+mise run test -- pvisor-overlaynet -- --test stream_recovery --run-ignored only \
+  -E 'test(real_delayed_body_error_retains_admission_then_recovers)'
+```
+
+This checks router/body ownership and delayed local sink errors, not a real
+HTTP transport, upstream read timeout or network reconnect.
+
 ## Links
 
 - [OverlayNet architecture](../../docs/src/zh/design/overlaynet.md)
@@ -115,6 +131,23 @@ bytes with 16 KiB reads; upload remains active. This is Host buffering/backpress
 not TLS termination or guest download execution. Disabled hooks retain forwarding.
 
 ## Same-host peer packet networks
+
+`VmNetwork::start_with_io` runs the existing Ethernet/TCP/DNS data plane on a
+caller-owned asynchronous duplex stream. Its factory runs inside the network
+runtime, so Windows can adopt an IOCP byte pipe without a second packet engine.
+Adoption errors are returned before startup succeeds; drop cancels and joins
+the driver. Unix `start` retains its socket-pair convenience API and delegates
+to the same implementation.
+
+Windows peers use loopback UDP rather than Unix datagrams. The caller must
+supply a canonical, guest-excluded caller/SYSTEM-only directory with inherited
+private ACLs. Leased member records identify UDP endpoints and fresh 128-bit
+generations. Every received packet checks current source membership and both
+generation nonces; stale packets after address reuse are discarded. Frame
+validation and subnet policy are shared with Unix. Transmit discovery may be
+cached for 250 ms and may drop traffic during restart; it never authorizes
+delivery to an old receiver generation. Queue/socket budgets remain bounded.
+No UDP endpoint is exposed to guests or bound beyond host loopback.
 
 `VmNetworkConfig.peer_network` explicitly joins a private directory-backed
 network. The returned guest stream retains the same length-prefixed Ethernet

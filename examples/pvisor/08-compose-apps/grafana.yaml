@@ -1,0 +1,22 @@
+services:
+  grafana:
+    image: grafana/grafana:11.6.0
+    cpus: 1
+    mem_limit: 512m
+    environment:
+      GF_SECURITY_ADMIN_USER: composeadmin
+      GF_SECURITY_ADMIN_PASSWORD: ${CASE_ADMIN_PASSWORD:?required}
+      GF_SERVER_ROOT_URL: http://127.0.0.1:${CASE_HTTP_PORT:?required}/
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      GF_ANALYTICS_CHECK_FOR_PLUGIN_UPDATES: "false"
+    volumes: [dashboards:/var/lib/grafana]
+  nginx:
+    image: nginx:1.28-alpine
+    cpus: 1
+    mem_limit: 128m
+    ports: ["127.0.0.1:${CASE_HTTP_PORT:?required}:80"]
+    volumes: ["./nginx.conf:/etc/nginx/nginx.conf:ro"]
+    depends_on: [grafana]
+volumes:
+  dashboards: {}

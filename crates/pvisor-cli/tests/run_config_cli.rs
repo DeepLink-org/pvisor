@@ -38,6 +38,162 @@ fn only_run_dir(run_home: &std::path::Path) -> std::path::PathBuf {
 }
 
 #[test]
+#[cfg(unix)]
+fn result_file_exports_plain_run_result_for_ordinary_spawn() {
+    for (exit_code, destination) in [(0, "result.json"), (7, "new-parent/result.json")] {
+        let temporary = tempfile::tempdir().unwrap();
+        let runs = temporary.path().join("runs");
+        let output = Command::new(env!("CARGO_BIN_EXE_pvisor"))
+            .current_dir(temporary.path())
+            .env("HOME", temporary.path())
+            .env("XDG_CONFIG_HOME", temporary.path().join("config"))
+            .env("PVISOR_RUN_HOME", &runs)
+            .args([
+                "spawn",
+                "--no-agent-defaults",
+                "--filesystem",
+                "host",
+                "--overlaynet",
+                "off",
+                "--stdio",
+                "capture",
+                "--result-file",
+                destination,
+                "--",
+                "/bin/sh",
+                "-c",
+                "printf 'once\\n' >> effects; printf 'stdout\\n'; printf 'stderr\\n' >&2; exit \"$1\"",
+                "result-fixture",
+            ])
+            .arg(exit_code.to_string())
+            .output()
+            .unwrap();
+        assert_eq!(
+            output.status.code(),
+            Some(exit_code),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let result_path = temporary.path().join(destination);
+        let result: pvisor_core::RunResult = serde_json::from_slice(
+            &std::fs::read(&result_path).expect("ordinary spawn must publish its requested result"),
+        )
+        .expect("ordinary result-file contains a plain Core RunResult");
+        let run = only_run_dir(&runs);
+        let record = pvisor::RunRecord::read(&run).unwrap();
+        let bundle = RunBundle::read(&run).unwrap();
+        assert!(run.join("completion.json").is_file());
+        assert_eq!(result.run_id.as_str(), record.run_id);
+        assert_eq!(result.run_id.as_str(), bundle.run.run_id);
+        assert_eq!(result.execution_id.as_str(), bundle.run.execution_id);
+        assert_eq!(result.state, bundle.run.state);
+        assert_eq!(
+            result.state,
+            if exit_code == 0 {
+                pvisor_core::RunState::Completed
+            } else {
+                pvisor_core::RunState::Failed
+            }
+        );
+        assert_eq!(result.exit_code, Some(exit_code));
+        assert_eq!(result.exit_code, bundle.run.exit_code);
+        assert_eq!(result.output.stdout.as_deref(), Some("stdout\n"));
+        assert_eq!(result.output.stderr.as_deref(), Some("stderr\n"));
+        assert_eq!(
+            std::fs::read(temporary.path().join("effects")).unwrap(),
+            b"once\n"
+        );
+        assert_eq!(
+            std::fs::metadata(result_path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
+}
+
+#[test]
+#[cfg(unix)]
+fn result_file_write_failure_preserves_completed_workload() {
+    let temporary = tempfile::tempdir().unwrap();
+    let runs = temporary.path().join("runs");
+    let blocked_parent = temporary.path().join("blocked-parent");
+    std::fs::write(&blocked_parent, b"existing file\n").unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_pvisor"))
+        .current_dir(temporary.path())
+        .env("HOME", temporary.path())
+        .env("XDG_CONFIG_HOME", temporary.path().join("config"))
+        .env("PVISOR_RUN_HOME", &runs)
+        .args([
+            "spawn",
+            "--no-agent-defaults",
+            "--filesystem",
+            "host",
+            "--overlaynet",
+            "off",
+            "--result-file",
+            "blocked-parent/result.json",
+            "--",
+            "/bin/sh",
+            "-c",
+            "printf 'once\\n' >> effects",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "result publication must fail after the workload completes: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let run = only_run_dir(&runs);
+    let record = pvisor::RunRecord::read(&run).unwrap();
+    let bundle = RunBundle::read(&run).unwrap();
+    assert!(run.join("completion.json").is_file());
+    assert_eq!(bundle.run.run_id, record.run_id);
+    assert_eq!(bundle.run.state, pvisor_core::RunState::Completed);
+    assert_eq!(bundle.run.exit_code, Some(0));
+    assert!(bundle.run.failure.is_none());
+    assert_eq!(
+        std::fs::read(temporary.path().join("effects")).unwrap(),
+        b"once\n"
+    );
+    assert_eq!(std::fs::read(blocked_parent).unwrap(), b"existing file\n");
+}
+
+#[test]
+#[cfg(unix)]
+fn result_file_preserves_prepared_spec_envelope() {
+    let temporary = tempfile::tempdir().unwrap();
+    let spec = pvisor_core::RunSpec::process("prepared-result-envelope", "test", "/usr/bin/true");
+    let spec_path = temporary.path().join("spec.json");
+    std::fs::write(&spec_path, serde_json::to_vec(&spec).unwrap()).unwrap();
+    let result_path = temporary.path().join("result.json");
+    let output = Command::new(env!("CARGO_BIN_EXE_pvisor"))
+        .current_dir(temporary.path())
+        .env("HOME", temporary.path())
+        .env("XDG_CONFIG_HOME", temporary.path().join("config"))
+        .env("PVISOR_RUN_HOME", temporary.path().join("runs"))
+        .args(["spawn", "--spec"])
+        .arg(&spec_path)
+        .arg("--result-file")
+        .arg(&result_path)
+        .arg("--stage")
+        .arg(temporary.path().join("stage"))
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let result: pvisor::DelegatedRunOutput =
+        serde_json::from_slice(&std::fs::read(result_path).unwrap()).unwrap();
+    assert_eq!(result.result.run_id.as_str(), "prepared-result-envelope");
+    assert_eq!(result.result.state, pvisor_core::RunState::Completed);
+    assert_eq!(result.result.exit_code, Some(0));
+    assert_eq!(result.agentctl.run_id, "prepared-result-envelope");
+}
+
+#[test]
 #[cfg(target_os = "macos")]
 fn unsupported_memory_limit_preserves_observed_file_size_limit() {
     let temporary = tempfile::tempdir().unwrap();

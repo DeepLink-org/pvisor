@@ -77,6 +77,8 @@ port and transport restrictions still apply.
 An audit grant derives a request-scoped policy from the canonical capability;
 it retains explicit denies and bandwidth limits, and does not mutate the source
 policy or authorize other hosts, ports, transports, or private DNS results.
+For scoped capabilities this narrowing applies to every layer and the fallback:
+existing allow rules and default-allow behavior do not widen the temporary grant.
 Approval request hosts must be exact hostnames or IP literals. Wildcards and
 CIDRs are policy expressions, not single destinations, and cannot be approved
 as request hosts.
@@ -105,3 +107,19 @@ access checks, explicit fsync, execution results and audit records remain.
 
 `overlay::LayerMutability` owns the portable lower stability record shared by VM
 and Overlay; it does not depend on a host filesystem implementation.
+
+## Suspension receipt validation
+
+`operation::ExecutionSuspension::from_result` accepts native hibernation evidence
+only when a Hibernated `RunResult` has no guest exit/failure and its checkpoint
+binds the same Run and Execution. The request and checkpoint identities retain
+their byte-length and shape constraints. Validation does not authenticate the
+producer, resolve the snapshot store or implement completion/outbox persistence.
+
+`tests/suspension_receipt_recovery.rs` uses caller-owned fake files to exercise
+close/reopen, every JSON truncation boundary and generated mismatched receipts,
+with explicit valid boundary controls. It preserves failed fixtures; successful
+fixtures are deleted only after assertions. `PVISOR_CHAOS_FIRST_SEED` and
+`PVISOR_CHAOS_SEED_COUNT` select a finite reproducible interval (default 8 seeds,
+maximum 65536). These checks cover Core's parse/validation/serialization
+contracts, not VM suspension or runtime crash recovery.

@@ -293,7 +293,7 @@ fn session_pool_startup_remains_cancellable_while_the_companion_waits() {
     fs::write(
         &companion,
         format!(
-            "#!/bin/sh\n: > '{}'\nn=0\nwhile test ! -f '{}' && test \"$n\" -lt 500; do sleep 0.02; n=$((n+1)); done\n: > '{}'\nexit 7\n",
+            "#!/bin/sh\n: > '{}'\nn=0\nwhile test ! -f '{}' && test \"$n\" -lt 3000; do sleep 0.02; n=$((n+1)); done\n: > '{}'\nexit 7\n",
             ready.display(),
             release.display(),
             done.display()
@@ -308,7 +308,9 @@ fn session_pool_startup_remains_cancellable_while_the_companion_waits() {
         .stderr(std::process::Stdio::piped())
         .spawn()
         .unwrap();
-    let deadline = Instant::now() + Duration::from_secs(5);
+    // Cold copied executables can take longer to launch on macOS CI.
+    // This is setup time; the SIGINT response deadline below stays at five seconds.
+    let deadline = Instant::now() + Duration::from_secs(30);
     while !ready.exists() && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(10));
     }
