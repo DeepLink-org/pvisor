@@ -2253,6 +2253,10 @@ fn run_vm<Backing>(
             new_session: true,
             stdin: if instance.config.interactive {
                 pvisor_guest::StdinMode::Pipe
+            } else if instance.config.tty.is_some() {
+                // Keep fd 0 on the selected PTY without exposing an input
+                // attachment. Closed intentionally supplies /dev/null instead.
+                pvisor_guest::StdinMode::Inherit
             } else {
                 pvisor_guest::StdinMode::Closed
             },

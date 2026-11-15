@@ -73,6 +73,8 @@ Docker-style workloads use the generic guest's pipe/PTY output adapter rather
 than inheriting exclusive-open virtio-console ports. Standard-stream path opens
 therefore reach captured output instead of failing with EBUSY; PID 1 drains the
 existing relays before reporting workload completion.
+With `run -t` and no `-i`, all three workload descriptors use the PTY, but no
+host-input attachment is opened. Non-TTY closed stdin still receives EOF.
 Session commands use `pvisor`; `pvisor-daemon` owns cache and sandbox services and its optional
 pool. Replay is a
 Session frontend, not a runtime dependency. Cross-node placement and distributed scheduling

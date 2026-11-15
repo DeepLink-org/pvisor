@@ -182,6 +182,8 @@ pub struct ProcessConfig {
 #[serde(rename_all = "snake_case")]
 pub enum StdinMode {
     /// Inherit the bootstrap console, retaining ordinary Session terminal behavior.
+    /// An explicit PTY instead supplies terminal input without exporting an input
+    /// writer for a control-channel attachment.
     #[default]
     Inherit,
     /// Open /dev/null for noninteractive workloads.

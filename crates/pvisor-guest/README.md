@@ -136,6 +136,8 @@ Omission retains bootstrap identity/session and inherited console descriptors.
 unless `tty` requests a real PTY, in which case output is combined on stdout with
 the requested initial dimensions. `stdin = pipe` is interactive; `closed` gives
 EOF via `/dev/null`, including with a PTY (only output remains terminal-backed).
+With an explicit PTY, `stdin = inherit` keeps fd 0 on that terminal without
+exporting an input writer; Docker-style `run -t` without `-i` selects this mode.
 Without a control adapter the supervisor pumps bootstrap stdin into interactive
 input, routes pipe output by descriptor, and cancels/joins the input worker after
 reaping, including on supervision failure. The writer is nonblocking so neither
