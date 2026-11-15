@@ -3419,7 +3419,7 @@ mod tests {
     fn mmap_writeback_is_positional_without_changing_normal_append_or_exported_flags() {
         use std::os::unix::fs::FileExt;
         let (root, fs, lease) = buffered_write_fixture(libc::O_RDWR | libc::O_APPEND);
-        let file = lease.0.file.write().unwrap();
+        let file = lease.0.file.read().unwrap();
         let exported = file.try_clone().unwrap();
         let positional = positional_writeback_file(&fs.proc_self_fd, &file, true)
             .unwrap()
@@ -3449,7 +3449,7 @@ mod tests {
     fn mmap_writeback_pins_unlinked_inode_instead_of_reopening_a_guest_path() {
         use std::os::unix::fs::FileExt;
         let (root, fs, lease) = buffered_write_fixture(libc::O_RDWR | libc::O_APPEND);
-        let file = lease.0.file.write().unwrap();
+        let file = lease.0.file.read().unwrap();
         std::fs::remove_file(root.path().join("file")).unwrap();
         std::fs::write(root.path().join("file"), b"replacement").unwrap();
         let positional = positional_writeback_file(&fs.proc_self_fd, &file, true)
@@ -3468,7 +3468,7 @@ mod tests {
     #[test]
     fn mmap_writeback_keeps_ordinary_nonappend_descriptions() {
         let (_root, fs, lease) = buffered_write_fixture(libc::O_RDWR);
-        let file = lease.0.file.write().unwrap();
+        let file = lease.0.file.read().unwrap();
         assert!(
             positional_writeback_file(&fs.proc_self_fd, &file, true)
                 .unwrap()
