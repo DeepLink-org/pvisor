@@ -40,6 +40,10 @@ device/inode/birth-time 身份保存 UID/GID/mode；目录仍使用原有的保�
 不改变已有 socket 记录。`lchown` 只更新链接本身，不能跟随目标或改变宿主
 所有者；rename 和同一 rootfs 的重启保留身份，同名新 inode 不继承旧记录。
 catalog 损坏、不支持 birth time 或持久化失败仍返回错误，不忽略 chown 失败。
+inode 元数据和快照捕获/恢复共用不跟随最终 symlink 的 descriptor pin。
+Linux 直接使用 `open(O_PATH|O_NOFOLLOW|O_CLOEXEC)`，避免 musl 的
+`O_ACCMODE` 包含 `O_PATH`、导致 Rust `OpenOptions::custom_flags` 过滤掉
+该标志而将合法 symlink 误报为 ELOOP；macOS 保留 O_SYMLINK 语义。
 
 私有 virtual-owner rootfs 和管理卷不支持 POSIX access/default ACL xattr，
 get/set/remove 返回 `EOPNOTSUPP`，list 不公布这些 native ACL。直接写宿主

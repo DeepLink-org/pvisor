@@ -2230,10 +2230,7 @@ impl OverlayFs {
             }
             if matches!(attr.st_mode & libc::S_IFMT, libc::S_IFSOCK | libc::S_IFLNK) {
                 if let Some(catalog) = &self.special_metadata {
-                    let file = std::fs::OpenOptions::new()
-                        .read(true)
-                        .custom_flags(libc::O_PATH | libc::O_NOFOLLOW)
-                        .open(path)?;
+                    let file = super::snapshot::pin_inode(path)?;
                     if let Some(identity) = catalog.attributes(&file, *attr)? {
                         *attr = identity;
                     }
@@ -2261,10 +2258,7 @@ impl OverlayFs {
             // Never follow a link or chown a host inode to emulate guest ownership.
             // Persist the guest identity under Core's reserved
             // whiteout namespace, keyed by pinned device/inode/birth time.
-            let file = std::fs::OpenOptions::new()
-                .read(true)
-                .custom_flags(libc::O_PATH | libc::O_NOFOLLOW)
-                .open(path)?;
+            let file = super::snapshot::pin_inode(path)?;
             self.special_metadata
                 .as_ref()
                 .ok_or_else(|| io::Error::other("private inode catalog missing"))?
