@@ -103,6 +103,11 @@ def run_table(
         raise ValueError(
             "paired DAX needs dax_ab.py --prepare followed by semspec bench; see filesystem/README.md"
         )
+    if metadata["status"] == "explicit-python-paired-network-profile":
+        raise ValueError(
+            "network profile A/B needs profile_ab.py with frozen --baseline/--candidate/--worker "
+            "and --firmware; see network/README.md"
+        )
     if row is not None and topic not in ("startup", "filesystem"):
         raise ValueError("--row is supported only for startup/filesystem tables")
     prepare = load_prepare(topic)

@@ -146,6 +146,14 @@ opt-level = 3
 [profile.release.package.pvisor-overlay-core]
 opt-level = 3
 
+# Packet handling and TCP byte relays need throughput, not minimum code size.
+# Controlled KVM evidence: benchmark/network/PROFILE_REPORT.md.
+[profile.release.package.pvisor-overlaynet]
+opt-level = 3
+
+[profile.release.package.smoltcp]
+opt-level = 3
+
 # Build scripts and proc macros do not need release stripping. Keeping their
 # symbols avoids invoking a host rust-objcopy that may be unavailable when
 # cross-compiling from macOS, while the final application remains stripped.

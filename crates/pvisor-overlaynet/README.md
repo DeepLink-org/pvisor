@@ -93,6 +93,12 @@ drivers are not implemented.
 
 ## Develop
 
+The workspace release profile optimizes `pvisor-overlaynet` and `smoltcp` for
+execution speed (`opt-level = 3`), while other crates retain their existing
+size/speed policy. This changes compilation only, not socket defaults, queue
+budgets or authorization. The controlled Linux/KVM comparison and its platform
+limits are recorded in [the network profile report](../../benchmark/network/PROFILE_REPORT.md).
+
 ```bash
 mise run test -- pvisor-overlaynet
 ```

@@ -1,0 +1,3 @@
+{
+  "paired-network-profile": "$ python3 @REPO@/benchmark/network/profile_ab.py --baseline @BASELINE@ --candidate @CANDIDATE@ --worker @WORKER@ --firmware @FIRMWARE@ --output @OUTPUT@"
+}

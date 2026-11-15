@@ -224,7 +224,7 @@ check_line cargo clippy --all-targets --locked -p pvisor-shim --features vm -- -
 run test-py
 check_line uv run --locked --only-group dev python -m unittest discover -s tests
 check_line uv run --locked --only-group dev python -m unittest discover -s benchmark/support
-for suite in tests filesystem memory; do
+for suite in tests filesystem memory network; do
   check_line uv run --locked --only-group dev python -m unittest discover -s "benchmark/$suite"
 done
 for flags in selected leading filter; do

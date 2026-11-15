@@ -27,6 +27,7 @@ B-APPLY-DIAG,diagnostic,workflow/apply_diagnostic.json,requires-single-condition
 B-SUPERVISION,user-facing,workflow/review.json,requires-single-condition-command
 B-WORKFLOW,user-facing,workflow/workflow.json,requires-single-condition-command
 B-NETWORK,user-facing,network/network.json,requires-single-condition-command
+B-NETWORK-PROFILE-ENG,engineering A/B,network/profile_ab.json,explicit-python-paired-network-profile
 B-PEER-NET-ENG,engineering A/B,network/peer.json,requires-single-condition-command
 B-FOUR-PEER-ENG,engineering A/B,network/four_peer.json,requires-single-condition-command
 B-PEER-CHAOS-ENG,diagnostic,network/peer_chaos.json,requires-single-condition-command
