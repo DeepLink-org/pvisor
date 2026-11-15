@@ -1,4 +1,4 @@
-use super::api::{Config, Entry, ResidentMemoryAccounting, Snapshot, State};
+use super::api::{Config, Entry, RecoveryBlocked, ResidentMemoryAccounting, Snapshot, State};
 use anyhow::{Result, ensure};
 use std::collections::{BTreeMap, VecDeque};
 
@@ -40,12 +40,19 @@ impl Policy {
                 || config.waiting_memory_margin_bytes.is_none(),
             "measured resident accounting cannot use a waiting memory margin"
         );
+        ensure!(
+            !config.recovery_reclaim
+                || config.resident_memory_accounting == ResidentMemoryAccounting::Measured,
+            "recovery reclaim requires measured resident accounting"
+        );
         Ok(Self {
             snapshot: Snapshot {
                 instance: uuid::Uuid::new_v4().to_string(),
                 entries: BTreeMap::new(),
                 writebacks: 0,
                 measured_bytes: None,
+                recovery_blocked: None,
+                recovery_reclaim: None,
                 error: None,
             },
             config,
@@ -195,6 +202,7 @@ impl Policy {
     /// Offloaded pages/cache remain in measured charge; reclaim report byte counts
     /// never become an accounting credit. Missing samples stop every grant.
     pub fn plan(&mut self, parent: u64, charges: &BTreeMap<String, u64>) -> Result<Vec<Action>> {
+        self.snapshot.recovery_blocked = None;
         let mut committed = parent;
         let mut startup_top_up = 0u64;
         for (id, e) in &self.snapshot.entries {
@@ -429,6 +437,36 @@ impl Policy {
                     commitment_relief =
                         commitment_relief.saturating_add(charge.saturating_add(top_up));
                     actions.push(Action::Offload(id.clone()));
+                }
+            }
+        }
+        if let Some(id) = self.requests.front() {
+            let e = &self.snapshot.entries[id];
+            if e.state == State::RestoreQueued {
+                let extra = e.memory_bytes.saturating_sub(charges[id]);
+                let deficit = committed
+                    .saturating_add(extra)
+                    .saturating_sub(self.config.memory_bytes);
+                if deficit > 0 {
+                    self.snapshot.recovery_blocked = Some(RecoveryBlocked {
+                        id: id.clone(),
+                        token: e.token.clone().expect("queued restore token"),
+                        deficit_bytes: deficit,
+                        reclaim_eligible: actions.is_empty()
+                            && self.snapshot.writebacks == 0
+                            && !self.snapshot.entries.values().any(|e| {
+                                matches!(
+                                    e.state,
+                                    State::Admitted
+                                        | State::Binding
+                                        | State::Restoring
+                                        | State::Failed
+                                        | State::Waiting
+                                        | State::Queued
+                                        | State::Offloading
+                                )
+                            }),
+                    });
                 }
             }
         }

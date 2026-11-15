@@ -136,6 +136,46 @@ last recovery allowance at the current sample; it cannot guarantee progress
 under unbounded growth. OCI startup, guest limits, UKSM and backing protocols
 are unchanged. The same mode is supported with `max_writebacks: 0` for controls.
 
+### Bounded recovery reclaim (experimental)
+
+Set `recovery_reclaim: true` with measured resident accounting to attempt
+cgroup-local reclaim when the FIFO native-restore head cannot fit its full
+allowance and no safe waiter, startup or native control remains in flight.
+The default is false. This does not enable UKSM or change its scan policy.
+It does not change reservations, queue order, hard limits or the high watermark.
+
+Each existing recovery permit may issue at most three `memory.reclaim` requests,
+at least one second apart, within a ten-second retry window. Each request is
+its current deficit plus 16 MiB, capped at 256 MiB. Only one write may be in flight
+per scheduler. The retry window does **not** cancel a kernel write or bound its
+wall time: a slow write retains its slot until completion. Reclaim runs outside
+the node mutex and async executor so status and owner teardown remain available.
+Actual reclaimed bytes may be larger or smaller than the request; this is a
+request budget, not a physical-memory cap or a promise of progress.
+
+The service pins and validates its original cgroup directory and writes
+`memory.reclaim` with `swappiness=0`; it never uses global `drop_caches`, changes
+limits or retries without that swap restriction. Kernels lacking the interface
+or parameter and insufficient delegation produce a bounded diagnostic error.
+Even a successful write grants nothing: the next ordinary accounting sample
+must satisfy the full reservation. EAGAIN can indicate partial reclamation,
+so errors also receive normal fresh accounting, never estimated savings credit.
+See the [kernel contract](https://docs.kernel.org/6.14/admin-guide/cgroup-v2.html#memory-interface-files).
+
+Status includes `recovery_blocked` (FIFO head, token, measured deficit and
+reclaim eligibility) and `recovery_reclaim` (latest permit, attempt count,
+requested bytes, in-flight state and last error). A blocked diagnostic is only
+valid when snapshot `error` is null. Attempt intent is persisted before the
+write, and an undrained restart still fails closed. Once the retry budget is
+exhausted, the owner must time out and safely terminate the failed batch;
+unreclaimable memory does not authorize a restore or dropping reservations.
+Owner cleanup must not wait a second full recovery timeout after such failure.
+
+Regression tests cover a stalled FIFO head with a fitting follower, fresh-sample
+recovery, retained in-flight restore allowance, disabled/invalid configuration,
+retry spacing/exhaustion, slow-write single-flight, and ordinary-file refusal.
+These tests do not establish real high-density VM performance.
+
 ### Reserved resident accounting
 
 To opt into state-dependent reservations, set `waiting_memory_margin_bytes` to a

@@ -44,6 +44,11 @@ pub struct Config {
     /// measured UKSM credit; uncooperative/background allocations remain unsafe.
     #[serde(default)]
     pub waiting_memory_margin_bytes: Option<u64>,
+    /// Opt-in Linux cgroup reclaim for a budget-blocked native restore in Measured
+    /// mode. Defaults false. At most three requests of at most 256 MiB per permit,
+    /// with no swap and no accounting credit; grants require a fresh sample.
+    #[serde(default)]
+    pub recovery_reclaim: bool,
     /// Existing cgroup v2 subtree containing every managed VM and its helpers.
     /// The service reads it; it never installs or changes resource limits.
     pub cgroup_root: PathBuf,
@@ -113,6 +118,12 @@ pub struct Snapshot {
     pub writebacks: usize,
     /// Last valid parent cgroup charge; absent until a complete sample succeeds.
     pub measured_bytes: Option<u64>,
+    /// Most recent sampled FIFO native-recovery shortage, not a grant.
+    #[serde(default)]
+    pub recovery_blocked: Option<RecoveryBlocked>,
+    /// Latest bounded reclaim attempt, including errors and in-flight ownership.
+    #[serde(default)]
+    pub recovery_reclaim: Option<RecoveryReclaim>,
     /// Latest accounting error. Grants stop while measurement is unavailable.
     pub error: Option<String>,
 }
@@ -174,4 +185,35 @@ pub struct Envelope {
     pub instance: Option<String>,
     /// Requested transition.
     pub request: Request,
+}
+
+/// Sampled native recovery deficit. Invalid when the snapshot has an error.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct RecoveryBlocked {
+    /// FIFO head execution identity.
+    pub id: String,
+    /// Existing tool permit identity; recovery never creates a replacement token.
+    pub token: String,
+    /// Additional measured relief required to grant the full restore allowance.
+    pub deficit_bytes: u64,
+    /// Whether all native controls and startup reservations have finished and
+    /// no safe waiter remains available for offload.
+    pub reclaim_eligible: bool,
+}
+
+/// Diagnostic only; requested bytes never count as physical memory savings.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct RecoveryReclaim {
+    /// Execution whose recovery caused this attempt.
+    pub id: String,
+    /// Permit retained across retries.
+    pub token: String,
+    /// Attempts started for this permit (maximum three).
+    pub attempts: u8,
+    /// Bytes requested by the most recent attempt (maximum 256 MiB).
+    pub requested_bytes: u64,
+    /// True until the kernel write finishes; a slow write is never duplicated.
+    pub in_flight: bool,
+    /// Last write error. EAGAIN may still have reclaimed some memory.
+    pub error: Option<String>,
 }

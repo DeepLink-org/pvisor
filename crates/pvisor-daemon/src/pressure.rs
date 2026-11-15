@@ -7,6 +7,7 @@
 //! A lost control acknowledgement retains both memory and writeback reservations.
 pub mod api;
 mod policy;
+mod reclaim;
 mod service;
 
 pub use service::{exchange, serve};

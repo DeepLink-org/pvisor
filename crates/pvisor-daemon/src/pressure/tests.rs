@@ -15,6 +15,7 @@ fn config() -> Config {
         max_writebacks: 16,
         resident_memory_accounting: ResidentMemoryAccounting::Reserved,
         waiting_memory_margin_bytes: None,
+        recovery_reclaim: false,
         cgroup_root: "/sys/fs/cgroup/test".into(),
     }
 }
@@ -1069,4 +1070,56 @@ fn reserved_mode_keeps_strict_fifo_behind_offloading_head() {
     p.acquire(&id(2), id(102)).unwrap();
     assert!(p.plan(2, &charges(1, 1)).unwrap().is_empty());
     assert_eq!(p.snapshot.entries[&id(2)].state, State::Queued);
+}
+
+#[test]
+fn recovery_shortage_preserves_fifo_and_requires_fresh_measured_relief() {
+    let mut p = pair();
+    p.config.resident_memory_accounting = ResidentMemoryAccounting::Measured;
+    p.config.recovery_reclaim = true;
+    let actions = p.plan(20, &charges(1, 6)).unwrap();
+    assert_eq!(
+        actions,
+        vec![Action::Offload(id(1)), Action::Offload(id(2))]
+    );
+    for a in actions {
+        p.finish(a, Ok(()));
+    }
+    p.acquire(&id(1), id(101)).unwrap();
+    p.acquire(&id(2), id(102)).unwrap();
+    // Head requires 15 + (8 - 1) = 22 > 20; follower would fit at 17.
+    // No victims remain. Retrying or successful reclaim I/O alone grants nothing.
+    for _ in 0..4 {
+        assert!(p.plan(15, &charges(1, 6)).unwrap().is_empty());
+        let blocked = p.snapshot.recovery_blocked.as_ref().unwrap();
+        assert_eq!(blocked.id, id(1));
+        assert_eq!(blocked.token, id(101));
+        assert_eq!(blocked.deficit_bytes, 2);
+        assert!(blocked.reclaim_eligible);
+        assert_eq!(p.snapshot.entries[&id(2)].state, State::RestoreQueued);
+    }
+    assert_eq!(
+        p.plan(12, &charges(1, 6)).unwrap(),
+        vec![Action::Resume(id(1))]
+    );
+    assert!(p.snapshot.recovery_blocked.is_none());
+    assert_eq!(p.snapshot.entries[&id(2)].state, State::RestoreQueued);
+    // In-flight restore keeps its full allowance; no follower starts early.
+    assert!(p.plan(12, &charges(1, 6)).unwrap().is_empty());
+    p.finish(Action::Resume(id(1)), Ok(()));
+    assert_eq!(
+        p.plan(12, &charges(1, 6)).unwrap(),
+        vec![Action::Resume(id(2))]
+    );
+}
+
+#[test]
+fn recovery_reclaim_is_opt_in_and_requires_measured_mode() {
+    let mut value = serde_json::to_value(config()).unwrap();
+    value.as_object_mut().unwrap().remove("recovery_reclaim");
+    let old: Config = serde_json::from_value(value).unwrap();
+    assert!(!old.recovery_reclaim);
+    let mut cfg = config();
+    cfg.recovery_reclaim = true;
+    assert!(Policy::new(cfg).is_err());
 }

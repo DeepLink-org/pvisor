@@ -36,6 +36,7 @@ struct Owner {
     directory: PathBuf,
     failed: bool,
     root_identity: (u64, u64),
+    reclaim_retry: super::reclaim::Retry,
 }
 
 impl Owner {
@@ -394,9 +395,60 @@ impl Bound {
     }
 }
 
+// Called only after a successful fresh plan. The injected writer lets unit
+// tests gate a slow kernel operation without requiring privileged cgroups.
+fn start_reclaim<F>(owner: &Arc<Mutex<Owner>>, state: &mut Owner, write: F)
+where
+    F: FnOnce(PathBuf, (u64, u64), u64) -> Result<()> + Send + 'static,
+{
+    if state.failed
+        || state.policy.snapshot.error.is_some()
+        || !state.policy.config.recovery_reclaim
+    {
+        return;
+    }
+    let Some(blocked) = state.policy.snapshot.recovery_blocked.clone() else {
+        return;
+    };
+    let Some(attempt) = state
+        .reclaim_retry
+        .begin(&blocked, std::time::Instant::now())
+    else {
+        return;
+    };
+    let bytes = attempt.requested_bytes;
+    let root = state.policy.config.cgroup_root.clone();
+    let identity = state.root_identity;
+    state.policy.snapshot.recovery_reclaim = Some(attempt);
+    // Intent must be durable before the side effect; undrained restart is refused.
+    if state.save().is_err() {
+        return;
+    }
+    let owner = owner.clone();
+    tokio::spawn(async move {
+        // A slow kernel write retains single-flight ownership until completion.
+        // Neither the node mutex nor an async executor thread is held by it.
+        let result = tokio::task::spawn_blocking(move || write(root, identity, bytes)).await;
+        let error = match result {
+            Ok(Ok(())) => None,
+            Ok(Err(e)) => Some(format!("{e:#}")),
+            Err(e) => Some(format!("reclaim worker: {e}")),
+        };
+        let mut state = owner.lock().await;
+        state.reclaim_retry.in_flight = false;
+        if let Some(attempt) = state.policy.snapshot.recovery_reclaim.as_mut() {
+            attempt.in_flight = false;
+            attempt.error = error.map(|e| e.chars().take(512).collect());
+        }
+        let _ = state.save();
+        // Only a later normal plan with a fresh sample may grant recovery.
+    });
+}
+
 /// Serve one opt-in pressure scheduler in a fresh private directory on Linux.
 /// Same-UID clients enroll ordinary OCI executions through existing HostVm IPC.
-/// No image, backing, CPU quota, process or cgroup is created/modified here.
+/// No image, backing, CPU quota, process or cgroup limit is created/modified here.
+/// Opt-in recovery reclaim writes only this scheduler's cgroup memory.reclaim.
 /// Refuses an undrained prior ledger after restart; accepted effects are never
 /// retried automatically. Stop only after all records are Released. On crash,
 /// preserve the ledger and externally audit/clean its resources before a new run.
@@ -486,6 +538,7 @@ pub async fn serve(directory: PathBuf, config: Config) -> Result<()> {
         directory,
         failed: false,
         root_identity,
+        reclaim_retry: Default::default(),
     };
     owner.save()?;
     println!(
@@ -519,6 +572,11 @@ pub async fn serve(directory: PathBuf, config: Config) -> Result<()> {
                     Ok(actions) => actions,
                     Err(error) => { state.policy.snapshot.error = Some(format!("{error:#}").chars().take(512).collect()); continue; }
                 };
+                if actions.is_empty() {
+                    start_reclaim(&owner, &mut state, |root, identity, bytes| {
+                        super::reclaim::write(&root, identity, bytes)
+                    });
+                }
                 for action in actions {
                     let id = match &action { Action::Offload(id) | Action::Resume(id) => id };
                     let bound = state.bindings[id].clone();
@@ -579,6 +637,7 @@ mod tests {
             low_bytes: 14,
             max_writebacks: 16,
             waiting_memory_margin_bytes: None,
+            recovery_reclaim: false,
             resident_memory_accounting: Default::default(),
             cgroup_root: root,
         })
@@ -591,8 +650,90 @@ mod tests {
                 directory,
                 failed: false,
                 root_identity: (m.dev(), m.ino()),
+                reclaim_retry: Default::default(),
             },
         )
+    }
+
+    #[tokio::test]
+    async fn slow_reclaim_keeps_status_responsive_and_error_never_grants() {
+        let (_tmp, mut state) = fixture();
+        state.policy.config.recovery_reclaim = true;
+        state.policy.snapshot.recovery_blocked = Some(RecoveryBlocked {
+            id: "head".into(),
+            token: "token".into(),
+            deficit_bytes: 1024,
+            reclaim_eligible: true,
+        });
+        let owner = Arc::new(Mutex::new(state));
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        {
+            let mut state = owner.lock().await;
+            start_reclaim(&owner, &mut state, move |_, _, _| {
+                started_tx.send(()).unwrap();
+                release_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+                anyhow::bail!("injected EAGAIN")
+            });
+        }
+        tokio::time::timeout(Duration::from_secs(2), started_rx)
+            .await
+            .unwrap()
+            .unwrap();
+        let snap = tokio::time::timeout(
+            Duration::from_secs(2),
+            handle(
+                &owner,
+                Envelope {
+                    instance: None,
+                    request: Request::Status {},
+                },
+            ),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert!(snap.recovery_reclaim.unwrap().in_flight);
+        {
+            let mut state = owner.lock().await;
+            start_reclaim(&owner, &mut state, |_, _, _| panic!("duplicate reclaim"));
+        }
+        release_tx.send(()).unwrap();
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if !owner.lock().await.reclaim_retry.in_flight {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        let state = owner.lock().await;
+        assert!(state.policy.snapshot.entries.is_empty());
+        assert!(state.policy.snapshot.error.is_none());
+        assert!(
+            state
+                .policy
+                .snapshot
+                .recovery_reclaim
+                .as_ref()
+                .unwrap()
+                .error
+                .as_ref()
+                .unwrap()
+                .contains("EAGAIN")
+        );
+        assert_eq!(
+            state
+                .policy
+                .snapshot
+                .recovery_reclaim
+                .as_ref()
+                .unwrap()
+                .attempts,
+            1
+        );
     }
 
     fn envelope(owner: &Owner, request: Request) -> Envelope {
