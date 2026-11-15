@@ -1311,6 +1311,8 @@ impl Store {
     }
     /// Gracefully stop the selected generation, escalating through its owner.
     /// No signal is sent to a persisted host PID.
+    /// An explicit signal overrides the admitted Compose service override,
+    /// which otherwise takes precedence over the image's stop signal.
     /// `Duration::MAX` disables escalation and waits indefinitely for owner exit.
     /// Finite grace periods that cannot fit the monotonic clock are rejected
     /// before signal delivery. Other failures can follow accepted stop effects.
@@ -2251,12 +2253,19 @@ fn run_vm<Backing>(
             new_session: true,
             stdin: if instance.config.interactive {
                 pvisor_guest::StdinMode::Pipe
+            } else if instance.config.tty.is_some() {
+                // Keep fd 0 on the selected PTY without exposing an input
+                // attachment. Closed intentionally supplies /dev/null instead.
+                pvisor_guest::StdinMode::Inherit
             } else {
                 pvisor_guest::StdinMode::Closed
             },
             tty: instance.config.tty,
             create_workdir: true,
-            attached: false,
+            // Workloads need reopenable standard descriptors: virtio-console
+            // ports are exclusive-open devices, so /dev/stdout would be EBUSY.
+            // The generic guest supervisor owns and drains the pipe relays.
+            attached: true,
             allocator_reclaim: None,
         }),
         control: true,

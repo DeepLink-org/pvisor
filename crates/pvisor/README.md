@@ -64,6 +64,17 @@ pool-loss diagnostics.
 Container stop-signal names/numbers use `pvisor-guest::control::parse_signal`,
 shared with the Windows frontend; host signal numbering does not select the
 Linux guest signal.
+Compose service `stop_signal` overrides are validated before storage and retained
+in the admitted container configuration, without rewriting image metadata. All container stop
+paths use that override unless a caller explicitly supplies another signal.
+Empty/null Compose values inherit the image default rather than the image
+parser's legacy empty-spelling SIGTERM fallback.
+Docker-style workloads use the generic guest's pipe/PTY output adapter rather
+than inheriting exclusive-open virtio-console ports. Standard-stream path opens
+therefore reach captured output instead of failing with EBUSY; PID 1 drains the
+existing relays before reporting workload completion.
+With `run -t` and no `-i`, all three workload descriptors use the PTY, but no
+host-input attachment is opened. Non-TTY closed stdin still receives EOF.
 Session commands use `pvisor`; `pvisor-daemon` owns cache and sandbox services and its optional
 pool. Replay is a
 Session frontend, not a runtime dependency. Cross-node placement and distributed scheduling

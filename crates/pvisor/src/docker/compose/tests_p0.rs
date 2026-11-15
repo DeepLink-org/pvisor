@@ -9,6 +9,93 @@ fn reconcile(project: &Project, store: &Store) -> Vec<Instance> {
 }
 
 #[test]
+fn compose_empty_stop_signal_inherits_image_and_has_the_unset_config_identity() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = store(directory.path());
+    let mut catalog = store.catalog().unwrap();
+    catalog.values_mut().next().unwrap().stop_signal = 3;
+    store.save_catalog(&catalog).unwrap();
+    let unset = load(
+        directory.path(),
+        "services: {app: {image: 'fixture:latest'}}",
+    )
+    .unwrap();
+    for value in ["''", "null"] {
+        let project = load(
+            directory.path(),
+            &format!("services: {{app: {{image: 'fixture:latest', stop_signal: {value}}}}}"),
+        )
+        .unwrap();
+        assert_eq!(
+            project.config_hash("app").unwrap(),
+            unset.config_hash("app").unwrap()
+        );
+        let instance = reconcile(&project, &store).remove(0);
+        assert!(instance.config.stop_signal.is_none());
+        assert_eq!(instance.image.stop_signal, 3);
+    }
+}
+
+#[test]
+fn compose_stop_signal_validates_and_keeps_the_admitted_override() {
+    let directory = tempfile::tempdir().unwrap();
+    for spelling in ["SIGINT", "INT", "2", "SIGTERM"] {
+        let project = load(
+            directory.path(),
+            &format!("services: {{app: {{image: 'fixture:latest', stop_signal: '{spelling}'}}}}"),
+        )
+        .unwrap();
+        assert!(project.config().unwrap().contains(spelling));
+    }
+    for invalid in ["0", "-1", "SIGZERO", "1000"] {
+        assert!(
+            load(
+                directory.path(),
+                &format!(
+                    "services: {{app: {{image: 'fixture:latest', stop_signal: '{invalid}'}}}}"
+                ),
+            )
+            .is_err()
+        );
+    }
+    let store = store(directory.path());
+    let project = load(
+        directory.path(),
+        "services: {app: {image: 'fixture:latest', stop_signal: SIGINT}}",
+    )
+    .unwrap();
+    let first = reconcile(&project, &store).remove(0);
+    assert_eq!(first.config.stop_signal, Some(2));
+    assert_eq!(
+        store.resolve(&first.id).unwrap().image.stop_signal,
+        store.images().unwrap()[0].stop_signal,
+        "service settings must not rewrite image metadata"
+    );
+    let changed = load(
+        directory.path(),
+        "services: {app: {image: 'fixture:latest', stop_signal: SIGTERM}}",
+    )
+    .unwrap();
+    let retained = changed
+        .reconcile(
+            &store,
+            &[],
+            &UpOptions {
+                recreate: RecreatePolicy::Never,
+                ..UpOptions::default()
+            },
+            &mut |_| {},
+        )
+        .unwrap()
+        .remove(0);
+    assert_eq!(retained.id, first.id);
+    assert_eq!(retained.config.stop_signal, Some(2));
+    let replaced = reconcile(&changed, &store).remove(0);
+    assert_ne!(replaced.id, first.id);
+    assert_eq!(replaced.config.stop_signal, Some(15));
+}
+
+#[test]
 fn compose_command_and_entrypoint_preserve_inherit_clear_and_replace() {
     let directory = tempfile::tempdir().unwrap();
     let store = store(directory.path());

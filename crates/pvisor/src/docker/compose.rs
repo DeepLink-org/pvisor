@@ -137,7 +137,7 @@ struct Service {
     tty: bool,
     #[serde(default)]
     restart: RestartPolicy,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     stop_signal: Option<String>,
     #[serde(default)]
     stop_grace_period: Option<String>,
@@ -321,8 +321,11 @@ impl Project {
             if let Some(healthcheck) = &service.healthcheck {
                 healthcheck.validate()?;
             }
+            // Compose's empty string leaves Docker's image default in effect;
+            // do not apply the shared image parser's legacy empty => SIGTERM.
+            service.stop_signal = service.stop_signal.take().filter(|value| !value.is_empty());
             if let Some(stop_signal) = &service.stop_signal {
-                signal(stop_signal)?;
+                signal(stop_signal).with_context(|| format!("service {key} stop_signal"))?;
             }
             if let Some(grace) = &service.stop_grace_period {
                 readiness::milliseconds(grace).context("invalid stop_grace_period")?;

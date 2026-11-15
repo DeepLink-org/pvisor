@@ -44,6 +44,8 @@ CouchDB 本轮复用先前已拉取的镜像，远端 TLS 拉取失败单独保�
 - Celery/Flower 共用 `mher/flower:2.0.1` 的实际 Celery/Redis 依赖；
   只读挂载 `tasks.py` 中的加法任务，不用同步本地函数替代队列执行。
   Redis 配置密码和 AOF，Flower 配置 Basic Auth；不宣称 Flower 历史本身持久化。
+  镜像声明了 `/data` volume，worker 和 Flower 分别使用明确命名卷，避免
+  默认 `down/up` 后留下上一代无法重新关联的匿名卷；最终 `down -v` 清理三者。
 - Flower API 显式请求 `refresh=1` 重新 inspect worker，避免把首次 inspect
   早于 worker 就绪造成的空缓存误判为队列故障。
 - SeaweedFS 使用单实例 `weed server -s3`，内部 master/volume/filer/gateway

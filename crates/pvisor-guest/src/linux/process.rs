@@ -647,6 +647,35 @@ mod tests {
     }
 
     #[test]
+    fn attached_inherited_pty_keeps_stdin_terminal_without_input_attachment() {
+        let processes = Processes::default();
+        let mut config = attached_config(
+            "test -t 0 && test -t 1 && test -t 2 && printf terminal",
+            Some([24, 80]),
+            false,
+        );
+        config.process.as_mut().unwrap().stdin = StdinMode::Inherit;
+        let Spawned {
+            process,
+            input,
+            mut outputs,
+        } = processes.spawn(&config, false).unwrap();
+        assert!(input.is_none());
+        assert_eq!(processes.supervise(process).unwrap(), 0);
+        assert_eq!(outputs.len(), 1);
+        let mut bytes = Vec::new();
+        let mut buffer = [0; 1024];
+        loop {
+            let count = read_chunk(&mut outputs[0].0, &mut buffer).unwrap();
+            if count == 0 {
+                break;
+            }
+            bytes.extend_from_slice(&buffer[..count]);
+        }
+        assert_eq!(bytes, b"terminal");
+    }
+
+    #[test]
     fn attached_interactive_pty_accepts_input() {
         let processes = Processes::default();
         let config = attached_config(
