@@ -13,6 +13,44 @@ use std::{
 };
 
 const MAX_SESSION_BYTES: u64 = 64 * 1024 * 1024;
+const MAX_CACHED_SESSION_BYTES: usize = 256 * 1024;
+
+// Cache only pure deserialization of exact, already-read bytes. Every lookup
+// still opens and validates the current descriptor, enforces its byte bound and
+// checks the decoded root. No path, metadata, lease or admission result is cached.
+static PARSED_TASK_SESSION: std::sync::Mutex<Option<ParsedTaskSession>> =
+    std::sync::Mutex::new(None);
+
+struct ParsedTaskSession {
+    hash: blake3::Hash,
+    session: std::sync::Arc<Session>,
+}
+
+fn decode_task_session(bytes: &[u8]) -> anyhow::Result<Session> {
+    if bytes.len() > MAX_CACHED_SESSION_BYTES {
+        return Ok(serde_json::from_slice(bytes)?);
+    }
+    let hash = blake3::hash(bytes);
+    let cached = PARSED_TASK_SESSION.lock().ok().and_then(|entry| {
+        entry
+            .as_ref()
+            .filter(|entry| entry.hash == hash)
+            .map(|entry| entry.session.clone())
+    });
+    if let Some(session) = cached {
+        // Snapshots remain independent; cloning happens outside the cache lock.
+        return Ok((*session).clone());
+    }
+    let session: Session = serde_json::from_slice(bytes)?;
+    let parsed = ParsedTaskSession {
+        hash,
+        session: std::sync::Arc::new(session.clone()),
+    };
+    if let Ok(mut entry) = PARSED_TASK_SESSION.lock() {
+        *entry = Some(parsed);
+    }
+    Ok(session)
+}
 
 /// Durable continuation phase of a Session, independent of an Execution's live pause state.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -250,6 +288,13 @@ impl<Profile: Serialize> Session<Profile> {
 
 impl<Profile: serde::de::DeserializeOwned> Session<Profile> {
     pub(crate) fn read_profile(root: &Path) -> anyhow::Result<Option<Self>> {
+        Self::read_profile_using(root, |bytes| Ok(serde_json::from_slice(bytes)?))
+    }
+
+    fn read_profile_using(
+        root: &Path,
+        decode: impl FnOnce(&[u8]) -> anyhow::Result<Self>,
+    ) -> anyhow::Result<Option<Self>> {
         use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
         let file = match std::fs::OpenOptions::new()
             .read(true)
@@ -282,9 +327,15 @@ impl<Profile: serde::de::DeserializeOwned> Session<Profile> {
             bytes.len() as u64 <= MAX_SESSION_BYTES,
             "Session record exceeds 64 MiB"
         );
-        let session: Self = serde_json::from_slice(&bytes)?;
+        let session = decode(&bytes)?;
         session.validate_root(root)?;
         Ok(Some(session))
+    }
+}
+
+impl Session {
+    pub(crate) fn read_task_profile(root: &Path) -> anyhow::Result<Option<Self>> {
+        Self::read_profile_using(root, decode_task_session)
     }
 }
 
@@ -707,6 +758,55 @@ impl Session {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parsed_session_reuse_never_reuses_file_authority_or_rebinds_a_snapshot() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let (root, mut session, _, _, _) = fixture();
+        session.write().unwrap();
+        let path = root
+            .path()
+            .join(super::super::super::session_execution::STATE);
+        let original = Session::read_stage(root.path()).unwrap().unwrap();
+        assert_eq!(
+            Session::read_stage(root.path())
+                .unwrap()
+                .unwrap()
+                .active_execution(),
+            original.active_execution()
+        );
+
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(Session::read_stage(root.path()).is_err());
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let alias = root.path().join("alias.json");
+        std::fs::hard_link(&path, &alias).unwrap();
+        assert!(Session::read_stage(root.path()).is_err());
+        std::fs::remove_file(alias).unwrap();
+
+        let foreign = tempfile::tempdir().unwrap();
+        std::fs::copy(
+            &path,
+            foreign
+                .path()
+                .join(super::super::super::session_execution::STATE),
+        )
+        .unwrap();
+        assert!(
+            Session::read_stage(foreign.path()).is_err(),
+            "identical cached bytes cannot authorize a foreign root"
+        );
+
+        session.active_execution = "successor".into();
+        session.owner_epoch = "successor".into();
+        session.write().unwrap();
+        let successor = Session::read_stage(root.path()).unwrap().unwrap();
+        assert_eq!(successor.active_execution(), "successor");
+        assert_eq!(original.active_execution(), "execution");
+        std::fs::write(&path, b"{invalid").unwrap();
+        assert!(Session::read_stage(root.path()).is_err());
+    }
 
     #[test]
     fn session_record_bulk_read_preserves_complete_json_validation() {

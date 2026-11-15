@@ -99,7 +99,7 @@ impl Session {
             !root.join("execution-session.json").try_exists()?,
             "legacy execution Session requires its owning binary; no implicit migration"
         );
-        let session = match Self::read_profile(&root)? {
+        let session = match Self::read_task_profile(&root)? {
             Some(session) => session,
             None => return Ok(None),
         };

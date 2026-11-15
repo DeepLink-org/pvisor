@@ -98,6 +98,9 @@ schema 4 `session.json`, written/read by the same Session implementation.
 These bounded private records use compact JSON. Offline status reconciles and
 projects one freshly leased Session snapshot, without caching file authority or
 carrying that snapshot into later mutations.
+Repeated reads may reuse pure parsing of identical bytes for one task record of
+at most 256 KiB. The current file, permissions, link count, byte bound and root
+binding are still checked on every read; larger records are parsed without caching.
 Container start/restart selects a new Execution while keeping Session identity;
 automatic retries retain one owner epoch. Compose membership is resource
 ownership metadata, not another lifecycle or the owner of health configuration.
