@@ -1018,6 +1018,10 @@ impl<S: ColdRamStore> Pager<S> {
         let pages = self.replaced.len();
         let mut sparse_zero_bytes = 0;
         let mut copied_bytes = 0;
+        let mut copied_runs = 0;
+        let mut remap_runs = 0;
+        // Reuse bounded staging storage; never pass live guest mappings to writeback.
+        let mut copy_buffer = Vec::new();
         while let Some(&index) = self.replaced.first() {
             let range = self.pages.range(index);
             let region = self
@@ -1068,8 +1072,30 @@ impl<S: ColdRamStore> Pager<S> {
                     copied_bytes += count * 4096;
                 }
             } else {
-                backing.file().write_all_at(&bytes, offset)?;
-                copied_bytes += 4096;
+                copy_buffer.clear();
+                copy_buffer.extend_from_slice(&bytes);
+                // Preserve sparse-zero boundaries and never cross a region or
+                // an untracked page. The transition barrier keeps bytes stable.
+                while count < 4096 && self.replaced.contains(&(index + count)) {
+                    let next = self.pages.range(index + count);
+                    if next.start != range.start + (count * 4096) as u64
+                        || next.len != 4096
+                        || next.start + next.len > region.as_ptr() as u64 + region.len()
+                    {
+                        break;
+                    }
+                    let live = unsafe { std::slice::from_raw_parts(next.start as *const u8, 4096) };
+                    if live.iter().all(|&byte| byte == 0) {
+                        break;
+                    }
+                    copy_buffer.extend_from_slice(live);
+                    count += 1;
+                }
+                // Do not replace mappings or retire pins until the entire run
+                // has been written successfully (including short-write retries).
+                backing.file().write_all_at(&copy_buffer, offset)?;
+                copied_bytes += copy_buffer.len();
+                copied_runs += 1;
             }
             let mapped = unsafe {
                 libc::mmap(
@@ -1086,6 +1112,7 @@ impl<S: ColdRamStore> Pager<S> {
             if mapped == libc::MAP_FAILED {
                 return Err(io::Error::last_os_error());
             }
+            remap_runs += 1;
             for index in index..index + count {
                 if let Some(object) = self.pages[index].cold.take() {
                     self.retired.push(*object);
@@ -1095,7 +1122,7 @@ impl<S: ColdRamStore> Pager<S> {
         }
         if std::env::var_os("PVISOR_EXPERIMENTAL_MEMORY_METRICS").is_some() {
             eprintln!(
-                "pvisor-shared-reattach pages={pages} logical_bytes={} elapsed_us={} copied_bytes={copied_bytes} sparse_zero_bytes={sparse_zero_bytes}",
+                "pvisor-shared-reattach pages={pages} logical_bytes={} elapsed_us={} copied_bytes={copied_bytes} sparse_zero_bytes={sparse_zero_bytes} copied_runs={copied_runs} remap_runs={remap_runs}",
                 pages * 4096,
                 started.elapsed().as_micros()
             );
@@ -1691,6 +1718,51 @@ mod tests {
         }
     }
     #[test]
+    fn shared_backing_nonzero_batch_limit_preserves_tail() {
+        let size = 4097 * 4096;
+        let mut a =
+            backed_shared_pager_with_size(Arc::new(Mutex::new(SharedStore::default())), size);
+        a.release_free_pages(&[(0, size)]).unwrap();
+        let mut expected = vec![0x31; size];
+        expected[size - 1] = 0x79;
+        a.memory.write_slice(&expected, GuestAddress(0)).unwrap();
+        a.reattach_backing().unwrap();
+        assert!(a.replaced.is_empty());
+        crate::vmm::ram::reclaim(&a.memory).unwrap();
+        let mut actual = vec![0; size];
+        a.memory.read_slice(&mut actual, GuestAddress(0)).unwrap();
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn shared_backing_batched_nonzero_preserves_zero_gaps_and_cow_bytes() {
+        let mut a =
+            backed_shared_pager_with_size(Arc::new(Mutex::new(SharedStore::default())), 8 * 4096);
+        for index in [0, 1, 2, 3, 5, 6, 7] {
+            share_page(&mut a, index);
+            a.memory
+                .write_slice(&[index as u8 + 1], GuestAddress(index as u64 * 4096 + 17))
+                .unwrap();
+        }
+        a.memory
+            .write_slice(&[0; 4096], GuestAddress(2 * 4096))
+            .unwrap();
+        let mut expected = vec![0; 8 * 4096];
+        a.memory.read_slice(&mut expected, GuestAddress(0)).unwrap();
+        a.reattach_backing().unwrap();
+        assert!(a.replaced.is_empty());
+        assert_eq!(a.retired.len(), 7);
+        crate::vmm::ram::reclaim(&a.memory).unwrap();
+        let mut actual = vec![0; expected.len()];
+        a.memory.read_slice(&mut actual, GuestAddress(0)).unwrap();
+        assert_eq!(actual, expected);
+        a.reattach_backing().unwrap();
+        crate::vmm::ram::reclaim(&a.memory).unwrap();
+        a.memory.read_slice(&mut actual, GuestAddress(0)).unwrap();
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
     fn shared_backing_sparse_free_pages_preserve_reused_cow_and_neighbors() {
         use std::os::unix::fs::MetadataExt;
         let mut a =
@@ -1807,6 +1879,7 @@ mod tests {
         use std::os::fd::AsRawFd;
         let mut a = backed_shared_pager(Arc::new(Mutex::new(SharedStore::default())));
         share_page(&mut a, 0);
+        share_page(&mut a, 1);
         a.memory.write_slice(&[0x31], GuestAddress(0)).unwrap();
         let fd = a
             .memory
@@ -1822,6 +1895,9 @@ mod tests {
         assert!(a.reattach_backing().is_err());
         assert!(a.replaced.contains(&0));
         assert!(a.pages[0].cold.is_some());
+        assert!(a.replaced.contains(&1));
+        assert!(a.pages[1].cold.is_some());
+        assert!(a.retired.is_empty());
         assert_eq!(a.memory.read_obj::<u8>(GuestAddress(0)).unwrap(), 0x31);
     }
 

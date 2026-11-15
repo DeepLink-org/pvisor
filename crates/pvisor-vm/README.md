@@ -2006,3 +2006,10 @@ advice 的实例保留原有所有权策略，不进入匿名零映射替换。�
 
 工程验证及 64/256 MiB 整个 VMM 的 footprint/RSS 对照见
 [allocator reclaim 实验](../../benchmark/memory/README.md#pid-1-allocator-reclaim-and-whole-vmm-memory)。
+
+Managed shared-backing reattachment batches consecutive nonzero replaced pages
+into at most 16 MiB per write/remap, within one RAM region. Zero pages and
+untracked gaps end each batch. A reusable staging buffer preserves the existing
+write-before-remap and pin-retirement ordering; errors remain fatal. Optional
+`PVISOR_EXPERIMENTAL_MEMORY_METRICS` diagnostics include `copied_runs` and
+`remap_runs` (logical batches, not physical SSD writes or short-write retries).
