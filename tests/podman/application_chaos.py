@@ -1042,16 +1042,16 @@ class ApplicationChaos:
             print(f"round {index + 1}/{len(schedule)}: {case} passed", flush=True)
 
     def archive(self):
-        for entry in (self.store / "instances").glob("*/instance.json"):
+        for entry in (self.store / "instances").glob("*/session.json"):
             record = json.loads(entry.read_text())
-            directory = self.output / "owner-records" / record["name"]
+            directory = self.output / "owner-records" / record["profile"]["name"]
             directory.mkdir(parents=True, exist_ok=True)
             for path in entry.parent.iterdir():
                 if path.is_file() and (
                     path.suffix in {".log", ".json"} or path.name.startswith("boot-")
                 ):
                     shutil.copy2(path, directory / path.name)
-            completion = self.store / "results" / (record["id"] + ".json")
+            completion = self.store / "results" / (record["run_id"] + ".json")
             if completion.exists():
                 shutil.copy2(completion, directory / "completion.json")
 

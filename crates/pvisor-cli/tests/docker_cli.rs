@@ -10,6 +10,8 @@ use std::{
 mod compose_acceptance;
 #[path = "common/compose_edge_cases.rs"]
 mod compose_edge_cases;
+#[path = "common/docker_p0_acceptance.rs"]
+mod docker_p0_acceptance;
 
 fn command(home: &Path) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_pvisor"));
@@ -42,8 +44,6 @@ fn grouped_commands_and_hostname_help_boundary_are_inert() {
         (vec!["run", "-h"], 125),
         (vec!["run", "-h", "guest", "image"], 125),
         (vec!["container", "run", "-h", "guest", "image"], 125),
-        (vec!["container", "inspect", "missing"], 2),
-        (vec!["image", "inspect", "missing"], 2),
         (vec!["container", "unsupported"], 2),
         (vec!["image", "unsupported"], 2),
     ] {

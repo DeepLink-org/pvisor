@@ -27,12 +27,20 @@ pub use crate::image::oci::PullProgress;
 pub mod build;
 /// Validated, image-based Compose projects and project-scoped lifecycle.
 pub mod compose;
+mod copy;
 mod file_bind;
 /// Owner-supervised, generation-scoped container health checks.
 pub mod health;
 mod images;
+mod lifecycle;
+mod metadata;
+mod session;
+pub use session::ContainerProfile;
 mod staging;
+mod volumes;
+pub use lifecycle::RestartPolicy;
 pub use staging::StagedMount;
+pub use volumes::Volume;
 /// Persistent Docker-style network management and IPAM.
 pub mod network;
 pub use network::{Network, NetworkCreate};
@@ -332,12 +340,36 @@ pub struct Create {
     /// explicitly trust each other for IPv4 TCP, UDP and ICMP.
     #[serde(default)]
     pub peers: Option<crate::PeerNetworkSettings>,
+    /// Explicit label overrides at admission; published instances hold effective
+    /// image labels plus these overrides. Keys must be nonempty, keys/values
+    /// NUL-free. Labels never authorize resource adoption, stop or deletion.
+    #[serde(default)]
+    pub labels: BTreeMap<String, String>,
+    /// Owner-supervised workload restart policy. Auto-removal and staged mounts
+    /// require No. Owner/host death is not automatically recovered.
+    #[serde(default)]
+    pub restart: RestartPolicy,
+    /// Optional Linux stop signal override; omission inherits the pinned image.
+    #[serde(default)]
+    pub stop_signal: Option<i32>,
+    /// Default stop grace in milliseconds. Explicit stop/restart timeouts win.
+    #[serde(default = "lifecycle::default_stop_timeout")]
+    pub stop_timeout_ms: u64,
+    /// Effective owner-supervised check. None inherits image defaults for an
+    /// ordinary container admission; Compose supplies its resolved override.
+    #[serde(default)]
+    pub healthcheck: Option<health::Healthcheck>,
+    /// Explicitly disable an image check for ordinary container admission.
+    #[serde(default)]
+    pub no_healthcheck: bool,
 }
 
-/// Stable container identity plus the current launch generation.
+/// Read-only compatibility snapshot of a container-profile Session. This value
+/// is not a second durable lifecycle record; runtime mutation rereads/fences the
+/// authoritative Session before writing it.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Instance<Backing = CachedImage> {
-    /// Schema version; unknown versions refuse mutation.
+    /// Compatibility-view version (1), not the durable Session schema.
     pub schema: u32,
     /// Full 64-hex container ID.
     pub id: String,
@@ -355,10 +387,14 @@ pub struct Instance<Backing = CachedImage> {
     pub cwd: PathBuf,
     /// Effective guest identity.
     pub user: String,
-    /// `created`, `starting`, `running`, or `exited`.
+    /// `created`, `starting`, `running`, `restarting` (owner-held backoff), or `exited`.
     pub state: String,
     /// Unique launch generation; prevents stale control requests after restart.
     pub generation: String,
+    /// Continuous Session supervisor admission, retained through automatic
+    /// Execution retries and replaced by an explicit start.
+    #[serde(default)]
+    pub owner_epoch: String,
     /// Launch admission time, used only to reconcile abandoned startup records.
     #[serde(default)]
     pub started_ms: u64,
@@ -370,6 +406,9 @@ pub struct Instance<Backing = CachedImage> {
     /// Names alone never grant Compose permission to stop or remove a container.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compose: Option<compose::Membership>,
+    /// Automatic restarts since the last explicit start; manual restart resets it.
+    #[serde(default)]
+    pub restart_count: u32,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -401,6 +440,13 @@ impl Output {
         stderr: &mut impl Write,
     ) -> anyhow::Result<i32> {
         let mut completed = None;
+        let generation_result = self.result.with_file_name(format!(
+            "{}-{generation}.json",
+            self.result
+                .file_stem()
+                .context("invalid result path")?
+                .to_string_lossy()
+        ));
         loop {
             io::copy(&mut self.stdout, stdout)?;
             io::copy(&mut self.stderr, stderr)?;
@@ -411,7 +457,13 @@ impl Output {
             // cannot be reported as the fallback status 137.
             let active = lease_active(&self.directory.join("owner.lock"))?
                 || lease_active(&self.directory.join("vm.lock"))?;
-            if let Ok(file) = File::open(&self.result) {
+            if let Ok(file) = File::open(&generation_result).or_else(|error| {
+                if error.kind() == io::ErrorKind::NotFound {
+                    File::open(&self.result)
+                } else {
+                    Err(error)
+                }
+            }) {
                 let result: Completion = serde_json::from_reader(file)?;
                 if result.generation == generation {
                     completed.get_or_insert((result.code, Instant::now()));
@@ -563,39 +615,52 @@ impl Store {
     fn directory(&self, id: &str) -> PathBuf {
         self.root.join("instances").join(id)
     }
-    fn save<Backing: Serialize>(&self, instance: &Instance<Backing>) -> anyhow::Result<()> {
-        crate::util::write_private_json(
-            &self.directory(&instance.id).join("instance.json"),
-            instance,
-        )
+    fn save<Backing: Serialize + Clone>(&self, instance: &Instance<Backing>) -> anyhow::Result<()> {
+        self.save_session(instance)
     }
     fn all(&self) -> anyhow::Result<Vec<Instance>> {
         let mut instances = Vec::new();
         for entry in fs::read_dir(self.root.join("instances"))? {
-            let path = entry?.path().join("instance.json");
-            if path.is_file() {
+            let entry = entry?;
+            let id = entry
+                .file_name()
+                .into_string()
+                .map_err(|_| anyhow::anyhow!("invalid Session name"))?;
+            if entry.path().join("instance.json").try_exists()? {
+                bail!(
+                    "legacy container record requires its owning binary; recreate it as a Session"
+                );
+            }
+            if entry
+                .path()
+                .join(crate::runtime::session_execution::STATE)
+                .is_file()
+            {
                 // Unlocked startup observers may scan while another owner
                 // auto-removes its own record. Only disappearance is benign;
                 // malformed records and other I/O failures remain errors.
-                let file = match File::open(path) {
-                    Ok(file) => file,
-                    Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
-                    Err(error) => return Err(error.into()),
+                let Some(mut instance) = self.load_instance::<CachedImage>(&id)? else {
+                    continue;
                 };
-                let mut instance: Instance = serde_json::from_reader(file)?;
                 ensure!(
                     instance.schema == 1
                         && instance.id.len() == 64
                         && instance.id.bytes().all(|c| c.is_ascii_hexdigit()),
                     "unknown container record"
                 );
-                if (instance.state == "running"
+                if (matches!(instance.state.as_str(), "running" | "restarting")
                     || instance.state == "starting"
                         && crate::unix_now_ms().saturating_sub(instance.started_ms) > 30_000)
                     && !self.active(&instance)?
                 {
                     instance.state = "exited".into();
-                    instance.exit_code = Some(137);
+                    // An unlocked observer can read the old running projection
+                    // just before orderly completion releases the owner lease.
+                    // Prefer that generation's committed receipt to a crash guess.
+                    instance.exit_code = Some(
+                        self.completion(&instance)?
+                            .map_or(137, |completion| completion.code),
+                    );
                 }
                 instances.push(instance);
             }
@@ -769,32 +834,31 @@ impl Store {
         Ok(self
             .all()?
             .into_iter()
-            .filter(|i| all || i.state == "running")
+            .filter(|i| all || matches!(i.state.as_str(), "running" | "restarting"))
             .collect())
     }
     /// Resolve an exact name, full ID, or unambiguous ID prefix.
     pub fn resolve(&self, selector: &str) -> anyhow::Result<Instance> {
+        self.find(selector)?
+            .with_context(|| format!("No such container: {selector}"))
+    }
+    /// Find a Session/container without treating a missing selector as an error.
+    /// Exact names/IDs precede prefixes. Ambiguity, corrupt records and unsupported
+    /// schemas remain errors; callers must not fall back to another backend then.
+    pub fn find(&self, selector: &str) -> anyhow::Result<Option<Instance>> {
         let instances = self.all()?;
         if let Some(exact) = instances
             .iter()
             .find(|i| i.name == selector || i.id == selector)
         {
-            return Ok(exact.clone());
+            return Ok(Some(exact.clone()));
         }
         let found: Vec<_> = instances
             .into_iter()
             .filter(|i| !selector.is_empty() && i.id.starts_with(selector))
             .collect();
-        ensure!(
-            found.len() == 1,
-            "{} container: {selector}",
-            if found.is_empty() {
-                "No such"
-            } else {
-                "ambiguous"
-            }
-        );
-        Ok(found.into_iter().next().unwrap())
+        ensure!(found.len() <= 1, "ambiguous container: {selector}");
+        Ok(found.into_iter().next())
     }
     /// Create a stopped instance. A missing image is pulled before publication.
     pub fn create(&self, config: Create) -> anyhow::Result<Instance> {
@@ -827,6 +891,7 @@ impl Store {
         membership: Option<compose::Membership>,
         pinned: Option<Image>,
     ) -> anyhow::Result<Instance> {
+        lifecycle::validate(&config)?;
         staging::validate_mounts(&mut config)?;
         if let Some(platform) = &config.platform {
             require_native_platform(platform)?;
@@ -899,6 +964,13 @@ impl Store {
             self.pull_with_progress(&config.image, progress)?
         };
         require_native_platform(&image.platform)?;
+        if membership.is_none() {
+            if config.no_healthcheck {
+                config.healthcheck = None;
+            } else if config.healthcheck.is_none() {
+                config.healthcheck = health::image_default(self, &image)?;
+            }
+        }
         if config.memory_pool.is_some() || config.shared_kernel_base.is_some() {
             let image_root = self.open_image(&image)?;
             let rootfs = image_root.rootfs().canonicalize()?;
@@ -1064,6 +1136,9 @@ impl Store {
             "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin".into()
         });
         let user = config.user.clone().unwrap_or_else(|| image.user.clone());
+        let mut labels = self.image_labels(&image)?;
+        labels.extend(config.labels);
+        config.labels = labels;
         let instance = Instance {
             schema: 1,
             id,
@@ -1076,10 +1151,12 @@ impl Store {
             user,
             state: "created".into(),
             generation: String::new(),
+            owner_epoch: String::new(),
             started_ms: 0,
             exit_code: None,
             created_ms: crate::unix_now_ms(),
             compose: membership,
+            restart_count: 0,
         };
         self.save(&instance)?;
         Ok(instance)
@@ -1107,6 +1184,8 @@ impl Store {
     /// Launch a new generation; `start` never changes the pinned image or upper.
     /// Concurrent callers join an already-starting generation and observe its
     /// bounded readiness/completion result, without holding the catalog lock.
+    /// An active automatic restart returns its current restarting projection
+    /// without launching a second owner; readiness still needs observation.
     pub fn start(&self, selector: &str) -> anyhow::Result<Instance> {
         let mut instance;
         {
@@ -1119,10 +1198,13 @@ impl Store {
                     .is_none_or(|member| member.replaces.is_none()),
                 "pending Compose replacements cannot be started directly; retry compose up or use compose down"
             );
+            lifecycle::validate(&instance.config)?;
             staging::validate_mounts(&mut instance.config)?;
             require_native_platform(&instance.image.platform)?;
             self.validate_network_attachment(&instance)?;
-            if self.active(&instance)? && instance.state == "running" {
+            if self.active(&instance)?
+                && matches!(instance.state.as_str(), "running" | "restarting")
+            {
                 return Ok(instance);
             }
             if instance.state != "starting" {
@@ -1138,9 +1220,11 @@ impl Store {
                 let owner_lease = lease_file(&self.directory(&instance.id).join("owner.lock"))?;
                 owner_lease.lock_exclusive()?;
                 instance.generation = uuid();
+                instance.owner_epoch = instance.generation.clone();
                 instance.started_ms = crate::unix_now_ms();
                 instance.state = "starting".into();
                 instance.exit_code = None;
+                instance.restart_count = 0;
                 self.save(&instance)?;
                 let spawn = (|| -> anyhow::Result<()> {
                     let mut command = Command::new(std::env::current_exe()?);
@@ -1236,13 +1320,7 @@ impl Store {
         timeout: Duration,
         requested_signal: Option<&str>,
     ) -> anyhow::Result<()> {
-        let instance = {
-            let _guard = self.lock()?;
-            self.resolve(selector)?
-        };
-        if !self.active(&instance)? {
-            return Ok(());
-        }
+        let parsed_signal = requested_signal.map(signal).transpose()?;
         let deadline = if timeout == Duration::MAX {
             None
         } else {
@@ -1252,14 +1330,29 @@ impl Store {
                     .context("stop timeout exceeds monotonic clock range")?,
             )
         };
+        let instance = {
+            let _guard = self.lock()?;
+            let instance = self.resolve(selector)?;
+            if self.active(&instance)? {
+                // Commit suppression under the same catalog lock as restart
+                // admission. A stop during backoff must not launch a successor.
+                crate::util::write_private_json(
+                    &self.directory(&instance.id).join("stop-request.json"),
+                    &instance.generation,
+                )?;
+            }
+            instance
+        };
+        if !self.active(&instance)? {
+            return Ok(());
+        }
         let request = Request::Stop {
-            signal: requested_signal
-                .map(signal)
-                .transpose()?
+            signal: parsed_signal
+                .or(instance.config.stop_signal)
                 .unwrap_or(instance.image.stop_signal),
         };
         let _ = self.request(&instance, &request);
-        while self.active(&instance)? {
+        while self.generation_active(&instance)? {
             if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
                 break;
             }
@@ -1268,7 +1361,7 @@ impl Store {
         {
             // Auto-removal uses the same lock; never publish into a removed instance.
             let _guard = self.lock()?;
-            if !self.active(&instance)? {
+            if !self.generation_active(&instance)? {
                 return Ok(());
             }
             crate::util::write_private_json(
@@ -1277,7 +1370,7 @@ impl Store {
             )?;
         }
         let deadline = Instant::now() + Duration::from_secs(10);
-        while self.directory(&instance.id).exists() && self.active(&instance)? {
+        while self.directory(&instance.id).exists() && self.generation_active(&instance)? {
             ensure!(
                 Instant::now() < deadline,
                 "owner did not confirm VM termination"
@@ -1286,6 +1379,28 @@ impl Store {
         }
         Ok(())
     }
+    /// Deliver a Linux signal to the selected main execution without a grace
+    /// timer or later escalation. SIGKILL uses confirmed forced teardown and
+    /// suppresses automatic restart; other signals may leave it running.
+    /// Signals are routed through the owned guest generation, never a host PID.
+    pub fn signal(&self, selector: &str, requested: &str) -> anyhow::Result<()> {
+        let number = signal(requested)?;
+        let instance = self.resolve(selector)?;
+        ensure!(self.active(&instance)?, "Session is not running");
+        if number == 9 {
+            return self.stop(&instance.id, Duration::ZERO, Some(requested));
+        }
+        ensure!(instance.state == "running", "Session is not running");
+        ensure!(
+            matches!(
+                self.request(&instance, &Request::Stop { signal: number })?,
+                Reply::Ready
+            ),
+            "guest did not acknowledge signal"
+        );
+        Ok(())
+    }
+
     /// Delete a stopped container. Named volumes always survive; `volumes` also
     /// removes its anonymous volumes. Force termination must be requested first.
     pub fn remove(&self, selector: &str, volumes: bool) -> anyhow::Result<()> {
@@ -1709,7 +1824,7 @@ fn owner(store: &Store, mut instance: Instance) -> anyhow::Result<()> {
             "stale owner admission"
         );
     }
-    run_owner_generation(store, &mut instance)?;
+    lifecycle::supervise(store, &mut instance)?;
     drop(lock);
     // Detached owners have no frontend to reap them; the OS adopts them.
     std::process::exit(0)
@@ -1725,10 +1840,11 @@ fn generation_stderr(path: &Path, offset: u64) -> io::Result<String> {
     Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
-fn run_owner_generation(store: &Store, instance: &mut Instance) -> anyhow::Result<()> {
+fn run_owner_generation(store: &Store, instance: &mut Instance) -> anyhow::Result<Duration> {
     let directory = store.directory(&instance.id);
     let mut stages = Vec::new();
     let mut spawned = false;
+    let mut running_since = None;
     let result = (|| -> anyhow::Result<i32> {
         stages = staging::prepare(store, instance)?;
         let mut listeners = Vec::new();
@@ -1789,6 +1905,7 @@ fn run_owner_generation(store: &Store, instance: &mut Instance) -> anyhow::Resul
                 && let Ok(Reply::Ready) = store.request(instance, &Request::Ping {})
             {
                 instance.state = "running".into();
+                running_since = Some(Instant::now());
                 let _guard = store.lock()?;
                 store.save(instance)?;
                 fs::write(
@@ -1796,11 +1913,7 @@ fn run_owner_generation(store: &Store, instance: &mut Instance) -> anyhow::Resul
                     b"ready",
                 )?;
                 drop(_guard);
-                if let Some(check) = instance
-                    .compose
-                    .as_ref()
-                    .and_then(|member| member.healthcheck.clone())
-                {
+                if let Some(check) = instance.config.healthcheck.clone() {
                     health = Some(health::Monitor::start(
                         store.clone(),
                         instance.clone(),
@@ -1822,7 +1935,8 @@ fn run_owner_generation(store: &Store, instance: &mut Instance) -> anyhow::Resul
             std::thread::sleep(Duration::from_millis(20));
         }
     })();
-    settle_owner_generation(store, instance, &mut stages, result, spawned)
+    settle_owner_generation(store, instance, &mut stages, result, spawned)?;
+    Ok(running_since.map(|time| time.elapsed()).unwrap_or_default())
 }
 
 fn settle_owner_generation(
@@ -1871,16 +1985,28 @@ fn finish_instance(
     code: i32,
     error: Option<String>,
 ) -> anyhow::Result<()> {
+    let completion = Completion {
+        generation: instance.generation.clone(),
+        code,
+        error,
+    };
+    // Keep per-generation receipts so waiters cannot lose an exit when a
+    // restart quickly overwrites the current-generation projection.
+    if !instance.generation.is_empty() {
+        crate::util::write_private_json(
+            &store
+                .root
+                .join("results")
+                .join(format!("{}-{}.json", instance.id, instance.generation)),
+            &completion,
+        )?;
+    }
     crate::util::write_private_json(
         &store
             .root
             .join("results")
             .join(format!("{}.json", instance.id)),
-        &Completion {
-            generation: instance.generation.clone(),
-            code,
-            error,
-        },
+        &completion,
     )?;
     instance.state = "exited".into();
     instance.exit_code = Some(code);
@@ -2493,7 +2619,7 @@ mod tests {
         }
     }
 
-    fn fixture() -> (tempfile::TempDir, Store, Image) {
+    pub(super) fn fixture() -> (tempfile::TempDir, Store, Image) {
         let directory = tempfile::tempdir().unwrap();
         let store = Store::open(directory.path().join("docker")).unwrap();
         let context = directory.path().join("context");
@@ -3223,7 +3349,7 @@ mod tests {
             instance.generation
         );
     }
-    fn request() -> Create {
+    pub(super) fn request() -> Create {
         Create {
             name: Some("test".into()),
             image: "fixture:latest".into(),
@@ -3247,6 +3373,12 @@ mod tests {
             network_name: None,
             ipv4_address: None,
             peers: None,
+            labels: BTreeMap::new(),
+            restart: RestartPolicy::No,
+            stop_signal: None,
+            stop_timeout_ms: 10_000,
+            healthcheck: None,
+            no_healthcheck: false,
         }
     }
     #[test]
@@ -3565,6 +3697,8 @@ mod tests {
     fn docker_start_joins_starting_generation_and_reports_its_failure() {
         let (_temporary, store, _) = fixture();
         let mut instance = store.create(request()).unwrap();
+        instance.generation = uuid();
+        instance.owner_epoch = instance.generation.clone();
         instance.state = "starting".into();
         instance.started_ms = crate::unix_now_ms();
         store.save(&instance).unwrap();

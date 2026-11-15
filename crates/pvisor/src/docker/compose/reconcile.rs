@@ -131,10 +131,7 @@ impl Project {
                 }
             });
             let healthcheck = if !replace && let Some(previous) = &previous {
-                previous
-                    .compose
-                    .as_ref()
-                    .and_then(|member| member.healthcheck.clone())
+                previous.config.healthcheck.clone()
             } else {
                 self.resolve_healthcheck(store, &service, &image)?
             };
@@ -194,6 +191,7 @@ impl Project {
                 continue;
             }
             let mut config = self.create_request(&plan.service, store, &plan.image)?;
+            config.healthcheck = plan.healthcheck.clone();
             if let Some(previous) = &plan.previous {
                 config.name = Some(format!("compose-pending-{}", uuid()));
                 for mount in &previous.config.mounts {
@@ -215,7 +213,6 @@ impl Project {
                     service: plan.service.clone(),
                     config_hash: plan.hash.clone(),
                     replaces: plan.previous.as_ref().map(|old| old.id.clone()),
-                    healthcheck: plan.healthcheck.clone(),
                 }),
                 Some(plan.image.clone()),
             )?;
@@ -225,7 +222,13 @@ impl Project {
         for (plan, instance) in prepared {
             if plan.replace {
                 let previous = plan.previous.as_ref().unwrap();
-                store.stop(&previous.id, options.timeout, None)?;
+                store.stop(
+                    &previous.id,
+                    options
+                        .timeout
+                        .unwrap_or(Duration::from_millis(previous.config.stop_timeout_ms)),
+                    None,
+                )?;
                 ready.push(self.promote(store, &instance.id, &previous.id, &plan.service)?);
             } else {
                 ready.push(instance);

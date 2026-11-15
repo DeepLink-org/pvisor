@@ -417,10 +417,14 @@ documented under [Windows container commands](#windows-container-commands).
 
 `pvisor run` creates a container, optionally with Linux staged binds as described
 below; `spawn` retains its existing Session stage/review/apply semantics.
-Unknown command names and leading Session options default to `spawn`;
-`pvisor -- COMMAND` explicitly selects default Session execution. Use `spawn` for Sessions.
-Each container
-uses its own Linux VM and supervisor, started as the current host user. No
+Unknown command names fail closed. Native tasks use explicit `spawn` or
+`pvisor [SESSION_OPTIONS] -- COMMAND`; options-only file-backed `--config` /
+`--spec` invocations remain supported. Leading options are parsed using spawn's
+declarations, but never reinterpret positional commands such as
+`pvisor --config ./docker images` as host workloads.
+This makes a literal `alias docker=pvisor` safe from accidental host-command fallback.
+Each container is a `Session<ContainerProfile>` with its own Linux VM and supervisor,
+started as the current host user. No
 central Docker daemon, privileged helper or shared Linux VM is required.
 Guest root is independent of host root; the image's `User` is respected.
 Docker defaults are translated on the host into generic guest launch options.
@@ -524,17 +528,25 @@ platform; pulling the same tag for another platform replaces that reference,
 while existing containers keep their pinned images.
 
 The registered commands are `run`, `build`, `pull`, `images`, `rmi`, `exec`,
-`ps`, `start`, `stop`, `rm`, `logs`, `network`, `builder` and `compose`. Docker's grouped
-spellings are also accepted: `container run/exec/ls/start/stop/rm/logs` and
-`image build/pull/ls/rm`; `ls` accepts `list` (`container ls` also accepts `ps`)
+`ps`, `start`, `stop`, `restart`, `wait`, `cp`, `rm`, `logs`, `network`, `volume`,
+`builder` and `compose`. Docker's grouped
+spellings are also accepted: `container run/exec/ls/start/stop/restart/wait/cp/rm/logs/inspect` and
+`image build/pull/ls/rm/inspect`; `ls` accepts `list` (`container ls` also accepts `ps`)
 and `rm` accepts `remove`. These dispatch to the same implementations and retain
 the same options and exit codes. Unsupported grouped commands fail during parsing,
 without falling back to Session execution.
 
 `run --help` (or `help run`) displays help. `run -h` is not a help alias:
 Docker reserves it for hostname, which is currently unsupported. Root `inspect`
-still inspects a Session filesystem, not Docker container/image metadata;
-`container inspect` and `image inspect` are explicitly unsupported.
+now reports Session/container/image metadata; `--type container|image` restricts lookup.
+Use `--files`, `--checkpoint`, or a trailing `-- COMMAND` for a native task's
+read-only filesystem view. Plain inspect never opens an implicit shell.
+Root `kill [-s SIGNAL]` signals the current execution; native task cancellation
+supports KILL/TERM and explicitly rejects other process signals.
+Root `export [-o FILE] CONTAINER` produces a stopped merged-rootfs tar, excluding
+attached volume contents. Live/staged exports and unsupported special files fail
+explicitly; existing output files are not replaced. `export --path/--all --output`
+selects the separate native project-results manifest capability.
 
 Compatibility is limited to the options
 listed in `pvisor COMMAND --help`; unsupported commands/options fail
@@ -542,24 +554,29 @@ rather than being silently ignored. This is not complete Docker CLI or
 Docker Engine API compatibility. Compose has the bounded profile below; there is no Docker socket,
 Docker credential-helper integration or cross-architecture emulation.
 
-`stop -t/--timeout` accepts nonnegative seconds (default 10); `-1` waits
+`stop -t/--timeout` and `restart -t/--timeout` accept nonnegative seconds; omission
+uses the container's recorded grace (default 10). `-1` waits
 indefinitely after delivering the requested stop signal, without force-stop
 escalation. Values below `-1` are rejected before contacting a container.
 
 | Command | Implemented options |
 | --- | --- |
-| `run` | `--platform`, `--name`, `--rm`, `-d`, `-i`, `-t`, `-e`, `--env-file`, `-w`, `-u`, `--entrypoint`, `-v`, `-p`, `--cpus`, `-m/--memory`, `-M`, `--memory-pool`, `--shared-kernel-base`, `--network`/`--net bridge/none/NAME`, `--ip` |
+| `run` | `--platform`, `--name`, `--rm`, `-d`, `-i`, `-t`, `-e`, `--env-file`, `-w`, `-u`, `--entrypoint`, `-v`, `-p`, `--cpus`, `-m/--memory`, `-M`, `--memory-pool`, `--shared-kernel-base`, `--network`/`--net bridge/none/NAME`, `--ip`, `-l/--label`, `--restart`, `--stop-signal`, `--stop-timeout` |
 | `build` | Local context, `-f`, repeated `-t`/`--build-arg`, `--target`, `--platform`, `--pull`, `--no-cache`, `-q`, `--iidfile`, `-o type=oci,dest=PATH`, `--network default/none`, `--cpus`, `-m`, `--timeout`, `--progress auto/plain` |
 | `pull` | `--platform`, one public OCI image reference |
-| `images` | Optional repository, `-q`, `--no-trunc` |
+| `images` | Optional repository, `-q`, `--no-trunc`, `-f/--filter`, `--format` |
 | `rmi` | Multiple references/IDs, `-f` |
 | `exec` | `-i`, `-t`, `-e`, `--env-file`, `-w`, `-u`, command and arguments |
-| `ps` | `-a`, `-q`, `--no-trunc` |
+| `ps` | `-a`, `-q`, `--no-trunc`, `-f/--filter`, `--format` |
 | `start` | Multiple container names/IDs |
 | `stop` | Multiple names/IDs, `-t/--timeout`, `-s/--signal` |
 | `rm` | Multiple names/IDs, `-f`, `-v` |
 | `logs` | One container, `-f` |
 | `network` | `create --driver bridge --subnet --gateway`, `ls -q --no-trunc`, `inspect`, `rm -f` |
+| `volume` | `create [-d local] [NAME]`, `ls [-q] [--format]`, `inspect [-f/--format] NAME...`, `rm NAME...` |
+| `container inspect`, `image inspect` | Multiple selectors, `-f/--format`; default JSON array |
+| `restart`, `wait` | Multiple container selectors; restart has `-t/--timeout` |
+| `cp` | `HOST_PATH CONTAINER:PATH` or the reverse; files/directories in live or stopped containers, bounded below |
 
 The first profile supports Apple Silicon macOS/HVF and Linux x86_64/KVM;
 Linux runtime acceptance must be validated separately. macOS binaries require
@@ -579,12 +596,106 @@ unsupported. An empty managed volume must first be initialized through a
 writable mount before it can be mounted read-only. Read-only shares reject
 mutation requests in the host adapter as well as in the guest mount. `stop`/`start` retains the instance upper and volumes; `rm` drops
 the upper, `rm -v` also drops anonymous volumes, and named volumes survive.
-There is not yet a volume-management CLI or image-blob garbage collector;
+`volume rm` refuses references from running **or stopped** containers, validates
+Compose-owned directory identity and reconciles its ownership record after deletion.
+It never removes host binds; there is no force bypass, volume prune or nonlocal driver.
+`volume inspect` reports name/driver, not a host Mountpoint for bypassing guest metadata.
+There is not yet an image-blob garbage collector;
 `rmi` removes local references while retaining shared pool objects and legacy OCI data.
+
+### Container lifecycle, metadata and copies
+
+On Unix, a shell can use `alias docker=pvisor` for this supported command subset.
+Root metadata/signal/rootfs-export commands and grouped spellings select the same
+Session resources. Unsupported commands fail closed. An alias does not redirect
+SDK sockets or executable lookup in subprocesses, and no Docker Engine API is supplied.
+
+Persistent container/task records now use shared Session schema 4 `session.json`.
+Old `instance.json`/`execution-session.json` records are explicitly rejected, never
+silently migrated. Use the old owning binary to drain/review/clean old resources,
+or select a fresh private store; existing images/volumes are not reformatted.
+
+```bash
+pvisor run -d --name worker --label purpose=test --restart on-failure:3 \
+  --stop-signal SIGTERM --stop-timeout 5 alpine:3.20 sleep 600
+pvisor container inspect -f '{{.State.Status}}' worker
+pvisor ps -a --filter label=purpose=test --format '{{.Names}}\t{{.State}}'
+pvisor image inspect alpine:3.20
+pvisor restart worker
+pvisor cp worker:/etc/os-release ./os-release
+pvisor stop worker
+pvisor wait worker
+pvisor rm worker
+pvisor volume create data
+pvisor volume inspect data
+pvisor volume rm data
+```
+
+Restart policies are `no` (default), `always`, `unless-stopped`, and
+`on-failure[:MAX_RETRIES]` (zero/omitted limit means unlimited). The existing
+detached owner retains its lease through all automatic generations. Backoff starts
+at 100 ms and doubles up to 60 s; ten seconds of running resets its consecutive
+retry budget/backoff. Manual stop suppresses automatic restart, including during
+backoff; explicit start/restart begins a new generation and resets RestartCount.
+Health failure alone never triggers restart. Admission/owner/transport failures
+are not workload exits to retry. Owner death and host reboot require explicit
+start: no system boot service or daemon recovery is installed. Thus `always` and
+`unless-stopped` have the same behavior during one owner lifetime, not Docker
+daemon-restart recovery semantics. Restart policies conflict with `--rm` and
+staged binds. `--stop-timeout` is bounded to one day; explicit stop/restart
+timeouts override it.
+
+`wait` prints the selected generation's exit code and exits zero when observation
+succeeds, even when that workload failed. It does not wait for all automatic retries.
+Foreground `run` also follows its initial generation; use `-d` for services whose
+owner should continue automatic retries independently of the frontend.
+Created/unstarted containers return zero because they are not running; this
+does not certify that a command ran. Per-generation private completion
+receipts survive fast successors and auto-removal; missing completion after owner
+death is an error. These receipts have no automatic garbage collector.
+
+Inspect JSON includes effective labels/environment, argv defaults, state/health,
+mount destinations, published TCP ports and network addresses. It can contain
+secrets. It omits host PID/cgroup quota claims and private VM/control/pool backing.
+Labels inherit image defaults; explicit repeated keys use their last value.
+Compose-generated labels remain metadata, not ownership authority.
+
+Container filters: `id` prefix, literal `name` substring, `status`, `label=KEY`
+or `label=KEY=VALUE`, `exited=CODE`, `health`, and `ancestor` (local aliases resolve
+to an immutable image ID; no parent-image graph). Image filters: `label`,
+glob `reference`, and `dangling=true|false` (this catalog retains tagged entries,
+so true selects none). Different filter keys are ANDed; values of one key are ORed,
+except all label predicates must match. Unsupported filters fail before storage.
+
+Formatting supports `json`, `{{.Field}}`/nested paths, `{{json .Field}}`,
+`{{index .Config.Labels "key"}}`, literal text/`\t`/`\n`, and the `table ` prefix.
+List JSON is one object per row. Common container row fields are ID, Image, Command,
+State, Status, Names, Ports, Labels, Mounts, Networks and CreatedAt; image rows
+provide ID, Repository, Tag, Digest and CreatedAt. `-q` takes precedence over format.
+This is not the complete Go-template function language; unsupported expressions
+fail, and unknown fields fail when rendered.
+
+`cp` streams through native guest file operations when running and reopens the
+merged OverlayCore under a lifecycle fence when stopped; it never starts a workload
+or requires guest `tar`. Paths without a leading guest slash are root-relative.
+Explicit host parents may include `../`; recursively received names still use
+pinned descriptors and no-follow traversal. A file destination ending in `/`
+must already be a directory; normalization cannot turn it into a new file.
+Destination parents must exist. A directory copied into an existing directory
+keeps its basename; source `/.` copies contents. Basic modes are retained, new
+guest files are root-owned and host files use the invoking UID. Copies are neither
+snapshots nor transactions; errors may follow partial output. Each file is spooled
+privately on disk before destination writes. Trees are bounded to 100000 entries,
+depth 128, and 1024 entries per live guest directory. Symlink/special-file endpoints,
+host hard-linked destinations, archive stdin/stdout, `-a`/`-L`, ownership/xattr/time
+preservation and staged containers are unsupported. Stopped copies cannot cross
+mount targets or guest symlink ancestors; use live file operations for supported
+mounts. Read-only live shares still enforce write rejection.
 
 ### Compose command profile (experimental)
 
-`pvisor compose` reads an image-based Compose file and runs one VM per service.
+`pvisor compose` reads an image-based Compose file and creates one container-profile
+Session per service, with one VM per execution.
 It is a native frontend, not a wrapper around Docker Compose, and requires no
 Docker binary, socket or daemon. Use `pvisor compose`, not `docker compose`.
 
@@ -675,6 +786,13 @@ Supported service fields:
   and must already exist in the pVisor store. Ordinary same-named directories
   are not adopted: explicitly mark an existing volume external to use it.
 - Short/conditional `depends_on`, `stdin_open`, `tty`, and `healthcheck`.
+- `restart`, `stop_signal`, `stop_grace_period`, and `labels` (map or KEY=VALUE
+  list). Restart/stop semantics match the container profile above.
+  `stop_grace_period` uses the existing bounded compound duration parser, rounds
+  up to milliseconds and defaults to 10 s. Stop, down and replacement use the
+  **recorded** old container's grace/signal unless `-t` explicitly overrides grace.
+  `com.docker.compose.*` labels are reserved; project/service/container-number
+  labels are generated without granting ownership by label.
 
 Health checks support `test` as `["CMD", ...]`, `["CMD-SHELL", "..."]`, a shell
 string, or `["NONE"]`; `disable: true` disables an image default. Omitted fields
@@ -685,7 +803,11 @@ to milliseconds and are bounded to one day; intervals/timeouts/retries must be
 positive. Defaults are 30 s interval/timeout, three retries, no grace and 5 s
 start interval. Checks started during grace do not count as failures, even if
 they complete later; a success ends grace.
-The container owner keeps checking after the frontend exits. Health never
+Effective checks belong to the Session configuration, not Compose membership.
+Ordinary `run` also inherits image Healthcheck; `--no-healthcheck` explicitly
+disables it. Dockerfile `HEALTHCHECK CMD` (shell/JSON) and `NONE`, with
+interval/timeout/start-period/start-interval/retries options, publish these defaults.
+The Session owner keeps checking after the frontend exits. Health never
 restarts/stops a workload by itself. Timed-out tracked guest process groups are
 killed; transport cleanup can add a bounded wait.
 If cancellation cannot be acknowledged, the owner terminates the VM rather than
@@ -693,6 +815,9 @@ leaving an unowned probe; ordinary unsuccessful checks do not stop the service.
 Private, generation-bound health records retain at most 4096 bytes of check
 output and can contain secrets.
 `compose ps` shows current health; stopped/no-check services are not healthy.
+Readiness can follow automatic retries while the same Session owner epoch and
+configuration remain selected. A manually replaced owner/configuration still
+fails the wait; old execution health cannot satisfy a successor's readiness.
 
 Local builds accept `build: ./context` or a mapping with `context` (default `.`),
 `dockerfile` (relative to the context), `args` (map/list), `target`, and
@@ -752,7 +877,7 @@ readiness rather than treating `start` as a liveness monitor.
 selected services concurrently, prefixing output by service; streams are not
 timestamp-merged. `exec` defaults to interactive TTY; use `-T` for scripts and
 `--interactive=false` to close stdin. Guest exec exit status is preserved.
-`stop` and `down` accept `-t/--timeout SECONDS` (default 10).
+`stop` and `down` accept `-t/--timeout SECONDS`; omission uses recorded service grace.
 
 Project mutations use a private per-project lock and persisted ownership, not
 container-name prefixes. `down` removes only project members and the owned
@@ -790,7 +915,7 @@ multiple-file Compose merging, `extends`, or support for custom YAML tags.
 Explicit anonymous mount syntax,
 remote/inline build contexts, build secrets/SSH/cache mounts, nonlocal volume
 drivers/options, custom/external/multiple networks, long-form ports/mounts,
-dependency `restart`/`required` options, restart policies, profiles, scaling, multiple-file merging,
+dependency `restart`/`required` options, profiles, scaling, multiple-file merging,
 secrets/config objects, staged binds and attached `up` are not implemented.
 VM/platform and networking limits are the same as `run`.
 
@@ -926,8 +1051,15 @@ TTY allocation supports initial terminal dimensions; live resizing and detach
 key sequences are not implemented. stdout/stderr retain separate log streams
 without a merged timestamp ordering or `--since`/`--tail` filtering. Current
 human-readable list output is a pVisor rendering; scripts should use the
-implemented quiet options. Read the supported profile rather than assuming
+implemented quiet or explicit format options. Read the supported profile rather than assuming
 that every flag of a registered Docker command is available.
+
+P0 compatibility contracts run with
+`mise run test -- pvisor pvisor-cli -- -E 'test(docker::) | binary(compose_cli) | binary(docker_cli) | binary(docker_p0_cli)'`.
+The four `docker_native_p0_*` cases in `docker_cli` additionally require the native
+fixture/firmware above and `--run-ignored only --test-threads 1`. They check bounded
+automatic retries, manual-stop suppression/restart persistence, live/stopped
+binary copies/read-only enforcement, and Compose graceful signal delivery.
 
 Storage defaults to the current user's local data directory under
 `pvisor/docker`. `PVISOR_DOCKER_HOME` selects an isolated store, including for
@@ -1192,7 +1324,7 @@ network retains the existing public IPv4 TCP/DNS restrictions.
 The Dockerfile subset includes `FROM`/`AS`, completed-stage `COPY --from`,
 `RUN` (shell/JSON), local `COPY` (JSON, globs, numeric `--chown`, octal `--chmod`),
 `ARG`, `ENV`, `WORKDIR`, `USER`, `CMD`, `ENTRYPOINT`, `SHELL`, `LABEL`, `EXPOSE`,
-`VOLUME` metadata and `STOPSIGNAL`. `.dockerignore`, negation and Dockerfile-specific
+`VOLUME` metadata, `STOPSIGNAL` and `HEALTHCHECK`. `.dockerignore`, negation and Dockerfile-specific
 ignore files are supported. ARG values are not persisted as image environment;
 explicit `--build-arg NAME` forwards only that host variable. Build arguments
 are not secret storage. Simple `$NAME`/`${NAME}` expansion is supported.

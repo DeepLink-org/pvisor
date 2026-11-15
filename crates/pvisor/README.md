@@ -77,13 +77,48 @@ preparation passes the bound listener to the adapter without interpreting
 provider profiles or catalogs. Catalog copies are Run-local; credentials,
 installed catalogs and personal model selections remain client-owned.
 
-The public lifecycle is a Session. `Session` retains durable continuation state;
+The public lifecycle is a Session. `Session<Profile>` owns one stable identity,
+current Execution, supervisor epoch and durable phase. `TaskProfile` retains
+native execution/staging/checkpoint inputs; `docker::ContainerProfile` retains
+the pinned image, writable environment and resource references.
+Docker containers are not linked to a second Session: their compatibility
+`Instance` values are derived snapshots of this aggregate.
+`Session` retains durable continuation state;
 `SessionService` coordinates lifecycle and workspace operations, and `SessionRun`
 owns managed completion. Executors receive an `ExecutionContext` for the current
 execution. Its `execution_id` changes across restored executions so stale replies
 cannot affect a successor. Teardown releases live resources while retained stages
 remain available for review, apply and drop. Source and wire formats changed;
 see [stability](../../docs/src/en/reference/stability.md) before upgrading.
+
+### Session unification: first migration step
+
+All newly persisted managed tasks (including Host) and container instances use
+schema 4 `session.json`, written/read by the same Session implementation.
+These bounded private records use compact JSON. Offline status reconciles and
+projects one freshly leased Session snapshot, without caching file authority or
+carrying that snapshot into later mutations.
+Repeated reads may reuse pure parsing of identical bytes for one task record of
+at most 256 KiB. The current file, permissions, link count, byte bound and root
+binding are still checked on every read; larger records are parsed without caching.
+Container start/restart selects a new Execution while keeping Session identity;
+automatic retries retain one owner epoch. Compose membership is resource
+ownership metadata, not another lifecycle or the owner of health configuration.
+Task checkpoint transitions remain private to their profile. Review/apply do not
+become mandatory for ordinary container writable layers.
+
+This step unifies the aggregate and durable authority. Backend execution drivers,
+their control transports and storage-root selection are still distinct; it does
+not claim that every container operation already uses the native managed-Run
+execution pipeline. Converging those drivers is a subsequent focused step, not a
+second mutable container record or a `session_id` pointer alongside old state.
+
+There is no implicit persistent-format migration. Old `instance.json` container
+records and `execution-session.json` task records require their owning binary;
+stop/review/apply/drop/clean them there before recreating in a fresh store.
+New code never rewrites or deletes those records to make admission succeed.
+The existing `execution-session-root.json` remains a stage-to-Session root link,
+not an independent lifecycle authority. Image/volume stores are not reformatted.
 
 ```mermaid
 flowchart TD
@@ -1126,11 +1161,43 @@ pool loss; it does not inherit Linux sealed-local recovery. See the daemon READM
 for standalone startup, manager restart, budgets and experimental limitations.
 
 The experimental `docker` module owns the user-private image catalog, pinned
-container configuration, writable uppers, managed volumes and launch generation
-records used by the top-level container commands. The CLI owns Docker argument parsing, rendering
+container environment, writable uppers and managed-volume attachments. Its
+lifecycle record is the shared Session aggregate, not a parallel instance JSON.
+The CLI owns Docker argument parsing, rendering
 and terminal adapters. This profile does not convert ordinary Sessions or alter
 `spawn`, native Session staging, capture or existing daemon APIs. Linux containers
 can opt into generation-scoped staged binds through the extension below.
+
+Container P0 management is owned by this runtime, not implemented as CLI access
+to storage internals. `Store::inspect_container`/`inspect_image` expose
+Docker-shaped observations without private control/pool paths; effective labels
+inherit image defaults but never authorize ownership. `create_volume`, `volumes`,
+`inspect_volume` and `remove_volume` retain the catalog lock across reference and
+Compose directory-identity checks. Stopped references block explicit volume
+deletion; successful removal also reconciles Compose ownership.
+
+`Create.restart` selects the workload-exit policy supervised by the existing
+detached owner. Its continuously held lease spans backoff and successor
+generations; no new global daemon or host PID signalling is introduced.
+Manual stop publishes generation-bound restart suppression under the same lock
+as successor admission. Admission/transport failures and health state are not
+restart events; owner/host death requires explicit start. Policies conflict with
+auto-removal and staged binds. Effective stop signal/grace are recorded in Create,
+so changed Compose source cannot silently change an old member's shutdown.
+Explicit `restart` retains the pinned image, upper and volumes. `wait` observes
+one exact generation; private per-generation completion receipts avoid losing a
+fast exit to a later retry. These receipts currently have no automatic GC.
+
+`copy_from`/`copy_to` stream regular files and directory trees through guest file
+control while live, or through the stopped merged OverlayCore while holding
+the catalog fence. Copies never start a workload, run a host shell or depend on
+image tools. Existing backing ownership models are reopened, never converted.
+Host traversal uses pinned parent descriptors and no-follow opens; stopped
+mount-target traversal, staged containers, symlink/special-file endpoints,
+archive streams and ownership/xattr/time preservation are explicitly unsupported.
+Each file is privately disk-spooled before destination mutation; partial tree
+effects can remain on error. See the CLI README for bounds and supported syntax.
+
 `docker::compose::Project` owns the bounded, image-based Compose loader and
 project lifecycle. The frontend only parses arguments and renders output.
 Project mutations serialize with a private per-project lease; the normal
@@ -1165,7 +1232,7 @@ effective executables fail before project network/volume creation.
 Container
 admission rechecks managed mount sources under the same lock, preventing a
 volume resolved before concurrent deletion from publishing a stale reference.
-Compose owner health checks retain generation-fenced private observations and
+Session owner health checks retain generation-fenced private observations and
 execute tracked guest processes with timeout/cancellation cleanup. CLI readiness
 waits consume those observations rather than spawning probe-only frontends.
 Short dependencies and `service_started` only order process startup; a process

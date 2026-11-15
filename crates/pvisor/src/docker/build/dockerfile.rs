@@ -56,6 +56,7 @@ pub(super) fn parse(text: &str) -> anyhow::Result<Vec<Instruction>> {
                     | "EXPOSE"
                     | "VOLUME"
                     | "STOPSIGNAL"
+                    | "HEALTHCHECK"
             ),
             "Dockerfile line {start}: unsupported instruction {name}"
         );

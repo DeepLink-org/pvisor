@@ -121,12 +121,41 @@ impl Fixture {
         fixture
     }
     fn save(&self) {
+        let mut profile = self.instance.clone();
+        for key in ["schema", "id", "generation", "state", "owner_epoch"] {
+            profile.as_object_mut().unwrap().remove(key);
+        }
+        profile["started_ms"] = self.instance.get("started_ms").cloned().unwrap_or(json!(0));
+        profile["restart_count"] = self
+            .instance
+            .get("restart_count")
+            .cloned()
+            .unwrap_or(json!(0));
+        profile["compose"] = self.instance.get("compose").cloned().unwrap_or(json!(null));
+        let id = self.instance["id"].as_str().unwrap();
+        let state = if self.instance["state"] == "exited" {
+            json!("terminal")
+        } else {
+            self.instance["state"].clone()
+        };
+        let session = json!({
+            "version":pvisor::session_execution::SESSION_SCHEMA_VERSION,
+            "run_id":id,"root":self.store.join("instances").join(id),
+            "active_execution":self.instance["generation"],"owner_epoch":self.instance["generation"],
+            "state":state,"kind":"container","profile":profile,
+        });
         fs::write(
             self.store
                 .join("instances")
                 .join(self.instance["id"].as_str().unwrap())
-                .join("instance.json"),
-            serde_json::to_vec(&self.instance).unwrap(),
+                .join("session.json"),
+            serde_json::to_vec(&session).unwrap(),
+        )
+        .unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(
+            self.store.join("instances").join(id).join("session.json"),
+            fs::Permissions::from_mode(0o600),
         )
         .unwrap();
     }

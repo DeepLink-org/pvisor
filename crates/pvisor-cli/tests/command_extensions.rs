@@ -382,7 +382,7 @@ fn kernel_help_discovers_commands_and_default_execution_dispatches_spawn() {
             "Agent Commands:\n",
             &[
                 "run", "build", "pull", "images", "rmi", "exec", "ps", "start", "stop", "rm",
-                "logs",
+                "logs", "inspect", "kill",
             ][..],
         ),
         (
@@ -391,11 +391,9 @@ fn kernel_help_discovers_commands_and_default_execution_dispatches_spawn() {
             &[
                 "spawn",
                 "status",
-                "kill",
                 "review",
                 "apply",
                 "drop",
-                "inspect",
                 "checkpoint",
                 "suspend",
                 "resume",
@@ -624,7 +622,7 @@ fn isolated_core_keeps_session_commands_and_runs_without_extensions() {
         assert!(!help.contains(&format!("\n  {name} ")), "{help}");
     }
     let output = Command::new(&kernel)
-        .args(["/bin/sh", "-c", "printf standalone-kernel"])
+        .args(["spawn", "/bin/sh", "-c", "printf standalone-kernel"])
         .env("PATH", temporary.path())
         .output()
         .unwrap();
@@ -688,7 +686,7 @@ fn path_cannot_supply_companions_and_unknown_commands_are_not_discovered() {
 }
 
 #[test]
-fn unregistered_names_follow_default_execution_without_command_aliases() {
+fn unregistered_names_fail_closed_and_explicit_spawn_preserves_workload_arguments() {
     let temporary = tempfile::tempdir().unwrap();
     let kernel = temporary.path().join("pvisor");
     fs::copy(env!("CARGO_BIN_EXE_pvisor"), &kernel).unwrap();
@@ -714,10 +712,19 @@ fn unregistered_names_follow_default_execution_without_command_aliases() {
             .unwrap();
         assert_eq!(
             output.status.code(),
-            Some(42),
+            Some(2),
             "{name}: {}",
             String::from_utf8_lossy(&output.stderr)
         );
+        assert!(output.stdout.is_empty(), "{name}");
+        let output = Command::new(&kernel)
+            .args(["spawn", name, "space argument", "--literal", ""])
+            .current_dir(temporary.path())
+            .env("PVISOR_RUN_HOME", temporary.path().join("runs"))
+            .env("PATH", temporary.path())
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(42), "{name}: {output:?}");
         assert_eq!(output.stdout, b"space argument\n--literal\n\n", "{name}");
     }
 }

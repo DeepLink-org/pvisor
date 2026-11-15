@@ -278,10 +278,10 @@ impl RunRecord {
         } else {
             RunLease::acquire(&stage)?
         };
-        let mut current = Self::read(&stage)?;
+        let current = Self::read_with_lease(&stage, true)?;
         // Our own exclusive lease makes is_live true. It must not suppress the
         // completion gate for a stopped Execution about to be reviewed or mutated.
-        super::completion::Completion::observe_record(&mut current)?;
+        // The owned-lease read validates completion once, not a second time here.
         anyhow::ensure!(
             current.run_id == self.run_id,
             "Run identity changed while acquiring its lease"
@@ -372,6 +372,10 @@ impl RunRecord {
     }
 
     pub fn read(stage: &Path) -> anyhow::Result<Self> {
+        Self::read_with_lease(stage, false)
+    }
+
+    fn read_with_lease(stage: &Path, owns_execution_lease: bool) -> anyhow::Result<Self> {
         // A Session's original stage remains a stable selector across Executions.
         // The active Execution owns its own run.json, Bundle and storage lease.
         let active = crate::Session::read_stage(stage)?;
@@ -395,7 +399,9 @@ impl RunRecord {
         }
         // A writer may have published the terminal projection immediately before
         // committing its receipt. A live lease is not proof of that completion.
-        if record.completion_protocol.is_some() && (record.state.is_stopped() || !is_live(stage)?) {
+        if record.completion_protocol.is_some()
+            && (owns_execution_lease || record.state.is_stopped() || !is_live(stage)?)
+        {
             super::completion::Completion::observe_record(&mut record)?;
         }
         if let Some(overlay) = record.overlay.as_mut()

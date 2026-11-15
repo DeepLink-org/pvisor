@@ -25,6 +25,7 @@ blake3.workspace = true
 
 dirs.workspace = true
 fs2.workspace = true
+globset.workspace = true
 libc.workspace = true
 pvisor-core.workspace = true
 pvisor-journal.workspace = true
@@ -52,6 +53,7 @@ pvisor-containers.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+tar.workspace = true
 pvisor-containers.workspace = true
 
 proptest.workspace = true
