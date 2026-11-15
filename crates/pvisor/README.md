@@ -2561,3 +2561,30 @@ actual block length. Equal parent blocks are skipped; nonzero ancestors receive
 an explicit zero entry. Partial zero masks and later partial writes still use
 normal reconstruction. Compaction, content IDs, synchronization and failure
 fencing retain the existing contract.
+
+
+### Experimental compressed staging cache control
+
+`PVISOR_EXPERIMENTAL_STAGING_CACHE=1` enables a Linux-only experiment for each
+new compressed RAM writer. Unset or `0` preserves existing behavior. Other
+values are rejected; enabling it on other platforms returns Unsupported.
+The setting is read once at writer creation, does not toggle UKSM/offload,
+and does not change snapshot format or immutable read-only inspectors.
+
+A private worker performs staging `sync_data` and `POSIX_FADV_DONTNEED` after
+16 MiB of staged writes. Each writer has a 32 MiB unacknowledged-write budget;
+new writes wait when that budget is exhausted. Partial-page writes count the
+whole staged page span. Overwrites consume new credits, and an older completion
+never acknowledges a newer write. Errors stop the worker and fail subsequent
+write/drain operations. Publication drains the worker before capture/truncation;
+destruction drains remaining work and joins before the staging file is removed.
+Read/flush calls remain serialized by the existing store owner; worker advice
+can overlap them but never modifies bytes or dirty/zero masks.
+
+Read paths advise fully covered pages after copying their data: at most 16 MiB
+per read-at batch, or one reconstructed block. This includes publication reads;
+partial page edges are retained. Reads may refill cache and dirty pages may
+remain despite advice. This is a per-writer write budget, **not** a physical
+cache cap, node-wide budget, pressure detector, or automatic policy. It can add
+I/O, backpressure and cold-read latency. Keep it opt-in until real FUSE/VM
+correctness, shutdown and high-density throughput/tail-latency comparisons pass.

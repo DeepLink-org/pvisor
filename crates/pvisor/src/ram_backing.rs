@@ -14,6 +14,7 @@ pub mod sealed;
 /// Linux daemon-owned physical pages, mapped privately by VMs for kernel COW.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub mod shared;
+mod staging_cache;
 pub use image::{ImageId, RamLayout, RamRegion, SnapshotChain};
 
 use serde::{Deserialize, Serialize};
@@ -112,6 +113,8 @@ struct Descriptor {
 pub struct CompressedRam {
     manifest: File,
     directory: PathBuf,
+    // Drop joins the worker before unlinking its staging file.
+    cache: Option<staging_cache::Cache>,
     staging: Option<tempfile::NamedTempFile>,
     dirty: BTreeMap<u64, u16>,
     // Subset of dirty: explicit zeros override staging and ancestor contents.
@@ -125,6 +128,24 @@ impl CompressedRam {
     /// The manifest and private sidecar directory must be exclusively owned.
     /// Generations are immutable files; the manifest only appends head records.
     pub fn create(manifest: File, directory: &Path) -> io::Result<Self> {
+        let setting = std::env::var_os(staging_cache::ENV)
+            .map(|s| {
+                s.into_string()
+                    .map_err(|_| invalid("non-Unicode staging cache setting"))
+            })
+            .transpose()?;
+        Self::create_with_cache(
+            manifest,
+            directory,
+            staging_cache::enabled(setting.as_deref())?,
+        )
+    }
+
+    fn create_with_cache(
+        manifest: File,
+        directory: &Path,
+        cache_enabled: bool,
+    ) -> io::Result<Self> {
         let metadata = manifest.metadata()?;
         if !metadata.is_file() || metadata.len() != 0 {
             return Err(invalid("RAM manifest must be a new empty regular file"));
@@ -145,9 +166,15 @@ impl CompressedRam {
         manifest.write_all_at(&header, 0)?;
         manifest.sync_all()?;
         let staging = tempfile::NamedTempFile::new_in(&directory)?;
+        let cache = if cache_enabled {
+            Some(staging_cache::Cache::start(staging.as_file().try_clone()?)?)
+        } else {
+            None
+        };
         Ok(Self {
             manifest,
             directory,
+            cache,
             staging: Some(staging),
             dirty: BTreeMap::new(),
             zeros: BTreeMap::new(),
@@ -213,6 +240,7 @@ impl CompressedRam {
         Ok(Self {
             manifest,
             directory: descriptor.directory,
+            cache: None,
             staging: None,
             dirty: BTreeMap::new(),
             zeros: BTreeMap::new(),
@@ -316,6 +344,7 @@ impl CompressedRam {
                 }
             }
         }
+        self.advise_read(offset, length)?;
         Ok(output)
     }
 
@@ -328,6 +357,7 @@ impl CompressedRam {
             .saturating_sub(offset)
             .min(output.len() as u64) as usize;
         let mut done = 0;
+        let mut advised = 0;
         while done < size {
             let position = offset + done as u64;
             let block = position / BLOCK_BYTES as u64;
@@ -374,8 +404,27 @@ impl CompressedRam {
                 output[done..done + length].copy_from_slice(&data[within..within + length]);
             }
             done += length;
+            if done - advised >= 16 * 1024 * 1024 || done == size {
+                self.advise_read(offset + advised as u64, done - advised)?;
+                advised = done;
+            }
         }
         Ok(size)
+    }
+
+    fn advise_read(&self, offset: u64, length: usize) -> io::Result<()> {
+        if self.cache.is_some() {
+            let start = offset.div_ceil(PAGE_BYTES as u64) * PAGE_BYTES as u64;
+            let end = (offset + length as u64) / PAGE_BYTES as u64 * PAGE_BYTES as u64;
+            if end > start {
+                staging_cache::advise(
+                    self.staging.as_ref().unwrap().as_file(),
+                    start,
+                    end - start,
+                )?;
+            }
+        }
+        Ok(())
     }
 
     pub fn write_at(&mut self, offset: u64, input: &[u8]) -> io::Result<()> {
@@ -404,6 +453,9 @@ impl CompressedRam {
                 let start = first * PAGE_BYTES;
                 let end = (last * PAGE_BYTES).min(block_length);
                 let mask = self.dirty.get(&block).copied().unwrap_or(0);
+                if let Some(cache) = &mut self.cache {
+                    cache.before_write(end - start)?;
+                }
                 let staging = self.staging.as_ref().unwrap().as_file();
                 if within == start && within + length == end {
                     // Complete pages need no ancestor, including corrupt blocks.
@@ -448,6 +500,9 @@ impl CompressedRam {
                     if *zeros == 0 {
                         self.zeros.remove(&block);
                     }
+                }
+                if let Some(cache) = &mut self.cache {
+                    cache.written(end - start)?;
                 }
                 done += length;
             }
@@ -524,6 +579,9 @@ impl CompressedRam {
         };
         let mut capture_us = 0u128;
         let result = (|| {
+            if let Some(cache) = &mut self.cache {
+                cache.drain()?;
+            }
             // The adapter addresses compact backing offsets. It does not know
             // guest physical regions; direct SnapshotChain callers supply those.
             let layout = RamLayout {
@@ -634,6 +692,47 @@ impl pvisor_vm::api::RamFileStore for CompressedRam {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn experimental_cache_survives_overwrites_zero_masks_and_publication_epochs() {
+        let dir = tempfile::tempdir().unwrap();
+        let manifest = tempfile::tempfile().unwrap();
+        let mut store =
+            CompressedRam::create_with_cache(manifest.try_clone().unwrap(), dir.path(), true)
+                .unwrap();
+        let size = 40 * 1024 * 1024;
+        store.set_len(size as u64).unwrap();
+        let mut expected = vec![0; size];
+        let mut actual = vec![0; size];
+        for round in 0..3 {
+            for offset in (0..size).step_by(BLOCK_BYTES) {
+                expected[offset..offset + BLOCK_BYTES].fill(0x31 + round);
+                store
+                    .write_at(offset as u64, &expected[offset..offset + BLOCK_BYTES])
+                    .unwrap();
+                // Rewrite while older batches may still be syncing/advising.
+                store.write_at(17, &[0x90 + round]).unwrap();
+                expected[17] = 0x90 + round;
+            }
+            store.zero_range(4096, 8192).unwrap();
+            expected[4096..12288].fill(0);
+            store.write_at(4095, &[0x51, 0x52, 0x53]).unwrap();
+            expected[4095..4098].copy_from_slice(&[0x51, 0x52, 0x53]);
+            store.flush_writes().unwrap();
+            store.read_at(0, &mut actual).unwrap();
+            assert_eq!(actual, expected);
+            store.sync_all().unwrap();
+            assert_eq!(store.cache.as_ref().unwrap().pending_bytes_for_test(), 0);
+            let reopened = CompressedRam::open(manifest.try_clone().unwrap()).unwrap();
+            reopened.read_at(0, &mut actual).unwrap();
+            assert_eq!(actual, expected);
+        }
+        // A partial batch is outstanding when the writer is dropped.
+        store.write_at(0, &[0xa7; 4096]).unwrap();
+        drop(store);
+    }
+
     #[test]
     fn sparse_zero_overrides_ancestor_and_staging_then_survives_reopen() {
         use pvisor_vm::api::RamFileStore;
