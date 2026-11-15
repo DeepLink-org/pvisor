@@ -107,6 +107,11 @@ mod cold_ram_tests {
     impl ColdRamStore for UnusedStore {
         type Object = ();
 
+        fn publication_ready(&mut self) -> bool {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            panic!("unsupported pager must not query publication")
+        }
+
         fn put(&mut self, _: &[u8]) -> io::Result<()> {
             self.calls.fetch_add(1, Ordering::SeqCst);
             panic!("unsupported pager must not publish RAM")

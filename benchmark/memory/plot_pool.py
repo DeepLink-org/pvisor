@@ -12,6 +12,7 @@ from pool_compare import (
     PATTERNS,
     V4_SCHEMAS,
     digest,
+    physical_publication_health,
     validate_observation,
     validate_worker,
     values,
@@ -62,6 +63,14 @@ def select_arms(report, wanted, arms, *, formal=False):
             scope="selected preflight conditions audited; original report and raw measurements retained unchanged",
         )
     return result
+
+
+def audit_publication_health(root, row, *, required):
+    if not required and "publication_health" not in row:
+        return  # Historical cohorts keep their original evidence contract.
+    health = physical_publication_health(root)
+    if not health["healthy"] or row.get("publication_health") != health:
+        raise ValueError("physical publication health evidence missing or changed")
 
 
 def audit(root, *, formal=False, arms=None):
@@ -139,6 +148,10 @@ def audit(root, *, formal=False, arms=None):
                 raise ValueError("library row/condition mismatch")
         elif "library_variant" in cfg:
             raise ValueError("library case cannot populate static worker campaign")
+        if cfg["arm"] == "pvisor-physical":
+            audit_publication_health(
+                folder, row, required=report.get("physical_publication_health_required", False)
+            )
         input_directories.add(cfg["inputs"])
         if cfg.get("docker_inputs"):
             docker_directories.add(cfg["docker_inputs"])

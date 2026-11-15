@@ -295,6 +295,10 @@ impl LocalColdRamStore {
 impl pvisor_vm::api::ColdRamStore for LocalColdRamStore {
     type Object = LocalColdRamObject;
 
+    fn publication_ready(&mut self) -> bool {
+        true
+    }
+
     fn shared_mapping(&self, _: &Self::Object) -> Option<pvisor_vm::api::SharedRamMapping> {
         None
     }
@@ -351,6 +355,7 @@ impl pvisor_vm::api::ColdRamStore for LocalColdRamStore {
 
     fn stats(&mut self) -> io::Result<pvisor_vm::api::ColdRamPoolStats> {
         Ok(pvisor_vm::api::ColdRamPoolStats {
+            scope: pvisor_vm::api::ColdRamAccountingScope::Instance,
             encoded_bytes: self.pool.encoded_bytes() as u64,
             objects: self.pool.object_count() as u64,
             session_references: self.references,

@@ -6,10 +6,15 @@ use pvisor_vm::api::{self, RestoreState, SnapshotState, VmBuilder, VmConfigurati
 fn cold_store_batches_preserve_order_and_independent_reference_ownership() {
     use api::ColdRamStore;
     let mut store = pvisor::ram_backing::resident::LocalColdRamStore::new(16 * 1024, 4);
+    assert!(store.publication_ready());
     assert!(store.put_batch(&[]).unwrap().is_empty());
     store.release_batch(Vec::new()).unwrap();
     assert!(store.take_ready().is_empty());
     assert_eq!(store.stats().unwrap().session_references, 0);
+    assert_eq!(
+        store.stats().unwrap().scope,
+        api::ColdRamAccountingScope::Instance
+    );
     let zero = [0; 64 * 1024];
     let seven = [7; 64 * 1024];
     let results = store

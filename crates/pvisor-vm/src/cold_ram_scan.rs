@@ -79,6 +79,7 @@ pub(super) struct Scanner {
     ready: VecDeque<usize>,
     bootstrap_until: Option<Instant>,
     work_delay: Duration,
+    batch_finished: Instant,
     rungs: [Rung; 4],
     rung_budgets: bool,
 }
@@ -132,6 +133,7 @@ impl Scanner {
             ready: VecDeque::new(),
             bootstrap_until: None,
             work_delay: Duration::ZERO,
+            batch_finished: Instant::now(),
             rungs: std::array::from_fn(|_| Rung::default()),
             rung_budgets: true,
         }
@@ -151,8 +153,16 @@ impl Scanner {
         self.unfinished == 0
     }
 
+    #[cfg(any(target_os = "macos", test))]
     pub(super) fn delay(&self) -> Duration {
         let now = Instant::now();
+        self.next_scan_at(now).saturating_duration_since(now)
+    }
+
+    /// Re-evaluate hints and rung credit without renewing already-earned rest.
+    /// Maintenance wakeups may shorten an obsolete quiet/rung wait, but never
+    /// bypass the whole-batch work/rest deadline.
+    pub(super) fn next_scan_at(&self, now: Instant) -> Instant {
         let floor = if self.round_complete() && self.ready.is_empty() && !self.bootstrapping_at(now)
         {
             REJECT_RETRY
@@ -168,21 +178,20 @@ impl Scanner {
         for &page in &self.ready {
             needed[self.regions[self.region_index(page)].level] = true;
         }
-        let rung_wait = if self.bootstrapping_at(now) || !self.rung_budgets {
-            Duration::ZERO
+        let rung_due = if self.bootstrapping_at(now) || !self.rung_budgets {
+            now
         } else {
             self.rungs
                 .iter()
                 .zip(needed)
                 .filter(|(_, needed)| *needed)
-                .map(|(rung, _)| {
-                    rung.next_at
-                        .map_or(Duration::ZERO, |next| next.saturating_duration_since(now))
-                })
+                .map(|(rung, _)| rung.next_at.unwrap_or(now))
                 .min()
-                .unwrap_or_default()
+                .unwrap_or(now)
         };
-        floor.max(self.work_delay).max(rung_wait)
+        (self.batch_finished + floor.max(self.work_delay))
+            .max(rung_due)
+            .max(now)
     }
 
     fn bootstrapping_at(&self, now: Instant) -> bool {
@@ -201,7 +210,11 @@ impl Scanner {
     /// Hints and merges prioritize candidates, never renew the global budget.
     /// I/O wait counts as work.
     pub(super) fn finished_batch(&mut self, work: Duration) {
-        let now = Instant::now();
+        self.finished_batch_at(work, Instant::now());
+    }
+
+    fn finished_batch_at(&mut self, work: Duration, now: Instant) {
+        self.batch_finished = now;
         let bootstrap = self.bootstrapping_at(now);
         self.work_delay = work.saturating_mul(if bootstrap { 1 } else { 9 });
         let inspected: Duration = self.rungs.iter().map(|rung| rung.inspected).sum();
@@ -251,9 +264,10 @@ impl Scanner {
     }
 
     /// Backends inspect only the selected visit and append at most one result
-    /// per index. Empty/sparse visits consume quota too. Even an expired soft
-    /// budget permits one due background visit; a rung awaiting credit retains
-    /// its quota and hints. Foreground hints cannot starve due exploration.
+    /// per index. The soft time budget is checked between bounded visits:
+    /// callbacks must inspect the whole visit, including empty/sparse pages.
+    /// Even an expired budget permits one due background visit; a rung awaiting
+    /// credit retains its quota and hints. Hints cannot starve due exploration.
     pub(super) fn select<T, E>(
         &mut self,
         limit: usize,
@@ -513,15 +527,23 @@ mod tests {
     use super::*;
     use std::collections::BTreeSet;
 
+    // Compare policy deadlines at the accounting instant, without host-speed
+    // dependent assertions about how much wall time this test already spent.
+    fn rest(scanner: &Scanner) -> Duration {
+        scanner
+            .next_scan_at(scanner.batch_finished)
+            .duration_since(scanner.batch_finished)
+    }
+
     #[test]
     fn bootstrap_and_steady_work_have_explicit_rest_budgets() {
         let mut scanner = Scanner::new(std::iter::once(0..512), 4096, 1);
         scanner.sampled(0);
         scanner.finished_batch(Duration::from_millis(4));
-        assert_eq!(scanner.delay(), Duration::from_millis(4));
+        assert_eq!(rest(&scanner), Duration::from_millis(4));
         while scanner.next(512).is_some() {}
         assert_eq!(
-            scanner.delay(),
+            rest(&scanner),
             Duration::from_millis(4),
             "bootstrap must not wait 250 ms per round"
         );
@@ -529,18 +551,79 @@ mod tests {
         scanner.begin_round();
         scanner.finished_batch(Duration::from_millis(4));
         assert_eq!(scanner.work_delay, Duration::from_millis(36));
-        assert!(scanner.delay() >= scanner.work_delay);
+        assert!(rest(&scanner) >= scanner.work_delay);
         // Advance the rung credit without sleeping. The old whole-batch and
         // quiet-round floors must still apply after that credit is available.
         scanner.rungs[0].next_at = None;
-        assert_eq!(scanner.delay(), Duration::from_millis(36));
+        assert_eq!(rest(&scanner), Duration::from_millis(36));
         while scanner.next(512).is_some() {}
-        assert_eq!(scanner.delay(), REJECT_RETRY);
+        assert_eq!(rest(&scanner), REJECT_RETRY);
         scanner.ready(17);
         assert_eq!(
-            scanner.delay(),
+            rest(&scanner),
             Duration::from_millis(36),
             "hints bypass the quiet-round floor, not duty-cycle rest"
+        );
+    }
+
+    #[test]
+    fn ready_hints_shorten_obsolete_deadlines_without_renewing_or_bypassing_rest() {
+        for bytes in [4096, 16384] {
+            let pages = REGION_BYTES / bytes;
+            let mut scanner = Scanner::new(std::iter::once(0..2 * pages), bytes, 7);
+            let finished = Instant::now();
+            scanner.finished_batch_at(Duration::from_millis(40), finished);
+            scanner.regions[1].level = 3;
+            scanner.regions[1].remaining = 0;
+            scanner.unfinished = 1;
+            scanner.rungs[0].next_at = Some(finished + Duration::from_secs(1));
+            let old_deadline = scanner.next_scan_at(finished);
+            assert_eq!(old_deadline, finished + Duration::from_secs(1));
+
+            // A maintenance wake receives a hint on an otherwise-finished rich
+            // rung. Its work is due, but the global 360 ms rest still applies.
+            let wake = finished + REJECT_RETRY;
+            scanner.ready(pages);
+            let hinted_deadline = scanner.next_scan_at(wake);
+            assert_eq!(hinted_deadline, finished + Duration::from_millis(360));
+            assert!(hinted_deadline < old_deadline);
+            assert_eq!(
+                scanner.next_scan_at(wake + Duration::from_millis(50)),
+                hinted_deadline,
+                "maintenance must not start another 360 ms wait"
+            );
+            assert_eq!(scanner.next_scan_at(hinted_deadline), hinted_deadline);
+            scanner.rungs[3].next_at = Some(finished + Duration::from_millis(700));
+            assert_eq!(
+                scanner.next_scan_at(wake),
+                finished + Duration::from_millis(700),
+                "a ready hint cannot spend unavailable rung credit"
+            );
+        }
+    }
+
+    #[test]
+    fn quiet_deadlines_are_absolute_and_elapsed_rest_is_not_repeated() {
+        let mut scanner = Scanner::new(std::iter::once(0..512), 4096, 1);
+        while scanner.next(512).is_some() {}
+        let finished = Instant::now() - Duration::from_secs(2);
+        scanner.finished_batch_at(Duration::from_millis(4), finished);
+        // Isolate the quiet/global floors; rung credit has its own regression.
+        scanner.rungs[0].next_at = None;
+        let quiet_deadline = finished + REJECT_RETRY;
+        assert_eq!(scanner.next_scan_at(finished), quiet_deadline);
+        assert_eq!(
+            scanner.next_scan_at(finished + Duration::from_millis(100)),
+            quiet_deadline
+        );
+        scanner.ready(17);
+        assert_eq!(
+            scanner.next_scan_at(finished + Duration::from_millis(100)),
+            finished + Duration::from_millis(100)
+        );
+        assert!(
+            scanner.delay().is_zero(),
+            "the batch already earned its rest"
         );
     }
 
@@ -563,7 +646,7 @@ mod tests {
                 scanner.finished_batch(work);
                 assert_eq!(scanner.bootstrap_until, Some(expired));
                 assert_eq!(scanner.work_delay, work * 9);
-                assert!(scanner.delay() >= work * 9);
+                assert!(rest(&scanner) >= work * 9);
                 total_rest += scanner.work_delay;
             }
             assert_eq!(total_rest, work * 128 * 9);
@@ -572,12 +655,12 @@ mod tests {
             while scanner.next(512).is_some() {}
             scanner.rungs[0].next_at = None;
             assert_eq!(
-                scanner.delay(),
+                rest(&scanner),
                 work * 9,
                 "queued hints bypass only the quiet-round floor"
             );
             scanner.ready.clear();
-            assert_eq!(scanner.delay(), REJECT_RETRY);
+            assert_eq!(rest(&scanner), REJECT_RETRY);
         }
     }
 
@@ -604,7 +687,7 @@ mod tests {
             scanner.finished_batch(Duration::from_secs(2));
             assert_eq!(scanner.work_delay, Duration::from_secs(18));
             assert!(
-                scanner.delay() >= Duration::from_secs(18),
+                rest(&scanner) >= Duration::from_secs(18),
                 "the one-second per-rung pause bound must not bypass global rest"
             );
         }
@@ -657,7 +740,7 @@ mod tests {
         assert!(scanner.rungs[0].next_at.is_some());
         scanner.disable_rung_budgets();
         assert!(scanner.rungs.iter().all(|rung| rung.next_at.is_none()));
-        assert_eq!(scanner.delay(), Duration::from_millis(9));
+        assert_eq!(rest(&scanner), Duration::from_millis(9));
         let selected = scanner
             .select(64, Instant::now(), |visit, out| {
                 out.extend(visit.pages);
@@ -771,6 +854,41 @@ mod tests {
             scanner.probes > before,
             "expired hints must not starve exploration"
         );
+    }
+
+    #[test]
+    fn a_preempted_hint_visit_still_inspects_the_charged_background_quota() {
+        for bytes in [4096, 16384] {
+            let pages = REGION_BYTES / bytes;
+            let mut scanner = Scanner::new([0..pages, pages..2 * pages].into_iter(), bytes, 3);
+            scanner.disable_rung_budgets();
+            scanner.ready(pages);
+            let before = scanner.regions[0].remaining;
+            let started = Instant::now();
+            let mut visits = Vec::new();
+            let selected = scanner
+                .select(BATCH_BYTES / bytes, started, |visit, output| {
+                    if visits.is_empty() {
+                        // Simulate being descheduled inside the hint callback.
+                        std::thread::sleep(WORK_BUDGET * 2);
+                    }
+                    visits.push(visit.pages.clone());
+                    output.extend(visit.pages);
+                    Ok::<_, ()>(())
+                })
+                .unwrap();
+            assert!(started.elapsed() >= WORK_BUDGET);
+            assert_eq!(
+                visits.len(),
+                2,
+                "one hint and one reserved background visit"
+            );
+            assert_eq!(visits[1].len(), before);
+            assert!(visits[1].iter().all(|page| *page < pages));
+            assert_eq!(selected.len(), before + 1);
+            assert_eq!(scanner.probes as usize, selected.len());
+            assert_eq!(scanner.regions[0].remaining, 0);
+        }
     }
 
     #[test]
@@ -1019,7 +1137,7 @@ mod tests {
                 .unwrap();
             assert_eq!(selected.len(), 3);
             assert!(!scanner.round_complete());
-            assert_eq!(scanner.delay(), Duration::from_millis(1));
+            assert_eq!(rest(&scanner), Duration::from_millis(1));
             // Deliberately use a future start to test the probe cap without
             // depending on host scheduling speed.
             let start = Instant::now() + Duration::from_secs(60);
@@ -1030,7 +1148,7 @@ mod tests {
             assert!(selected.is_empty());
             assert_eq!((scanner.probes - before) as usize * bytes, PROBE_BYTES);
             while scanner.next(usize::MAX).is_some() {}
-            assert_eq!(scanner.delay(), Duration::from_millis(250));
+            assert_eq!(rest(&scanner), Duration::from_millis(250));
             scanner.begin_round();
             assert_eq!(
                 scanner.select::<usize, _>(1, start, |_, _| Err("query failed")),

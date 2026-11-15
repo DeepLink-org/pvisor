@@ -189,6 +189,10 @@ impl SealedClient {
 
 impl pvisor_vm::api::ColdRamStore for SealedClient {
     type Object = SealedReference;
+    fn publication_ready(&mut self) -> bool {
+        self.flush_releases();
+        self.connected()
+    }
     fn put(&mut self, bytes: &[u8]) -> io::Result<Self::Object> {
         self.put(bytes)
     }
@@ -224,12 +228,11 @@ impl pvisor_vm::api::ColdRamStore for SealedClient {
     }
     fn stats(&mut self) -> io::Result<pvisor_vm::api::ColdRamPoolStats> {
         let stats = self.stats()?;
-        Ok(pvisor_vm::api::ColdRamPoolStats {
-            encoded_bytes: stats.encoded_bytes,
-            objects: stats.objects,
-            session_references: stats.session_references,
-            cross_session_objects: stats.cross_session_objects,
-        })
+        Ok(stats.into_cold(if self.connected() {
+            pvisor_vm::api::ColdRamAccountingScope::Pool
+        } else {
+            pvisor_vm::api::ColdRamAccountingScope::LocalPins
+        }))
     }
 }
 

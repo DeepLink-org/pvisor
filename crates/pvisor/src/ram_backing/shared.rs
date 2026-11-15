@@ -81,6 +81,7 @@ pub struct SharedPool {
     free: Vec<u64>,
     next: u64,
     slots: usize,
+    publication_limit: usize,
 }
 impl SharedPool {
     pub fn new(max_bytes: usize, max_objects: usize) -> io::Result<Self> {
@@ -171,6 +172,7 @@ impl SharedPool {
             free: Vec::new(),
             next: 0,
             slots,
+            publication_limit: size,
         })
     }
     pub fn readonly_file(&self) -> Arc<File> {
@@ -181,6 +183,13 @@ impl SharedPool {
     }
     pub fn payload_bytes(&self) -> usize {
         self.objects.len() * PAGE
+    }
+    /// Bound new payload allocation after charging witnessed retired generations.
+    /// The logical backing size and all existing references remain unchanged.
+    /// Lowering below current use rejects new objects; it never evicts live RAM.
+    /// Duplicate hits acquire references without allocating another payload.
+    pub fn limit_publication_bytes(&mut self, bytes: usize) {
+        self.publication_limit = bytes.min(self.slots * PAGE) / PAGE * PAGE;
     }
     /// A hash hit grants only a pinned candidate. The client must compare every
     /// byte before using it; the VM separately rechecks live RAM at commit.
@@ -287,6 +296,12 @@ impl SharedPool {
                 return Err(invalid("shared page content identity collision"));
             }
             return Ok(object.clone());
+        }
+        if self.payload_bytes().saturating_add(PAGE) > self.publication_limit {
+            return Err(io::Error::new(
+                io::ErrorKind::OutOfMemory,
+                "physical payload budget reserved by retained generations",
+            ));
         }
         let offset = if let Some(offset) = self.free.pop() {
             offset
@@ -413,7 +428,7 @@ pub(super) fn peer_pidfd(stream: &UnixStream) -> io::Result<OwnedFd> {
     }
     Ok(unsafe { OwnedFd::from_raw_fd(fd as i32) })
 }
-#[cfg(target_os = "linux")]
+#[cfg(all(test, target_os = "linux"))]
 pub(super) fn wait_peer_exit(pidfd: &OwnedFd) -> io::Result<()> {
     let mut pfd = libc::pollfd {
         fd: pidfd.as_raw_fd(),
@@ -486,7 +501,7 @@ pub(super) fn peer_pidfd(stream: &UnixStream) -> io::Result<OwnedFd> {
     }
     Ok(queue)
 }
-#[cfg(target_os = "macos")]
+#[cfg(all(test, target_os = "macos"))]
 pub(super) fn wait_peer_exit(queue: &OwnedFd) -> io::Result<()> {
     loop {
         let mut event: libc::kevent = unsafe { std::mem::zeroed() };
@@ -515,6 +530,30 @@ pub(super) fn wait_peer_exit(queue: &OwnedFd) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn retired_budget_rejects_only_new_payload_and_never_evicts_live_pages() {
+        let mut pool = SharedPool::new(2 * PAGE, 2).unwrap();
+        let original = pool.intern(&[7; PAGE]).unwrap();
+        pool.limit_publication_bytes(0);
+        let alias = pool.intern(&[7; PAGE]).unwrap();
+        assert_eq!(original.offset(), alias.offset());
+        assert!(pool.intern(&[8; PAGE]).is_err());
+        let mut bytes = [0; PAGE];
+        original.restore(&mut bytes).unwrap();
+        assert_eq!(bytes, [7; PAGE]);
+        assert_eq!(pool.payload_bytes(), PAGE);
+        pool.limit_publication_bytes(2 * PAGE - 1);
+        assert!(
+            pool.intern(&[8; PAGE]).is_err(),
+            "limits round down to native pages"
+        );
+        pool.limit_publication_bytes(2 * PAGE);
+        let next = pool.intern(&[8; PAGE]).unwrap();
+        assert_ne!(next.offset(), original.offset());
+        assert_eq!(pool.payload_bytes(), 2 * PAGE);
+    }
+
     #[test]
     fn shared_hit_still_rejects_full_content_collision_and_corrupt_backing() {
         let mut pool = SharedPool::new(PAGE, 1).unwrap();

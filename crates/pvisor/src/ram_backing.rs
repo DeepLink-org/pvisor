@@ -1,5 +1,8 @@
 //! Immutable base/delta RAM storage plus a bounded writable staging adapter.
 //! The adapter preserves live mmap semantics; generation commit is not a VM checkpoint.
+/// Process-lifetime witnesses for recoverable physical backing generations.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub mod generation;
 pub mod image;
 /// macOS mapped-backing page diagnostics; never private RSS accounting.
 #[cfg(target_os = "macos")]

@@ -1,23 +1,24 @@
 //! Daemon-owned cold-page pool. Its detached service outlives API restarts.
-//! Physical sharing and macOS compression require a live owner. Linux compressed
-//! clients retain sealed backing for local restore after service loss. No mode
-//! silently replaces state or reconnects a running VM.
+//! Physical clients retain their backing across owner loss. Recovery fences the
+//! old owner and charges witnessed retired generations before allocating again.
+//! Legacy macOS compression still requires a live owner.
 use anyhow::{Context, Result, ensure};
 use fs2::FileExt;
 use pvisor::ram_backing::ipc::PoolClient;
 #[cfg(not(target_os = "linux"))]
-use pvisor::ram_backing::{ipc::serve, resident::CompressedPool};
-use pvisor::ram_backing::{ipc::serve_shared, shared::SharedPool};
-#[cfg(target_os = "linux")]
+use pvisor::ram_backing::resident::CompressedPool;
 use pvisor::ram_backing::{
-    ipc::{SealedClient, serve_sealed},
-    sealed::SealedPool,
+    generation::{PhysicalGeneration, retired_bytes_before_start},
+    ipc::AsyncPoolService,
+    shared::SharedPool,
 };
+#[cfg(target_os = "linux")]
+use pvisor::ram_backing::{ipc::SealedClient, sealed::SealedPool};
 use serde::{Deserialize, Serialize};
 use std::{
     fs::{self, File, OpenOptions},
     os::unix::{
-        fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
+        fs::{FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt},
         net::{UnixListener, UnixStream},
         process::CommandExt,
     },
@@ -25,7 +26,7 @@ use std::{
     process::{Command, Stdio},
     sync::{
         Arc, Mutex,
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicBool, Ordering},
     },
     time::{Duration, Instant},
 };
@@ -88,6 +89,59 @@ fn private_directory(path: &Path) -> Result<()> {
     );
     Ok(())
 }
+
+fn physical_mode(mode: PoolMode) -> bool {
+    mode == PoolMode::PhysicalPages || (cfg!(target_os = "linux") && mode == PoolMode::Physical)
+}
+
+fn service_lock(directory: &Path) -> Result<File> {
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(directory.join("service.lock"))?;
+    let metadata = file.metadata()?;
+    ensure!(
+        metadata.is_file()
+            && metadata.uid() == unsafe { libc::geteuid() }
+            && metadata.mode() & 0o7777 == 0o600
+            && metadata.nlink() == 1,
+        "unsafe physical service lock"
+    );
+    Ok(file)
+}
+
+fn recover_endpoint(directory: &Path, socket: &Path, mode: PoolMode) -> Result<()> {
+    ensure!(
+        physical_mode(mode),
+        "legacy pool cannot recover lost ownership"
+    );
+    let lock = service_lock(directory)?;
+    lock.try_lock_exclusive()
+        .context("pool owner is still alive; refusing endpoint replacement")?;
+    PhysicalGeneration::recoverable(directory)
+        .context("pool has no recoverable generation; preserve legacy VM ownership")?;
+    let metadata = fs::symlink_metadata(socket)?;
+    ensure!(
+        metadata.file_type().is_socket()
+            && metadata.uid() == unsafe { libc::geteuid() }
+            && metadata.mode() & 0o7777 == 0o600,
+        "unsafe stale pool endpoint"
+    );
+    let checked = fs::symlink_metadata(socket)?;
+    ensure!(
+        metadata.dev() == checked.dev() && metadata.ino() == checked.ino(),
+        "pool endpoint changed during recovery"
+    );
+    // Only this fenced, private endpoint is removed. Backings and generation
+    // records remain owned by their existing processes, never by a saved PID.
+    fs::remove_file(socket)?;
+    Ok(())
+}
+
 fn probe(socket: &Path, mode: PoolMode) -> Result<()> {
     let stream = UnixStream::connect(socket)?;
     pvisor::host_transport::authorize_host_peer_sync(&stream)?;
@@ -96,7 +150,7 @@ fn probe(socket: &Path, mode: PoolMode) -> Result<()> {
     #[cfg(target_os = "linux")]
     match mode {
         PoolMode::Physical | PoolMode::PhysicalPages => client
-            .enable_shared_mapping()
+            .check_shared_mapping()
             .context("pool lacks physical sharing; preserve active VMs and use fresh pool state")?,
         PoolMode::Compressed => {
             SealedClient::new(client).context(
@@ -109,14 +163,15 @@ fn probe(socket: &Path, mode: PoolMode) -> Result<()> {
     #[cfg(target_os = "macos")]
     if mode == PoolMode::PhysicalPages {
         client
-            .enable_shared_mapping()
+            .check_shared_mapping()
             .context("pool lacks physical pages; use fresh state")?;
     }
     Ok(())
 }
 /// Start or reuse a private, configuration-bound service. A pool startup lock
 /// serializes callers, including standalone managers. The state directory must
-/// already exist and be owned/private. Never replaces a socket or kills by PID.
+/// already exist and be owned/private. A stale physical endpoint is replaced
+/// only after owner fencing and generation validation; never kills by saved PID.
 pub fn ensure_service(state: &Path, executable: &Path, config: PoolConfig) -> Result<PathBuf> {
     private_directory(state)?;
     let state = state.canonicalize()?;
@@ -162,9 +217,14 @@ pub fn ensure_service(state: &Path, executable: &Path, config: PoolConfig) -> Re
     }
     let socket = directory.join("pool.sock");
     if socket.try_exists()? {
-        probe(&socket, config.mode)
-            .context("existing pool unavailable; refusing to replace live RAM ownership")?;
-        return Ok(socket);
+        match probe(&socket, config.mode) {
+            Ok(()) => return Ok(socket),
+            Err(error) => {
+                recover_endpoint(&directory, &socket, config.mode).with_context(|| {
+                    format!("existing pool unavailable ({error:#}); recovery refused")
+                })?;
+            }
+        }
     }
     let log = OpenOptions::new()
         .append(true)
@@ -207,8 +267,6 @@ pub fn ensure_service(state: &Path, executable: &Path, config: PoolConfig) -> Re
 
 /// Foreground daemon component, also used by bounded real-VM benchmarks.
 /// The private config fixes memory/connection bounds before any VM connects.
-// Keep fetch_update available to Rust toolchains before its 1.99 rename.
-#[allow(deprecated)]
 pub fn run(directory: &Path) -> Result<()> {
     private_directory(directory)?;
     let config: PoolConfig = serde_json::from_slice(&fs::read(directory.join("config.json"))?)?;
@@ -219,89 +277,139 @@ pub fn run(directory: &Path) -> Result<()> {
             && config.max_references > 0,
         "pool budgets must be positive"
     );
-    let lock = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .mode(0o600)
-        .custom_flags(libc::O_NOFOLLOW)
-        .open(directory.join("service.lock"))?;
+    let lock = service_lock(directory)?;
     lock.try_lock_exclusive()
         .context("memory-pool already has an owner")?;
     let socket = directory.join("pool.sock");
-    // An existing endpoint is never unlinked or silently adopted.
-    let listener = UnixListener::bind(&socket)?;
-    fs::set_permissions(&socket, fs::Permissions::from_mode(0o600))?;
-    #[cfg(not(target_os = "linux"))]
-    let compressed = (config.mode != PoolMode::PhysicalPages).then(|| {
-        Arc::new(Mutex::new(CompressedPool::new(
+    let (service, _maintenance) = if physical_mode(config.mode) {
+        let mut pool = SharedPool::with_candidate_limit(
             config.max_bytes,
             config.max_objects,
-        )))
-    });
-    let physical = config.mode == PoolMode::PhysicalPages
-        || (cfg!(target_os = "linux") && config.mode == PoolMode::Physical);
-    let pool = physical
-        .then(|| {
-            SharedPool::with_candidate_limit(
+            config.max_candidates,
+        )?;
+        let retired = retired_bytes_before_start(directory)?;
+        pool.limit_publication_bytes(config.max_bytes.saturating_sub(retired));
+        let generation = Arc::new(PhysicalGeneration::publish(
+            directory,
+            &pool.readonly_file(),
+        )?);
+        let pool = Arc::new(Mutex::new(pool));
+        let maintenance =
+            GenerationMaintenance::start(pool.clone(), generation.clone(), config.max_bytes);
+        (
+            AsyncPoolService::shared(
+                pool,
+                Some(generation),
+                config.max_connections,
+                config.max_references,
+            )?,
+            Some(maintenance),
+        )
+    } else {
+        #[cfg(target_os = "linux")]
+        let service = AsyncPoolService::sealed(
+            Arc::new(Mutex::new(SealedPool::new(
                 config.max_bytes,
                 config.max_objects,
-                config.max_candidates,
-            )
-        })
-        .transpose()?
-        .map(|pool| Arc::new(Mutex::new(pool)));
-    #[cfg(target_os = "linux")]
-    let sealed = (config.mode == PoolMode::Compressed).then(|| {
-        Arc::new(Mutex::new(SealedPool::new(
-            config.max_bytes,
-            config.max_objects,
-        )))
-    });
-    let connections = Arc::new(AtomicUsize::new(0));
-    println!(
-        "{}",
-        serde_json::json!({"ready": true, "socket": socket, "daemon_owned": true, "mode": config.mode})
-    );
-    for stream in listener.incoming() {
-        let stream = stream?;
-        if pvisor::host_transport::authorize_host_peer_sync(&stream).is_err() {
-            continue;
-        }
-        if connections
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
-                (n < config.max_connections).then_some(n + 1)
-            })
-            .is_err()
-        {
-            continue;
-        }
-        let owner = pool.clone();
+            ))),
+            config.max_connections,
+            config.max_references,
+        )?;
         #[cfg(not(target_os = "linux"))]
-        let compressed = compressed.clone();
-        #[cfg(target_os = "linux")]
-        let sealed = sealed.clone();
-        let count = connections.clone();
-        let refs = config.max_references;
-        std::thread::spawn(move || {
-            #[cfg(target_os = "linux")]
-            let result = match owner {
-                Some(owner) => serve_shared(stream, owner, refs),
-                None => serve_sealed(stream, sealed.unwrap(), refs),
-            };
-            #[cfg(not(target_os = "linux"))]
-            let result = match owner {
-                Some(owner) => serve_shared(stream, owner, refs),
-                None => serve(stream, compressed.unwrap(), refs),
-            };
-            if let Err(error) = result {
-                eprintln!("memory-pool session: {error}");
+        let service = AsyncPoolService::compressed(
+            Arc::new(Mutex::new(CompressedPool::new(
+                config.max_bytes,
+                config.max_objects,
+            ))),
+            config.max_connections,
+            config.max_references,
+        )?;
+        (service, None)
+    };
+    // A foreground owner never unlinks/adopts a previous endpoint. Only the
+    // manager's fenced recovery path may remove a validated stale socket.
+    let listener = UnixListener::bind(&socket)?;
+    fs::set_permissions(&socket, fs::Permissions::from_mode(0o600))?;
+    listener.set_nonblocking(true)?;
+    tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .max_blocking_threads(4)
+        .thread_name("pvisor-pool")
+        .enable_all()
+        .build()?
+        .block_on(async move {
+            let listener = tokio::net::UnixListener::from_std(listener)?;
+            println!(
+                "{}",
+                serde_json::json!({"ready": true, "socket": socket, "daemon_owned": true, "mode": config.mode, "async_sessions": true})
+            );
+            loop {
+                let (stream, _) = listener.accept().await?;
+                match service.connection(stream) {
+                    Ok(connection) => {
+                        tokio::spawn(async move {
+                            if let Err(error) = connection.await {
+                                eprintln!("memory-pool session: {error}");
+                            }
+                        });
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
+                    Err(error) => eprintln!("memory-pool admission: {error}"),
+                }
             }
-            count.fetch_sub(1, Ordering::AcqRel);
-        });
-    }
+            #[allow(unreachable_code)]
+            Ok::<(), std::io::Error>(())
+        })?;
     Ok(())
+}
+
+struct GenerationMaintenance {
+    stop: Arc<AtomicBool>,
+    worker: Option<std::thread::JoinHandle<()>>,
+}
+
+impl GenerationMaintenance {
+    fn start(
+        pool: Arc<Mutex<SharedPool>>,
+        generation: Arc<PhysicalGeneration>,
+        budget: usize,
+    ) -> Self {
+        let stop = Arc::new(AtomicBool::new(false));
+        let stopped = stop.clone();
+        let worker = std::thread::spawn(move || {
+            while !stopped.load(Ordering::Acquire) {
+                // One bounded metadata walk per owner, not per VM or page.
+                // Any accounting failure closes admission, not live mappings.
+                let available = match generation.retained_bytes() {
+                    Ok(retired) => budget.saturating_sub(retired),
+                    Err(error) => {
+                        eprintln!(
+                            "memory-pool generation accounting: {error}; publication disabled"
+                        );
+                        0
+                    }
+                };
+                pool.lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .limit_publication_bytes(available);
+                std::thread::park_timeout(Duration::from_secs(1));
+            }
+        });
+        Self {
+            stop,
+            worker: Some(worker),
+        }
+    }
+}
+
+impl Drop for GenerationMaintenance {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Release);
+        if let Some(worker) = self.worker.take() {
+            worker.thread().unpark();
+            let _ = worker.join();
+        }
+    }
 }
 
 #[cfg(test)]

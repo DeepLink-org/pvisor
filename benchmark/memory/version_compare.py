@@ -44,6 +44,42 @@ METRICS = (
     "kernel_mib",
     "pool_vmas",
 )
+# Explicit null means unset, not unknown. Preparers must also retain any other
+# build-affecting overrides they use; the entire recorded mapping is compared.
+BUILD_ENVIRONMENT_KEYS = (
+    "RUSTFLAGS",
+    "CARGO_ENCODED_RUSTFLAGS",
+    "RUSTC",
+    "RUSTC_WRAPPER",
+    "RUSTC_WORKSPACE_WRAPPER",
+    "RUSTC_BOOTSTRAP",
+    "CARGO_BUILD_RUSTFLAGS",
+    "CARGO_BUILD_TARGET",
+    "CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_RUSTFLAGS",
+    "CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER",
+    "SOURCE_DATE_EPOCH",
+    "CARGO_TARGET_DIR",
+    "CARGO_BUILD_JOBS",
+    "PVISOR_KRUNFW_KERNEL_BUNDLE",
+    "PVISOR_KRUNFW_PATH",
+    *(
+        "CARGO_PROFILE_RELEASE_" + prefix + name
+        for prefix in ("", "BUILD_OVERRIDE_")
+        for name in (
+            "OPT_LEVEL",
+            "LTO",
+            "CODEGEN_UNITS",
+            "DEBUG",
+            "STRIP",
+            "PANIC",
+            "DEBUG_ASSERTIONS",
+            "OVERFLOW_CHECKS",
+            "INCREMENTAL",
+            "RPATH",
+            "SPLIT_DEBUGINFO",
+        )
+    ),
+)
 
 
 def schedule(rounds, preflight, seed):
@@ -167,12 +203,52 @@ def paired_crossings(cases, rounds):
     return result
 
 
+def build_controls(folder, receipt):
+    """Require recorded argv, explicit environment and source-bound Cargo controls."""
+    command = receipt.get("build_command")
+    if (
+        not isinstance(command, list)
+        or not command
+        or any(not isinstance(arg, str) or not arg for arg in command)
+    ):
+        raise ValueError("build control missing or invalid: build_command argv")
+    environment = receipt.get("build_environment")
+    if not isinstance(environment, dict) or any(
+        not isinstance(key, str) or (value is not None and not isinstance(value, str))
+        for key, value in environment.items()
+    ):
+        raise ValueError("build control missing or invalid: build_environment")
+    missing = set(BUILD_ENVIRONMENT_KEYS) - environment.keys()
+    if missing:
+        raise ValueError("build environment controls missing: " + ", ".join(sorted(missing)))
+    configuration = {}
+    for row in json.loads((folder / "source-files.json").read_text()):
+        if row["path"] not in ("Cargo.lock", ".cargo/config", ".cargo/config.toml"):
+            continue
+        path = row["path"]
+        if path in configuration:
+            raise ValueError("duplicate Cargo build control: " + path)
+        if not row.get("absent"):
+            value = row.get("sha256")
+            if (
+                not isinstance(value, str)
+                or len(value) != 64
+                or any(c not in "0123456789abcdef" for c in value)
+            ):
+                raise ValueError("Cargo build control has no file digest: " + path)
+            configuration[path] = value
+    if "Cargo.lock" not in configuration:
+        raise ValueError("build control missing: Cargo.lock source digest")
+    return dict(command=command, environment=environment, configuration=configuration)
+
+
 def artifacts(directory):
     """Require identical controls and bound source/build receipts before sampling."""
     prepared = json.loads((directory / "preparation.json").read_text())
     if not prepared.get("prepared"):
         raise ValueError("matched artifact preparation has not completed")
     result = {}
+    controls = {}
     for version in ("A", "B"):
         folder = directory / version
         inputs = folder / "inputs"
@@ -195,10 +271,14 @@ def artifacts(directory):
             if digest(folder / name) != receipt[key]:
                 raise ValueError("variant source/supervisor changed")
         result[version] = dict(inputs=str(inputs.resolve()), receipt=receipt)
+        controls[version] = build_controls(folder, receipt)
     a, b = (result[v]["receipt"] for v in ("A", "B"))
     for key in ("rustc", "zig", "guest_supervisor_sha256", "common_helper_sha256"):
         if a[key] != b[key]:
             raise ValueError("build/helper/guest control differs: " + key)
+    for key in ("command", "environment", "configuration"):
+        if controls["A"][key] != controls["B"][key]:
+            raise ValueError("build control differs: " + key)
     if digest(directory / "common/pool_memory_case.rs") != a["common_helper_sha256"]:
         raise ValueError("common helper bytes changed")
     for name in ("worker", "worker.rs", "root/worker", "bundle/kernel.bin", "bundle/kernel.json"):

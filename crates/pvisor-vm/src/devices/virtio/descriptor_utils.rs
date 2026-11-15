@@ -6,7 +6,7 @@ use std::cmp;
 use std::collections::VecDeque;
 use std::fmt::{self, Display};
 use std::io::{self, Read, Write};
-use std::mem::{MaybeUninit, size_of};
+use std::mem::{size_of, MaybeUninit};
 use std::ops::Deref;
 use std::ptr::copy_nonoverlapping;
 use std::result;
@@ -520,6 +520,76 @@ pub(crate) struct FileReadCompletion {
     capacity: usize,
 }
 impl FileReadCompletion {
+    #[cfg(target_os = "linux")]
+    pub(crate) fn wants_immutable(&self) -> bool {
+        self.hints.file_mapping_enabled()
+    }
+
+    /// Queue only complete native pages in the successful READ prefix. File
+    /// authority comes from FileSystem::immutable_read_file, never guest flags.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn immutable(
+        &self,
+        file: std::sync::Arc<std::fs::File>,
+        offset: u64,
+        mut count: usize,
+    ) {
+        if count > self.capacity || !self.wants_immutable() {
+            return;
+        }
+        let Ok(metadata) = file.metadata() else {
+            return;
+        };
+        if !metadata.is_file()
+            || offset
+                .checked_add(count as u64)
+                .is_none_or(|end| end > metadata.len())
+        {
+            return;
+        }
+        let submit = |address: u64, source: u64, written: usize| {
+            let padding = (4096 - address % 4096) % 4096;
+            if let Some(aligned) = source.checked_add(padding) {
+                let bytes = written.saturating_sub(padding as usize) & !4095;
+                if aligned.is_multiple_of(4096) && bytes != 0 {
+                    self.hints.submit_file(super::memory_gate::ImmutableRead {
+                        file: file.clone(),
+                        offset: aligned,
+                        address: address + padding,
+                        length: bytes,
+                    });
+                }
+            }
+        };
+        let mut pending: Option<(u64, u64, usize)> = None;
+        let mut source = offset;
+        for &(address, length) in &self.ranges {
+            let written = count.min(length);
+            if written == 0 {
+                break;
+            }
+            if pending
+                .as_ref()
+                .is_some_and(|(start, _, bytes)| start.checked_add(*bytes as u64) == Some(address))
+            {
+                pending.as_mut().unwrap().2 += written;
+            } else {
+                if let Some((address, source, written)) = pending.take() {
+                    submit(address, source, written);
+                }
+                pending = Some((address, source, written));
+            }
+            source += written as u64;
+            count -= written;
+            if count == 0 {
+                break;
+            }
+        }
+        if let Some((address, source, written)) = pending {
+            submit(address, source, written);
+        }
+    }
+
     /// Only the successful byte prefix is eligible. Drop/error/EOF enqueue
     /// nothing; an impossible count declines acceleration without touching RAM.
     pub(crate) fn finish(self, mut count: usize) {
@@ -826,6 +896,57 @@ mod tests {
         );
         assert!(gate.try_close().unwrap());
     }
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn immutable_read_completion_keeps_source_offsets_and_only_successful_full_pages() {
+        use super::super::memory_gate::{ColdFaultActivity, ReadHints};
+        use std::sync::Arc;
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("source");
+        std::fs::write(&path, vec![0x5a; 16384]).unwrap();
+        let file = Arc::new(std::fs::File::open(path).unwrap());
+        let mem = GuestMemoryMmap::from_ranges(&[(GuestAddress(0), 32768)]).unwrap();
+        let gate = super::super::memory_gate::register(&mem);
+        let hints = Arc::new(ReadHints::default());
+        gate.close(std::time::Duration::ZERO).unwrap();
+        gate.install_cold_faults(Arc::new(ColdFaultActivity::default()))
+            .unwrap();
+        gate.install_read_hints(hints.clone()).unwrap();
+        gate.open();
+        let writer = Writer {
+            buffer: DescriptorChainConsumer {
+                memory_access: super::super::memory_gate::access(&mem),
+                buffers: [(4096, 2048), (6144, 2048), (16384, 8192)]
+                    .into_iter()
+                    .map(|(address, len)| mem.get_slice(GuestAddress(address), len).unwrap())
+                    .collect(),
+                bytes_consumed: 0,
+            },
+        };
+        let completion = writer.file_read_completion().unwrap();
+        completion.immutable(file.clone(), 4096, 9000);
+        let first = hints.take_file(4096).unwrap();
+        let second = hints.take_file(4096).unwrap();
+        assert_eq!((first.offset, first.length), (4096, 4096));
+        assert_eq!((second.offset, second.length), (8192, 4096));
+        assert_eq!(
+            first.address,
+            mem.get_host_address(GuestAddress(4096)).unwrap() as u64
+        );
+        assert_eq!(
+            second.address,
+            mem.get_host_address(GuestAddress(16384)).unwrap() as u64
+        );
+        assert!(
+            hints.take_file(4096).is_none(),
+            "short tails are not mapping authority"
+        );
+        for (offset, count) in [(1, 8192), (0, 0), (0, 16385), (12288, 8192)] {
+            completion.immutable(file.clone(), offset, count);
+            assert!(hints.take_file(16384).is_none());
+        }
+    }
+
     #[test]
     fn file_read_completion_declines_disabled_canceled_eof_and_invalid_counts() {
         use super::super::memory_gate::{ColdFaultActivity, ReadHints};

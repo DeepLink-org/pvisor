@@ -70,13 +70,12 @@ fn sample<O>(
     scanner: &mut scan::Scanner,
     bytes: usize,
     buffers: &mut Vec<Vec<u8>>,
+    started: Instant,
 ) -> Result<Vec<(usize, Vec<u8>)>, String> {
-    let started = Instant::now();
     let candidates = scanner.select(scan::BATCH_BYTES / bytes, started, |visit, samples| {
+        // Scanner charges this entire bounded visit before calling us. Check
+        // the soft time budget between visits, never discard uninspected quota.
         for index in visit.pages {
-            if started.elapsed() >= scan::WORK_BUDGET {
-                break;
-            }
             debug_assert!(visit.region.contains(&index));
             let page = &pages[index];
             if deadline(started) < page.eligible_at {
@@ -165,6 +164,16 @@ fn run<S: ColdRamStore>(handle: VmmHandle, mut store: S, metrics: bool) {
     let mut privatized = 0u64;
     let mut buffers = Vec::new();
     loop {
+        if !store.publication_ready() {
+            buffers.clear();
+            if handle.vmm.upgrade().is_none() {
+                return;
+            }
+            // Existing file mappings remain valid. Do not repeatedly capture
+            // RAM or enter barriers while the optional publisher is unavailable.
+            std::thread::sleep(scan::REJECT_RETRY);
+            continue;
+        }
         let now = deadline(Instant::now());
         for hint in store.take_ready() {
             if let Some(index) = hint
@@ -189,9 +198,15 @@ fn run<S: ColdRamStore>(handle: VmmHandle, mut store: S, metrics: bool) {
         let candidates = if scanner.round_complete() {
             Vec::new()
         } else {
-            match handle
-                .with_ram_quiesced(|_| sample(&mut pages, &mut scanner, bytes, &mut buffers))
-            {
+            match handle.with_ram_quiesced(|_| {
+                sample(
+                    &mut pages,
+                    &mut scanner,
+                    bytes,
+                    &mut buffers,
+                    Instant::now(),
+                )
+            }) {
                 Ok(Some(candidates)) => candidates,
                 Ok(None) => {
                     std::thread::sleep(scan::REJECT_RETRY);
@@ -330,6 +345,11 @@ fn run<S: ColdRamStore>(handle: VmmHandle, mut store: S, metrics: bool) {
         }
         scanner.finished_batch(batch_started.elapsed());
         if metrics {
+            eprintln!(
+                "pvisor-cold-accounting scope={:?} pid={}",
+                stats.scope,
+                std::process::id()
+            );
             let shared = pages.iter().filter(|page| page.pinned.is_some()).count() * bytes;
             eprintln!(
                 "pvisor-shared-sample pid={} shared_bytes={shared} mapped_total={mapped} privatized_total={privatized} pool_bytes={} pool_objects={} references={} cross_session_objects={} rejections={rejections}",
@@ -377,13 +397,22 @@ mod tests {
         let mut buffers = vec![vec![0; page], vec![0; page]];
         let mut allocations: Vec<_> = buffers.iter().map(|buffer| buffer.as_ptr()).collect();
         allocations.sort_unstable();
-        for value in [0x53, 0xa5] {
+        for (value, expired) in [(0x53, false), (0xa5, true)] {
             memory
                 .write_slice(&vec![value; page * 2], GuestAddress(0x200000))
                 .unwrap();
             scanner.begin_round();
-            let samples = super::sample(&mut pages, &mut scanner, page, &mut buffers).unwrap();
+            // An expired selection budget must still inspect the reserved
+            // background visit through the real Mach/snapshot callback.
+            let mut started = std::time::Instant::now();
+            if expired {
+                started -= crate::cold_ram_scan::WORK_BUDGET * 2;
+            }
+            let probes = scanner.probes;
+            let samples =
+                super::sample(&mut pages, &mut scanner, page, &mut buffers, started).unwrap();
             assert_eq!(samples.len(), 2);
+            assert_eq!(scanner.probes - probes, samples.len() as u64);
             assert!(buffers.is_empty());
             for (_, bytes) in samples {
                 assert_eq!(bytes, vec![value; page]);
@@ -399,9 +428,15 @@ mod tests {
             );
         }
         scanner.begin_round();
-        assert!(super::sample(&mut pages, &mut scanner, page, &mut buffers)
-            .unwrap()
-            .is_empty());
+        assert!(super::sample(
+            &mut pages,
+            &mut scanner,
+            page,
+            &mut buffers,
+            std::time::Instant::now()
+        )
+        .unwrap()
+        .is_empty());
         assert_eq!(buffers.len(), 2, "cooling pages must not consume buffers");
     }
 
@@ -497,9 +532,15 @@ mod tests {
         let mut scanner = crate::cold_ram_scan::Scanner::new(std::iter::once(0..2), page, 7);
         let mut buffers = Vec::new();
         assert!(
-            super::sample(&mut pages, &mut scanner, page, &mut buffers)
-                .unwrap()
-                .is_empty(),
+            super::sample(
+                &mut pages,
+                &mut scanner,
+                page,
+                &mut buffers,
+                std::time::Instant::now()
+            )
+            .unwrap()
+            .is_empty(),
             "the adaptive scanner must skip unchanged shared mappings"
         );
         assert_eq!(read(0x200000), 0x5353535353535353);
@@ -536,7 +577,14 @@ mod tests {
         );
         assert_eq!(read(0x200000), 0xa1);
         scanner.begin_round();
-        let samples = super::sample(&mut pages, &mut scanner, page, &mut buffers).unwrap();
+        let samples = super::sample(
+            &mut pages,
+            &mut scanner,
+            page,
+            &mut buffers,
+            std::time::Instant::now(),
+        )
+        .unwrap();
         assert_eq!(samples.len(), 2, "CPU and device COW must both be sampled");
         assert_eq!(scanner.cow_breaks, 2);
         for (index, bytes) in samples {
@@ -546,7 +594,14 @@ mod tests {
             );
         }
         scanner.begin_round();
-        super::sample(&mut pages, &mut scanner, page, &mut buffers).unwrap();
+        super::sample(
+            &mut pages,
+            &mut scanner,
+            page,
+            &mut buffers,
+            std::time::Instant::now(),
+        )
+        .unwrap();
         assert_eq!(
             scanner.cow_breaks, 2,
             "a retained old pin must not count the same COW twice"
@@ -555,7 +610,14 @@ mod tests {
             std::time::Instant::now() + std::time::Duration::from_secs(30),
         );
         scanner.begin_round();
-        let samples = super::sample(&mut pages, &mut scanner, page, &mut buffers).unwrap();
+        let samples = super::sample(
+            &mut pages,
+            &mut scanner,
+            page,
+            &mut buffers,
+            std::time::Instant::now(),
+        )
+        .unwrap();
         assert_eq!(
             samples.iter().map(|(index, _)| *index).collect::<Vec<_>>(),
             [1],

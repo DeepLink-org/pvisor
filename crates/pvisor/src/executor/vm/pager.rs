@@ -1,7 +1,9 @@
 //! Product-side cold RAM pool authorization and diagnostic destinations.
 //! VM mapping transitions and fault/device recovery live in pvisor-vm.
 use crate::env::{self, ram::METRICS_ENV};
-use crate::ram_backing::ipc::{PoolClient, RemoteObject};
+#[cfg(target_os = "macos")]
+use crate::ram_backing::ipc::RemoteObject;
+use crate::ram_backing::ipc::{PhysicalClient, PoolClient};
 use pvisor_vm::api::ColdRamControl;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 use pvisor_vm::api::{FrozenMemory, RuntimeSupport, VmPlatform};
@@ -28,7 +30,7 @@ pub(crate) struct PreparedPager {
 enum PagerStore {
     Disabled,
     Local(crate::ram_backing::resident::LocalColdRamStore),
-    Physical(PoolClient),
+    Physical(PhysicalClient),
     #[cfg(target_os = "macos")]
     Compressed(PoolClient),
     #[cfg(target_os = "linux")]
@@ -221,33 +223,37 @@ pub(crate) fn prepare_pool(path: &Path, metrics: bool) -> io::Result<PreparedPag
     let stream = UnixStream::connect(path)?;
     crate::host_transport::authorize_host_peer_sync(&stream).map_err(io::Error::other)?;
     let mut pool = PoolClient::new(stream, Duration::from_secs(5))?;
-    #[cfg(target_os = "macos")]
     let store = match pool.enable_shared_mapping() {
-        Ok(()) => PagerStore::Physical(pool),
+        Ok(()) => PagerStore::Physical(PhysicalClient::new(pool, Some(path.to_path_buf()))?),
         Err(_) => {
-            // Only a fully consumed mode rejection permits legacy compression.
-            // A malformed descriptor or dead transport must fail startup.
-            pool.stats()?;
-            PagerStore::Compressed(pool)
-        }
-    };
-    #[cfg(target_os = "linux")]
-    let store = {
-        if pool.enable_shared_mapping().is_err() {
-            // Only the negotiated sealed protocol may fall back to local
-            // decode; legacy remote GET ownership is never used on Linux.
-            PagerStore::Sealed(crate::ram_backing::ipc::SealedClient::new(pool)?)
-        } else {
-            PagerStore::Physical(pool)
+            #[cfg(target_os = "macos")]
+            {
+                // Only a fully consumed mode rejection permits legacy compression.
+                // A malformed descriptor or dead transport must fail startup.
+                pool.stats()?;
+                PagerStore::Compressed(pool)
+            }
+            #[cfg(target_os = "linux")]
+            {
+                // Only the negotiated sealed protocol may fall back to local
+                // decode; legacy remote GET ownership is never used on Linux.
+                PagerStore::Sealed(crate::ram_backing::ipc::SealedClient::new(pool)?)
+            }
         }
     };
     Ok(PreparedPager { store, metrics })
 }
 
+// Raw GET restoration remains only for the legacy macOS compressed backend.
+// Linux pager stores must use PhysicalClient or SealedClient local authority.
+#[cfg(target_os = "macos")]
 impl pvisor_vm::api::ColdRamStore for PoolClient {
     type Object = RemoteObject;
-    fn shared_mapping(&self, object: &Self::Object) -> Option<pvisor_vm::api::SharedRamMapping> {
-        PoolClient::shared_mapping(self, object)
+    fn publication_ready(&mut self) -> bool {
+        true
+    }
+    fn shared_mapping(&self, _: &Self::Object) -> Option<pvisor_vm::api::SharedRamMapping> {
+        None
     }
     fn put(&mut self, bytes: &[u8]) -> io::Result<Self::Object> {
         PoolClient::put_duplicate(self, bytes)
@@ -268,16 +274,10 @@ impl pvisor_vm::api::ColdRamStore for PoolClient {
         PoolClient::release_objects(self, objects)
     }
     fn take_ready(&mut self) -> Vec<u64> {
-        PoolClient::take_ready(self)
+        Vec::new()
     }
     fn stats(&mut self) -> io::Result<pvisor_vm::api::ColdRamPoolStats> {
-        let stats = PoolClient::stats(self)?;
-        Ok(pvisor_vm::api::ColdRamPoolStats {
-            encoded_bytes: stats.encoded_bytes,
-            objects: stats.objects,
-            session_references: stats.session_references,
-            cross_session_objects: stats.cross_session_objects,
-        })
+        Ok(PoolClient::stats(self)?.into_cold(pvisor_vm::api::ColdRamAccountingScope::Pool))
     }
 }
 

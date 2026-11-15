@@ -1088,15 +1088,26 @@ pub struct MachineRestore {
 }
 
 /// Immutable block storage supplied by the host's pool/service adapter.
-/// Object references belong to one store session; successful `put` acquires one
+/// Object references belong to one logical store session; successful `put` acquires one
 /// reference, and `release` consumes it. `restore` must verify the entire block
 /// before returning success. `WouldBlock` from put certifies a healthy admission
-/// rejection with no acquired reference; other errors require a stats check to
-/// distinguish capacity rejection from a broken connection. No VM pointers or
+/// rejection with no acquired reference. An adapter may contain publisher loss
+/// only while independently retaining all backing needed by existing references.
+/// Connection recovery must never bind an old offset/token to a replacement file.
+/// Other errors require a stats check to distinguish capacity rejection from a
+/// broken store. No VM pointers or
 /// OS mapping state cross this boundary. The pager never calls put under a VM barrier.
 pub trait ColdRamStore: Send {
-    /// Session-owned immutable block reference; Send does not permit cross-session reuse.
+    /// Store-owned immutable block reference; Send does not permit transfer to
+    /// another store. A reconnecting store must retain the exact old backing
+    /// and quarantine uncertain remote references before returning safe rejection.
     type Object: Send;
+    /// Whether optional publication may proceed. Called outside VM barriers
+    /// and pager locks before allocating/capturing snapshots. A store may flush
+    /// deferred releases or attempt bounded recovery here. False pauses new
+    /// discovery only: existing mapping, restore and release contracts remain
+    /// valid. This is not authority to reclaim RAM or evidence of peer death.
+    fn publication_ready(&mut self) -> bool;
     /// Publish verified immutable bytes and acquire exactly one reference.
     /// WouldBlock guarantees no reference was acquired; other errors may be uncertain.
     fn put(&mut self, bytes: &[u8]) -> io::Result<Self::Object>;
@@ -1204,16 +1215,35 @@ pub struct ColdRamActivity {
     pub pending_snapshot_bytes: u64,
 }
 
+/// The ownership domain represented by a storage-accounting snapshot.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ColdRamAccountingScope {
+    /// Current publisher's pool and connection. Retired connection generations
+    /// are not included; this is not a whole-host memory measurement.
+    Pool,
+    /// Instance-local store, including its retained objects and aliases.
+    Instance,
+    /// Independently retained local references after publication loss. Other
+    /// processes, uncertain remote pins and unreferenced bytes in retained
+    /// backing files are excluded. Cross-session sharing is unknown.
+    LocalPins,
+}
+
 #[derive(Clone, Copy, Debug)]
-/// Store-reported accounting for the current session and shared immutable objects.
+/// Store-reported accounting with an explicit ownership domain.
 pub struct ColdRamPoolStats {
+    /// Which store/generation domain the values describe. Never sum snapshots
+    /// from different scopes as though all were current pool-wide measurements.
+    pub scope: ColdRamAccountingScope,
     /// Bytes charged by the store encoding; not decoded VM RAM or process RSS.
     pub encoded_bytes: u64,
     /// Number of currently retained immutable objects.
     pub objects: u64,
-    /// Object references held by this store session, including local aliases.
+    /// Object references held in the reported scope, including local aliases.
     pub session_references: u64,
     /// Objects referenced by multiple sessions; a live approximate sharing count.
+    /// With LocalPins this is zero as an unavailable observation, not proof that
+    /// no other process maps the same bytes.
     pub cross_session_objects: u64,
 }
 

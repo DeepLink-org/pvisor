@@ -2,6 +2,10 @@
 //! The caller owns endpoint authentication, connection limits and service lifetime.
 //! Legacy GET restores a bounded block; Linux sealed clients own compressed
 //! memfds and decode locally. No disk backing or implicit VM eviction here.
+#[path = "async_service.rs"]
+mod async_service;
+#[path = "physical_client.rs"]
+mod physical_client;
 #[cfg(target_os = "linux")]
 #[path = "sealed_client.rs"]
 mod sealed_client;
@@ -10,6 +14,8 @@ use super::{
     resident::{CompressedObject, CompressedPool, identity},
     shared_index::fingerprint,
 };
+pub use async_service::AsyncPoolService;
+pub use physical_client::{PhysicalClient, PhysicalReference};
 #[cfg(target_os = "linux")]
 pub use sealed_client::{SealedClient, SealedReference};
 use std::{
@@ -37,7 +43,9 @@ const PUT_BATCH: u8 = 13;
 const RELEASE_BATCH: u8 = 14;
 const DISCOVER_XXH3: u8 = 15;
 const SHARED_STATS: u8 = 16;
+const REGISTER_GENERATION: u8 = 17;
 const DISCOVERY_VERSION: u32 = 3;
+const RECOVERY_DISCOVERY_VERSION: u32 = 4;
 const DISCOVERY_BATCH: usize = 256;
 const MAX_BATCH_REPLY: usize = 96 * 1024;
 
@@ -73,6 +81,22 @@ pub struct PoolStats {
     /// Objects held here with additional references outside this session.
     pub cross_session_objects: u64,
 }
+impl PoolStats {
+    /// The owning adapter supplies scope; wire counts cannot infer whether
+    /// they describe a live publisher or only the client's retained pins.
+    pub(crate) fn into_cold(
+        self,
+        scope: pvisor_vm::api::ColdRamAccountingScope,
+    ) -> pvisor_vm::api::ColdRamPoolStats {
+        pvisor_vm::api::ColdRamPoolStats {
+            scope,
+            encoded_bytes: self.encoded_bytes,
+            objects: self.objects,
+            session_references: self.session_references,
+            cross_session_objects: self.cross_session_objects,
+        }
+    }
+}
 fn read_u32(stream: &mut impl Read) -> io::Result<u32> {
     let mut bytes = [0; 4];
     stream.read_exact(&mut bytes)?;
@@ -83,7 +107,7 @@ fn read_u64(stream: &mut impl Read) -> io::Result<u64> {
     stream.read_exact(&mut bytes)?;
     Ok(u64::from_le_bytes(bytes))
 }
-fn reject(stream: &mut UnixStream, message: &str) -> io::Result<()> {
+fn reject(stream: &mut impl Write, message: &str) -> io::Result<()> {
     let bytes = message.as_bytes();
     let length = bytes.len().min(256);
     let mut frame = Vec::with_capacity(5 + length);
@@ -112,7 +136,7 @@ fn status(stream: &mut impl Read) -> io::Result<Option<io::Error>> {
     }
 }
 
-fn write_batch_reply(stream: &mut UnixStream, payload: &[u8]) -> io::Result<()> {
+fn write_batch_reply(stream: &mut impl Write, payload: &[u8]) -> io::Result<()> {
     let mut frame = Vec::with_capacity(5 + payload.len());
     frame.push(0);
     frame.extend_from_slice(&(payload.len() as u32).to_le_bytes());
@@ -189,36 +213,85 @@ fn release_reference(
     pool.collect(Some(id))
 }
 
-/// One service thread per authorized connection; callers bound connection count.
-/// No idle expiry: disconnected sessions release references, quiet VMs retain them.
+/// Blocking legacy compressed service for authorized embedded callers.
+/// The caller owns the serving thread and connection count. This backend grants
+/// no mapped backing: disconnect releases references; idle sessions retain them.
+/// Daemon services use AsyncPoolService instead.
 pub fn serve(
     stream: UnixStream,
     pool: Arc<Mutex<CompressedPool>>,
     max_references: usize,
 ) -> io::Result<()> {
-    serve_inner(stream, Owner::Compressed(pool), max_references)
+    serve_inner(
+        stream,
+        Owner::Compressed(pool),
+        max_references,
+        Registration::Legacy,
+    )
 }
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-pub fn serve_shared(
+// Blocking mapped-backend fixtures exercise the wire engine and peer-exit
+// contract in unit tests. Production mapped services are exclusively async.
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+pub(crate) fn serve_shared(
     stream: UnixStream,
     pool: Arc<Mutex<super::shared::SharedPool>>,
     max_references: usize,
 ) -> io::Result<()> {
-    serve_inner(stream, Owner::Shared(pool), max_references)
+    serve_inner(
+        stream,
+        Owner::Shared(pool),
+        max_references,
+        Registration::Legacy,
+    )
 }
 
 /// Serve immutable compressed objects to authorized Linux clients. Outstanding
 /// references on disconnect stay budgeted until pidfd proves peer exit; client
 /// descriptors remain valid even if this service exits. No socket reconnection.
-#[cfg(target_os = "linux")]
-pub fn serve_sealed(
+#[cfg(all(test, target_os = "linux"))]
+pub(crate) fn serve_sealed(
     stream: UnixStream,
     pool: Arc<Mutex<super::sealed::SealedPool>>,
     max_references: usize,
 ) -> io::Result<()> {
-    serve_inner(stream, Owner::Sealed(pool), max_references)
+    serve_inner(
+        stream,
+        Owner::Sealed(pool),
+        max_references,
+        Registration::Legacy,
+    )
 }
 
+#[derive(Clone)]
+enum Registration {
+    Legacy,
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    Required(Arc<super::generation::PhysicalGeneration>),
+}
+
+impl Registration {
+    fn required(&self) -> bool {
+        !matches!(self, Self::Legacy)
+    }
+
+    fn version(&self) -> u32 {
+        if self.required() {
+            RECOVERY_DISCOVERY_VERSION
+        } else {
+            DISCOVERY_VERSION
+        }
+    }
+
+    fn verify(&self, id: [u8; 16]) -> io::Result<()> {
+        match self {
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            Self::Required(generation) => generation.verify_registration(id),
+            Self::Legacy => Err(invalid("generation registration unsupported")),
+        }
+    }
+}
+
+#[derive(Clone)]
 enum Owner {
     Compressed(Arc<Mutex<CompressedPool>>),
     #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -337,6 +410,11 @@ impl Owner {
             return true;
         }
         false
+    }
+    // Only GET-only compression may retire authority on transport loss.
+    // Every backend handing out mappings must first prove peer process exit.
+    fn requires_peer_exit(&self) -> bool {
+        self.is_shared() || self.is_sealed()
     }
     fn intern(&self, bytes: &[u8], duplicate: bool, session: [u8; 16]) -> io::Result<Reference> {
         #[cfg(not(any(target_os = "linux", target_os = "macos")))]
@@ -481,30 +559,110 @@ fn timed_pool_lock<'a, T>(
         operation,
     })
 }
-fn serve_inner(mut stream: UnixStream, pool: Owner, max_references: usize) -> io::Result<()> {
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
-    let peer = if pool.is_shared() || pool.is_sealed() {
+fn serve_inner(
+    mut stream: UnixStream,
+    pool: Owner,
+    max_references: usize,
+    registration: Registration,
+) -> io::Result<()> {
+    #[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+    let peer = if pool.requires_peer_exit() {
         Some(super::shared::peer_pidfd(&stream)?)
     } else {
         None
     };
-    if max_references == 0 {
-        return Err(invalid("invalid pool reference budget"));
-    }
-    let session = *uuid::Uuid::new_v4().as_bytes();
+    let mut state = Session::new(pool, max_references, registration)?;
     stream.write_all(MAGIC)?;
-    stream.write_all(&session)?;
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
-    if let Owner::Shared(owner) = &pool {
-        owner
-            .lock()
-            .map_err(|_| io::Error::other("pool poisoned"))?
-            .register_session(session);
+    stream.write_all(&state.id)?;
+    let result = state.exchange(&mut stream);
+    state.disconnect()?;
+    #[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+    if !state.references.is_empty()
+        && let Some(peer) = peer
+    {
+        super::shared::wait_peer_exit(&peer).unwrap_or_else(|error| {
+            eprintln!("cannot safely release shared RAM ownership: {error}");
+            std::process::abort();
+        });
     }
-    let mut references: BTreeMap<u64, Reference> = BTreeMap::new();
-    let mut local_counts: BTreeMap<ImageId, LocalReferenceCount> = BTreeMap::new();
-    let result = (|| {
-        let mut next = 0u64;
+    state.retire()?;
+    result
+}
+
+trait ServerIo: Read + Write {
+    fn mapping(&mut self, fd: std::os::fd::RawFd) -> io::Result<()>;
+}
+
+impl ServerIo for UnixStream {
+    fn mapping(&mut self, fd: std::os::fd::RawFd) -> io::Result<()> {
+        send_mapping_fd(self, fd)
+    }
+}
+
+// Async service, legacy compressed service and blocking protocol fixtures share
+// atomic release validation and reference ownership in this state machine.
+struct Session {
+    pool: Owner,
+    registration: Registration,
+    max_references: usize,
+    id: [u8; 16],
+    references: BTreeMap<u64, Reference>,
+    local_counts: BTreeMap<ImageId, LocalReferenceCount>,
+    next: u64,
+    registered: bool,
+    started: bool,
+    observed: bool,
+    closed: bool,
+    admission: Option<tokio::sync::OwnedSemaphorePermit>,
+}
+
+impl Session {
+    fn new(pool: Owner, max_references: usize, registration: Registration) -> io::Result<Self> {
+        if max_references == 0 {
+            return Err(invalid("invalid pool reference budget"));
+        }
+        Ok(Self {
+            registered: !registration.required(),
+            pool,
+            registration,
+            max_references,
+            id: *uuid::Uuid::new_v4().as_bytes(),
+            references: BTreeMap::new(),
+            local_counts: BTreeMap::new(),
+            next: 0,
+            started: false,
+            observed: false,
+            closed: false,
+            admission: None,
+        })
+    }
+
+    fn exchange(&mut self, mut stream: &mut impl ServerIo) -> io::Result<()> {
+        if self.closed {
+            return Err(io::Error::new(
+                io::ErrorKind::NotConnected,
+                "closed pool session",
+            ));
+        }
+        if !self.started {
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            if let Owner::Shared(owner) = &self.pool {
+                owner
+                    .lock()
+                    .map_err(|_| io::Error::other("pool poisoned"))?
+                    .register_session(self.id);
+            }
+            self.started = true;
+        }
+        let pool = &self.pool;
+        let registration = &self.registration;
+        let max_references = self.max_references;
+        let session = self.id;
+        let references = &mut self.references;
+        let local_counts = &mut self.local_counts;
+        let next = &mut self.next;
+        let registered = &mut self.registered;
+        let observed = &mut self.observed;
         loop {
             let mut operation = [0];
             match stream.read(&mut operation) {
@@ -513,7 +671,22 @@ fn serve_inner(mut stream: UnixStream, pool: Owner, max_references: usize) -> io
                 Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
                 Err(error) => return Err(error),
             }
+            if !*registered
+                && matches!(
+                    operation[0],
+                    PUT | PUT_SHARED | PUT_DUPLICATE | PUT_SEALED | PUT_BATCH | DISCOVER_XXH3
+                )
+            {
+                return Err(invalid("physical publication has no generation witness"));
+            }
             match operation[0] {
+                REGISTER_GENERATION => {
+                    let mut id = [0; 16];
+                    stream.read_exact(&mut id)?;
+                    registration.verify(id)?;
+                    *registered = true;
+                    stream.write_all(&[0])?;
+                }
                 PUT | PUT_SHARED | PUT_DUPLICATE | PUT_SEALED => {
                     let size = read_u32(&mut stream)? as usize;
                     if size == 0 || size > BLOCK_BYTES {
@@ -521,7 +694,7 @@ fn serve_inner(mut stream: UnixStream, pool: Owner, max_references: usize) -> io
                     }
                     let mut bytes = vec![0; size];
                     stream.read_exact(&mut bytes)?;
-                    if references.len() >= max_references || next == u64::MAX {
+                    if references.len() >= max_references || *next == u64::MAX {
                         reject(&mut stream, "pool reference budget exhausted")?;
                         continue;
                     }
@@ -551,8 +724,7 @@ fn serve_inner(mut stream: UnixStream, pool: Owner, max_references: usize) -> io
                     let id = object.id();
                     let offset = object.offset();
                     // Reference remains owned even if this response fails; session cleanup releases it.
-                    let token =
-                        acquire_reference(&mut references, &mut local_counts, &mut next, object);
+                    let token = acquire_reference(references, local_counts, next, object);
                     let mut reply = Vec::with_capacity(53);
                     reply.push(0);
                     reply.extend_from_slice(&token.to_le_bytes());
@@ -563,8 +735,8 @@ fn serve_inner(mut stream: UnixStream, pool: Owner, max_references: usize) -> io
                     }
                     stream.write_all(&reply)?;
                     #[cfg(target_os = "linux")]
-                    if let Reference::Sealed(object) = &references[&next] {
-                        send_mapping_fd(&stream, object.file().as_raw_fd())?;
+                    if let Reference::Sealed(object) = &references[&*next] {
+                        stream.mapping(object.file().as_raw_fd())?;
                     }
                 }
                 SEALED => {
@@ -577,7 +749,7 @@ fn serve_inner(mut stream: UnixStream, pool: Owner, max_references: usize) -> io
                 DISCOVERY => {
                     if pool.is_shared() {
                         let mut reply = vec![0];
-                        reply.extend_from_slice(&DISCOVERY_VERSION.to_le_bytes());
+                        reply.extend_from_slice(&registration.version().to_le_bytes());
                         reply.extend_from_slice(&(DISCOVERY_BATCH as u32).to_le_bytes());
                         stream.write_all(&reply)?;
                     } else {
@@ -613,10 +785,11 @@ fn serve_inner(mut stream: UnixStream, pool: Owner, max_references: usize) -> io
                         for item in fingerprints.as_chunks::<24>().0 {
                             let id = item[..16].try_into().unwrap();
                             let page = u64::from_le_bytes(item[16..].try_into().unwrap());
-                            if references.len() >= max_references || next == u64::MAX {
+                            if references.len() >= max_references || *next == u64::MAX {
                                 reply.push(3); // No acquired reference.
                                 continue;
                             }
+                            *observed = true;
                             match owner.discover(id, session, page) {
                                 super::shared::Discovery::Unique => reply.push(0),
                                 super::shared::Discovery::Unmatched => reply.push(4),
@@ -627,9 +800,9 @@ fn serve_inner(mut stream: UnixStream, pool: Owner, max_references: usize) -> io
                                     append_object(
                                         &mut reply,
                                         Reference::Shared(object),
-                                        &mut references,
-                                        &mut local_counts,
-                                        &mut next,
+                                        references,
+                                        local_counts,
+                                        next,
                                     );
                                 }
                             }
@@ -653,7 +826,7 @@ fn serve_inner(mut stream: UnixStream, pool: Owner, max_references: usize) -> io
                     let mut reply = Vec::new();
                     reply.extend_from_slice(&(count as u32).to_le_bytes());
                     for page in bytes.as_chunks::<{ super::shared::PAGE }>().0 {
-                        if references.len() >= max_references || next == u64::MAX {
+                        if references.len() >= max_references || *next == u64::MAX {
                             reply.push(3);
                             continue;
                         }
@@ -669,13 +842,9 @@ fn serve_inner(mut stream: UnixStream, pool: Owner, max_references: usize) -> io
                             Err(error) => return Err(error),
                         };
                         match interned {
-                            Ok(object) => append_object(
-                                &mut reply,
-                                object,
-                                &mut references,
-                                &mut local_counts,
-                                &mut next,
-                            ),
+                            Ok(object) => {
+                                append_object(&mut reply, object, references, local_counts, next)
+                            }
                             Err(error) if error.kind() == io::ErrorKind::OutOfMemory => {
                                 reply.push(3)
                             }
@@ -723,7 +892,7 @@ fn serve_inner(mut stream: UnixStream, pool: Owner, max_references: usize) -> io
                     }
                     // Validate the whole chunk before consuming any authority.
                     for token in tokens {
-                        release_reference(token, &mut references, &mut local_counts, &pool)?;
+                        release_reference(token, references, local_counts, pool)?;
                     }
                     stream.write_all(&[0])?;
                 }
@@ -735,7 +904,7 @@ fn serve_inner(mut stream: UnixStream, pool: Owner, max_references: usize) -> io
                             .map_err(|_| io::Error::other("pool poisoned"))?
                             .readonly_file();
                         stream.write_all(&[0])?;
-                        send_mapping_fd(&stream, file.as_raw_fd())?;
+                        stream.mapping(file.as_raw_fd())?;
                         continue;
                     }
                     reject(&mut stream, "physical sharing unsupported by this pool")?;
@@ -761,7 +930,7 @@ fn serve_inner(mut stream: UnixStream, pool: Owner, max_references: usize) -> io
                         reject(&mut stream, "unknown pool reference")?;
                         continue;
                     }
-                    release_reference(token, &mut references, &mut local_counts, &pool)?;
+                    release_reference(token, references, local_counts, pool)?;
                     stream.write_all(&[0])?;
                 }
                 STATS | SHARED_STATS => {
@@ -798,50 +967,73 @@ fn serve_inner(mut stream: UnixStream, pool: Owner, max_references: usize) -> io
                 _ => return Err(invalid("unknown pool operation")),
             }
         }
-    })();
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
-    if let Owner::Shared(owner) = &pool {
-        owner
-            .lock()
-            .map_err(|_| io::Error::other("pool poisoned"))?
-            .unregister_session(session);
-        // Only cleanup passes serialize here; this gate never blocks live RPCs.
-        // Preserve one rotation's scope while releasing the shared pool between
-        // bounded batches. Concurrent publication may evict candidates, but cannot
-        // publish new candidates belonging to this disconnected session.
-        static CLEANUP: Mutex<()> = Mutex::new(());
-        let _cleanup = CLEANUP
-            .lock()
-            .map_err(|_| io::Error::other("cleanup poisoned"))?;
-        let mut remaining = owner
-            .lock()
-            .map_err(|_| io::Error::other("pool poisoned"))?
-            .candidate_count();
-        while remaining != 0 {
-            let batch = remaining.min(256);
+    }
+
+    fn disconnect(&mut self) -> io::Result<()> {
+        self.closed = true;
+        if !self.started {
+            return Ok(());
+        }
+        let session = self.id;
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        if let Owner::Shared(owner) = &self.pool {
             owner
                 .lock()
                 .map_err(|_| io::Error::other("pool poisoned"))?
-                .forget_candidates_batch(session, batch);
-            remaining -= batch;
-            std::thread::sleep(Duration::from_micros(50));
+                .unregister_session(session);
+            // Stats/readiness/FD-only sessions never entered the candidate
+            // index. Thousands of such disconnects must not each rotate it.
+            if !self.observed {
+                return Ok(());
+            }
+            // Only cleanup passes serialize here; this gate never blocks live RPCs.
+            // Preserve one rotation's scope while releasing the shared pool between
+            // bounded batches. Concurrent publication may evict candidates, but cannot
+            // publish new candidates belonging to this disconnected session.
+            static CLEANUP: Mutex<()> = Mutex::new(());
+            let _cleanup = CLEANUP
+                .lock()
+                .map_err(|_| io::Error::other("cleanup poisoned"))?;
+            let mut remaining = owner
+                .lock()
+                .map_err(|_| io::Error::other("pool poisoned"))?
+                .candidate_count();
+            while remaining != 0 {
+                let batch = remaining.min(256);
+                owner
+                    .lock()
+                    .map_err(|_| io::Error::other("pool poisoned"))?
+                    .forget_candidates_batch(session, batch);
+                remaining -= batch;
+                std::thread::sleep(Duration::from_micros(50));
+            }
+        }
+        Ok(())
+    }
+
+    // Call only after transport close with no mapped references, or proven peer
+    // exit. An abandoned/cancelled task must never implicitly recycle live slots.
+    fn retire(&mut self) -> io::Result<()> {
+        self.closed = true;
+        self.local_counts.clear();
+        self.references.clear();
+        self.pool.collect(None)
+    }
+}
+
+impl Drop for Session {
+    fn drop(&mut self) {
+        if !self.references.is_empty() && self.pool.requires_peer_exit() {
+            // Only unexpected task cancellation/panic reaches this fallback.
+            // Retain authority and the connection permit until owner-process
+            // exit, rather than making still-mapped slots reusable.
+            std::mem::forget(std::mem::take(&mut self.references));
+            if let Some(admission) = self.admission.take() {
+                std::mem::forget(admission);
+            }
+            eprintln!("memory-pool abandoned session retained until owner exit");
         }
     }
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
-    if !references.is_empty()
-        && let Some(peer) = peer
-    {
-        // Socket loss is not proof that private COW mappings have disappeared.
-        // Hold every slot until the peer's pidfd proves the VM process exited.
-        super::shared::wait_peer_exit(&peer).unwrap_or_else(|error| {
-            eprintln!("cannot safely release shared RAM ownership: {error}");
-            std::process::abort();
-        });
-    }
-    drop(local_counts);
-    drop(references);
-    pool.collect(None)?;
-    result
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -880,6 +1072,8 @@ pub struct PoolClient {
     shared_length: u64,
     ready: VecDeque<u64>,
     last_token: u64,
+    physical_version: u32,
+    generation_registered: bool,
 }
 // One absolute deadline covers partial writes and trickling replies. Nonblocking
 // I/O plus poll avoids relying on per-syscall Unix socket timeout semantics.
@@ -1090,6 +1284,8 @@ impl PoolClient {
             shared_length: 0,
             ready: VecDeque::new(),
             last_token: 0,
+            physical_version: 0,
+            generation_registered: false,
         })
     }
     fn exchange<T>(
@@ -1173,6 +1369,7 @@ impl PoolClient {
         if blocks.is_empty() {
             return Ok(Vec::new());
         }
+        self.require_registration()?;
         if self.shared_file.is_none() {
             return Ok(blocks
                 .iter()
@@ -1337,6 +1534,7 @@ impl PoolClient {
     }
 
     fn put_inner(&mut self, bytes: &[u8], duplicate: bool) -> io::Result<RemoteObject> {
+        self.require_registration()?;
         if bytes.is_empty() || bytes.len() > BLOCK_BYTES {
             return Err(invalid("invalid pool input length"));
         }
@@ -1398,8 +1596,18 @@ impl PoolClient {
         self.last_token = object.token;
         Ok(object)
     }
+    /// Validate physical-service capabilities without becoming a publisher.
+    /// Consumes the connection and drops its temporary mapping descriptor.
+    /// Managers use this probe so readiness checks do not retain generation
+    /// witnesses or reserve retired memory for their entire process lifetime.
     #[cfg(any(target_os = "linux", target_os = "macos"))]
-    pub fn enable_shared_mapping(&mut self) -> io::Result<()> {
+    pub fn check_shared_mapping(mut self) -> io::Result<()> {
+        self.negotiate_shared_mapping()?;
+        Ok(())
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn negotiate_shared_mapping(&mut self) -> io::Result<(Arc<std::fs::File>, u64, u32)> {
         let (file, length) = self.exchange(|stream| {
             stream.write_all(&[MAPPING])?;
             if let Some(error) = status(stream)? {
@@ -1434,20 +1642,85 @@ impl PoolClient {
             }
             Ok(Ok((Arc::new(file), length)))
         })?;
-        self.exchange(|stream| {
+        let version = self.exchange(|stream| {
             stream.write_all(&[DISCOVERY])?;
             if let Some(error) = status(stream)? {
                 return Ok(Err(error));
             }
             let version = read_u32(stream)?;
             let batch = read_u32(stream)?;
-            if version != DISCOVERY_VERSION || batch != DISCOVERY_BATCH as u32 {
+            if !matches!(version, DISCOVERY_VERSION | RECOVERY_DISCOVERY_VERSION)
+                || batch != DISCOVERY_BATCH as u32
+            {
                 return Err(invalid("unsupported physical discovery protocol"));
             }
-            Ok(Ok(()))
+            Ok(Ok(version))
         })?;
+        Ok((file, length, version))
+    }
+
+    /// Negotiate physical discovery and retain its read-only backing. Recoverable
+    /// services additionally require a private generation record matching this
+    /// exact inode and a process-held witness before allowing publication.
+    /// Failure closes an incomplete recovery handshake. No received backing may
+    /// be passed to another process, or its witness could outlive this contract.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    pub fn enable_shared_mapping(&mut self) -> io::Result<()> {
+        let (file, length, version) = self.negotiate_shared_mapping()?;
         self.shared_file = Some(file);
         self.shared_length = length;
+        self.physical_version = version;
+        self.generation_registered = false;
+        if version == RECOVERY_DISCOVERY_VERSION {
+            let registration = (|| {
+                let address = self
+                    .stream
+                    .as_ref()
+                    .ok_or_else(|| invalid("pool connection closed during negotiation"))?
+                    .peer_addr()?;
+                let directory = address
+                    .as_pathname()
+                    .and_then(std::path::Path::parent)
+                    .ok_or_else(|| invalid("recoverable pool requires a named Unix endpoint"))?;
+                let lease = super::generation::GenerationLease::acquire(
+                    directory,
+                    self.shared_file.as_ref().unwrap(),
+                )?;
+                self.register_generation(lease.id())?;
+                lease.retain_for_process()
+            })();
+            if let Err(error) = registration {
+                self.stream.take();
+                self.shared_file.take();
+                self.shared_length = 0;
+                self.generation_registered = false;
+                return Err(error);
+            }
+        }
+        Ok(())
+    }
+
+    fn require_registration(&self) -> io::Result<()> {
+        if self.physical_version == RECOVERY_DISCOVERY_VERSION && !self.generation_registered {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "recoverable physical publication requires generation registration",
+            ));
+        }
+        Ok(())
+    }
+
+    fn register_generation(&mut self, id: [u8; 16]) -> io::Result<()> {
+        self.exchange(|stream| {
+            let mut frame = vec![REGISTER_GENERATION];
+            frame.extend_from_slice(&id);
+            stream.write_all(&frame)?;
+            Ok(match status(stream)? {
+                Some(error) => Err(error),
+                None => Ok(()),
+            })
+        })?;
+        self.generation_registered = true;
         Ok(())
     }
     pub fn shared_mapping(
@@ -1502,18 +1775,8 @@ impl PoolClient {
         }
         if self.shared_file.is_some() {
             for chunk in objects.chunks(DISCOVERY_BATCH) {
-                self.exchange(|stream| {
-                    let mut frame = vec![RELEASE_BATCH];
-                    frame.extend_from_slice(&(chunk.len() as u32).to_le_bytes());
-                    for object in chunk {
-                        frame.extend_from_slice(&object.token.to_le_bytes());
-                    }
-                    stream.write_all(&frame)?;
-                    Ok(match status(stream)? {
-                        Some(error) => Err(error),
-                        None => Ok(()),
-                    })
-                })?;
+                let tokens: Vec<_> = chunk.iter().map(|object| object.token).collect();
+                self.release_tokens(&tokens)?;
             }
         } else {
             for object in objects {
@@ -1529,6 +1792,28 @@ impl PoolClient {
         }
         Ok(())
     }
+
+    // Internal current-session notification. The raw API validates every
+    // RemoteObject first; PhysicalClient validates its logical store and exact
+    // current backing before queuing tokens. Never accept caller-supplied IDs.
+    fn release_tokens(&mut self, tokens: &[u64]) -> io::Result<()> {
+        if tokens.is_empty() || tokens.len() > DISCOVERY_BATCH {
+            return Err(invalid("invalid release batch size"));
+        }
+        self.exchange(|stream| {
+            let mut frame = vec![RELEASE_BATCH];
+            frame.extend_from_slice(&(tokens.len() as u32).to_le_bytes());
+            for token in tokens {
+                frame.extend_from_slice(&token.to_le_bytes());
+            }
+            stream.write_all(&frame)?;
+            Ok(match status(stream)? {
+                Some(error) => Err(error),
+                None => Ok(()),
+            })
+        })
+    }
+
     pub fn stats(&mut self) -> io::Result<PoolStats> {
         if self.shared_file.is_some() {
             let (stats, ready) = self.exchange(|stream| {
@@ -1571,6 +1856,52 @@ impl PoolClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cold_accounting_preserves_counts_and_requires_explicit_owner_scope() {
+        use pvisor_vm::api::ColdRamAccountingScope;
+        for scope in [
+            ColdRamAccountingScope::Pool,
+            ColdRamAccountingScope::Instance,
+            ColdRamAccountingScope::LocalPins,
+        ] {
+            let stats = PoolStats {
+                encoded_bytes: 197,
+                objects: 3,
+                session_references: 7,
+                cross_session_objects: 2,
+            }
+            .into_cold(scope);
+            assert_eq!(stats.scope, scope);
+            assert_eq!(stats.encoded_bytes, 197);
+            assert_eq!(stats.objects, 3);
+            assert_eq!(stats.session_references, 7);
+            assert_eq!(stats.cross_session_objects, 2);
+        }
+    }
+
+    #[test]
+    fn only_mapped_backends_require_peer_exit_before_reference_retirement() {
+        let compressed = Owner::Compressed(Arc::new(Mutex::new(CompressedPool::new(
+            BLOCK_BYTES * 2,
+            2,
+        ))));
+        assert!(!compressed.requires_peer_exit());
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        {
+            let shared = Owner::Shared(Arc::new(Mutex::new(
+                super::super::shared::SharedPool::new(super::super::shared::PAGE * 2, 2).unwrap(),
+            )));
+            assert!(shared.requires_peer_exit());
+        }
+        #[cfg(target_os = "linux")]
+        {
+            let sealed = Owner::Sealed(Arc::new(Mutex::new(
+                super::super::sealed::SealedPool::new(BLOCK_BYTES * 2, 2),
+            )));
+            assert!(sealed.requires_peer_exit());
+        }
+    }
 
     #[test]
     fn framed_reply_reads_are_bounded_independently_of_page_count() {

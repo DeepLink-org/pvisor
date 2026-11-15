@@ -64,16 +64,38 @@ def fake_artifacts(root):
             path.write_bytes(content)
         for name, content in (
             ("source.tar.gz", b"frozen source"),
-            ("source-files.json", b"[]"),
             ("guest-supervisor", b"guest"),
         ):
             (folder / name).write_bytes(content)
+        write(
+            folder / "source-files.json",
+            [
+                dict(path="Cargo.lock", sha256="a" * 64),
+                dict(path=".cargo/config.toml", sha256="b" * 64),
+            ],
+        )
         receipt = dict(
             embedded_fw=True,
             target="x86_64-unknown-linux-musl",
             profile="release",
             rustc="same compiler",
             zig="same zig",
+            build_command=[
+                "cargo",
+                "zigbuild",
+                "--locked",
+                "--offline",
+                "--release",
+                "--target",
+                "x86_64-unknown-linux-musl",
+                "-p",
+                "pvisor",
+                "--example",
+                "pool_memory_case",
+                "-p",
+                "pvisor-daemon",
+            ],
+            build_environment=dict.fromkeys(subject.BUILD_ENVIRONMENT_KEYS),
             common_helper_sha256=subject.digest(helper),
             hashes={name: subject.digest(inputs / name) for name in data},
             source_archive_sha256=subject.digest(folder / "source.tar.gz"),
@@ -212,6 +234,96 @@ class ArtifactTests(unittest.TestCase):
             root = Path(directory)
             fake_artifacts(root)
             self.assertEqual(set(subject.artifacts(root)), {"A", "B"})
+
+    def test_build_flags_features_environment_and_cargo_config_must_match(self):
+        failures = (
+            "RUSTFLAGS",
+            "CARGO_ENCODED_RUSTFLAGS",
+            "CARGO_PROFILE_RELEASE_LTO",
+            "CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER",
+            "RUSTC_WRAPPER",
+            "additional_environment",
+            "features",
+            "Cargo.lock",
+            ".cargo/config.toml",
+        )
+        for failure in failures:
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                prepared = fake_artifacts(root)
+                receipt = prepared["variants"]["B"]
+                if failure in ("Cargo.lock", ".cargo/config.toml"):
+                    path = root / "B/source-files.json"
+                    rows = json.loads(path.read_text())
+                    for row in rows:
+                        if row["path"] == failure:
+                            row["sha256"] = "c" * 64
+                    write(path, rows)
+                    receipt["source_files_sha256"] = subject.digest(path)
+                elif failure == "features":
+                    receipt["build_command"].extend(["--no-default-features", "--features", "net"])
+                else:
+                    receipt["build_environment"][failure] = "-C target-cpu=native"
+                write(root / "B/inputs/receipt.json", receipt)
+                write(root / "preparation.json", prepared)
+                with self.assertRaisesRegex(ValueError, "build control differs"):
+                    subject.artifacts(root)
+
+    def test_missing_build_controls_are_not_inferred_as_defaults(self):
+        for failure in (
+            "build_command",
+            "build_environment",
+            *subject.BUILD_ENVIRONMENT_KEYS,
+            "Cargo.lock",
+        ):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                prepared = fake_artifacts(root)
+                # Both arms omit the same evidence: equality alone is not enough.
+                for version in ("A", "B"):
+                    receipt = prepared["variants"][version]
+                    if failure in subject.BUILD_ENVIRONMENT_KEYS:
+                        del receipt["build_environment"][failure]
+                    elif failure == "Cargo.lock":
+                        path = root / version / "source-files.json"
+                        write(path, [])
+                        receipt["source_files_sha256"] = subject.digest(path)
+                    else:
+                        del receipt[failure]
+                    write(root / version / "inputs/receipt.json", receipt)
+                write(root / "preparation.json", prepared)
+                with self.assertRaisesRegex(ValueError, "build.*missing"):
+                    subject.artifacts(root)
+
+    def test_malformed_build_controls_are_rejected_even_when_both_arms_agree(self):
+        for failure in (
+            "command_string",
+            "empty_command",
+            "environment_list",
+            "flag_type",
+            "lock_hash",
+        ):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                prepared = fake_artifacts(root)
+                for version in ("A", "B"):
+                    receipt = prepared["variants"][version]
+                    if failure == "command_string":
+                        receipt["build_command"] = "cargo build --release"
+                    elif failure == "empty_command":
+                        receipt["build_command"] = []
+                    elif failure == "environment_list":
+                        receipt["build_environment"] = []
+                    elif failure == "flag_type":
+                        receipt["build_environment"]["RUSTFLAGS"] = False
+                    else:
+                        path = root / version / "source-files.json"
+                        write(path, [dict(path="Cargo.lock", sha256="not a digest")])
+                        receipt["source_files_sha256"] = subject.digest(path)
+                    write(root / version / "inputs/receipt.json", receipt)
+                write(root / "preparation.json", prepared)
+                with self.assertRaisesRegex(ValueError, "build control"):
+                    subject.artifacts(root)
 
     def test_fw_toolchain_and_supervisor_mismatches_are_rejected(self):
         for failure in ("fw", "compiler", "supervisor", "helper"):

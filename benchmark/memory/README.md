@@ -303,6 +303,31 @@ receipt and retain the exact kernel bytes, load/entry metadata and source/build
 provenance. Do not substitute a dummy firmware file or an installed old probe
 for a current-source embedded-FW build. Different firmware and host kernels
 remain separate from historical documentation measurements.
+Preparation preserves both policy switches in the generated semspec command.
+Current-source physical helpers use the runtime's authenticated `PhysicalClient`
+adapter rather than the legacy raw-client store. The
+[current-source qualification](DOCS_RETEST.md) records the completed preparation
+checks and preserves the incomplete attempts. The subsequent
+[repaired-pool results](REPAIRED_POOL_RESULTS.md) contain a complete six-condition
+off/physical N=1 preflight: 348 checks, zero interference and zero publication
+disable events in 12 physical VM logs. They report memory/CPU/readback trade-offs
+and write-after-sharing overhead, not a formal repeated or old/new comparison,
+and do not replace the published seven-arm or library cohorts.
+The subsequent [async-pool water-level retest](ASYNC_POOL_RESULTS.md) uses a
+fresh current-source release and an independently complete six-condition N=1
+subset. It retains a separate interfered attempt, reports idle/readback/post-write
+levels and CPU roles, and places r6 historical levels alongside without a version
+speedup claim. Static anonymous payloads do not exercise native immutable-file
+mapping, so this retest does not quantify the new READ/mmap path.
+The [post-cleanup retest](CLEANUP_POOL_RESULTS.md) independently rebuilds the
+cleaned implementation and completes the same six-condition N=1 protocol.
+Its pre-cleanup comparison is descriptive only; file-charge differences remain
+separate from PSS, and it supplies no causal cleanup speedup or DAX result.
+New static and library cohorts also require all four physical publisher logs
+and reject any `publication_disabled=true` transition, even after a reconnect.
+The result binds those log hashes, and analysis rechecks them. This prevents
+stopped publication from masquerading as lower scanning CPU. Older frozen
+cohorts retain their original contracts and bytes.
 
 `plot_pool.py` audits complete N=1 diagnostic cohorts. Historical cohorts with
 retired conditions require an explicit `--arms` selection of supported conditions.
@@ -345,6 +370,19 @@ supervisor bytes. The preparation must use the same source/build path,
 toolchain, FW, helper and workload; A changes only the common test entry,
 not its implementation. The supplied bytes are verified before each condition.
 
+Both receipts must record the identical nonempty `build_command` argv, including
+feature flags and target selection, and an identical `build_environment` mapping.
+Every key in `version_compare.BUILD_ENVIRONMENT_KEYS` must be present: use JSON
+`null` for unset flags, never omit them or infer defaults. The required controls
+cover Rust flags, compiler/wrappers, target linker, release/build-override profile
+variables, reproducibility, target directory, build concurrency and FW selection.
+Preparers must also record any additional build-affecting overrides they use;
+all recorded entries are compared without path normalization, since the build
+path is itself a matched control. Source manifests must bind the same `Cargo.lock`
+and repository `.cargo/config` / `.cargo/config.toml` bytes when present.
+Legacy receipts missing these controls are rejected for new strict comparisons;
+do not backfill or rewrite historical measurement receipts.
+
 ```sh
 python3 benchmark/memory/version_compare.py --artifacts MATCHED_ARTIFACTS \
   --output .data/uv-p0 --preflight --prepare
@@ -371,7 +409,8 @@ non-regression. An automatic non-inferiority PASS requires predeclared margins.
 ## Published curves and archived history
 
 The [bilingual technical analysis](../../docs/src/zh/lab-notes/vm-memory-performance-analysis.md)
-uses only the complete `q8` and `l4` preflights. It publishes idle charged-memory
+keeps its historical seven-arm section bound to the complete `q8` and `l4`
+preflights. It publishes idle charged-memory
 and PSS curves, with readback and CPU observations; post-write curves remain
 local. The public SVG files are byte-identical copies of each cohort's
 `derived/memory-curves.svg`. The additional library 0–5-second SVG is rendered
@@ -385,6 +424,38 @@ The documentation before cleanup is preserved in
 Original reports, failed executions, frozen sources and raw curves remain in their
 own directories. Historical and incomplete measurements are excluded from the
 current comparison. This documentation cleanup starts no new measurements.
+
+## Implementation curve comparison
+
+`compare_pool_plots.py` redraws, but never measures, the complete before/after
+cleanup off/physical cohorts. It rechecks the independent audits, frozen inputs
+and source evidence, worker/log/observation hashes and full six-condition grid.
+Idle, startup and post-write overlays retain raw samples, separate epochs and
+explicit N=1 labels; dashed/solid means before/after, teal/amber means off/physical.
+No smoothing, cross-cohort averaging or endpoint imputation is performed.
+
+Use Python with matplotlib installed and a NEW output directory:
+
+```sh
+python3 benchmark/memory/compare_pool_plots.py \
+  --before benchmark/memory/.data/async-file-retest-20261115-r2/curves \
+  --after benchmark/memory/.data/cleanup-retest-20261115-r1/curves \
+  --output benchmark/memory/.data/NEW-COMPARISON
+mise run test-py -- discover -s benchmark/memory -p test_compare_pool_plots.py
+```
+
+Inputs are local retained evidence, not provisioned by a fresh checkout. The
+optional `--publish docs/overrides/assets/benchmarks` copies SVGs only and refuses
+to overwrite existing files. PNGs, full source/output manifests and statistics
+remain local. The public engineering section is
+[the implementation comparison](../../docs/src/zh/lab-notes/vm-memory-performance-analysis.md#pool-implementation-comparison).
+
+Historical q8/l4 raw archives were unavailable on the replotting machine.
+Their published static/library/early SVG bytes are preserved and hash-checked,
+not digitized into synthetic samples. Published static-table levels provide a
+separately labelled historical reference, with different host kernel and
+unestablished firmware identity. No new seven-arm or library/DAX result is
+implied by the two-arm replot.
 
 ## PID-1 allocator reclaim and whole-VMM memory
 

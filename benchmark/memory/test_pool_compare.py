@@ -3,8 +3,11 @@
 import copy
 import errno
 import importlib.util
+import json
 import os
+import shlex
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -79,6 +82,71 @@ def fixture():
 
 
 class CurveEvidenceTests(unittest.TestCase):
+    def test_physical_publication_health_requires_all_four_unchanged_logs(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for instance in range(1, 5):
+                (root / f"vm{instance}.stderr").write_text("")
+            health = subject.physical_publication_health(root)
+            self.assertTrue(health["healthy"])
+            self.assertEqual(health["disabled_events"], [])
+            self.assertEqual(len(health["log_sha256"]), 4)
+            path = root / "vm2.stderr"
+            path.write_text(
+                "pvisor-physical-pool publication_connected=true accounting_scope=pool\n"
+            )
+            changed = subject.physical_publication_health(root)
+            self.assertTrue(changed["healthy"])
+            self.assertNotEqual(changed["log_sha256"], health["log_sha256"])
+            path.unlink()
+            with self.assertRaisesRegex(ValueError, "logs incomplete"):
+                subject.physical_publication_health(root)
+
+    def test_physical_publication_disable_is_failure_even_after_reconnect(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for instance in range(1, 5):
+                (root / f"vm{instance}.stderr").write_text("")
+            (root / "vm3.stderr").write_text(
+                "unrelated message\n"
+                "pvisor-physical-pool publication_disabled=true accounting_scope=local-pins "
+                "reason=release_failed error_kind=BrokenPipe unix_ms=1\n"
+                "pvisor-physical-pool publication_connected=true accounting_scope=pool\n"
+            )
+            health = subject.physical_publication_health(root)
+            self.assertFalse(health["healthy"])
+            self.assertEqual(health["disabled_events"], [dict(instance=3, line=2)])
+
+    def test_prepared_command_preserves_kernel_and_firmware_policy(self):
+        for diagnostic in (False, True):
+            with self.subTest(diagnostic=diagnostic), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                args = [
+                    "pool_compare.py",
+                    "--inputs",
+                    str(root / "inputs"),
+                    "--output",
+                    str(root / "curves"),
+                    "--preflight",
+                    "--prepare",
+                    "--arms",
+                    "pvisor-off,pvisor-physical",
+                    "--patterns",
+                    "repeated,random-shared,random-unique",
+                ]
+                if diagnostic:
+                    args += ["--without-ksm", "--embedded-fw"]
+                with patch.object(sys, "argv", args):
+                    self.assertEqual(subject.main(), 0)
+                command = json.loads((root / "curves.input.json").read_text())["pool-curves"]
+                argv = shlex.split(command.removeprefix("$ "))
+                self.assertNotIn("--prepare", argv)
+                self.assertEqual("--without-ksm" in argv, diagnostic)
+                self.assertEqual("--embedded-fw" in argv, diagnostic)
+                self.assertEqual(argv[argv.index("--arms") + 1], "pvisor-off,pvisor-physical")
+                self.assertEqual(argv[argv.index("--output") + 1], str(root / "curves"))
+                self.assertFalse((root / "curves").exists(), "preparation must not start a trial")
+
     def test_readonly_validation_alias_is_not_counted_as_shared_guest_ram(self):
         with tempfile.TemporaryDirectory() as directory:
             proc = Path(directory)

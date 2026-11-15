@@ -5,7 +5,7 @@
 use crate::api::{
     ColdRamActivity, ColdRamDisposition, ColdRamOptions, ColdRamSample, ColdRamStore, VmmHandle,
 };
-use crate::devices::virtio::memory_gate::ReadHints;
+use crate::devices::virtio::memory_gate::{ImmutableRead, ReadHints};
 use sha2::{Digest, Sha256};
 use std::{
     fs::OpenOptions,
@@ -36,6 +36,7 @@ fn pagemap_flags(bits: u64) -> u8 {
     present | file
 }
 static PENDING: AtomicU64 = AtomicU64::new(0);
+static FILE_PENDING: AtomicU64 = AtomicU64::new(0);
 const API: u64 = 0xaa;
 // Linux x86_64 _IOWR/_IOR ABI; this module is compiled only on that target.
 const fn iowr(number: u64, size: u64) -> libc::c_ulong {
@@ -315,6 +316,8 @@ struct Pager<S: ColdRamStore> {
     shared_scan: Option<scan::Scanner>,
     read_hints: Option<Arc<ReadHints>>,
     file_hint_candidates: u64,
+    file_ranges: FileRanges,
+    file_mapped_bytes: u64,
     // Compressed candidate walk, or the independent physical-reference walk.
     cursor: usize,
     restored: u64,
@@ -326,6 +329,87 @@ struct Pager<S: ColdRamStore> {
     restore_max_us: u64,
     backing: Option<VerifiedBacking>,
     snapshot_buffers: Vec<Vec<u8>>,
+}
+
+/// Remember only the union of directly file-backed RAM intervals. This grants
+/// no bytes/reference authority: anonymous COW PTEs remain scan eligible.
+/// Adjacent reads coalesce; at 4096 mapping operations per VM further
+/// acceleration declines. This bounds interval metadata and new VMA splits
+/// even when guest writes repeatedly fragment previously mapped intervals.
+#[derive(Default)]
+struct FileRanges {
+    ranges: std::collections::BTreeMap<usize, usize>,
+    operations: usize,
+}
+impl FileRanges {
+    fn contains(&self, page: usize) -> bool {
+        self.ranges
+            .range(..=page)
+            .next_back()
+            .is_some_and(|(_, end)| page < *end)
+    }
+    fn insert(&mut self, mut start: usize, mut end: usize) -> bool {
+        if self.operations == 4096 {
+            return false;
+        }
+        self.operations += 1;
+        if let Some((&first, &last)) = self.ranges.range(..=start).next_back() {
+            if last >= start {
+                start = first;
+                end = end.max(last);
+                self.ranges.remove(&first);
+            }
+        }
+        while let Some((&first, &last)) = self.ranges.range(start..=end).next() {
+            self.ranges.remove(&first);
+            end = end.max(last);
+        }
+        self.ranges.insert(start, end);
+        true
+    }
+}
+
+struct PreparedFileRead {
+    read: ImmutableRead,
+    bytes: Vec<u8>,
+}
+impl Drop for PreparedFileRead {
+    fn drop(&mut self) {
+        FILE_PENDING.fetch_sub(self.bytes.len() as u64, Ordering::SeqCst);
+    }
+}
+impl PreparedFileRead {
+    /// Read native backing outside every RAM/barrier/store lock. Failure loses
+    /// acceleration only. Whole pages strictly before EOF cannot SIGBUS.
+    fn new(read: ImmutableRead) -> io::Result<Self> {
+        use std::os::unix::fs::FileExt;
+        if read.length == 0
+            || read.length > scan::BATCH_BYTES
+            || !read.length.is_multiple_of(4096)
+            || !read.offset.is_multiple_of(4096)
+            || !read.address.is_multiple_of(4096)
+            || read
+                .offset
+                .checked_add(read.length as u64)
+                .is_none_or(|end| end > i64::MAX as u64)
+        {
+            return Err(io::Error::other("invalid immutable READ geometry"));
+        }
+        let metadata = read.file.metadata()?;
+        if !metadata.is_file() || read.offset + read.length as u64 > metadata.len() {
+            return Err(io::Error::other("immutable READ exceeds native file"));
+        }
+        let mut prepared = Self {
+            bytes: vec![0; read.length],
+            read,
+        };
+        FILE_PENDING.fetch_add(prepared.bytes.len() as u64, Ordering::SeqCst);
+        prepared
+            .read
+            .file
+            .read_exact_at(&mut prepared.bytes, prepared.read.offset)?;
+        Ok(prepared)
+    }
 }
 
 // Retain the exact File owner, never a recyclable numeric FD. Size seals and
@@ -667,6 +751,88 @@ fn publish_snapshots<S: ColdRamStore>(
 }
 
 impl<S: ColdRamStore> Pager<S> {
+    /// CPU/device leases are drained by the caller. Use contiguous matching
+    /// runs, never a per-page pool object/hash/RPC. Stale/canceled READ hints,
+    /// changed bytes, excluded/device windows and sparse RAM simply decline.
+    fn map_file_read(&mut self, prepared: &PreparedFileRead, until: Instant) -> io::Result<()> {
+        if !self.share_resident {
+            return Ok(());
+        }
+        let read = &prepared.read;
+        let Some(end) = read.address.checked_add(read.length as u64) else {
+            return Ok(());
+        };
+        let Some(first) = self.fault_index(read.address) else {
+            return Ok(());
+        };
+        let Some(last) = self.fault_index(end - 1) else {
+            return Ok(());
+        };
+        if self.pages.range(first).start != read.address
+            || self.pages.range(last).start + self.pages.range(last).len != end
+            || (last - first + 1) * 4096 != read.length
+        {
+            return Ok(());
+        }
+        let mut cursor = 0;
+        while cursor < read.length && Instant::now() < until {
+            let matches = |pager: &Self, offset: usize| -> io::Result<bool> {
+                let index = first + offset / 4096;
+                if pager.pages[index].cold.is_some()
+                    || !fully_resident(pager.pages.range(index))?
+                    || pager.skip_file_scan(index)?
+                {
+                    return Ok(false);
+                }
+                let live = unsafe {
+                    std::slice::from_raw_parts((read.address + offset as u64) as *const u8, 4096)
+                };
+                Ok(live == &prepared.bytes[offset..offset + 4096])
+            };
+            if !matches(self, cursor)? {
+                cursor += 4096;
+                continue;
+            }
+            let begin = cursor;
+            cursor += 4096;
+            while cursor < read.length && Instant::now() < until && matches(self, cursor)? {
+                cursor += 4096;
+            }
+            if !self
+                .file_ranges
+                .insert(first + begin / 4096, first + cursor / 4096)
+            {
+                continue;
+            }
+            // The filesystem's physical immutability promise covers all host
+            // aliases. The VMA itself pins the inode after this descriptor drops.
+            // KVM's MMU notifier invalidates secondary mappings on replacement.
+            let mapped = unsafe {
+                libc::mmap(
+                    (read.address + begin as u64) as *mut libc::c_void,
+                    cursor - begin,
+                    libc::PROT_READ | libc::PROT_WRITE,
+                    libc::MAP_PRIVATE | libc::MAP_FIXED,
+                    read.file.as_raw_fd(),
+                    (read.offset + begin as u64) as libc::off_t,
+                )
+            };
+            if mapped == libc::MAP_FAILED {
+                return Err(io::Error::last_os_error());
+            }
+            // Match physical-pool commit: establish clean file PTEs with
+            // read faults. MAP_POPULATE on writable private RAM can eagerly
+            // COW; leaving PTEs absent can also invite KVM's writable GUP path.
+            for offset in (0..cursor - begin).step_by(4096) {
+                unsafe {
+                    std::ptr::read_volatile(mapped.cast::<u8>().add(offset));
+                }
+            }
+            self.file_mapped_bytes += (cursor - begin) as u64;
+        }
+        Ok(())
+    }
+
     fn accept_ready(&mut self, handles: Vec<u64>) {
         let now = deadline(Instant::now());
         for handle in handles {
@@ -834,6 +1000,12 @@ impl<S: ColdRamStore> Pager<S> {
     fn file_page(&self, range: Range) -> io::Result<bool> {
         Ok(self.page_flags(range)? == PAGE_PRESENT | PAGE_FILE)
     }
+    fn skip_file_scan(&self, index: usize) -> io::Result<bool> {
+        // An absent clean file PTE may still refault its immutable backing.
+        // Only present anonymous COW is eligible for content discovery.
+        Ok(self.file_ranges.contains(index)
+            && self.page_flags(self.pages.range(index))? != PAGE_PRESENT)
+    }
     fn hinted_candidates(&mut self, limit: usize, now: Instant) -> Vec<usize> {
         let mut selected = Vec::new();
         let Some(hints) = self.read_hints.clone() else {
@@ -863,7 +1035,10 @@ impl<S: ColdRamStore> Pager<S> {
                 let flags = self
                     .page_flags(self.pages.range(index))
                     .unwrap_or_else(|e| fatal(e));
-                if flags & PAGE_PRESENT != 0 && !(page.cold.is_some() && flags & PAGE_FILE != 0) {
+                if flags & PAGE_PRESENT != 0
+                    && !((page.cold.is_some() || self.file_ranges.contains(index))
+                        && flags & PAGE_FILE != 0)
+                {
                     selected.push(index);
                 }
             }
@@ -892,6 +1067,7 @@ impl<S: ColdRamStore> Pager<S> {
         candidates.dedup();
         let priority_len = candidates.len();
         let pages = &self.pages;
+        let file_ranges = &self.file_ranges;
         let pagemap = self.pagemap.as_ref();
         let background = self
             .shared_scan
@@ -905,7 +1081,8 @@ impl<S: ColdRamStore> Pager<S> {
                     if deadline(now) < page.eligible_at || bits & PAGE_PRESENT == 0 {
                         continue;
                     }
-                    if page.cold.is_some() && bits & PAGE_FILE != 0 {
+                    if (page.cold.is_some() || file_ranges.contains(index)) && bits & PAGE_FILE != 0
+                    {
                         continue;
                     }
                     selected.push(index);
@@ -979,6 +1156,9 @@ impl<S: ColdRamStore> Pager<S> {
             let range = self.pages.range(index);
             let page = &self.pages[index];
             if deadline(now) < page.eligible_at
+                || self
+                    .skip_file_scan(index)
+                    .unwrap_or_else(|error| fatal(error))
                 || (page.cold.is_some()
                     && (!self.share_resident
                         || self.file_page(range).unwrap_or_else(|error| fatal(error))))
@@ -1181,7 +1361,7 @@ impl<S: ColdRamStore> Pager<S> {
 
 pub(crate) fn activity() -> ColdRamActivity {
     ColdRamActivity {
-        pending_file_bytes: 0,
+        pending_file_bytes: FILE_PENDING.load(Ordering::SeqCst),
         pending_snapshot_bytes: PENDING.load(Ordering::SeqCst),
     }
 }
@@ -1304,6 +1484,8 @@ pub(crate) fn start<S: ColdRamStore + 'static>(
                 .then(|| pages.shared_scanner(rand::random())),
             read_hints,
             file_hint_candidates: 0,
+            file_ranges: FileRanges::default(),
+            file_mapped_bytes: 0,
             pages,
             store: Arc::new(Mutex::new(store)),
             uffd,
@@ -1410,10 +1592,28 @@ pub(crate) fn start<S: ColdRamStore + 'static>(
     let worker = std::thread::Builder::new().name("pvisor-cold-pager".into()).spawn(move || {
         let pool = worker_pager.lock().unwrap().store.clone();
         let mut next_scan = Instant::now();
+        let mut retry_after = next_scan;
         let mut next_references = next_scan + scan::REJECT_RETRY;
         loop {
-            let ready = pool.lock().unwrap_or_else(|_| fatal("store poisoned")).take_ready();
-            worker_pager.lock().unwrap_or_else(|_| fatal("pager poisoned")).accept_ready(ready);
+            // Optional publication/recovery may use IPC. Never hold pager state
+            // or a CPU/device barrier here; mandatory local maintenance remains
+            // independent of publication availability.
+            let (ready, publication_ready) = {
+                let mut pool = pool.lock().unwrap_or_else(|_| fatal("store poisoned"));
+                let ready_for_publication = pool.publication_ready();
+                (pool.take_ready(), ready_for_publication)
+            };
+            {
+                let mut pager = worker_pager.lock().unwrap_or_else(|_| fatal("pager poisoned"));
+                pager.accept_ready(ready);
+                if let Some(scanner) = &pager.shared_scan {
+                    next_scan = scanner.next_scan_at(Instant::now()).max(retry_after);
+                }
+                if !publication_ready {
+                    pager.snapshot_buffers.clear();
+                    next_scan = next_scan.max(Instant::now() + scan::REJECT_RETRY);
+                }
+            }
             // Separate absolute deadlines: a maintenance-only wake must neither
             // bypass discovery rest nor postpone discovery by renewing its wait.
             let wake = if options.share_resident { next_scan.min(next_references) } else { next_scan };
@@ -1445,7 +1645,8 @@ pub(crate) fn start<S: ColdRamStore + 'static>(
                             reports.complete(&report).unwrap_or_else(|error| fatal(error));
                         }
                         Ok(None) => {
-                            next_scan = next_scan.max(Instant::now() + scan::REJECT_RETRY);
+                            retry_after = Instant::now() + scan::REJECT_RETRY;
+                            next_scan = next_scan.max(retry_after);
                             continue;
                         },
                         Err(error) if error == "VMM has stopped" => break,
@@ -1453,7 +1654,54 @@ pub(crate) fn start<S: ColdRamStore + 'static>(
                     }
                 }
             }
+            // File sharing is local and independent of pool availability and
+            // content-discovery rest. At most one MiB per maintenance wake.
+            let file_hints = worker_pager.lock().unwrap_or_else(|_| fatal("pager poisoned"))
+                .read_hints.clone();
+            let mut prepared = Vec::new();
+            let mut file_bytes = 0;
+            while file_bytes < scan::BATCH_BYTES && prepared.len() < 256 {
+                let Some(read) = file_hints.as_ref().and_then(|hints| hints.take_file(scan::BATCH_BYTES - file_bytes)) else { break };
+                file_bytes += read.length;
+                if let Ok(read) = PreparedFileRead::new(read) {
+                    prepared.push(read);
+                }
+            }
+            if !prepared.is_empty() {
+                match handle.ram_quiesced(|_| {
+                    let mut pager = worker_pager.lock().map_err(|_| "pager poisoned")?;
+                    let before = pager.file_mapped_bytes;
+                    let until = Instant::now() + scan::WORK_BUDGET;
+                    for read in &prepared {
+                        pager.map_file_read(read, until).map_err(|error| error.to_string())?;
+                    }
+                    Ok((pager.file_mapped_bytes - before, pager.file_mapped_bytes,
+                        pager.file_ranges.operations))
+                }) {
+                    Ok(Some((added, total, operations))) => {
+                        // Closing queued native FDs is not barrier work.
+                        if operations == 4096 {
+                            if let Some(hints) = &file_hints {
+                                hints.disable_file_mapping();
+                            }
+                        }
+                        if options.metrics && added != 0 {
+                            eprintln!("pvisor-cold-file mapped_bytes_total={total} mapping_operations_total={operations} pid={}",
+                                std::process::id());
+                        }
+                    },
+                    Ok(_) => {},
+                    Err(error) if error == "VMM has stopped" => break,
+                    Err(error) => fatal(error),
+                }
+            }
+            // File comparison buffers must not overlap a later content
+            // snapshot/publication batch or remain retained through scan rest.
+            drop(prepared);
             if Instant::now() < next_scan {
+                continue;
+            }
+            if !publication_ready {
                 continue;
             }
             let mut candidates = worker_pager.lock().unwrap_or_else(|_| fatal("pager poisoned")).candidates();
@@ -1475,8 +1723,7 @@ pub(crate) fn start<S: ColdRamStore + 'static>(
                     if let Some(scanner) = &mut state.shared_scan {
                         scanner.finished_batch(started.elapsed());
                     }
-                    next_scan = Instant::now() + state.shared_scan.as_ref()
-                        .map_or(scan::REJECT_RETRY, scan::Scanner::delay);
+                    next_scan = Instant::now() + scan::REJECT_RETRY;
                     continue;
                 },
                 Err(error) if error == "VMM has stopped" => break,
@@ -1524,6 +1771,7 @@ pub(crate) fn start<S: ColdRamStore + 'static>(
                 // Pool RPCs never run with the pager or VM barrier held. Pool
                 // counters are current pool-wide values, not VM physical savings.
                 let stats = pool.lock().unwrap_or_else(|_| fatal("store poisoned")).stats().unwrap_or_else(|error| fatal(error));
+                eprintln!("pvisor-cold-accounting scope={:?} pid={}", stats.scope, std::process::id());
                 let pager = worker_pager.lock().unwrap_or_else(|_| fatal("pager poisoned"));
                 let cold: u64 = pager.pages.iter().enumerate().filter(|(_, page)| page.cold.is_some()).map(|(index, _)| pager.pages.range(index).len).sum();
                 eprintln!("pvisor-cold-linux cold_bytes_current={cold} discarded_bytes_total={} restored_bytes_total={} invalidated_total={} put_rejections_total={} restore_count_total={} restore_time_us_total={} restore_time_us_max={} snapshots_batch={} pool_encoded_bytes_current={} pool_objects_current={} pool_session_references_current={} pool_cross_session_objects_current={} pid={}",
@@ -1540,8 +1788,7 @@ pub(crate) fn start<S: ColdRamStore + 'static>(
             if let Some(scanner) = &mut pager.shared_scan {
                 scanner.finished_batch(started.elapsed());
             }
-            next_scan = Instant::now() + pager.shared_scan.as_ref()
-                .map_or(scan::REJECT_RETRY, scan::Scanner::delay);
+            next_scan = Instant::now() + scan::REJECT_RETRY;
         }
         worker_pager.lock().unwrap_or_else(|_| fatal("pager poisoned")).shutdown().unwrap_or_else(|error| fatal(error));
         worker_stop.store(true, Ordering::Release);
@@ -1578,6 +1825,9 @@ mod tests {
     }
     impl ColdRamStore for CompressedStore {
         type Object = Vec<u8>;
+        fn publication_ready(&mut self) -> bool {
+            true
+        }
         fn shared_mapping(&self, _: &Self::Object) -> Option<crate::api::SharedRamMapping> {
             None
         }
@@ -1626,6 +1876,7 @@ mod tests {
         }
         fn stats(&mut self) -> io::Result<ColdRamPoolStats> {
             Ok(ColdRamPoolStats {
+                scope: crate::api::ColdRamAccountingScope::Instance,
                 encoded_bytes: 0,
                 objects: 0,
                 session_references: 0,
@@ -1641,6 +1892,9 @@ mod tests {
     }
     impl ColdRamStore for SharedStore {
         type Object = Arc<std::fs::File>;
+        fn publication_ready(&mut self) -> bool {
+            true
+        }
         fn put(&mut self, bytes: &[u8]) -> io::Result<Self::Object> {
             use std::os::unix::fs::FileExt;
             if let Some(file) = self.files.get(bytes) {
@@ -1700,6 +1954,7 @@ mod tests {
         }
         fn stats(&mut self) -> io::Result<ColdRamPoolStats> {
             Ok(ColdRamPoolStats {
+                scope: crate::api::ColdRamAccountingScope::Instance,
                 encoded_bytes: 0,
                 objects: 0,
                 session_references: 0,
@@ -1727,6 +1982,8 @@ mod tests {
             shared_scan: Some(pages.shared_scanner(0)),
             read_hints: Some(Arc::new(ReadHints::default())),
             file_hint_candidates: 0,
+            file_ranges: FileRanges::default(),
+            file_mapped_bytes: 0,
             pages,
             store: Arc::new(Mutex::new(SharedStore::default())),
             uffd: None,
@@ -1744,6 +2001,202 @@ mod tests {
             snapshot_buffers: Vec::new(),
         }
     }
+    #[test]
+    fn immutable_reads_map_contiguous_runs_skip_clean_content_and_keep_cow_private() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("immutable");
+        std::fs::write(&path, vec![0x5a; 65536]).unwrap();
+        let file = Arc::new(std::fs::File::open(&path).unwrap());
+        let mut a = shared_pager_with_size(65536);
+        let mut b = shared_pager_with_size(65536);
+        for pager in [&mut a, &mut b] {
+            let read = PreparedFileRead::new(ImmutableRead {
+                file: file.clone(),
+                offset: 0,
+                address: pager.pages.range(0).start,
+                length: 65536,
+            })
+            .unwrap();
+            pager
+                .map_file_read(&read, Instant::now() + Duration::from_secs(1))
+                .unwrap();
+            assert_eq!(pager.file_mapped_bytes, 65536);
+            assert_eq!(
+                pager.file_ranges.operations, 1,
+                "one extent, not sixteen pool slots"
+            );
+            assert!(pager.file_page(pager.pages.range(0)).unwrap());
+            assert_eq!(
+                unsafe {
+                    libc::madvise(
+                        pager.pages.range(1).start as *mut libc::c_void,
+                        4096,
+                        libc::MADV_DONTNEED,
+                    )
+                },
+                0
+            );
+            assert_eq!(pager.page_flags(pager.pages.range(1)).unwrap(), 0);
+            assert!(
+                pager
+                    .sample_candidates(&(0..16).collect::<Vec<_>>())
+                    .0
+                    .is_empty(),
+                "cached file pages with absent PTEs must not be copied by stale candidates"
+            );
+        }
+        let mut bytes = [0; 4096];
+        a.memory.write_slice(&[0x72], GuestAddress(0)).unwrap();
+        a.memory.read_slice(&mut bytes, GuestAddress(0)).unwrap();
+        assert_eq!(bytes[0], 0x72);
+        b.memory.read_slice(&mut bytes, GuestAddress(0)).unwrap();
+        assert_eq!(bytes, [0x5a; 4096]);
+        assert!(b.file_page(b.pages.range(0)).unwrap());
+        let mut batch = a.sample_candidates(&[0, 1]);
+        assert_eq!(
+            batch.0.len(),
+            1,
+            "only present anonymous COW reenters discovery"
+        );
+        assert_eq!(batch.0[0].bytes[0], 0x72);
+        a.recycle(&mut batch);
+        assert!(b.sample_candidates(&[0, 1]).0.is_empty());
+        assert_eq!(std::fs::read(&path).unwrap(), vec![0x5a; 65536]);
+        // Neither an OPEN descriptor, pathname nor pool daemon is needed to
+        // refault an already installed immutable file mapping.
+        drop(file);
+        std::fs::remove_file(&path).unwrap();
+        let range = b.pages.range(0);
+        assert_eq!(
+            unsafe { libc::madvise(range.start as *mut libc::c_void, 4096, libc::MADV_DONTNEED) },
+            0
+        );
+        b.memory.read_slice(&mut bytes, GuestAddress(0)).unwrap();
+        assert_eq!(bytes, [0x5a; 4096]);
+        assert!(b.release_free_pages(&[(0, 8192)]).unwrap().is_empty());
+        b.memory.read_slice(&mut bytes, GuestAddress(0)).unwrap();
+        assert_eq!(
+            bytes, [0; 4096],
+            "balloon reuse must never resurrect file bytes"
+        );
+    }
+
+    #[test]
+    fn immutable_reads_decline_stale_sparse_excluded_and_invalid_ranges() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("immutable");
+        std::fs::write(&path, vec![0x5a; 8192]).unwrap();
+        let file = Arc::new(std::fs::File::open(&path).unwrap());
+        let mut pager = shared_pager();
+        let address = pager.pages.range(0).start;
+        let read = || ImmutableRead {
+            file: file.clone(),
+            offset: 0,
+            address,
+            length: 8192,
+        };
+        let prepared = PreparedFileRead::new(read()).unwrap();
+        pager.memory.write_slice(&[0x72], GuestAddress(0)).unwrap();
+        pager
+            .map_file_read(&prepared, Instant::now() + Duration::from_secs(1))
+            .unwrap();
+        assert!(!pager.file_ranges.contains(0));
+        assert!(pager.file_ranges.contains(1));
+        assert_eq!(pager.file_mapped_bytes, 4096);
+        let mut changed = [0];
+        pager
+            .memory
+            .read_slice(&mut changed, GuestAddress(0))
+            .unwrap();
+        assert_eq!(changed, [0x72]);
+        let excluded = PreparedFileRead::new(ImmutableRead {
+            address: 4096,
+            ..read()
+        })
+        .unwrap();
+        pager
+            .map_file_read(&excluded, Instant::now() + Duration::from_secs(1))
+            .unwrap();
+        assert_eq!(pager.file_mapped_bytes, 4096);
+        for invalid in [
+            ImmutableRead {
+                length: 8193,
+                ..read()
+            },
+            ImmutableRead {
+                offset: 4096,
+                ..read()
+            },
+            ImmutableRead {
+                address: address + 1,
+                ..read()
+            },
+            ImmutableRead {
+                offset: u64::MAX - 4095,
+                ..read()
+            },
+        ] {
+            assert!(PreparedFileRead::new(invalid).is_err());
+        }
+        assert_eq!(
+            unsafe { libc::madvise(address as *mut libc::c_void, 4096, libc::MADV_DONTNEED) },
+            0
+        );
+        assert!(!fully_resident(pager.pages.range(0)).unwrap());
+        pager
+            .map_file_read(&prepared, Instant::now() + Duration::from_secs(1))
+            .unwrap();
+        assert!(
+            !fully_resident(pager.pages.range(0)).unwrap(),
+            "no sparse RAM fault-in"
+        );
+        assert_eq!(pager.file_mapped_bytes, 4096);
+    }
+
+    #[test]
+    fn immutable_read_buffers_are_accounted_and_released_on_success_or_io_failure() {
+        use std::os::unix::fs::OpenOptionsExt;
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("immutable");
+        std::fs::write(&path, vec![0x5a; 8192]).unwrap();
+        let before = activity().pending_file_bytes;
+        let read = |file| ImmutableRead {
+            file: Arc::new(file),
+            offset: 0,
+            address: 4096,
+            length: 8192,
+        };
+        let prepared = PreparedFileRead::new(read(std::fs::File::open(&path).unwrap())).unwrap();
+        assert_eq!(activity().pending_file_bytes, before + 8192);
+        drop(prepared);
+        assert_eq!(activity().pending_file_bytes, before);
+        // Metadata succeeds but an O_PATH descriptor cannot pread. The
+        // optional I/O error must release its already allocated work buffer.
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_PATH)
+            .open(path)
+            .unwrap();
+        assert!(PreparedFileRead::new(read(file)).is_err());
+        assert_eq!(activity().pending_file_bytes, before);
+    }
+
+    #[test]
+    fn immutable_mapping_metadata_and_lifetime_vma_budget_are_bounded() {
+        let mut ranges = FileRanges::default();
+        for n in 0..4096 {
+            assert!(ranges.insert(n, n + 1));
+        }
+        assert_eq!(ranges.ranges.len(), 1);
+        assert!(ranges.contains(0) && ranges.contains(4095));
+        assert!(!ranges.contains(4096));
+        assert!(
+            !ranges.insert(0, 4097),
+            "COW/remap churn cannot renew the budget"
+        );
+        assert!(!ranges.contains(4096));
+    }
+
     #[test]
     fn configured_shared_ram_metadata_stays_within_two_mib_for_512_mib() {
         let pages = host_sorted_pages::<Arc<std::fs::File>>(
@@ -2329,6 +2782,8 @@ mod tests {
             shared_scan: None,
             read_hints: None,
             file_hint_candidates: 0,
+            file_ranges: FileRanges::default(),
+            file_mapped_bytes: 0,
             pages,
             store: Arc::new(Mutex::new(CompressedStore::default())),
             uffd: Some(Arc::new(uffd)),

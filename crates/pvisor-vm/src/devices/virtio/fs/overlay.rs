@@ -15,11 +15,11 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, RwLock};
 use std::time::Duration;
 
-use pvisor_overlay_core::{BackingIdentity, BackingResolution, OverlayCore};
 use pvisor_overlay_core::{
     backend,
     service::{FilesystemService, OpenBacking, UpperNamespaceMutation},
 };
+use pvisor_overlay_core::{BackingIdentity, BackingResolution, OverlayCore};
 
 use super::super::linux_errno::linux_error;
 use super::bindings;
@@ -442,19 +442,32 @@ impl OverlaySnapshot {
     }
     pub(super) fn prepare_protected_workspace_seed(&mut self) -> io::Result<()> {
         use super::snapshot::invalid;
-        if self.config.lower_dirs.len() != 1 || self.layers.len() != 2
-            || !self.hard_links.is_empty() || !self.hard_link_origins.is_empty()
+        if self.config.lower_dirs.len() != 1
+            || self.layers.len() != 2
+            || !self.hard_links.is_empty()
+            || !self.hard_link_origins.is_empty()
         {
-            return Err(invalid("protected workspace seed requires one unmodified lower"));
+            return Err(invalid(
+                "protected workspace seed requires one unmodified lower",
+            ));
         }
         let baseline = Path::new(&self.config.lower_dirs[0]);
-        for alias in [self.config.apply_target.as_deref(), self.config.baseline_lower.as_deref()].into_iter().flatten() {
+        for alias in [
+            self.config.apply_target.as_deref(),
+            self.config.baseline_lower.as_deref(),
+        ]
+        .into_iter()
+        .flatten()
+        {
             if Path::new(alias) != baseline {
-                return Err(invalid("protected workspace seed has a distinct target or baseline"));
+                return Err(invalid(
+                    "protected workspace seed has a distinct target or baseline",
+                ));
             }
         }
         for private in std::iter::once(self.config.upper_dir.as_str())
-            .chain(self.config.work_dir.as_deref()).chain(self.config.preimage_dir.as_deref())
+            .chain(self.config.work_dir.as_deref())
+            .chain(self.config.preimage_dir.as_deref())
         {
             if baseline.starts_with(private) || Path::new(private).starts_with(baseline) {
                 return Err(invalid("protected workspace seed overlaps private backing"));
@@ -899,7 +912,11 @@ struct LowerDataObjects {
 #[derive(Clone, Copy, Hash, Eq, PartialEq)]
 enum LowerDataKey {
     Native((usize, u64, u64, u64, u64)),
-    Logical { layer: usize, object: u64, size: u64 },
+    Logical {
+        layer: usize,
+        object: u64,
+        size: u64,
+    },
 }
 
 impl LowerDataObjects {
@@ -909,13 +926,7 @@ impl LowerDataObjects {
             LowerDataKey::Logical { size, .. } => size,
         };
         if let Some(id) = self.ids.get(&key) {
-            return Some((
-                LowerDataObject {
-                    id: *id,
-                    size,
-                },
-                false,
-            ));
+            return Some((LowerDataObject { id: *id, size }, false));
         }
         if self.ids.len() >= MAX_LOWER_DATA_OBJECTS {
             return None;
@@ -1090,8 +1101,10 @@ impl OverlayFs {
 
     pub(super) fn configure_object_read_barriers(&mut self, requested: bool) {
         self.host_writeback_options.object_barriers = requested && self.host_writeback;
-        self.profile.add("object_read_barriers_enabled",
-            u64::from(self.host_writeback_options.object_barriers));
+        self.profile.add(
+            "object_read_barriers_enabled",
+            u64::from(self.host_writeback_options.object_barriers),
+        );
     }
 
     /// Wait for the accepted prefix. Errors remain sticky in the queue until
@@ -2327,7 +2340,9 @@ impl OverlayFs {
                     continue;
                 }
                 match backend::stable_namespace(root)? {
-                    Some(lease) => { leases.insert(index + 1, lease); }
+                    Some(lease) => {
+                        leases.insert(index + 1, lease);
+                    }
                     None => {
                         eligible = false;
                         break;
@@ -2357,9 +2372,15 @@ impl OverlayFs {
     }
 
     pub(super) fn configure_logical_data_cache(&mut self, requested: bool) {
-        self.logical_data_cache = requested && self.logical_directory_cache_enabled
-            && cfg!(target_os = "linux") && !self.host_writeback && !self.new_session_writeback;
-        self.profile.add("logical_data_cache_enabled", u64::from(self.logical_data_cache));
+        self.logical_data_cache = requested
+            && self.logical_directory_cache_enabled
+            && cfg!(target_os = "linux")
+            && !self.host_writeback
+            && !self.new_session_writeback;
+        self.profile.add(
+            "logical_data_cache_enabled",
+            u64::from(self.logical_data_cache),
+        );
     }
 
     // The caller holds read_operation through handle publication. A writer
@@ -2750,10 +2771,12 @@ impl OverlayFs {
         if self.lower_data_cache_active.load(Ordering::Relaxed)
             && readonly
             && !options.contains(OpenOptions::DIRECT_IO)
-            && (logical_regular || (immutable_regular && matches!(
-                backend::attributes(&self.roots[layer.0].join(&path)),
-                Ok(None)
-            )))
+            && (logical_regular
+                || (immutable_regular
+                    && matches!(
+                        backend::attributes(&self.roots[layer.0].join(&path)),
+                        Ok(None)
+                    )))
         {
             options |= OpenOptions::PVISOR_DATA_OBJECT;
         }
@@ -2815,10 +2838,13 @@ impl OverlayFs {
         let receipt = (|| {
             let lease = self.file_io_lease(handle).ok()?;
             let h = &lease.handle;
-            if h.overlay_inode != inode || h.layer.0 == 0 { return None; }
-            let logical = self.logical_data_cache
-                && self.stable_namespace_leases.contains_key(&h.layer.0);
-            if !logical && h.layer
+            if h.overlay_inode != inode || h.layer.0 == 0 {
+                return None;
+            }
+            let logical =
+                self.logical_data_cache && self.stable_namespace_leases.contains_key(&h.layer.0);
+            if !logical
+                && h.layer
                     .0
                     .checked_sub(1)
                     .and_then(|i| self.snapshot_config.lower_mutability.get(i))
@@ -2835,13 +2861,21 @@ impl OverlayFs {
             }
             let key = if logical {
                 let pinned = self.stable_namespace_leases.get(&h.layer.0)?;
-                let content = pinned.content_identity(
-                    Path::new(OsStr::from_bytes(&h.relative_path))
-                ).ok()??;
+                let content = pinned
+                    .content_identity(Path::new(OsStr::from_bytes(&h.relative_path)))
+                    .ok()??;
                 if !self.layers[h.layer.0].logical_data_fd_eligible(
-                    &lease.native, content.size, &self.profile,
-                ) { return None; }
-                LowerDataKey::Logical { layer: h.layer.0, object: content.object, size: content.size }
+                    &lease.native,
+                    content.size,
+                    &self.profile,
+                ) {
+                    return None;
+                }
+                LowerDataKey::Logical {
+                    layer: h.layer.0,
+                    object: content.object,
+                    size: content.size,
+                }
             } else {
                 let identity = match qualification {
                     Some(identity) => {
@@ -2851,17 +2885,20 @@ impl OverlayFs {
                     None => {
                         self.profile.add("open_qualification_receipt_misses", 1);
                         self.layers[h.layer.0].lower_data_identity_profiled(
-                            h.inode, h.handle, &self.profile,
+                            h.inode,
+                            h.handle,
+                            &self.profile,
                         )?
                     }
                 };
                 LowerDataKey::Native((
-                h.layer.0,
-                identity.dev,
-                identity.ino,
-                identity.mount_id,
-                identity.size,
-            )) };
+                    h.layer.0,
+                    identity.dev,
+                    identity.ino,
+                    identity.mount_id,
+                    identity.size,
+                ))
+            };
             match self.lower_data_objects.lock().unwrap().register(key) {
                 Some((receipt, registered)) => {
                     self.profile.add(
@@ -2890,6 +2927,41 @@ impl OverlayFs {
 }
 
 impl FileSystem for OverlayFs {
+    #[cfg(target_os = "linux")]
+    fn immutable_read_file(&self, inode: u64, handle: u64) -> Option<Arc<std::fs::File>> {
+        let lease = self.file_io_lease(handle).ok()?;
+        let h = &lease.handle;
+        if h.overlay_inode != inode
+            || h.layer
+                .0
+                .checked_sub(1)
+                .and_then(|i| self.snapshot_config.lower_mutability.get(i))
+                != Some(&pvisor_overlay_core::LayerMutability::Immutable)
+            || !matches!(
+                backend::attributes(
+                    &self.roots[h.layer.0].join(OsStr::from_bytes(&h.relative_path))
+                ),
+                Ok(None)
+            )
+        {
+            return None;
+        }
+        // Borrow the already authorized handle, not the current merged path:
+        // copy-up/rename must never rebind old READs to a new upper inode.
+        let mut result = None;
+        self.layers[h.layer.0]
+            .with_dax_file(h.inode, h.handle, |file| {
+                use std::os::fd::AsRawFd;
+                let flags = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GETFL) };
+                if flags >= 0 && flags & libc::O_ACCMODE == libc::O_RDONLY {
+                    result = Some(Arc::new(file.try_clone()?));
+                }
+                Ok(())
+            })
+            .ok()?;
+        result
+    }
+
     fn diagnostic_profiles(&self) -> Vec<pvisor_overlay_core::profile::ProfileReport> {
         self.profile
             .report()
@@ -3100,7 +3172,7 @@ impl FileSystem for OverlayFs {
                 "cannot replace a negotiated read-only flush-elision session by restoring state",
             ));
         }
-        use super::snapshot::{FsSnapshot, invalid};
+        use super::snapshot::{invalid, FsSnapshot};
         let FsSnapshot::Overlay(state) = state else {
             return Err(invalid("overlay filesystem type mismatch"));
         };
@@ -3820,7 +3892,11 @@ impl FileSystem for OverlayFs {
             // accessible to its host owner, with guest identity stored below.
             // FIFO/device nodes retain the original checks: Linux does not
             // support our user-xattr identity record on those native types.
-            (self.private_create_context(ctx), (mode & libc::S_IFMT) | 0o600, 0)
+            (
+                self.private_create_context(ctx),
+                (mode & libc::S_IFMT) | 0o600,
+                0,
+            )
         } else {
             (ctx, mode, umask)
         };
@@ -4531,8 +4607,7 @@ impl FileSystem for OverlayFs {
                     .filter(|name| !name.is_empty())
                 {
                     let name = OsStr::from_bytes(name);
-                    if self.virtual_metadata
-                        && pvisor_overlay_core::is_private_metadata_xattr(name)
+                    if self.virtual_metadata && pvisor_overlay_core::is_private_metadata_xattr(name)
                     {
                         continue;
                     }
@@ -5341,45 +5416,78 @@ mod tests {
             drop(fs);
             let fs = OverlayFs::new(config.clone(), Arc::new(InodeAllocator::new())).unwrap();
             fs.init(FsOptions::empty()).unwrap();
-            let guest = Context { uid: 70, gid: 70, pid: 123 };
-            let socket = fs.mknod(guest, fuse::ROOT_ID, c"socket",
-                libc::S_IFSOCK | 0o644, 0, 0, Extensions::default()).unwrap();
-            let alias = fs.link(root, socket.inode, fuse::ROOT_ID, c"alias").unwrap();
+            let guest = Context {
+                uid: 70,
+                gid: 70,
+                pid: 123,
+            };
+            let socket = fs
+                .mknod(
+                    guest,
+                    fuse::ROOT_ID,
+                    c"socket",
+                    libc::S_IFSOCK | 0o644,
+                    0,
+                    0,
+                    Extensions::default(),
+                )
+                .unwrap();
+            let alias = fs
+                .link(root, socket.inode, fuse::ROOT_ID, c"alias")
+                .unwrap();
             assert_eq!((alias.attr.st_uid, alias.attr.st_gid), (70, 70));
             let mut requested = socket.attr;
             requested.st_uid = 88;
             requested.st_gid = 99;
             requested.st_mode = libc::S_IFSOCK | 0o640;
-            fs.setattr(root, socket.inode, requested, None,
-                SetattrValid::UID | SetattrValid::GID | SetattrValid::MODE).unwrap();
+            fs.setattr(
+                root,
+                socket.inode,
+                requested,
+                None,
+                SetattrValid::UID | SetattrValid::GID | SetattrValid::MODE,
+            )
+            .unwrap();
             let observed = fs.getattr(root, alias.inode, None).unwrap().0;
-            assert_eq!((observed.st_uid, observed.st_gid, observed.st_mode),
-                (88, 99, libc::S_IFSOCK | 0o640));
+            assert_eq!(
+                (observed.st_uid, observed.st_gid, observed.st_mode),
+                (88, 99, libc::S_IFSOCK | 0o640)
+            );
             let native = std::fs::symlink_metadata(temp.path().join("upper/socket")).unwrap();
             assert!(native.file_type().is_socket());
             assert_eq!(native.uid(), unsafe { libc::geteuid() });
             assert_eq!(native.mode() & 0o7777, 0o600);
-            assert!(pvisor_overlay_core::sys::get_xattr(
-                &temp.path().join("upper/socket"),
-                OsStr::new("user.containers.override_stat"),
-            ).is_err(), "socket identities must not require native user xattrs");
+            assert!(
+                pvisor_overlay_core::sys::get_xattr(
+                    &temp.path().join("upper/socket"),
+                    OsStr::new("user.containers.override_stat"),
+                )
+                .is_err(),
+                "socket identities must not require native user xattrs"
+            );
             let name = c".wh..pvisor-socket-metadata";
             assert!(fs.lookup(root, fuse::ROOT_ID, name).is_err());
-            assert!(fs.mkdir(root, fuse::ROOT_ID, name, 0o700, 0, Extensions::default()).is_err());
+            assert!(fs
+                .mkdir(root, fuse::ROOT_ID, name, 0o700, 0, Extensions::default())
+                .is_err());
             let handle = fs.opendir(root, fuse::ROOT_ID, 0).unwrap().0.unwrap();
             fs.readdir(root, fuse::ROOT_ID, handle, 4096, 0, |entry| {
                 assert!(!entry.name.starts_with(b".wh."));
                 Ok(1)
-            }).unwrap();
+            })
+            .unwrap();
             fs.releasedir(root, fuse::ROOT_ID, 0, handle).unwrap();
-            fs.rename(root, fuse::ROOT_ID, c"alias", fuse::ROOT_ID, c"moved", 0).unwrap();
+            fs.rename(root, fuse::ROOT_ID, c"alias", fuse::ROOT_ID, c"moved", 0)
+                .unwrap();
             fs.unlink(root, fuse::ROOT_ID, c"socket").unwrap();
             drop(fs);
             let reopened = OverlayFs::new(config, Arc::new(InodeAllocator::new())).unwrap();
             reopened.init(FsOptions::empty()).unwrap();
             let moved = reopened.lookup(root, fuse::ROOT_ID, c"moved").unwrap();
-            assert_eq!((moved.attr.st_uid, moved.attr.st_gid, moved.attr.st_mode),
-                (88, 99, libc::S_IFSOCK | 0o640));
+            assert_eq!(
+                (moved.attr.st_uid, moved.attr.st_gid, moved.attr.st_mode),
+                (88, 99, libc::S_IFSOCK | 0o640)
+            );
         }
 
         fn truncate_detached(replace: bool) {
@@ -6469,24 +6577,34 @@ mod tests {
             fs.directory_names(Path::new("dir")).unwrap().names
         };
         let initial = cache(&fs);
-        fs.mkdir(ctx, fuse::ROOT_ID, c"unrelated", 0o755, 0, Extensions::default()).unwrap();
+        fs.mkdir(
+            ctx,
+            fuse::ROOT_ID,
+            c"unrelated",
+            0o755,
+            0,
+            Extensions::default(),
+        )
+        .unwrap();
         let after_create = cache(&fs);
         assert!(!Arc::ptr_eq(&initial, &after_create));
-        fs.rename(ctx, fuse::ROOT_ID, c"unrelated", fuse::ROOT_ID, c"other", 0).unwrap();
+        fs.rename(ctx, fuse::ROOT_ID, c"unrelated", fuse::ROOT_ID, c"other", 0)
+            .unwrap();
         assert!(!Arc::ptr_eq(&after_create, &cache(&fs)));
-        fs.mkdir(ctx, dir, c"child", 0o755, 0, Extensions::default()).unwrap();
+        fs.mkdir(ctx, dir, c"child", 0o755, 0, Extensions::default())
+            .unwrap();
         let changed = cache(&fs);
         assert!(!Arc::ptr_eq(&initial, &changed));
         assert!(changed.iter().any(|name| name == b"child"));
-        fs.rename(ctx, fuse::ROOT_ID, c"dir", fuse::ROOT_ID, c"moved", 0).unwrap();
+        fs.rename(ctx, fuse::ROOT_ID, c"dir", fuse::ROOT_ID, c"moved", 0)
+            .unwrap();
         assert!(fs.directory_names_cache.lock().unwrap().is_none());
         {
             let _guard = fs.read_operation().unwrap();
             fs.directory_names(Path::new("moved")).unwrap();
         }
-        fs.snapshot_config.access_policy = pvisor_overlay_core::FileAccessPolicy::new(
-            vec!["private/**".into()], vec![],
-        ).unwrap();
+        fs.snapshot_config.access_policy =
+            pvisor_overlay_core::FileAccessPolicy::new(vec!["private/**".into()], vec![]).unwrap();
         assert!(fs.unlink(ctx, dir, c"missing").is_err());
         assert!(fs.directory_names_cache.lock().unwrap().is_none());
     }
@@ -7322,7 +7440,7 @@ mod tests {
         body: &[u8],
     ) -> (vm_memory::GuestMemoryMmap, vm_memory::GuestAddress, usize) {
         use super::super::descriptor_utils::{
-            DescriptorType, OwnedDescriptorChain, create_descriptor_chain,
+            create_descriptor_chain, DescriptorType, OwnedDescriptorChain,
         };
         use vm_memory::{Bytes, GuestAddress, GuestMemoryMmap};
         let mem = GuestMemoryMmap::from_ranges(&[(GuestAddress(0), 0x10000)]).unwrap();
@@ -8204,7 +8322,7 @@ mod tests {
         use pvisor_overlay_core::backend::{
             BackendAttachment, FileAttr, FileType, ReadOnlyBackend,
         };
-        use std::sync::mpsc::{Receiver, Sender, channel};
+        use std::sync::mpsc::{channel, Receiver, Sender};
         struct Source {
             root: PathBuf,
             entered: Sender<()>,
@@ -8937,6 +9055,53 @@ mod tests {
     }
 
     #[cfg(target_os = "linux")]
+    #[test]
+    fn immutable_read_backing_uses_the_opened_lower_and_declines_mutable_or_upper() {
+        use std::os::unix::fs::FileExt;
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::create_dir(temp.path().join("lower")).unwrap();
+        std::fs::write(temp.path().join("lower/file"), vec![0x5a; 8192]).unwrap();
+        let mut fs = local_flush_fixture(temp.path(), false, false);
+        fs.init(FsOptions::empty()).unwrap();
+        let ctx = root_context();
+        let inode = fs.lookup(ctx, fuse::ROOT_ID, c"file").unwrap().inode;
+        let handle = fs
+            .open(ctx, inode, false, libc::O_RDONLY as u32)
+            .unwrap()
+            .0
+            .unwrap();
+        assert!(fs.immutable_read_file(inode, handle).is_none());
+        fs.release(ctx, inode, 0, handle, false, false, None)
+            .unwrap();
+        fs.snapshot_config.lower_mutability[0] = pvisor_overlay_core::LayerMutability::Immutable;
+        let handle = fs
+            .open(ctx, inode, false, libc::O_RDONLY as u32)
+            .unwrap()
+            .0
+            .unwrap();
+        let backing = fs.immutable_read_file(inode, handle).unwrap();
+        assert!(fs.immutable_read_file(inode + 100, handle).is_none());
+        let upper = fs
+            .open(ctx, inode, false, libc::O_RDWR as u32)
+            .unwrap()
+            .0
+            .unwrap();
+        assert!(fs.immutable_read_file(inode, upper).is_none());
+        assert!(
+            fs.immutable_read_file(inode, handle).is_some(),
+            "copy-up must not rebind an old lower descriptor"
+        );
+        fs.release(ctx, inode, 0, handle, false, false, None)
+            .unwrap();
+        assert!(fs.immutable_read_file(inode, handle).is_none());
+        let mut bytes = [0; 8192];
+        backing.read_exact_at(&mut bytes, 0).unwrap();
+        assert_eq!(bytes, [0x5a; 8192], "queued backing outlives RELEASE");
+        fs.release(ctx, inode, 0, upper, false, false, None)
+            .unwrap();
+    }
+
+    #[cfg(target_os = "linux")]
     fn local_flush_fixture(root: &Path, immutable: bool, writeback: bool) -> OverlayFs {
         let mut config = parent_cache_fixture(root).snapshot_config.clone();
         config.lower_mutability = vec![if immutable {
@@ -9409,8 +9574,15 @@ mod tests {
     fn lower_data_object_ids_are_bounded_never_recycled_and_layer_specific() {
         let mut table = LowerDataObjects::default();
         let mut domains = LowerDataObjects::default();
-        let native = domains.register(LowerDataKey::Native((1, 2, 3, 4, 5))).unwrap().0;
-        let key = LowerDataKey::Logical { layer: 1, object: 3, size: 5 };
+        let native = domains
+            .register(LowerDataKey::Native((1, 2, 3, 4, 5)))
+            .unwrap()
+            .0;
+        let key = LowerDataKey::Logical {
+            layer: 1,
+            object: 3,
+            size: 5,
+        };
         let logical = domains.register(key).unwrap().0;
         assert_ne!(native.id, logical.id);
         assert_eq!(domains.register(key), Some((logical, false)));
@@ -9423,17 +9595,27 @@ mod tests {
             let key = LowerDataKey::Native((1, 2, index as u64 + 3, 4, 5));
             assert_eq!(table.register(key).unwrap().0.id, index as u32 + 1);
         }
-        assert!(table.register(LowerDataKey::Native((2, 2, 3, 4, 5))).is_none());
+        assert!(table
+            .register(LowerDataKey::Native((2, 2, 3, 4, 5)))
+            .is_none());
         assert_eq!(table.register(first), Some((a, false))); // hit still works at limit
         assert_eq!(table.ids.len(), MAX_LOWER_DATA_OBJECTS);
         let mut layers = LowerDataObjects::default();
         assert_ne!(
             layers.register(first).unwrap().0.id,
-            layers.register(LowerDataKey::Native((2, 2, 3, 4, 5))).unwrap().0.id
+            layers
+                .register(LowerDataKey::Native((2, 2, 3, 4, 5)))
+                .unwrap()
+                .0
+                .id
         );
         assert_ne!(
             layers.register(first).unwrap().0.id,
-            layers.register(LowerDataKey::Native((1, 2, 3, 4, 6))).unwrap().0.id
+            layers
+                .register(LowerDataKey::Native((1, 2, 3, 4, 6)))
+                .unwrap()
+                .0
+                .id
         );
     }
 
@@ -9934,7 +10116,10 @@ mod tests {
         fs.init(FsOptions::empty()).unwrap();
         fs.core.observe_read(Path::new("file")).unwrap();
         let observations = pvisor_overlay_core::load_preimages(&source.join("journal")).unwrap();
-        let super::super::snapshot::FsSnapshot::Overlay(mut seed) = fs.capture_state().unwrap() else { panic!("overlay"); };
+        let super::super::snapshot::FsSnapshot::Overlay(mut seed) = fs.capture_state().unwrap()
+        else {
+            panic!("overlay");
+        };
         drop(fs);
         seed.prepare_protected_workspace_seed().unwrap();
         let baseline = source.join("lower");
@@ -9943,18 +10128,44 @@ mod tests {
             let branch = temp.path().join(name);
             std::fs::create_dir(&branch).unwrap();
             for role in ["upper", "journal"] {
-                pvisor::environment_snapshot::copy_owned_tree(&source.join(role), &branch.join(role)).unwrap();
+                pvisor::environment_snapshot::copy_owned_tree(
+                    &source.join(role),
+                    &branch.join(role),
+                )
+                .unwrap();
             }
             let mut state = seed.clone();
-            state.validate_shared_readonly_layers(std::slice::from_ref(&baseline)).unwrap();
-            state.rebind_roots(|path| {
-                let path = Path::new(path);
-                Ok(if path == baseline { path.to_owned() } else { branch.join(path.strip_prefix(&source).unwrap()) }.to_string_lossy().into_owned())
-            }, std::slice::from_ref(&baseline), false, &[]).unwrap();
-            let restored = OverlayFs::open_existing(state.config.clone(), Arc::new(InodeAllocator::new())).unwrap();
+            state
+                .validate_shared_readonly_layers(std::slice::from_ref(&baseline))
+                .unwrap();
+            state
+                .rebind_roots(
+                    |path| {
+                        let path = Path::new(path);
+                        Ok(if path == baseline {
+                            path.to_owned()
+                        } else {
+                            branch.join(path.strip_prefix(&source).unwrap())
+                        }
+                        .to_string_lossy()
+                        .into_owned())
+                    },
+                    std::slice::from_ref(&baseline),
+                    false,
+                    &[],
+                )
+                .unwrap();
+            let restored =
+                OverlayFs::open_existing(state.config.clone(), Arc::new(InodeAllocator::new()))
+                    .unwrap();
             restored.init(FsOptions::empty()).unwrap();
-            restored.restore_state(&super::super::snapshot::FsSnapshot::Overlay(state)).unwrap();
-            assert_eq!(pvisor_overlay_core::load_preimages(&branch.join("journal")).unwrap(), observations);
+            restored
+                .restore_state(&super::super::snapshot::FsSnapshot::Overlay(state))
+                .unwrap();
+            assert_eq!(
+                pvisor_overlay_core::load_preimages(&branch.join("journal")).unwrap(),
+                observations
+            );
             branches.push((branch, restored));
         }
         branches[0].1.core.copy_up(Path::new("file")).unwrap();
@@ -9962,8 +10173,14 @@ mod tests {
         assert_eq!(std::fs::read(baseline.join("file")).unwrap(), b"original");
         assert!(!branches[1].0.join("upper/file").exists());
         branches[1].1.core.copy_up(Path::new("file")).unwrap();
-        assert_eq!(std::fs::read(branches[1].0.join("upper/file")).unwrap(), b"original");
-        assert_eq!(pvisor_overlay_core::load_preimages(&branches[1].0.join("journal")).unwrap(), observations);
+        assert_eq!(
+            std::fs::read(branches[1].0.join("upper/file")).unwrap(),
+            b"original"
+        );
+        assert_eq!(
+            pvisor_overlay_core::load_preimages(&branches[1].0.join("journal")).unwrap(),
+            observations
+        );
     }
 
     #[test]
@@ -9972,16 +10189,25 @@ mod tests {
         std::fs::create_dir(temp.path().join("lower")).unwrap();
         std::fs::write(temp.path().join("lower/file"), b"original").unwrap();
         let fs = parent_cache_fixture(temp.path());
-        let super::super::snapshot::FsSnapshot::Overlay(mut state) = fs.capture_state().unwrap() else { panic!("overlay"); };
+        let super::super::snapshot::FsSnapshot::Overlay(mut state) = fs.capture_state().unwrap()
+        else {
+            panic!("overlay");
+        };
         let baseline = state.config.lower_dirs[0].clone();
         state.config.apply_target = Some(baseline.clone());
         state.config.baseline_lower = Some(baseline.clone());
         state.prepare_protected_workspace_seed().unwrap();
-        state.validate_shared_readonly_layers(&[PathBuf::from(&baseline)]).unwrap();
+        state
+            .validate_shared_readonly_layers(&[PathBuf::from(&baseline)])
+            .unwrap();
         assert!(state.config.apply_target.is_none());
         assert!(state.config.baseline_lower.is_none());
-        assert_eq!(state.config.lower_dirs.as_slice(), std::slice::from_ref(&baseline));
-        state.config.apply_target = Some(temp.path().join("distinct").to_string_lossy().into_owned());
+        assert_eq!(
+            state.config.lower_dirs.as_slice(),
+            std::slice::from_ref(&baseline)
+        );
+        state.config.apply_target =
+            Some(temp.path().join("distinct").to_string_lossy().into_owned());
         let before = serde_json::to_value(&state).unwrap();
         assert!(state.prepare_protected_workspace_seed().is_err());
         assert_eq!(serde_json::to_value(&state).unwrap(), before);
@@ -9989,9 +10215,16 @@ mod tests {
         state.config.work_dir = Some(format!("{baseline}/work"));
         assert!(state.prepare_protected_workspace_seed().is_err());
         state.config.work_dir = None;
-        let super::super::snapshot::FsSnapshot::Passthrough(lower) = &mut state.layers[1] else { panic!("passthrough"); };
+        let super::super::snapshot::FsSnapshot::Passthrough(lower) = &mut state.layers[1] else {
+            panic!("passthrough");
+        };
         lower.handles.push(super::super::snapshot::HandleSnapshot {
-            handle: 42, inode: 1, flags: libc::O_RDWR, offset: 0, entries: vec![], directory_ready: false,
+            handle: 42,
+            inode: 1,
+            flags: libc::O_RDWR,
+            offset: 0,
+            entries: vec![],
+            directory_ready: false,
             #[cfg(target_os = "linux")]
             directory_entries: None,
         });
@@ -11604,9 +11837,23 @@ mod tests {
             fs.init(FsOptions::PVISOR_DATA_OBJECT).unwrap();
             let ctx = root_context();
             let entry = fs.lookup(ctx, fuse::ROOT_ID, c"file").unwrap();
-            let receipt = fs.open_for_reply(ctx, entry.inode, false, libc::O_RDONLY as u32, true).unwrap();
-            assert_eq!(receipt.data_object.is_some(), stable && cfg!(target_os = "linux"));
-            fs.release(ctx, entry.inode, 0, receipt.handle.unwrap(), false, false, None).unwrap();
+            let receipt = fs
+                .open_for_reply(ctx, entry.inode, false, libc::O_RDONLY as u32, true)
+                .unwrap();
+            assert_eq!(
+                receipt.data_object.is_some(),
+                stable && cfg!(target_os = "linux")
+            );
+            fs.release(
+                ctx,
+                entry.inode,
+                0,
+                receipt.handle.unwrap(),
+                false,
+                false,
+                None,
+            )
+            .unwrap();
             assert_eq!(entry.attr.st_uid, 1234);
             assert_eq!(entry.attr.st_gid, 2345);
             assert_eq!(entry.attr.st_mode as u32 & 0o7777, 0o755);
@@ -11640,9 +11887,23 @@ mod tests {
             let (attr, _) = fs.getattr(ctx, entry.inode, Some(handle)).unwrap();
             assert_eq!(attr.st_uid, 1234);
             fs.core.copy_up(Path::new("file")).unwrap();
-            let upper_reply = fs.open_for_reply(ctx, entry.inode, false, libc::O_RDONLY as u32, true).unwrap();
-            assert!(upper_reply.data_object.is_none(), "upper must not reuse lower content identity");
-            fs.release(ctx, entry.inode, 0, upper_reply.handle.unwrap(), false, false, None).unwrap();
+            let upper_reply = fs
+                .open_for_reply(ctx, entry.inode, false, libc::O_RDONLY as u32, true)
+                .unwrap();
+            assert!(
+                upper_reply.data_object.is_none(),
+                "upper must not reuse lower content identity"
+            );
+            fs.release(
+                ctx,
+                entry.inode,
+                0,
+                upper_reply.handle.unwrap(),
+                false,
+                false,
+                None,
+            )
+            .unwrap();
             assert_eq!(
                 std::fs::read(temp.path().join("upper/file")).unwrap(),
                 b"real image data"

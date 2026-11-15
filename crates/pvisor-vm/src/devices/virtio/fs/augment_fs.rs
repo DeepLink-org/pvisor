@@ -794,6 +794,14 @@ impl<T: FileSystem<Inode = Inode, Handle = Handle>> FileSystem for AugmentFs<T> 
         )
     }
 
+    #[cfg(target_os = "linux")]
+    fn immutable_read_file(&self, inode: Inode, handle: Handle) -> Option<Arc<std::fs::File>> {
+        if self.is_virtual(inode) {
+            return None;
+        }
+        self.inner.immutable_read_file(inode, handle)
+    }
+
     fn setupmapping(
         &self,
         ctx: Context,

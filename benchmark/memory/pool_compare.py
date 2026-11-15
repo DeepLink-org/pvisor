@@ -682,6 +682,28 @@ def pss_observer(unit, stop, root):
     save(root / "pss.json", rows)
 
 
+def physical_publication_health(root):
+    """Bind all four logs; an unavailable publisher cannot qualify as low CPU."""
+    logs, events = {}, []
+    for instance in range(1, 5):
+        path = root / f"vm{instance}.stderr"
+        if not path.is_file():
+            raise ValueError("physical publisher logs incomplete")
+        logs[path.name] = digest(path)
+        with path.open() as stream:
+            for line_number, line in enumerate(stream, 1):
+                if line.startswith("pvisor-physical-pool ") and (
+                    "publication_disabled=true" in line.split()
+                ):
+                    events.append(dict(instance=instance, line=line_number))
+    return dict(
+        schema="pvisor-physical-publication-health/v1",
+        healthy=not events,
+        log_sha256=logs,
+        disabled_events=events,
+    )
+
+
 def execution(
     inputs,
     root,
@@ -801,6 +823,10 @@ def execution(
             from library_protocol import validate_library
 
             validate_library(raw, cfg, root)
+        if arm == "pvisor-physical":
+            row["publication_health"] = physical_publication_health(root)
+            if not row["publication_health"]["healthy"]:
+                raise ValueError("physical publisher disabled during measurement")
         row["worker_sha256"] = digest(root / "worker.json")
         row["status"] = "successful"
     except Exception as error:
@@ -896,6 +922,10 @@ def main():
         ]
         if a.preflight:
             command.append("--preflight")
+        if a.without_ksm:
+            command.append("--without-ksm")
+        if a.embedded_fw:
+            command.append("--embedded-fw")
         if docker_inputs:
             command += ["--docker-inputs", str(docker_inputs)]
         destination = output.with_suffix(".input.json")
@@ -938,6 +968,7 @@ def main():
         primary_baseline="pvisor-off" if a.without_ksm else "firecracker",
         preflight=a.preflight,
         samples=1 if a.preflight else a.samples,
+        physical_publication_health_required=True,
         arms=arms,
         patterns=patterns,
         receipt=receipt,

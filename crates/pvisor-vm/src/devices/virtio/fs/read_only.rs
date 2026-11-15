@@ -86,6 +86,21 @@ impl PassthroughFsRo {
 }
 
 impl FileSystem for PassthroughFsRo {
+    #[cfg(target_os = "linux")]
+    fn immutable_read_file(&self, inode: Inode, handle: Handle) -> Option<Arc<std::fs::File>> {
+        // Only immutable_filesystem grants the physical stability promise.
+        // Ordinary read-only attachments can still be changed by the host.
+        self.dax.as_ref()?;
+        let mut result = None;
+        self.inner
+            .with_dax_file(inode, handle, |file| {
+                result = Some(Arc::new(file.try_clone()?));
+                Ok(())
+            })
+            .ok()?;
+        result
+    }
+
     fn supports_directory_image(&self) -> bool {
         #[cfg(target_os = "linux")]
         if self.dax.is_some() {
@@ -578,7 +593,10 @@ mod tests {
         let ro_flags = read_only_open_flags(flags).unwrap();
 
         assert_eq!((ro_flags as i32) & libc::O_ACCMODE, libc::O_RDONLY);
-        assert_ne!((ro_flags as i32) & crate::devices::virtio::bindings::LINUX_O_APPEND, 0);
+        assert_ne!(
+            (ro_flags as i32) & crate::devices::virtio::bindings::LINUX_O_APPEND,
+            0
+        );
     }
 
     #[test]
@@ -590,7 +608,10 @@ mod tests {
 
     #[test]
     fn read_only_open_flags_reject_truncate() {
-        let err = read_only_open_flags((libc::O_RDONLY | crate::devices::virtio::bindings::LINUX_O_TRUNC) as u32).unwrap_err();
+        let err = read_only_open_flags(
+            (libc::O_RDONLY | crate::devices::virtio::bindings::LINUX_O_TRUNC) as u32,
+        )
+        .unwrap_err();
 
         assert_eq!(err.raw_os_error(), Some(libc::EROFS));
     }
@@ -659,6 +680,14 @@ mod tests {
             .unwrap()
             .0
             .unwrap();
+        assert!(fs.immutable_read_file(entry.inode, handle).is_some());
+        assert!(fs.immutable_read_file(entry.inode + 100, handle).is_none());
+        let dax = fs.dax.take();
+        assert!(
+            fs.immutable_read_file(entry.inode, handle).is_none(),
+            "ordinary read-only attachment is not physical immutability"
+        );
+        fs.dax = dax;
         assert_eq!(
             fs.setupmapping(
                 ctx,
@@ -705,6 +734,7 @@ mod tests {
         .unwrap();
         fs.release(ctx, entry.inode, 0, handle, false, false, None)
             .unwrap();
+        assert!(fs.immutable_read_file(entry.inode, handle).is_none());
         assert_eq!(memory.read_obj::<u8>(GuestAddress(0)).unwrap(), 0x5a);
         assert_eq!(
             fs.setupmapping(

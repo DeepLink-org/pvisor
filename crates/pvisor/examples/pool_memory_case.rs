@@ -5,7 +5,7 @@ mod native {
     use anyhow::{Context, ensure};
     use clap::{Parser, ValueEnum};
     use pvisor::ram_backing::{
-        ipc::{PoolClient, SealedClient},
+        ipc::{PhysicalClient, PoolClient, SealedClient},
         resident::LocalColdRamStore,
     };
     use pvisor_vm::api::{
@@ -182,11 +182,16 @@ mod native {
                 }
                 Mode::Physical | Mode::Compressed => {
                     let socket = a.pool_socket.as_ref().unwrap();
-                    let mut pool =
-                        PoolClient::new(UnixStream::connect(socket)?, Duration::from_secs(5))?;
+                    let stream = UnixStream::connect(socket)?;
+                    pvisor::host_transport::authorize_host_peer_sync(&stream)
+                        .map_err(std::io::Error::other)?;
+                    let mut pool = PoolClient::new(stream, Duration::from_secs(5))?;
                     if matches!(a.mode, Mode::Physical) {
                         pool.enable_shared_mapping()?;
-                        handle.start_cold_pager(pool, options(true))
+                        handle.start_cold_pager(
+                            PhysicalClient::new(pool, Some(socket.clone()))?,
+                            options(true),
+                        )
                     } else {
                         handle.start_cold_pager(SealedClient::new(pool)?, options(false))
                     }
