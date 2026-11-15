@@ -1,5 +1,5 @@
 //! Bounded read model for both recorded-owner and offline Session queries.
-use super::{ServiceContext, SessionSelection, SessionService, execution_blocker};
+use super::{ServiceContext, SessionSelection, SessionService, execution_blocker_for_session};
 use crate::runtime::{load_apply_records, overlay_status};
 use anyhow::{Context, ensure};
 use pvisor_core::operation::FilesystemObservation;
@@ -422,21 +422,33 @@ impl SessionService {
             }
         }
         let live = owner.is_some();
-        if !live && record.completion_protocol.is_some() {
-            let _session = super::lock_selected_session(context, &record)?;
+        let session = if !live && record.completion_protocol.is_some() {
+            let mut selected = super::lock_selected_session(context, &record)?;
             match record.lock_current() {
                 Ok((mut current, _lease)) => {
                     context.check(&current)?;
-                    super::super::completion::reconcile(&mut current)?;
+                    super::super::completion::reconcile_session(
+                        &mut current,
+                        selected.as_mut().map(|(session, _)| session),
+                    )?;
                     record = current;
+                    // Keep one coherent observation for the response. The
+                    // snapshot is not reused for any later mutation/request.
+                    drop(_lease);
+                    selected.map(|(session, _)| session)
                 }
                 Err(error)
                     if error
                         .downcast_ref::<std::io::Error>()
-                        .is_some_and(|error| error.kind() == std::io::ErrorKind::WouldBlock) => {}
+                        .is_some_and(|error| error.kind() == std::io::ErrorKind::WouldBlock) =>
+                {
+                    crate::Session::read(&record)?
+                }
                 Err(error) => return Err(error),
             }
-        }
+        } else {
+            crate::Session::read(&record)?
+        };
         let workspace_checkpoint_count =
             crate::runtime::checkpoint::list_checkpoints(&record)?.len();
         let apply_batch_count = load_apply_records(&record.stage_dir())?.len();
@@ -496,7 +508,9 @@ impl SessionService {
                 .as_ref()
                 .map(|value| network_activity(value, ObservationSource::Durable))
         });
-        let execution = crate::Session::read(&record)?
+        let execution_blocker = execution_blocker_for_session(&record, session.as_ref())
+            .map(|value| excerpt(&value, 1024).0);
+        let execution = session
             .map(|session| {
                 ensure!(
                     session.active_execution().len() <= 256
@@ -514,7 +528,6 @@ impl SessionService {
                 })
             })
             .transpose()?;
-        let execution_blocker = execution_blocker(&record).map(|value| excerpt(&value, 1024).0);
         let mut response = StatusResponse {
             state: crate::StatusState::recorded(record.state),
             schema_version: 3,

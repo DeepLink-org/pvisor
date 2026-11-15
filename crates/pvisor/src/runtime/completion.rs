@@ -182,10 +182,24 @@ pub(crate) fn reconcile(record: &mut RunRecord) -> anyhow::Result<()> {
     if record.completion_protocol.is_none() {
         return Ok(());
     }
+    let mut session = crate::Session::read(record)?;
+    reconcile_session(record, session.as_mut())
+}
+
+/// Reuse a Session freshly read under its metadata lease. The caller also owns
+/// the Execution lease; neither selection-time snapshots nor cached file
+/// authority may be passed here.
+pub(crate) fn reconcile_session(
+    record: &mut RunRecord,
+    session: Option<&mut crate::Session>,
+) -> anyhow::Result<()> {
+    if record.completion_protocol.is_none() {
+        return Ok(());
+    }
     let previous = serde_json::to_value(&*record)?;
     let completion =
         Completion::observe_record(record).context("read committed Execution completion")?;
-    if let Some(mut session) = crate::Session::read(record)? {
+    if let Some(session) = session {
         let changed = session.apply(super::execution::SessionTransition::CompletionObserved {
             record,
             result: completion.as_ref().map(|receipt| &receipt.result),

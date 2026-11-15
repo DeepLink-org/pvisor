@@ -234,9 +234,14 @@ impl<Profile: Serialize> Session<Profile> {
             !self.root.join(legacy).try_exists()?,
             "legacy Session authority must be handled by its owning binary"
         );
-        crate::util::write_run_json(
+        // Session records are machine authority, reread at every admission
+        // fence. Do not amplify their I/O and parsing cost with indentation.
+        let body = crate::util::persistence_step(&self.run_id, "session", "serialize", || {
+            serde_json::to_vec(self)
+        })?;
+        crate::util::write_run_bytes(
             &self.root.join(super::super::session_execution::STATE),
-            self,
+            &body,
             &self.run_id,
             "session",
         )
@@ -723,6 +728,11 @@ mod tests {
         let path = root
             .path()
             .join(super::super::super::session_execution::STATE);
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            serde_json::to_vec(&session).unwrap(),
+            "machine Session records must not amplify repeated reads with indentation"
+        );
         let read = || Session::<serde_json::Value>::read_profile(root.path());
         assert_eq!(read().unwrap().unwrap().profile(), &profile);
 

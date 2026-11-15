@@ -95,6 +95,9 @@ see [stability](../../docs/src/en/reference/stability.md) before upgrading.
 
 All newly persisted managed tasks (including Host) and container instances use
 schema 4 `session.json`, written/read by the same Session implementation.
+These bounded private records use compact JSON. Offline status reconciles and
+projects one freshly leased Session snapshot, without caching file authority or
+carrying that snapshot into later mutations.
 Container start/restart selects a new Execution while keeping Session identity;
 automatic retries retain one owner epoch. Compose membership is resource
 ownership metadata, not another lifecycle or the owner of health configuration.

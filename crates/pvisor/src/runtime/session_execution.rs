@@ -217,6 +217,12 @@ pub(crate) fn require_mutable(record: &RunRecord) -> anyhow::Result<()> {
 pub fn session(record: &RunRecord) -> anyhow::Result<Session> {
     let session = Session::read(record)?
         .context("CAPABILITY_UNSUPPORTED: this Session has no native execution handoff")?;
+    require_native_handoff(record, &session)?;
+    Ok(session)
+}
+
+/// Validate an already-observed profile without loading a second Session.
+pub(crate) fn require_native_handoff(record: &RunRecord, session: &Session) -> anyhow::Result<()> {
     ensure!(
         session.run_id == record.run_id,
         "execution Session owner mismatch"
@@ -225,7 +231,7 @@ pub fn session(record: &RunRecord) -> anyhow::Result<Session> {
         session.config.run.executor == RunExecutorKind::Vm,
         "CAPABILITY_UNSUPPORTED: native execution capture/restore requires a VM profile"
     );
-    Ok(session)
+    Ok(())
 }
 
 pub(crate) fn capture_error(error: anyhow::Error) -> AgentCtlHostError {

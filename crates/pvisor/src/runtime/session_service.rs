@@ -179,13 +179,22 @@ fn lock_selected_session_mode(
 }
 
 pub fn execution_blocker(record: &RunRecord) -> Option<String> {
+    match Session::read(record) {
+        Ok(session) => execution_blocker_for_session(record, session.as_ref()),
+        Err(error) => Some(format!("{error:#}")),
+    }
+}
+
+fn execution_blocker_for_session(record: &RunRecord, session: Option<&Session>) -> Option<String> {
     if let Err(error) = super::owned_workspace::reject_stage_reconstruction(&record.stage_dir()) {
         return Some(format!("{error:#}"));
     }
-    let session = match super::session_execution::session(record) {
-        Ok(session) => session,
-        Err(error) => return Some(format!("{error:#}")),
+    let Some(session) = session else {
+        return Some("CAPABILITY_UNSUPPORTED: this Session has no native execution handoff".into());
     };
+    if let Err(error) = super::session_execution::require_native_handoff(record, session) {
+        return Some(format!("{error:#}"));
+    }
     if session.config().vm.prepared_rootfs.is_some() {
         return Some(
             "native execution capture/restore is unsupported for prepared rootfs sources".into(),
