@@ -112,7 +112,7 @@ fn test_words(test: &Words) -> anyhow::Result<Vec<String>> {
     Ok(words)
 }
 
-fn milliseconds(text: &str) -> anyhow::Result<u64> {
+pub(in crate::docker) fn milliseconds(text: &str) -> anyhow::Result<u64> {
     ensure!(
         !text.is_empty() && text.len() <= 128,
         "invalid healthcheck duration"
@@ -228,7 +228,7 @@ impl Project {
         let service = &instance.compose.as_ref().unwrap().service;
         let condition = if self.is_completion_job(service) {
             Condition::CompletedSuccessfully
-        } else if instance.compose.as_ref().unwrap().healthcheck.is_some() {
+        } else if instance.config.healthcheck.is_some() {
             Condition::Healthy
         } else {
             Condition::Started
@@ -246,10 +246,37 @@ impl Project {
         loop {
             let current = store.resolve(&instance.id)?;
             ensure!(
-                current.generation == instance.generation,
-                "dependency {} changed generation while waiting",
+                current.owner_epoch == instance.owner_epoch
+                    && current.compose.as_ref().map(|member| (
+                        &member.project,
+                        &member.service,
+                        &member.config_hash
+                    )) == instance.compose.as_ref().map(|member| (
+                        &member.project,
+                        &member.service,
+                        &member.config_hash
+                    ))
+                    && (current.generation == instance.generation
+                        || current.restart_count > instance.restart_count),
+                "dependency {} changed Session owner/configuration while waiting",
                 current.name
             );
+            // Session identity and supervisor ownership remain stable across
+            // automatic Execution retries. Wait for that same owner to converge;
+            // do not confuse backoff with a terminal dependency failure.
+            let retrying = matches!(current.state.as_str(), "starting" | "restarting")
+                || current.state == "exited"
+                    && current.config.restart != RestartPolicy::No
+                    && store.active(&current)?;
+            if retrying {
+                ensure!(
+                    Instant::now() < deadline,
+                    "readiness timeout waiting for {}",
+                    current.name
+                );
+                std::thread::sleep(Duration::from_millis(20));
+                continue;
+            }
             if condition == Condition::CompletedSuccessfully {
                 if current.state == "exited" {
                     ensure!(
@@ -274,11 +301,16 @@ impl Project {
                 let status = store
                     .health(&instance.id)?
                     .context("service_healthy requires a healthcheck")?;
-                ensure!(
-                    status.generation == instance.generation,
-                    "dependency {} changed generation while reading health",
-                    current.name
-                );
+                if status.generation != current.generation {
+                    // Re-observe Session owner/config fences after an automatic
+                    // transition between the state and health observations.
+                    ensure!(
+                        Instant::now() < deadline,
+                        "readiness timeout waiting for {}",
+                        current.name
+                    );
+                    continue;
+                }
                 match status.state {
                     State::Healthy => return Ok(()),
                     State::Unhealthy => bail!(
@@ -303,89 +335,30 @@ fn effective_healthcheck(
     definition: Option<&Definition>,
     config: &serde_json::Value,
 ) -> anyhow::Result<Option<Healthcheck>> {
-    let base = &config["config"]["Healthcheck"];
-    if definition.is_some_and(|definition| definition.disable) {
-        return Ok(None);
-    }
-    let test = match definition.and_then(|definition| definition.test.as_ref()) {
-        Some(test) => test_words(test)?,
-        None if base["Test"].is_array() => serde_json::from_value(base["Test"].clone())?,
-        None => {
-            ensure!(
-                definition.is_none(),
-                "healthcheck needs a test or an image default"
-            );
-            return Ok(None);
-        }
+    let parsed = |value: Option<&String>| value.map(|text| milliseconds(text)).transpose();
+    let overrides = health::Overrides {
+        test: definition
+            .and_then(|d| d.test.as_ref())
+            .map(test_words)
+            .transpose()?,
+        disable: definition.is_some_and(|d| d.disable),
+        interval: parsed(definition.and_then(|d| d.interval.as_ref()))?,
+        timeout: parsed(definition.and_then(|d| d.timeout.as_ref()))?,
+        retries: definition.and_then(|d| d.retries),
+        start_period: parsed(definition.and_then(|d| d.start_period.as_ref()))?,
+        start_interval: parsed(definition.and_then(|d| d.start_interval.as_ref()))?,
     };
-    let test = test_words(&Words::List(test))?;
-    if test[0] == "NONE" {
-        return Ok(None);
-    }
-    let command = if test[0] == "CMD" {
-        test[1..].to_vec()
-    } else {
-        let mut shell: Vec<String> = if config["config"]["Shell"].is_array() {
-            serde_json::from_value(config["config"]["Shell"].clone())?
-        } else {
-            vec!["/bin/sh".into(), "-c".into()]
-        };
-        ensure!(!shell.is_empty(), "image health shell is empty");
-        shell.push(test[1].clone());
-        shell
-    };
-    let timing =
-        |override_value: Option<&String>, field: &str, default: u64| -> anyhow::Result<u64> {
-            if let Some(value) = override_value {
-                return milliseconds(value);
-            }
-            if base[field].is_null() {
-                return Ok(default);
-            }
-            let nanos = base[field]
-                .as_u64()
-                .context("invalid image healthcheck duration")?;
-            Ok(if nanos == 0 {
-                default
-            } else {
-                nanos.div_ceil(1_000_000)
-            })
-        };
-    let check = Healthcheck {
-        command,
-        interval_ms: timing(
-            definition.and_then(|d| d.interval.as_ref()),
-            "Interval",
-            30_000,
-        )?,
-        timeout_ms: timing(
-            definition.and_then(|d| d.timeout.as_ref()),
-            "Timeout",
-            30_000,
-        )?,
-        retries: match definition.and_then(|d| d.retries) {
-            Some(retries) => retries,
-            None if base["Retries"].is_null() => 3,
-            None => {
-                let retries = base["Retries"]
-                    .as_u64()
-                    .context("invalid image healthcheck retries")?;
-                if retries == 0 { 3 } else { retries.try_into()? }
-            }
-        },
-        start_period_ms: timing(
-            definition.and_then(|d| d.start_period.as_ref()),
-            "StartPeriod",
-            0,
-        )?,
-        start_interval_ms: timing(
-            definition.and_then(|d| d.start_interval.as_ref()),
-            "StartInterval",
-            5_000,
-        )?,
-    };
-    check.validate()?;
-    Ok(Some(check))
+    let check = health::resolve(config, overrides)?;
+    ensure!(
+        check.is_some()
+            || definition.is_none()
+            || definition.is_some_and(|d| d.disable
+                || d.test
+                    .as_ref()
+                    .is_some_and(|test| test_words(test).is_ok_and(|test| test == ["NONE"]))),
+        "healthcheck needs a test or an image default"
+    );
+    Ok(check)
 }
 
 #[cfg(test)]

@@ -458,8 +458,7 @@ mod tests {
         ForkOptions, ForkRequest, ResumeRequest, SESSION_SCHEMA_VERSION,
     };
     fn write_session(session: &Session) {
-        pvisor::write_private_json(&session.root().join("execution-session.json"), session)
-            .unwrap();
+        pvisor::write_private_json(&session.root().join("session.json"), session).unwrap();
     }
 
     fn patch_session(session: &mut Session, edit: impl FnOnce(&mut serde_json::Value)) {
@@ -480,9 +479,10 @@ mod tests {
         config.overlaynet.mode = pvisor::OverlayNetMode::Off;
         let session: Session = serde_json::from_value(serde_json::json!({
             "version":SESSION_SCHEMA_VERSION,"run_id":record.run_id,"root":root,
-            "active_stage":root,"previous_stage":root,"active_execution":"execution-current",
+            "active_execution":"execution-current","owner_epoch":"execution-current","kind":"task","state":"suspended",
+            "profile":{"active_stage":root,"previous_stage":root,
             "config":config,"spec":pvisor_core::RunSpec::process("session-fence", "probe", "probe"),
-            "state":"suspended","head":null,"checkpoints":{},"requests":{},"resumes":{},"forks":{},"stores":[root.join("execution-snapshots")]
+            "head":null,"checkpoints":{},"requests":{},"resumes":{},"forks":{},"stores":[root.join("execution-snapshots")]}
         })).unwrap();
         (record, session)
     }
@@ -511,7 +511,7 @@ mod tests {
             ..Default::default()
         };
         patch_session(&mut session, |value| {
-            value["config"]["overlayfs"] = serde_json::to_value(overlay).unwrap();
+            value["profile"]["config"]["overlayfs"] = serde_json::to_value(overlay).unwrap();
         });
         write_session(&session);
         let checkpoints = root.path().join("checkpoints");
@@ -594,7 +594,7 @@ mod tests {
                     .unwrap();
             if location == "spec" {
                 patch_session(&mut session, |value| {
-                    value["spec"]["policies"]["session"]["filesystem"] =
+                    value["profile"]["spec"]["policies"]["session"]["filesystem"] =
                         serde_json::to_value(ask).unwrap();
                 });
             } else {
@@ -671,8 +671,8 @@ mod tests {
             checkpoint_id: "checkpoint".into(),
         };
         patch_session(&mut session, |value| {
-            value["resumes"]["replay"] = serde_json::to_value(resume).unwrap();
-            value["forks"]["replay"] = serde_json::to_value(fork).unwrap();
+            value["profile"]["resumes"]["replay"] = serde_json::to_value(resume).unwrap();
+            value["profile"]["forks"]["replay"] = serde_json::to_value(fork).unwrap();
         });
         write_session(&session);
         let before = std::fs::read_dir(root.path())

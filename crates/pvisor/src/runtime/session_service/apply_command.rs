@@ -991,12 +991,14 @@ mod tests {
     fn seed_execution_session(record: &RunRecord) {
         let session: crate::Session = serde_json::from_value(serde_json::json!({
             "version":crate::runtime::session_execution::SESSION_SCHEMA_VERSION,
-            "run_id":record.run_id,"root":record.stage_dir(),"active_stage":record.stage_dir(),
-            "previous_stage":record.stage_dir(),"active_execution":record.execution_id,
+            "run_id":record.run_id,"root":record.stage_dir(),"active_execution":record.execution_id,
+            "owner_epoch":record.execution_id,"kind":"task","state":"terminal",
+            "profile":{"active_stage":record.stage_dir(),"previous_stage":record.stage_dir(),
             "config":crate::config::RunConfig::default(),
             "spec":pvisor_core::RunSpec::process(record.run_id.clone(), "test", "true"),
-            "state":"terminal","head":null,"checkpoints":{},"requests":{},"resumes":{},"forks":{},"stores":[]
-        })).unwrap();
+            "head":null,"checkpoints":{},"requests":{},"resumes":{},"forks":{},"stores":[]}
+        }))
+        .unwrap();
         session.write().unwrap();
     }
 

@@ -34,7 +34,7 @@ fn export_help_is_grouped_and_inert_and_stage_explains_both_network_choices() {
     let text = help(root.path(), &["--help"]);
     let (containers, rest) = text.split_once("Agent Commands:").unwrap();
     assert!(
-        !containers
+        containers
             .lines()
             .any(|l| l.split_whitespace().next() == Some("export"))
     );
@@ -44,7 +44,7 @@ fn export_help_is_grouped_and_inert_and_stage_explains_both_network_choices() {
         .filter_map(|l| l.split_whitespace().next())
         .collect();
     let review = names.iter().position(|n| *n == "review").unwrap();
-    assert_eq!(&names[review..review + 3], &["review", "export", "apply"]);
+    assert_eq!(&names[review..review + 2], &["review", "apply"]);
     let direct = help(root.path(), &["export", "--help"]);
     assert_eq!(direct, help(root.path(), &["help", "export"]));
     for text in [
@@ -62,7 +62,7 @@ fn export_help_is_grouped_and_inert_and_stage_explains_both_network_choices() {
     ] {
         assert!(direct.contains(text), "missing {text}: {direct}");
     }
-    assert!(!direct.contains("-o,"));
+    assert!(direct.contains("-o,"));
     let stage = help(root.path(), &["stage", "--help"]);
     for text in [
         "coding agent stagebox",
@@ -127,7 +127,8 @@ fn run_and_spawn_help_match_their_pinned_baselines() {
     for (command, digest) in [
         (
             "run",
-            "9f1c0305bee76b16ffd646a075cc72f592df24a8baf6884e534ce8f4c7766956",
+            // Docker profile flags, including owner restart/health controls.
+            "2f58375a02136fd5dae21990b74f99172e6aa8975347bd29332cd46a20633d0c",
         ),
         (
             "spawn",

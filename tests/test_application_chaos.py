@@ -76,6 +76,29 @@ class ApplicationChaosTests(unittest.TestCase):
             first.assert_called_once()
             second.assert_called_once()
 
+    def test_archive_reads_session_identity_and_container_profile(self):
+        with workspace() as (directory, _):
+            runner = self.runner(directory)
+            identity = "a" * 64
+            instance = runner.store / "instances" / identity
+            instance.mkdir(parents=True)
+            record = {
+                "version": 4,
+                "kind": "container",
+                "run_id": identity,
+                "profile": {"name": "owned-session"},
+            }
+            (instance / "session.json").write_text(json.dumps(record))
+            (instance / "stdout.log").write_text("preserved")
+            results = runner.store / "results"
+            results.mkdir()
+            (results / f"{identity}.json").write_text('{"code":7}')
+            runner.archive()
+            evidence = directory / "owner-records" / "owned-session"
+            self.assertEqual(json.loads((evidence / "session.json").read_text()), record)
+            self.assertEqual((evidence / "stdout.log").read_text(), "preserved")
+            self.assertEqual(json.loads((evidence / "completion.json").read_text()), {"code": 7})
+
     def test_cleanup_executions_all_owned_resources_after_failure(self):
         with workspace() as (directory, _):
             runner = self.runner(directory)

@@ -11,7 +11,8 @@
 pub mod environment_snapshot;
 mod runtime;
 pub use runtime::execution::{
-    Execution, ExecutionProgress, ExecutionSnapshot, Session, SessionState, StatusState,
+    Execution, ExecutionProgress, ExecutionSnapshot, Session, SessionKind, SessionState,
+    StatusState, TaskProfile,
 };
 pub mod execution_context;
 mod startup_profile;

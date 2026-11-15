@@ -151,7 +151,7 @@ class Deployment:
     def records(self):
         return [
             json.loads(path.read_text())
-            for path in (self.root / "store/instances").glob("*/instance.json")
+            for path in (self.root / "store/instances").glob("*/session.json")
         ]
 
     def pull(self):
@@ -204,14 +204,16 @@ class Deployment:
         assert records
         observed = set()
         for record in records:
-            service = record["compose"]["service"]
+            assert record["version"] == 4 and record["kind"] == "container"
+            profile = record["profile"]
+            service = profile["compose"]["service"]
             if service in completed:
-                assert record["state"] == "exited" and record["exit_code"] == 0, service
+                assert record["state"] == "terminal" and profile["exit_code"] == 0, service
                 observed.add(service)
             else:
                 assert record["state"] == "running", service
         assert observed == set(completed), "expected completed initialization services absent"
-        return {record["id"] for record in records}
+        return {record["run_id"] for record in records}
 
     def request(
         self,

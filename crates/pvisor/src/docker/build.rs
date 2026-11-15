@@ -10,6 +10,9 @@ use std::{collections::BTreeSet, os::unix::fs::PermissionsExt};
 mod cache;
 mod dockerfile;
 mod filesystem;
+pub(super) fn export_filesystem(core: &OverlayCore, output: &Path) -> anyhow::Result<()> {
+    filesystem::export(core, output)
+}
 pub use cache::{PruneOptions, PruneReport, prune};
 use dockerfile::{expand, expanded_words, words};
 
@@ -364,6 +367,13 @@ pub fn build(store: &Store, options: &BuildOptions) -> anyhow::Result<Image> {
                     stage.image.stop_signal = signal(&value)?;
                     stage.config["StopSignal"] = value.into();
                 }
+                "HEALTHCHECK" => {
+                    stage.config["Healthcheck"] = health_declaration(&instruction.value)?;
+                    health::resolve(
+                        &json!({"config":stage.config}),
+                        health::Overrides::default(),
+                    )?;
+                }
                 _ => unreachable!(),
             }
             Ok(())
@@ -392,6 +402,70 @@ pub fn build(store: &Store, options: &BuildOptions) -> anyhow::Result<Image> {
         export_layout(&result.layout, output)?;
     }
     publish(store, result, &options.tags)
+}
+
+fn health_declaration(text: &str) -> anyhow::Result<Value> {
+    let mut rest = text.trim();
+    let mut declaration = serde_json::Map::new();
+    while rest.starts_with("--") {
+        let (option, next) = rest
+            .split_once(char::is_whitespace)
+            .context("HEALTHCHECK needs CMD or NONE")?;
+        let (key, value) = option
+            .split_once('=')
+            .context("HEALTHCHECK options require --key=value")?;
+        let (field, number) = match key {
+            "--retries" => {
+                let retries: u32 = value.parse().context("invalid HEALTHCHECK retries")?;
+                ensure!(retries > 0, "HEALTHCHECK retries must be positive");
+                ("Retries", u64::from(retries))
+            }
+            "--interval" | "--timeout" | "--start-period" | "--start-interval" => {
+                let ms = compose::milliseconds(value)?;
+                ensure!(
+                    key == "--start-period" || ms > 0,
+                    "HEALTHCHECK timing must be positive"
+                );
+                let field = match key {
+                    "--interval" => "Interval",
+                    "--timeout" => "Timeout",
+                    "--start-period" => "StartPeriod",
+                    _ => "StartInterval",
+                };
+                (
+                    field,
+                    ms.checked_mul(1_000_000)
+                        .context("HEALTHCHECK timing overflow")?,
+                )
+            }
+            _ => bail!("unsupported HEALTHCHECK option: {key}"),
+        };
+        declaration.insert(field.into(), json!(number));
+        rest = next.trim_start();
+    }
+    if rest == "NONE" {
+        ensure!(
+            declaration.is_empty(),
+            "HEALTHCHECK NONE cannot have timing options"
+        );
+        declaration.insert("Test".into(), json!(["NONE"]));
+    } else {
+        let body = rest
+            .strip_prefix("CMD")
+            .filter(|body| body.starts_with(char::is_whitespace))
+            .context("HEALTHCHECK requires CMD or NONE")?
+            .trim_start();
+        ensure!(!body.is_empty(), "HEALTHCHECK CMD needs a command");
+        let test = if body.starts_with('[') {
+            let mut args = vec!["CMD".to_owned()];
+            args.extend(serde_json::from_str::<Vec<String>>(body)?);
+            args
+        } else {
+            vec!["CMD-SHELL".into(), body.into()]
+        };
+        declaration.insert("Test".into(), json!(test));
+    }
+    Ok(Value::Object(declaration))
 }
 
 fn read_text(path: &Path) -> io::Result<String> {
@@ -507,8 +581,9 @@ pub(super) fn run_internal(store: &Store, id: &str, generation: &str) -> anyhow:
         id.len() == 64 && id.bytes().all(|b| b.is_ascii_hexdigit()),
         "invalid build instance ID"
     );
-    let instance: Instance<BuildSource> =
-        serde_json::from_reader(File::open(store.directory(id).join("instance.json"))?)?;
+    let instance: Instance<BuildSource> = store
+        .load_instance(id)?
+        .context("build Session disappeared")?;
     ensure!(
         instance.schema == 1 && instance.id == id && instance.generation == generation,
         "stale build instance"
@@ -628,6 +703,12 @@ impl Stage {
             peers: None,
             network_name: None,
             ipv4_address: None,
+            labels: BTreeMap::new(),
+            restart: RestartPolicy::No,
+            stop_signal: None,
+            stop_timeout_ms: 10_000,
+            healthcheck: None,
+            no_healthcheck: false,
         };
         let instance = Instance {
             schema: 1,
@@ -641,10 +722,12 @@ impl Stage {
             user: base.image.user.clone(),
             state: "created".into(),
             generation: uuid(),
+            owner_epoch: String::new(),
             started_ms: 0,
             exit_code: None,
             created_ms: crate::unix_now_ms(),
             compose: None,
+            restart_count: 0,
         };
         store.save(&instance)?;
         let stage = Self {

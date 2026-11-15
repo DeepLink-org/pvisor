@@ -732,7 +732,7 @@ services:
         .iter()
         .find(|instance| instance.name == "test-db-1")
         .unwrap();
-    assert!(db.compose.as_ref().unwrap().healthcheck.is_some());
+    assert!(db.config.healthcheck.is_some());
     assert!(
         store.health(&db.id).unwrap().is_none(),
         "stopped is not healthy"
@@ -801,6 +801,8 @@ services:
         .clone();
     // Persisted exit fixtures, not simulated VM startup. Both forms of Started
     // only order startup; Healthy/Completed still consume current observations.
+    job.generation = uuid();
+    job.owner_epoch = job.generation.clone();
     for code in [0, 17] {
         job.state = "exited".into();
         job.exit_code = Some(code);
@@ -826,6 +828,8 @@ services:
         .into_iter()
         .find(|instance| instance.name == "test-short-1")
         .unwrap();
+    app.generation = uuid();
+    app.owner_epoch = app.generation.clone();
     app.state = "exited".into();
     app.exit_code = Some(0);
     store.save(&app).unwrap();
@@ -879,4 +883,76 @@ services:
     instance.state = "exited".into();
     store.save(&instance).unwrap();
     assert!(store.health(&instance.id).unwrap().is_none());
+}
+
+#[test]
+fn readiness_follows_retry_executions_but_never_a_replaced_session_owner_or_configuration() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = store(directory.path());
+    let project = load(
+        directory.path(),
+        "services:\n  app:\n    image: fixture:latest\n    healthcheck: {test: [CMD, 'true']}\n",
+    )
+    .unwrap();
+    let mut instance = reconcile(&project, &store).remove(0);
+    let lease = lease_file(&store.directory(&instance.id).join("owner.lock")).unwrap();
+    lease.lock_exclusive().unwrap();
+    instance.state = "running".into();
+    instance.generation = uuid();
+    instance.owner_epoch = instance.generation.clone();
+    store.save(&instance).unwrap();
+    let selected = instance.clone();
+    let path = store.directory(&instance.id).join("health.json");
+    let mut health = health::Status {
+        generation: instance.generation.clone(),
+        state: health::State::Healthy,
+        failing_streak: 0,
+        exit_code: Some(0),
+        output: String::new(),
+    };
+    crate::util::write_private_json(&path, &health).unwrap();
+    project
+        .wait_ready(&store, &selected, Instant::now())
+        .unwrap();
+    instance.owner_epoch = uuid();
+    store.save(&instance).unwrap();
+    assert!(
+        project
+            .wait_ready(&store, &selected, Instant::now())
+            .unwrap_err()
+            .to_string()
+            .contains("changed Session owner/configuration")
+    );
+    instance.owner_epoch = selected.owner_epoch.clone();
+    instance
+        .compose
+        .as_mut()
+        .unwrap()
+        .config_hash
+        .push_str("-changed");
+    store.save(&instance).unwrap();
+    assert!(
+        project
+            .wait_ready(&store, &selected, Instant::now())
+            .unwrap_err()
+            .to_string()
+            .contains("changed Session owner/configuration")
+    );
+    instance.compose = selected.compose.clone();
+    instance.generation = uuid();
+    instance.restart_count = 1;
+    store.save(&instance).unwrap();
+    assert!(
+        project
+            .wait_ready(&store, &selected, Instant::now())
+            .unwrap_err()
+            .to_string()
+            .contains("readiness timeout"),
+        "old health must not satisfy a retry"
+    );
+    health.generation = instance.generation.clone();
+    crate::util::write_private_json(&path, &health).unwrap();
+    project
+        .wait_ready(&store, &selected, Instant::now())
+        .unwrap();
 }

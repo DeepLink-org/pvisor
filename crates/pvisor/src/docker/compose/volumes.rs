@@ -122,6 +122,21 @@ fn owned(store: &Store, name: &str, owner: &Owner) -> anyhow::Result<PathBuf> {
     Ok(path)
 }
 
+// Caller holds the Docker catalog lock and has checked all container references.
+pub(in crate::docker) fn remove_unused(store: &Store, name: &str) -> anyhow::Result<()> {
+    let mut catalog = catalog(store)?;
+    let path = if let Some(owner) = catalog.volumes.get(name) {
+        owned(store, name, owner)?
+    } else {
+        existing(store, name)?
+    };
+    fs::remove_dir_all(path)?;
+    if catalog.volumes.remove(name).is_some() {
+        save(store, &catalog)?;
+    }
+    Ok(())
+}
+
 impl Project {
     pub(super) fn volume_name(&self, key: &str) -> &str {
         self.document.volumes[key]
@@ -233,5 +248,28 @@ impl Project {
             save(store, &catalog)?;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod management_tests {
+    use super::*;
+    #[test]
+    fn explicit_volume_removal_reconciles_compose_ownership_and_refuses_substitution() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Store::open(directory.path().join("store")).unwrap();
+        let file = directory.path().join("compose.yaml");
+        fs::write(&file,"name: demo\nservices:\n  app:\n    image: alpine\n    volumes: [data:/data]\nvolumes: {data: {}}\n").unwrap();
+        let project = Project::load(Some(&file), None).unwrap();
+        project.ensure_volumes(&store, &["app".into()]).unwrap();
+        store.remove_volume("demo_data").unwrap();
+        assert!(!catalog(&store).unwrap().volumes.contains_key("demo_data"));
+        project.ensure_volumes(&store, &["app".into()]).unwrap();
+        let path = store.root.join("volumes/demo_data");
+        fs::rename(&path, directory.path().join("original")).unwrap();
+        fs::create_dir(&path).unwrap();
+        assert!(store.remove_volume("demo_data").is_err());
+        assert!(path.is_dir());
+        assert!(directory.path().join("original").is_dir());
     }
 }

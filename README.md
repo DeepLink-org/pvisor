@@ -71,6 +71,13 @@ The experimental command subset includes image-based
 [`pvisor compose`](crates/pvisor-cli/README.md#compose-command-profile-experimental);
 it does not implement the Docker Engine API or the full Compose specification.
 
+For the supported Unix command profile, `alias docker=pvisor` uses the same
+Session runtime: root `inspect` reports metadata, `kill` signals the current
+execution, and `export` writes a stopped container rootfs tar. Unknown commands
+fail rather than executing a host workload. Native tasks use explicit `spawn`
+or `pvisor -- COMMAND`; `inspect --files` selects a task filesystem view.
+A shell alias does not redirect SDK Docker sockets or subprocess executable lookup.
+
 #### Agent style stagebox
 
 For the Host stagebox example, prepare FUSE and user

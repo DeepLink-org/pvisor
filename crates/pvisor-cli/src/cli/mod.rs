@@ -89,7 +89,7 @@ enum Command {
     Status(runtime::StatusCommandArgs),
     /// Review staged changes and execution evidence.
     Review(product::ReviewArgs),
-    /// Export selected project results without applying them (Linux only).
+    /// Export a stopped rootfs tar or explicitly selected native project results.
     #[command(long_about = handoff::EXPORT_LONG_ABOUT)]
     Export(handoff::ExportArgs),
     /// Manage Session checkpoints.
@@ -98,14 +98,8 @@ enum Command {
     Suspend(checkpoint::SuspendCommandArgs),
     /// Resume a suspended Session or live VM.
     Resume(checkpoint::ResumeCommandArgs),
-    /// Stop a running Session.
-    Kill(runtime::KillArgs),
     /// Branch a Session from staged files or a checkpoint.
     Fork(run::ForkArgs),
-    /// Inspect a Session's filesystem.
-    Inspect(runtime::InspectArgs),
-    #[command(external_subcommand)]
-    External(Vec<OsString>),
 }
 
 fn root_command() -> anyhow::Result<clap::Command> {
@@ -144,6 +138,13 @@ fn grouped_commands(command: &clap::Command) -> String {
                 "container",
                 "image",
                 "compose",
+                "volume",
+                "restart",
+                "wait",
+                "cp",
+                "inspect",
+                "kill",
+                "export",
             ],
         ),
         (
@@ -152,12 +153,9 @@ fn grouped_commands(command: &clap::Command) -> String {
                 "spawn",
                 "stage",
                 "status",
-                "kill",
                 "review",
-                "export",
                 "apply",
                 "drop",
-                "inspect",
                 "checkpoint",
                 "suspend",
                 "resume",
@@ -219,12 +217,7 @@ fn command_offset(args: &[OsString]) -> usize {
 
 fn normalize_default_spawn(mut args: Vec<OsString>, command: &clap::Command) -> Vec<OsString> {
     let offset = command_offset(&args);
-    if let Some(first) = args.get(offset).and_then(|arg| arg.to_str())
-        && command.find_subcommand(first).is_none()
-        && !companions::is_root_command(first)
-        && !["ctrl", "service", "help"].contains(&first)
-        && !["--help", "-h", "--version", "-V"].contains(&first)
-    {
+    if args.get(offset).is_some_and(|arg| arg == "--") {
         args.insert(offset, "spawn".into());
     }
     // clap propagates globals by replacement across parser levels, not append.
@@ -467,14 +460,6 @@ pub fn main() -> anyhow::Result<()> {
             let resume = resume.args;
             finish(host_service::call(host::SessionCommand::Resume(resume))?);
         }
-        Command::Kill(args) => finish(host_service::call(host::SessionCommand::Kill(args))?),
-        Command::Inspect(args) => finish(host_service::call(host::SessionCommand::Inspect(args))?),
-        Command::External(args) => companions::dispatch(
-            args[0]
-                .to_str()
-                .ok_or_else(|| anyhow::anyhow!("extension name must be UTF-8"))?,
-            &args[1..],
-        )?,
     }
     Ok(())
 }
@@ -556,7 +541,7 @@ mod feature_parser_tests {
             assert!(parsed.features.is_empty(), "{args:?}");
         }
         for args in [
-            vec!["pvisor", "/bin/echo", "--rm"],
+            vec!["pvisor", "--", "/bin/echo", "--rm"],
             vec!["pvisor", "--", "run"],
             vec!["pvisor", "spawn", "--", "pull"],
         ] {
@@ -589,7 +574,7 @@ mod feature_parser_tests {
     }
 
     #[test]
-    fn stage_is_recognized_without_changing_default_spawn() {
+    fn stage_is_recognized_and_workloads_require_an_explicit_boundary() {
         for args in [
             vec!["pvisor", "stage"],
             vec!["pvisor", "stage", "-it", "sh", "-c", "true"],
@@ -602,7 +587,7 @@ mod feature_parser_tests {
         for args in [
             vec!["pvisor", "--", "stage", "--rm"],
             vec!["pvisor", "spawn", "--", "stage"],
-            vec!["pvisor", "echo", "stage"],
+            vec!["pvisor", "spawn", "echo", "stage"],
         ] {
             assert!(
                 matches!(parse(&args).command, Command::Spawn(_)),
@@ -673,7 +658,7 @@ mod feature_parser_tests {
     }
 
     #[test]
-    fn root_enables_work_before_after_and_with_implicit_spawn() {
+    fn root_enables_work_before_after_and_with_explicit_spawn() {
         for args in [
             vec![
                 "pvisor",
@@ -698,6 +683,7 @@ mod feature_parser_tests {
                 "pvisor",
                 "--feature",
                 "workload-aware-memory-offloading",
+                "spawn",
                 "--executor",
                 "vm",
                 "--",
@@ -816,12 +802,16 @@ mod feature_parser_tests {
                 clap::error::ErrorKind::DisplayHelp
             );
         }
-        assert!(matches!(
-            Cli::try_parse_from(["pvisor", "custom-extension", "--feature", "extension-only"])
-                .unwrap()
-                .command,
-            Command::External(_)
-        ));
+        for name in [
+            "custom-extension",
+            "unsupported-docker-command",
+            "/bin/echo",
+        ] {
+            assert_eq!(
+                Cli::try_parse_from(["pvisor", name]).unwrap_err().kind(),
+                clap::error::ErrorKind::InvalidSubcommand
+            );
+        }
         assert_eq!(
             normalize_default_spawn(
                 vec!["pvisor".into(), "replay".into(), "--help".into()],

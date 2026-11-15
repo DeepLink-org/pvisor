@@ -94,6 +94,20 @@ class RunnerMinioBuildContracts(unittest.TestCase):
             self.assertEqual(deployment.result["cleanup"], "pass")
             self.assertEqual(deployment.result["remaining_volume_directories"], [])
 
+    def test_cleanup_rejects_retained_session_even_after_successful_down(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            deployment, _ = self.fixture(Path(temporary))
+            deployment.compose.return_value.returncode = 0
+            instance = deployment.root / "store/instances/app-id"
+            instance.mkdir(parents=True)
+            record = RunnerInitializationContracts().record("app")
+            (instance / "session.json").write_text(json.dumps(record))
+            self.assertEqual(deployment.records(), [record])
+            deployment.cleanup()
+            self.assertEqual(deployment.result["cleanup"], "fail")
+            self.assertEqual(deployment.result["outcome"], "fail")
+            self.assertTrue((instance / "session.json").exists())
+
 
 class RunnerInitializationContracts(unittest.TestCase):
     def deployment(self, records):
@@ -104,14 +118,15 @@ class RunnerInitializationContracts(unittest.TestCase):
 
     def record(self, service, state="running", exit_code=None):
         return {
-            "id": service + "-id",
-            "compose": {"service": service},
+            "version": 4,
+            "kind": "container",
+            "run_id": service + "-id",
             "state": state,
-            "exit_code": exit_code,
+            "profile": {"compose": {"service": service}, "exit_code": exit_code},
         }
 
     def test_only_explicit_successful_init_jobs_may_be_exited(self):
-        records = [self.record("init", "exited", 0), self.record("app")]
+        records = [self.record("init", "terminal", 0), self.record("app")]
         deployment = self.deployment(records)
         self.assertEqual(deployment.up(completed=("init",)), {"init-id", "app-id"})
         with self.assertRaises(AssertionError):
@@ -119,10 +134,10 @@ class RunnerInitializationContracts(unittest.TestCase):
 
     def test_failed_missing_or_still_running_init_is_not_ready(self):
         for records in (
-            [self.record("init", "exited", 1), self.record("app")],
+            [self.record("init", "terminal", 1), self.record("app")],
             [self.record("app")],
             [self.record("init"), self.record("app")],
-            [self.record("init", "exited", 0), self.record("app", "exited", 0)],
+            [self.record("init", "terminal", 0), self.record("app", "terminal", 0)],
         ):
             with self.subTest(records=records), self.assertRaises(AssertionError):
                 self.deployment(records).up(completed=("init",))

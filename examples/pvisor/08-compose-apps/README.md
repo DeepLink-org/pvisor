@@ -131,6 +131,9 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover \
 ```
 
 这些 loopback 单测只校验 runner，不替代真实应用/KVM 的业务验收。
+Runner 按当前 Session v4 的 `session.json` 读取身份、容器 Profile 和状态；
+成功退出的初始化服务对应 `terminal` 状态及退出码 0。清理后残留的 Session
+或卷目录都会使验收失败，不会因旧记录文件名消失而误判清理成功。
 
 ### 数据库 socket 的历史诊断对照
 

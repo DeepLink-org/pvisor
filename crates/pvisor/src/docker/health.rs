@@ -27,6 +27,99 @@ pub struct Healthcheck {
     pub start_interval_ms: u64,
 }
 
+#[derive(Default)]
+pub(super) struct Overrides {
+    pub test: Option<Vec<String>>,
+    pub disable: bool,
+    pub interval: Option<u64>,
+    pub timeout: Option<u64>,
+    pub retries: Option<u32>,
+    pub start_period: Option<u64>,
+    pub start_interval: Option<u64>,
+}
+
+pub(super) fn image_default(store: &Store, image: &Image) -> anyhow::Result<Option<Healthcheck>> {
+    let config = serde_json::from_reader(File::open(store.image_config_path(image)?)?)?;
+    resolve(&config, Overrides::default())
+}
+
+pub(super) fn resolve(
+    config: &serde_json::Value,
+    overrides: Overrides,
+) -> anyhow::Result<Option<Healthcheck>> {
+    if overrides.disable {
+        return Ok(None);
+    }
+    let base = &config["config"]["Healthcheck"];
+    let test: Vec<String> = match overrides.test {
+        Some(test) => test,
+        None if base["Test"].is_array() => serde_json::from_value(base["Test"].clone())?,
+        None => return Ok(None),
+    };
+    ensure!(
+        test.first()
+            .is_some_and(|kind| matches!(kind.as_str(), "NONE" | "CMD" | "CMD-SHELL")),
+        "invalid healthcheck test"
+    );
+    if test[0] == "NONE" {
+        ensure!(test.len() == 1, "NONE cannot have arguments");
+        return Ok(None);
+    }
+    let command = if test[0] == "CMD" {
+        ensure!(test.len() > 1, "CMD needs a health command");
+        test[1..].to_vec()
+    } else {
+        ensure!(
+            test.len() == 2 && !test[1].is_empty(),
+            "CMD-SHELL needs one command"
+        );
+        let mut shell: Vec<String> = if config["config"]["Shell"].is_array() {
+            serde_json::from_value(config["config"]["Shell"].clone())?
+        } else {
+            vec!["/bin/sh".into(), "-c".into()]
+        };
+        ensure!(!shell.is_empty(), "image health shell is empty");
+        shell.push(test[1].clone());
+        shell
+    };
+    let timing = |value: Option<u64>, field: &str, default: u64| -> anyhow::Result<u64> {
+        if let Some(value) = value {
+            return Ok(value);
+        }
+        if base[field].is_null() {
+            return Ok(default);
+        }
+        let nanos = base[field]
+            .as_u64()
+            .context("invalid image healthcheck duration")?;
+        Ok(if nanos == 0 {
+            default
+        } else {
+            nanos.div_ceil(1_000_000)
+        })
+    };
+    let retries = match overrides.retries {
+        Some(value) => value,
+        None if base["Retries"].is_null() => 3,
+        None => {
+            let value = base["Retries"]
+                .as_u64()
+                .context("invalid image healthcheck retries")?;
+            if value == 0 { 3 } else { value.try_into()? }
+        }
+    };
+    let check = Healthcheck {
+        command,
+        retries,
+        interval_ms: timing(overrides.interval, "Interval", 30_000)?,
+        timeout_ms: timing(overrides.timeout, "Timeout", 30_000)?,
+        start_period_ms: timing(overrides.start_period, "StartPeriod", 0)?,
+        start_interval_ms: timing(overrides.start_interval, "StartInterval", 5_000)?,
+    };
+    check.validate()?;
+    Ok(Some(check))
+}
+
 impl Healthcheck {
     pub(super) fn validate(&self) -> anyhow::Result<()> {
         ensure!(
@@ -88,19 +181,13 @@ pub struct Status {
 }
 
 impl Store {
-    /// Observe health for the current running Compose generation. None means
+    /// Observe health for the current running Session execution. None means
     /// stopped or no configured effective healthcheck, not healthy.
     /// Missing/stale observations report Starting; corrupt records remain errors.
     /// This does not execute a new check or change the workload.
     pub fn health(&self, selector: &str) -> anyhow::Result<Option<Status>> {
         let instance = self.resolve(selector)?;
-        if instance.state != "running"
-            || instance
-                .compose
-                .as_ref()
-                .and_then(|member| member.healthcheck.as_ref())
-                .is_none()
-        {
+        if instance.state != "running" || instance.config.healthcheck.is_none() {
             return Ok(None);
         }
         let path = self.directory(&instance.id).join("health.json");
