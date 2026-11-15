@@ -2013,3 +2013,11 @@ untracked gaps end each batch. A reusable staging buffer preserves the existing
 write-before-remap and pin-retirement ordering; errors remain fatal. Optional
 `PVISOR_EXPERIMENTAL_MEMORY_METRICS` diagnostics include `copied_runs` and
 `remap_runs` (logical batches, not physical SSD writes or short-write retries).
+
+`PVISOR_DIAG_SHARED_REATTACH=1` performs an opt-in content census under the
+transition barrier before reattachment: live zero, nonzero equal/different to
+a pinned pool object, nonzero without a pin, and unknown. It does not prove
+physical sharing or dirty history and never changes mapping authority. Failed
+reference reads are reported as unknown. Diagnostic reads can fault pages in
+and extend the real pause; `diagnostic_us` is separate from reattachment time.
+Use separate diagnostic runs, never treat these as uninstrumented latency data.

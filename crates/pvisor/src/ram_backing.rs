@@ -511,6 +511,18 @@ impl CompressedRam {
         if self.logical_bytes == 0 || (self.chain.is_some() && self.dirty.is_empty()) {
             return self.manifest.sync_all();
         }
+        let diagnostic = std::env::var("PVISOR_DIAG_COMMIT").as_deref() == Ok("1");
+        let started = std::time::Instant::now();
+        let dirty_blocks = self.dirty.len();
+        let zero_pages = if diagnostic {
+            self.zeros
+                .values()
+                .map(|m| m.count_ones() as u64)
+                .sum::<u64>()
+        } else {
+            0
+        };
+        let mut capture_us = 0u128;
         let result = (|| {
             // The adapter addresses compact backing offsets. It does not know
             // guest physical regions; direct SnapshotChain callers supply those.
@@ -526,13 +538,26 @@ impl CompressedRam {
                 output.copy_from_slice(&self.read_block(block)?);
                 Ok(())
             };
-            let chain = if self.chain.is_none() {
-                // New staging starts zeroed; dirty tracks every written block.
-                // Existing generations (including full compaction) never qualify.
-                SnapshotChain::capture_zero_base(&self.directory, &layout, &dirty, read)?
-            } else {
-                SnapshotChain::capture(&self.directory, &layout, self.chain.as_ref(), &dirty, read)?
-            };
+            let capture_started = std::time::Instant::now();
+            // Only complete explicit overrides are authoritative. A partial
+            // zero mask still needs staging/ancestor reconstruction.
+            let mut zero_blocks = BTreeSet::new();
+            for (&block, &mask) in &self.zeros {
+                let (_, length) = layout.block_span(block)?;
+                let full = ((1u32 << length.div_ceil(PAGE_BYTES)) - 1) as u16;
+                if mask == full && self.dirty.get(&block) == Some(&full) {
+                    zero_blocks.insert(block);
+                }
+            }
+            let chain = SnapshotChain::capture_staged(
+                &self.directory,
+                &layout,
+                self.chain.as_ref(),
+                &dirty,
+                &zero_blocks,
+                read,
+            )?;
+            capture_us = capture_started.elapsed().as_micros();
             if self.head_id() != Some(chain.head_id()) {
                 let mut record = [0; HEAD_BYTES];
                 record[..8].copy_from_slice(HEAD_MAGIC);
@@ -555,6 +580,18 @@ impl CompressedRam {
             }
             Ok(())
         })();
+        if diagnostic {
+            eprintln!(
+                "pvisor-commit-diagnostic {}",
+                serde_json::json!({
+                    "pid": std::process::id(), "logical_bytes": self.logical_bytes,
+                    "dirty_blocks": dirty_blocks, "explicit_zero_bytes": zero_pages * PAGE_BYTES as u64,
+                    "capture_us": capture_us, "total_us": started.elapsed().as_micros(),
+                    "complete": result.is_ok(),
+                    "unix_ns": std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos()
+                })
+            );
+        }
         self.failed = result.is_err();
         result
     }

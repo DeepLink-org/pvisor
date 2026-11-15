@@ -2548,3 +2548,16 @@ identify contention without logging page contents. This is a targeted candidate
 for pressure qualification, not evidence that the 80-VM deadline failure is
 resolved. A protocol test holds the owner lock and checks that rejection leaves
 an existing shared reference restorable and releasable.
+
+`PVISOR_DIAG_COMMIT=1` logs compressed RAM generation publication diagnostics:
+logical length, dirty block count, explicit zero override bytes, generation
+capture time (including generation publication), and total store commit time.
+Counters describe logical staging state, not physical I/O. This opt-in path
+preserves publication and failure ordering; compare identical builds/settings.
+
+Compressed managed backing preserves complete explicit zero overrides as
+metadata during generation capture, reusing the canonical zero checksum by
+actual block length. Equal parent blocks are skipped; nonzero ancestors receive
+an explicit zero entry. Partial zero masks and later partial writes still use
+normal reconstruction. Compaction, content IDs, synchronization and failure
+fencing retain the existing contract.

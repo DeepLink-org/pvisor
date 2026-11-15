@@ -1005,6 +1005,60 @@ impl<S: ColdRamStore> Pager<S> {
             self.restore(index)
         }
     }
+    // Diagnostic only: content equality is not proof that a page is physically
+    // shared or never written. Called under the existing CPU/device barrier.
+    fn diagnose_reattach(&self) -> serde_json::Value {
+        use std::os::unix::fs::FileExt;
+        let start = Instant::now();
+        let mut zero = 0u64;
+        let mut same = 0u64;
+        let mut different = 0u64;
+        let mut unpinned = 0u64;
+        let mut unknown = 0u64;
+        let mut reference = [0u8; 4096];
+        for &index in &self.replaced {
+            let range = self.pages.range(index);
+            if range.len != 4096 {
+                unknown += range.len;
+                continue;
+            }
+            let live = unsafe { std::slice::from_raw_parts(range.start as *const u8, 4096) };
+            if live.iter().all(|&b| b == 0) {
+                zero += 4096;
+                continue;
+            }
+            let Some(object) = &self.pages[index].cold else {
+                unpinned += 4096;
+                continue;
+            };
+            let mapping = self
+                .store
+                .lock()
+                .ok()
+                .and_then(|s| s.shared_mapping(object));
+            match mapping {
+                Some(mapping)
+                    if mapping
+                        .file
+                        .read_exact_at(&mut reference, mapping.offset)
+                        .is_ok() =>
+                {
+                    if live == reference {
+                        same += 4096;
+                    } else {
+                        different += 4096;
+                    }
+                }
+                _ => unknown += 4096,
+            }
+        }
+        serde_json::json!({"generation":self.generation,"tracked_bytes":self.replaced.len() * 4096,
+            "live_zero_bytes":zero,"nonzero_equal_pinned_bytes":same,
+            "nonzero_different_pinned_bytes":different,"nonzero_without_pin_bytes":unpinned,
+            "unknown_bytes":unknown,"diagnostic_us":start.elapsed().as_micros(),
+            "content_only_not_physical_sharing":true})
+    }
+
     fn reattach_backing(&mut self) -> io::Result<()> {
         use std::os::{fd::AsRawFd, unix::fs::FileExt};
         if !self.shared_backing {
@@ -1014,6 +1068,12 @@ impl<S: ColdRamStore> Pager<S> {
             .generation
             .checked_add(1)
             .ok_or_else(|| io::Error::other("sharing generation exhausted"))?;
+        if std::env::var("PVISOR_DIAG_SHARED_REATTACH").as_deref() == Ok("1") {
+            eprintln!(
+                "pvisor-shared-reattach-classification {}",
+                self.diagnose_reattach()
+            );
+        }
         let started = std::time::Instant::now();
         let pages = self.replaced.len();
         let mut sparse_zero_bytes = 0;
@@ -1717,6 +1777,38 @@ mod tests {
             pager.store.lock().unwrap().release(previous).unwrap();
         }
     }
+    #[test]
+    fn shared_backing_diagnostic_classifies_content_without_changing_authority() {
+        let mut a =
+            backed_shared_pager_with_size(Arc::new(Mutex::new(SharedStore::default())), 4 * 4096);
+        for index in 0..4 {
+            share_page(&mut a, index);
+        }
+        a.memory.write_slice(&[0x31], GuestAddress(4096)).unwrap();
+        a.memory
+            .write_slice(&[0; 4096], GuestAddress(8192))
+            .unwrap();
+        a.retired.push(*a.pages[3].cold.take().unwrap());
+        let generation = a.generation;
+        let stats = a.diagnose_reattach();
+        for key in [
+            "nonzero_equal_pinned_bytes",
+            "nonzero_different_pinned_bytes",
+            "live_zero_bytes",
+            "nonzero_without_pin_bytes",
+        ] {
+            assert_eq!(stats[key], 4096);
+        }
+        assert_eq!(stats["unknown_bytes"], 0);
+        assert_eq!(stats["tracked_bytes"], 16384);
+        assert_eq!(a.generation, generation);
+        assert_eq!(a.replaced.len(), 4);
+        assert_eq!(a.retired.len(), 1);
+        a.reattach_backing().unwrap();
+        crate::vmm::ram::reclaim(&a.memory).unwrap();
+        assert_eq!(a.memory.read_obj::<u8>(GuestAddress(4096)).unwrap(), 0x31);
+    }
+
     #[test]
     fn shared_backing_nonzero_batch_limit_preserves_tail() {
         let size = 4097 * 4096;

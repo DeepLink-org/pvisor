@@ -425,19 +425,44 @@ impl SnapshotChain {
         dirty: &BTreeSet<u64>,
         read: impl FnMut(u64, &mut [u8]) -> io::Result<()>,
     ) -> io::Result<Self> {
-        Self::capture_inner(directory, layout, parent, dirty, false, read)
+        Self::capture_inner(directory, layout, parent, dirty, (false, None), read)
     }
 
     /// Capture newly zero-initialized storage. `written` must contain every block
     /// ever written, even if written back to zero. The caller must flush mmap
     /// writes and provide a stable epoch. No parent/compaction can use this path.
+    #[cfg(test)]
     pub(super) fn capture_zero_base(
         directory: &Path,
         layout: &RamLayout,
         written: &BTreeSet<u64>,
         read: impl FnMut(u64, &mut [u8]) -> io::Result<()>,
     ) -> io::Result<Self> {
-        Self::capture_inner(directory, layout, None, written, true, read)
+        Self::capture_inner(directory, layout, None, written, (true, None), read)
+    }
+
+    /// Internal staging contract: each zero block is dirty and completely
+    /// covered by authoritative zero overrides, including its short tail.
+    /// Partial overrides must use the reader. Publication order is unchanged.
+    pub(super) fn capture_staged(
+        directory: &Path,
+        layout: &RamLayout,
+        parent: Option<&Self>,
+        dirty: &BTreeSet<u64>,
+        zeros: &BTreeSet<u64>,
+        read: impl FnMut(u64, &mut [u8]) -> io::Result<()>,
+    ) -> io::Result<Self> {
+        if !zeros.is_subset(dirty) {
+            return Err(invalid("zero proof must be a subset of dirty blocks"));
+        }
+        Self::capture_inner(
+            directory,
+            layout,
+            parent,
+            dirty,
+            (parent.is_none(), Some(zeros)),
+            read,
+        )
     }
 
     fn capture_inner(
@@ -445,9 +470,10 @@ impl SnapshotChain {
         layout: &RamLayout,
         parent: Option<&Self>,
         dirty: &BTreeSet<u64>,
-        zero_base: bool,
+        zero_proof: (bool, Option<&BTreeSet<u64>>),
         mut read: impl FnMut(u64, &mut [u8]) -> io::Result<()>,
     ) -> io::Result<Self> {
+        let (zero_base, explicit_zeros) = zero_proof;
         layout.validate()?;
         let directory = directory.canonicalize()?;
         if parent.is_some_and(|chain| chain.layout() != layout || chain.directory != directory)
@@ -477,13 +503,18 @@ impl SnapshotChain {
         let mut zero_checksums = std::collections::BTreeMap::new();
         for block in blocks {
             let (_, length) = layout.block_span(block)?;
-            if zero_base && !dirty.contains(&block) {
+            if (zero_base && !dirty.contains(&block))
+                || explicit_zeros.is_some_and(|zeros| zeros.contains(&block))
+            {
                 // Preserve the complete base index and its content identity, but
-                // never materialize or scan an unwritten block more than once
+                // never materialize or scan a proven zero block more than once
                 // per length (including short region tails).
                 let checksum = *zero_checksums
                     .entry(length)
                     .or_insert_with(|| hash(&vec![0; length]));
+                if delta.is_some_and(|chain| chain.resolved[&block].1.checksum == checksum) {
+                    continue;
+                }
                 entries.push(Entry {
                     block,
                     frame: None,
@@ -678,6 +709,75 @@ mod tests {
         )
         .unwrap()
     }
+    #[test]
+    fn staged_zero_proofs_match_generic_across_tails_deltas_and_compaction() {
+        let fast_dir = tempfile::tempdir().unwrap();
+        let plain_dir = tempfile::tempdir().unwrap();
+        let l = layout();
+        let dirty = (0..l.block_count()).collect::<BTreeSet<_>>();
+        let mut fast: Option<SnapshotChain> = None;
+        let mut plain: Option<SnapshotChain> = None;
+        for round in 0..12u8 {
+            let mut data = vec![round + 1; l.logical_bytes() as usize];
+            let mut zeros = BTreeSet::new();
+            if round > 0 {
+                for block in [0, l.block_count() - 1] {
+                    let (offset, len) = l.block_span(block).unwrap();
+                    data[offset as usize..offset as usize + len].fill(0);
+                    zeros.insert(block);
+                }
+            }
+            let next = SnapshotChain::capture_staged(
+                fast_dir.path(),
+                &l,
+                fast.as_ref(),
+                &dirty,
+                &zeros,
+                |block, out| {
+                    assert!(!zeros.contains(&block), "proven zero must not be read");
+                    let offset = l.block_span(block)?.0 as usize;
+                    out.copy_from_slice(&data[offset..offset + out.len()]);
+                    Ok(())
+                },
+            )
+            .unwrap();
+            let generic = capture(
+                plain_dir.path(),
+                plain.as_ref(),
+                &dirty.iter().copied().collect::<Vec<_>>(),
+                &data,
+            );
+            assert_eq!(next.head_id(), generic.head_id());
+            let output = tempfile::tempfile().unwrap();
+            SnapshotChain::open(fast_dir.path(), next.head_id())
+                .unwrap()
+                .restore_to(&output)
+                .unwrap();
+            let mut restored = vec![0; data.len()];
+            output.read_exact_at(&mut restored, 0).unwrap();
+            assert_eq!(restored, data);
+            fast = Some(next);
+            plain = Some(generic);
+        }
+    }
+
+    #[test]
+    fn staged_zero_proof_outside_dirty_is_rejected_before_publication() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(
+            SnapshotChain::capture_staged(
+                dir.path(),
+                &layout(),
+                None,
+                &BTreeSet::new(),
+                &BTreeSet::from([0]),
+                |_, _| panic!("invalid proof must not read")
+            )
+            .is_err()
+        );
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+    }
+
     #[test]
     fn zero_base_skips_unwritten_blocks_and_matches_generic_identity() {
         for written in [BTreeSet::new(), BTreeSet::from([0, 1])] {
