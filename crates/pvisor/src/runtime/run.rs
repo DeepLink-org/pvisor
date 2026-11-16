@@ -624,6 +624,7 @@ impl PVisor {
             .remove(crate::executor::sandbox::SANDBOX_PROXY_KEY);
         let capability_plan = effective_capability_plan(
             &descriptor,
+            executor.capability_plan(&spec, self.runtime.proxy_network_is_configured()),
             &spec,
             self.runtime.proxy_network_is_configured(),
             vm_network_executor && self.runtime.vm_network_is_enforcing(),
@@ -795,11 +796,11 @@ impl PVisor {
 
 fn effective_capability_plan(
     descriptor: &ExecutorPlan,
+    mut plan: CapabilityEnforcementPlan,
     spec: &RunSpec,
     proxy_network_configured: bool,
     vm_network_enforcing: bool,
 ) -> CapabilityEnforcementPlan {
-    let mut plan = descriptor.capability_plan.clone();
     if matches!(
         descriptor.isolation,
         IsolationKind::RootlessProcess | IsolationKind::SandboxedProcess
@@ -819,38 +820,6 @@ fn effective_capability_plan(
             EnforcementPlanLevel::Cooperative,
             "explicit-proxy-environment",
         );
-    }
-    if matches!(spec.capabilities.network, NetworkCapability::Deny) {
-        match descriptor.isolation {
-            IsolationKind::RootlessProcess => plan.record(
-                CapabilityDimension::Network,
-                EnforcementPlanLevel::Planned,
-                "linux-network-namespace",
-            ),
-            IsolationKind::SandboxedProcess => plan.record(
-                CapabilityDimension::Network,
-                EnforcementPlanLevel::Planned,
-                "macos-seatbelt-network-deny",
-            ),
-            _ => {}
-        }
-    }
-    if crate::executor::sandbox::sandbox_required(spec)
-        && descriptor.isolation == IsolationKind::SandboxedProcess
-    {
-        plan.record(
-            CapabilityDimension::FilesystemRead,
-            EnforcementPlanLevel::Planned,
-            "macos-seatbelt-read-policy",
-        );
-        if proxy_network_configured || matches!(spec.capabilities.network, NetworkCapability::Deny)
-        {
-            plan.record(
-                CapabilityDimension::Network,
-                EnforcementPlanLevel::Planned,
-                "macos-seatbelt-proxy-only",
-            );
-        }
     }
     if vm_network_enforcing {
         plan.record(
@@ -1318,6 +1287,35 @@ mod tests {
     }
 
     #[test]
+    fn isolation_labels_cannot_promote_uninstalled_network_controls() {
+        let mut spec = RunSpec::process("deny", "agent", "/bin/true");
+        spec.capabilities.network = NetworkCapability::Deny;
+        spec.metadata.insert(
+            crate::executor::sandbox::REQUIRED_SANDBOX_KEY.into(),
+            true.into(),
+        );
+        for isolation in [
+            IsolationKind::SandboxedProcess,
+            IsolationKind::RootlessProcess,
+        ] {
+            let descriptor = ExecutorPlan {
+                name: "external-filesystem-only".into(),
+                kind: ExecutorKind::Process,
+                isolation,
+                capability_plan: Default::default(),
+                supports_checkpoint: false,
+                supports_migration: false,
+            };
+            for proxy in [false, true] {
+                let plan =
+                    effective_capability_plan(&descriptor, Default::default(), &spec, proxy, false);
+                assert!(!plan.is_planned(CapabilityDimension::Network));
+                assert!(!plan.is_planned(CapabilityDimension::FilesystemRead));
+            }
+        }
+    }
+
+    #[test]
     fn host_filesystem_mode_only_removes_local_process_filesystem_evidence() {
         let mut process = ExecutorPlan {
             name: "local-rootless-v1".into(),
@@ -1334,13 +1332,25 @@ mod tests {
             "pvisor.filesystem.mode".into(),
             serde_json::Value::String("host".into()),
         );
-        let process_evidence = effective_capability_plan(&process, &process_spec, false, false);
+        let process_evidence = effective_capability_plan(
+            &process,
+            process.capability_plan.clone(),
+            &process_spec,
+            false,
+            false,
+        );
         assert!(!process_evidence.is_planned(CapabilityDimension::FilesystemRead));
         assert!(!process_evidence.is_planned(CapabilityDimension::FilesystemWrite));
 
         process.isolation = IsolationKind::VirtualMachine;
         process.kind = ExecutorKind::VirtualMachine;
-        let vm_evidence = effective_capability_plan(&process, &process_spec, false, false);
+        let vm_evidence = effective_capability_plan(
+            &process,
+            process.capability_plan.clone(),
+            &process_spec,
+            false,
+            false,
+        );
         assert!(vm_evidence.is_planned(CapabilityDimension::FilesystemRead));
         assert!(vm_evidence.is_planned(CapabilityDimension::FilesystemWrite));
     }

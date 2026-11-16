@@ -35,6 +35,17 @@ pub(crate) use crate::execution_context::ExecutionContext;
 #[async_trait]
 pub trait RunExecutor: Send + Sync {
     fn descriptor(&self) -> ExecutorPlan;
+    /// Plan controls this backend will install for the resolved request.
+    /// The default uses the descriptor unchanged. Wrappers must delegate to retain
+    /// request-dependent controls; isolation labels alone grant no capabilities.
+    /// This is admission intent, not evidence of successful installation.
+    fn capability_plan(
+        &self,
+        _spec: &pvisor_core::RunSpec,
+        _proxy_network_configured: bool,
+    ) -> pvisor_core::CapabilityEnforcementPlan {
+        self.descriptor().capability_plan
+    }
     /// Capture this executor's actual VM settings and feature selection for durable
     /// continuation. None means no native Session continuation contract. Managed VM
     /// startup rejects None before starting drivers; bare Execution startup remains

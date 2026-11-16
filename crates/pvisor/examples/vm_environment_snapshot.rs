@@ -42,9 +42,9 @@ fn main() -> anyhow::Result<()> {
     }
     let mode = std::env::args()
         .nth(1)
-        .context("save, restore or delete required")?;
+        .context("boot, save, restore or delete required")?;
     ensure!(
-        ["save", "restore", "delete"].contains(&mode.as_str()),
+        ["boot", "save", "restore", "delete"].contains(&mode.as_str()),
         "invalid mode"
     );
     let base = PathBuf::from(
@@ -148,6 +148,11 @@ fn main() -> anyhow::Result<()> {
                 while !root.join("ready").exists() {
                     ensure!(Instant::now() < deadline, "guest ready timeout");
                     std::thread::sleep(Duration::from_millis(20));
+                }
+                if mode == "boot" {
+                    // Isolate PID 1 bootstrap from snapshot eligibility checks.
+                    println!("environment-boot-ready pid={}", std::process::id());
+                    std::process::exit(0);
                 }
                 std::thread::sleep(Duration::from_millis(150));
                 handle

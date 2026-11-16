@@ -4,7 +4,7 @@
 use std::{
     fs,
     os::unix::process::CommandExt,
-    path::{Path, PathBuf},
+    path::PathBuf,
     process::{Command, Output, Stdio},
     thread,
     time::{Duration, Instant},
@@ -319,7 +319,10 @@ fn native_fixture() -> Fixture {
 
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 fn native_fixture_for(mut fixture: Fixture) -> Fixture {
-    assert!(Path::new("/dev/kvm").exists(), "requires /dev/kvm");
+    assert!(
+        std::path::Path::new("/dev/kvm").exists(),
+        "requires /dev/kvm"
+    );
     fs::create_dir(fixture.path("bin")).unwrap();
     fixture.binary = fixture.path("bin/pvisor");
     let binary = std::env::var_os("PVISOR_TEST_STAGE_BINARY")

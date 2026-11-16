@@ -241,6 +241,7 @@ pub(crate) fn capture_error(error: anyhow::Error) -> AgentCtlHostError {
     let message = format!("{error:#}");
     let code = if message.contains("REQUEST_ID_CONFLICT")
         || message.contains("SESSION_BUSY")
+        || message.contains("SESSION_CAPACITY")
         || message.contains("stale Session/Execution")
     {
         AgentCtlHostErrorCode::Conflict
@@ -316,6 +317,7 @@ impl Session {
         if let Some(store) = &store {
             session.apply(SessionTransition::StoreBound { store })?;
         }
+        session.check_admission_capacity()?;
         session.write()?;
         session.link_stage(&stage)?;
         Ok(session)

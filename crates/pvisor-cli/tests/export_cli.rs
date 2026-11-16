@@ -1,6 +1,7 @@
 //! External handoff contracts; no VM, FUSE, model account or privileged apply.
 #![cfg(unix)]
 
+#[cfg(target_os = "linux")]
 use serde_json::{Value, json};
 use std::{
     fs,

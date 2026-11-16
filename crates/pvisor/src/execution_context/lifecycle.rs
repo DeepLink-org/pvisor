@@ -714,6 +714,59 @@ fn persist_result_blocking(
     crate::util::startup_mark_run("execution.bundle_ready", result.run_id.as_str());
 }
 
+/// Observe without releasing the PID that reserves the process group's identity.
+pub(crate) async fn observe_child_exit(
+    child: &mut tokio::process::Child,
+) -> std::io::Result<std::process::ExitStatus> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        // Match Child::wait's stdin ownership, without polling its reaping future.
+        drop(child.stdin.take());
+        let pid = child
+            .id()
+            .ok_or_else(|| std::io::Error::other("child already reaped"))?;
+        let mut signal = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::child())?;
+        loop {
+            {
+                let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+                let ret = unsafe {
+                    libc::waitid(
+                        libc::P_PID,
+                        pid,
+                        &mut info,
+                        libc::WEXITED | libc::WNOWAIT | libc::WNOHANG,
+                    )
+                };
+                if ret != 0 {
+                    let error = std::io::Error::last_os_error();
+                    if error.kind() == std::io::ErrorKind::Interrupted {
+                        continue;
+                    }
+                    return Err(error);
+                }
+                if unsafe { info.si_pid() } != 0 {
+                    let status = unsafe { info.si_status() };
+                    let raw = if info.si_code == libc::CLD_EXITED {
+                        status << 8
+                    } else {
+                        status
+                            | if info.si_code == libc::CLD_DUMPED {
+                                0x80
+                            } else {
+                                0
+                            }
+                    };
+                    return Ok(std::process::ExitStatus::from_raw(raw));
+                }
+            }
+            signal.recv().await;
+        }
+    }
+    #[cfg(not(unix))]
+    child.wait().await
+}
+
 pub(crate) async fn terminate_process_tree(
     child: &mut tokio::process::Child,
     process_group: Option<u32>,
@@ -722,6 +775,10 @@ pub(crate) async fn terminate_process_tree(
     #[cfg(unix)]
     {
         if let Some(pid) = process_group {
+            if child.id() != Some(pid) {
+                // Never signal a cached numeric group after its owner was reaped.
+                return;
+            }
             // The child is the leader of the process group configured above.
             let process_group = -(pid as i32);
             unsafe {
@@ -729,8 +786,7 @@ pub(crate) async fn terminate_process_tree(
             }
             let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(grace_ms);
             loop {
-                // Reaping the leader does not mean its descendants have exited.
-                let _ = child.try_wait();
+                // Keep the leader waitable through the last group signal.
                 if unsafe { libc::kill(process_group, 0) } != 0
                     && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
                 {
@@ -751,4 +807,112 @@ pub(crate) async fn terminate_process_tree(
 
     let _ = child.kill().await;
     let _ = child.wait().await;
+}
+
+#[cfg(all(test, unix))]
+mod process_group_tests {
+    use super::*;
+    use std::process::Stdio;
+    use tokio::io::AsyncReadExt;
+
+    #[tokio::test]
+    async fn group_cleanup_pins_leader_until_escalation_finishes() {
+        let mut child = tokio::process::Command::new("/bin/sh")
+            .args([
+                "-c",
+                "(trap '' TERM; printf ready; exec /bin/sleep 30) & exit 7",
+            ])
+            .stdout(Stdio::piped())
+            .process_group(0)
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        let pid = child.id().unwrap();
+        let mut stdout = child.stdout.take().unwrap();
+        stdout.read_exact(&mut [0; 5]).await.unwrap();
+        assert_eq!(
+            observe_child_exit(&mut child).await.unwrap().code(),
+            Some(7)
+        );
+        {
+            let cleanup = terminate_process_tree(&mut child, Some(pid), 100);
+            tokio::pin!(cleanup);
+            tokio::select! {
+                _ = &mut cleanup => panic!("cleanup released the group identity before grace elapsed"),
+                _ = tokio::time::sleep(std::time::Duration::from_millis(30)) => {}
+            }
+            let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+            let observed = unsafe {
+                libc::waitid(
+                    libc::P_PID,
+                    pid,
+                    &mut info,
+                    libc::WEXITED | libc::WNOWAIT | libc::WNOHANG,
+                )
+            };
+            let error = std::io::Error::last_os_error();
+            cleanup.await;
+            assert_eq!(
+                observed, 0,
+                "leader identity released during cleanup: {error}"
+            );
+            assert_eq!(unsafe { info.si_status() }, 7);
+        }
+        assert_eq!(child.wait().await.unwrap().code(), Some(7));
+        assert_eq!(
+            stdout.read(&mut [0]).await.unwrap(),
+            0,
+            "descendant survived KILL"
+        );
+    }
+
+    #[tokio::test]
+    async fn observing_exit_closes_stdin_and_preserves_status_until_cleanup() {
+        for script in ["read line; exit 7", "read line; kill -TERM $$"] {
+            let mut child = tokio::process::Command::new("/bin/sh")
+                .args(["-c", script])
+                .stdin(Stdio::piped())
+                .process_group(0)
+                .kill_on_drop(true)
+                .spawn()
+                .unwrap();
+            let pid = child.id().unwrap();
+            let status = tokio::time::timeout(
+                std::time::Duration::from_secs(2),
+                observe_child_exit(&mut child),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+            assert_eq!(observe_child_exit(&mut child).await.unwrap(), status);
+            assert_eq!(child.id(), Some(pid));
+            terminate_process_tree(&mut child, Some(pid), 0).await;
+            assert_eq!(child.wait().await.unwrap(), status);
+        }
+    }
+
+    #[tokio::test]
+    async fn reaped_or_mismatched_child_cannot_signal_a_cached_group() {
+        let mut unrelated = tokio::process::Command::new("/bin/sleep")
+            .arg("30")
+            .process_group(0)
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        let group = unrelated.id().unwrap();
+        let mut child = tokio::process::Command::new("/bin/sleep")
+            .arg("30")
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        terminate_process_tree(&mut child, Some(group), 0).await;
+        assert!(unrelated.try_wait().unwrap().is_none());
+        child.kill().await.unwrap();
+        child.wait().await.unwrap();
+        terminate_process_tree(&mut child, Some(group), 0).await;
+        let alive = unrelated.try_wait().unwrap().is_none();
+        unrelated.kill().await.unwrap();
+        unrelated.wait().await.unwrap();
+        assert!(alive, "cached group killed an unrelated live child");
+    }
 }

@@ -85,6 +85,12 @@ impl SessionService {
             .root()
             .join("executions")
             .join(uuid::Uuid::new_v4().to_string());
+        let previous = session.clone();
+        session.apply(SessionTransition::RestoreAdmitted {
+            id: &request_id,
+            stage: &stage,
+            eager_ram,
+        })?;
         let (mut executor, mut overlay) =
             VmExecutor::restore(session.config().vm.clone(), checkpoint.clone(), &stage)?;
         executor = executor.with_features(session.config().features.clone())?;
@@ -92,12 +98,6 @@ impl SessionService {
             executor.materialize_restore_ram(&stage)?;
         }
         preserve_apply_target(&source, &mut overlay);
-        let previous = session.clone();
-        session.apply(SessionTransition::RestoreAdmitted {
-            id: &request_id,
-            stage: &stage,
-            eager_ram,
-        })?;
         session.link_stage(&stage)?;
         session.write()?;
         drop(lease);

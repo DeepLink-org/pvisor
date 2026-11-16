@@ -13,6 +13,10 @@ use std::{
 };
 
 const MAX_SESSION_BYTES: u64 = 64 * 1024 * 1024;
+// Reserve escaped checkpoint/error receipts for every accepted capture, plus
+// lifecycle recovery writes that must remain possible when new work is refused.
+const SESSION_RECOVERY_BYTES: u64 = 64 * 1024;
+const CAPTURE_RECEIPT_BYTES: u64 = 64 * 1024;
 const MAX_CACHED_SESSION_BYTES: usize = 256 * 1024;
 
 // Cache only pure deserialization of exact, already-read bytes. Every lookup
@@ -277,6 +281,10 @@ impl<Profile: Serialize> Session<Profile> {
         let body = crate::util::persistence_step(&self.run_id, "session", "serialize", || {
             serde_json::to_vec(self)
         })?;
+        ensure!(
+            body.len() as u64 <= MAX_SESSION_BYTES,
+            "Session record exceeds 64 MiB"
+        );
         crate::util::write_run_bytes(
             &self.root.join(super::super::session_execution::STATE),
             &body,
@@ -498,6 +506,41 @@ impl Session {
 
     // Each arm validates before mutation so rejected transitions leave no partial changes.
     pub(crate) fn apply(&mut self, input: SessionTransition<'_>) -> anyhow::Result<bool> {
+        if matches!(
+            &input,
+            SessionTransition::CaptureAdmitted { .. }
+                | SessionTransition::CaptureReused { .. }
+                | SessionTransition::RestoreAdmitted { .. }
+                | SessionTransition::ForkAdmitted { .. }
+                | SessionTransition::StoreBound { .. }
+        ) {
+            let mut candidate = self.clone();
+            let changed = candidate.apply_transition(input)?;
+            candidate.check_admission_capacity()?;
+            *self = candidate;
+            return Ok(changed);
+        }
+        self.apply_transition(input)
+    }
+
+    pub(crate) fn check_admission_capacity(&self) -> anyhow::Result<()> {
+        let pending = self
+            .requests
+            .values()
+            .filter(|request| request.checkpoint.is_none() && request.error.is_none())
+            .count() as u64;
+        let bytes = serde_json::to_vec(self)?.len() as u64;
+        ensure!(
+            bytes
+                .saturating_add(pending.saturating_mul(CAPTURE_RECEIPT_BYTES))
+                .saturating_add(SESSION_RECOVERY_BYTES)
+                <= MAX_SESSION_BYTES,
+            "SESSION_CAPACITY: no room for new work and its completion receipts"
+        );
+        Ok(())
+    }
+
+    fn apply_transition(&mut self, input: SessionTransition<'_>) -> anyhow::Result<bool> {
         match input {
             SessionTransition::ExecutionStarted { record } => {
                 ensure!(
@@ -563,7 +606,7 @@ impl Session {
             }
             SessionTransition::CaptureRejected { id, message } => {
                 let request = self.requests.get_mut(id).context("request disappeared")?;
-                request.error = Some(message);
+                request.error = Some(message.chars().take(4096).collect());
                 if request.suspend && self.state == SessionState::Suspending {
                     self.state = SessionState::Unknown;
                 }
@@ -758,6 +801,179 @@ impl Session {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn capture_failure_receipt_is_bounded_and_keeps_utf8() {
+        let (root, mut session, _, _, _) = fixture();
+        session
+            .apply(SessionTransition::CaptureAdmitted {
+                id: "error",
+                suspend: true,
+                ram_storage: SnapshotRamStorage::Raw,
+            })
+            .unwrap();
+        session
+            .apply(SessionTransition::CaptureRejected {
+                id: "error",
+                message: "雪\n".repeat(10_000),
+            })
+            .unwrap();
+        assert_eq!(
+            session.requests["error"]
+                .error
+                .as_ref()
+                .unwrap()
+                .chars()
+                .count(),
+            4096
+        );
+        session.write().unwrap();
+        assert_eq!(
+            Session::read_stage(root.path()).unwrap().unwrap().state(),
+            SessionState::Unknown
+        );
+    }
+
+    #[test]
+    fn oversized_write_preserves_readable_authority_and_admission_reserves_receipts() {
+        let (root, mut session, _, checkpoint, result) = fixture();
+        session
+            .apply(SessionTransition::StoreBound {
+                store: &checkpoint.store,
+            })
+            .unwrap();
+        // Fill to the admission boundary using ordinary serializable metadata.
+        session
+            .profile
+            .spec
+            .metadata
+            .insert("padding".into(), "".into());
+        let length = serde_json::to_vec(&session).unwrap().len();
+        let target =
+            (MAX_SESSION_BYTES - SESSION_RECOVERY_BYTES - CAPTURE_RECEIPT_BYTES - 4096) as usize;
+        session
+            .profile
+            .spec
+            .metadata
+            .insert("padding".into(), "a".repeat(target - length).into());
+        session.write().unwrap();
+        session
+            .apply(SessionTransition::CaptureAdmitted {
+                id: "suspend",
+                suspend: true,
+                ram_storage: SnapshotRamStorage::Raw,
+            })
+            .unwrap();
+        session.write().unwrap();
+        // No more admission is possible, but an accepted capture can finish.
+        assert!(session.check_admission_capacity().is_ok());
+        session
+            .apply(SessionTransition::CaptureAcknowledged {
+                id: "suspend",
+                checkpoint: &checkpoint,
+            })
+            .unwrap();
+        session
+            .apply(SessionTransition::Completed(&result))
+            .unwrap();
+        session.write().unwrap();
+        let path = root
+            .path()
+            .join(super::super::super::session_execution::STATE);
+        let before = std::fs::read(&path).unwrap();
+        session.profile.spec.metadata.insert(
+            "padding".into(),
+            "b".repeat(MAX_SESSION_BYTES as usize).into(),
+        );
+        assert!(session.write().unwrap_err().to_string().contains("64 MiB"));
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        assert_eq!(
+            Session::read_stage(root.path()).unwrap().unwrap().state(),
+            SessionState::Suspended
+        );
+    }
+
+    #[test]
+    fn full_ledger_rejects_new_work_atomically_but_can_terminate() {
+        let (root, mut session, _, checkpoint, result) = fixture();
+        session
+            .apply(SessionTransition::StoreBound {
+                store: &checkpoint.store,
+            })
+            .unwrap();
+        suspend(&mut session, &checkpoint, &result);
+        session
+            .profile
+            .spec
+            .metadata
+            .insert("padding".into(), "".into());
+        let length = serde_json::to_vec(&session).unwrap().len();
+        let target = (MAX_SESSION_BYTES - SESSION_RECOVERY_BYTES) as usize;
+        session
+            .profile
+            .spec
+            .metadata
+            .insert("padding".into(), "a".repeat(target - length).into());
+        session.write().unwrap();
+        let before = serde_json::to_vec(&session).unwrap();
+        let fork = ForkRequest {
+            options: super::super::super::session_execution::ForkOptions {
+                checkpoint: None,
+                stage: None,
+                name: None,
+                ram_storage: None,
+                eager_ram: false,
+            },
+            stage: root.path().with_extension("child"),
+            session_id: "child".into(),
+            checkpoint_id: checkpoint.snapshot_id.clone(),
+        };
+        for input in [
+            SessionTransition::CaptureReused {
+                id: "new",
+                suspend: true,
+                ram_storage: SnapshotRamStorage::Raw,
+            },
+            SessionTransition::RestoreAdmitted {
+                id: "resume",
+                stage: &root.path().join("executions/next"),
+                eager_ram: false,
+            },
+            SessionTransition::ForkAdmitted {
+                id: "fork",
+                request: &fork,
+            },
+        ] {
+            let error = session.apply(input).unwrap_err();
+            assert!(error.to_string().contains("SESSION_CAPACITY"));
+            assert_eq!(
+                super::super::super::session_execution::capture_error(error).code,
+                pvisor_core::host_protocol::AgentCtlHostErrorCode::Conflict
+            );
+            assert_eq!(serde_json::to_vec(&session).unwrap(), before);
+        }
+        session.state = SessionState::Running;
+        let running = serde_json::to_vec(&session).unwrap();
+        assert!(
+            session
+                .apply(SessionTransition::CaptureAdmitted {
+                    id: "pending",
+                    suspend: false,
+                    ram_storage: SnapshotRamStorage::Raw,
+                })
+                .unwrap_err()
+                .to_string()
+                .contains("SESSION_CAPACITY")
+        );
+        assert_eq!(serde_json::to_vec(&session).unwrap(), running);
+        session.state = SessionState::Suspended;
+        session.apply(SessionTransition::Terminated).unwrap();
+        session.write().unwrap();
+        assert_eq!(
+            Session::read_stage(root.path()).unwrap().unwrap().state(),
+            SessionState::Terminal
+        );
+    }
 
     #[test]
     fn parsed_session_reuse_never_reuses_file_authority_or_rebinds_a_snapshot() {
