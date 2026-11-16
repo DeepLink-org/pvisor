@@ -270,6 +270,7 @@ enum FlowPhase {
 }
 
 struct Flow {
+    generation: u64,
     handle: SocketHandle,
     destination: FlowDestination,
     phase: FlowPhase,
@@ -287,26 +288,31 @@ struct Flow {
 enum FlowEvent {
     Connected {
         key: FlowKey,
+        generation: u64,
         sender: mpsc::Sender<Vec<u8>>,
         policy_authorized: bool,
     },
     Data {
         key: FlowKey,
+        generation: u64,
         bytes: Vec<u8>,
         permit: OwnedSemaphorePermit,
     },
     Uploaded {
         key: FlowKey,
+        generation: u64,
         bytes: usize,
     },
-    RemoteEof(FlowKey),
+    RemoteEof(FlowKey, u64),
     ConnectFailed {
         key: FlowKey,
+        generation: u64,
         denied: bool,
         error: String,
     },
     BridgeFailed {
         key: FlowKey,
+        generation: u64,
         error: String,
     },
 }
@@ -509,6 +515,16 @@ fn smol_now(clock: std::time::Instant) -> Instant {
     Instant::from_micros(clock.elapsed().as_micros().min(i64::MAX as u128) as i64)
 }
 
+fn next_flow_generation() -> u64 {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    NEXT.fetch_update(
+        std::sync::atomic::Ordering::Relaxed,
+        std::sync::atomic::Ordering::Relaxed,
+        |value| value.checked_add(1),
+    )
+    .expect("VM flow generation exhausted")
+}
+
 fn ensure_listener(
     key: FlowKey,
     flows: &mut HashMap<FlowKey, Flow>,
@@ -591,6 +607,7 @@ fn ensure_listener(
     flows.insert(
         key,
         Flow {
+            generation: next_flow_generation(),
             handle,
             destination,
             phase: if local_dns {
@@ -627,12 +644,13 @@ fn drive_flows(
 
         if flow.phase == FlowPhase::WaitingForSyn && socket.state() == tcp::State::SynReceived {
             flow.phase = FlowPhase::Connecting;
+            let generation = flow.generation;
             let destination = flow.destination.clone();
             let egress = config.egress.clone();
             let context = config.context.clone();
             let events = event_tx.clone();
             flow.upstream_task = Some(tokio::spawn(async move {
-                connect_and_bridge(key, destination, egress, context, events).await;
+                connect_and_bridge(key, generation, destination, egress, context, events).await;
             }));
         }
 
@@ -741,6 +759,7 @@ fn flush_inbound(socket: &mut tcp::Socket<'_>, flow: &mut Flow) {
 
 async fn connect_and_bridge(
     key: FlowKey,
+    generation: u64,
     destination: FlowDestination,
     egress: EgressRuntime,
     context: EgressContext,
@@ -773,6 +792,7 @@ async fn connect_and_bridge(
             let _ = events
                 .send(FlowEvent::ConnectFailed {
                     key,
+                    generation,
                     denied,
                     error: error.to_string(),
                 })
@@ -784,6 +804,7 @@ async fn connect_and_bridge(
     if events
         .send(FlowEvent::Connected {
             key,
+            generation,
             sender,
             policy_authorized,
         })
@@ -792,7 +813,7 @@ async fn connect_and_bridge(
     {
         return;
     }
-    bridge_upstream(key, stream, receiver, bandwidth, events).await;
+    bridge_upstream(key, generation, stream, receiver, bandwidth, events).await;
 }
 
 async fn connect_vm_egress(
@@ -827,6 +848,7 @@ async fn connect_vm_egress(
 
 async fn bridge_upstream(
     key: FlowKey,
+    generation: u64,
     stream: TcpStream,
     mut outbound: mpsc::Receiver<Vec<u8>>,
     bandwidth: crate::bandwidth::BandwidthSession,
@@ -842,6 +864,7 @@ async fn bridge_upstream(
             if upload_events
                 .send(FlowEvent::Uploaded {
                     key,
+                    generation,
                     bytes: bytes.len(),
                 })
                 .await
@@ -861,13 +884,14 @@ async fn bridge_upstream(
             let permit = credits.clone().acquire_owned().await.unwrap();
             let length = read.read(&mut buffer).await?;
             if length == 0 {
-                let _ = events.send(FlowEvent::RemoteEof(key)).await;
+                let _ = events.send(FlowEvent::RemoteEof(key, generation)).await;
                 return Ok::<(), io::Error>(());
             }
             bandwidth.throttle(length).await;
             if events
                 .send(FlowEvent::Data {
                     key,
+                    generation,
                     bytes: buffer[..length].to_vec(),
                     permit,
                 })
@@ -878,11 +902,11 @@ async fn bridge_upstream(
             }
         }
     };
-    let (upload_result, download_result) = tokio::join!(upload, download);
-    if let Err(error) = upload_result.or(download_result) {
+    if let Err(error) = tokio::try_join!(upload, download) {
         let _ = events
             .send(FlowEvent::BridgeFailed {
                 key,
+                generation,
                 error: error.to_string(),
             })
             .await;
@@ -895,11 +919,37 @@ fn apply_flow_event(
     sockets: &mut SocketSet<'static>,
     metrics: &InterceptionMetrics,
 ) {
+    let (key, generation) = match &event {
+        FlowEvent::Connected {
+            key, generation, ..
+        }
+        | FlowEvent::Data {
+            key, generation, ..
+        }
+        | FlowEvent::Uploaded {
+            key, generation, ..
+        }
+        | FlowEvent::ConnectFailed {
+            key, generation, ..
+        }
+        | FlowEvent::BridgeFailed {
+            key, generation, ..
+        }
+        | FlowEvent::RemoteEof(key, generation) => (key, generation),
+    };
+    // Aborting the old task cannot retract events already queued for its tuple.
+    if flows
+        .get(key)
+        .is_none_or(|flow| flow.generation != *generation)
+    {
+        return;
+    }
     match event {
         FlowEvent::Connected {
             key,
             sender,
             policy_authorized,
+            ..
         } => {
             if let Some(flow) = flows.get_mut(&key) {
                 flow.upstream = Some(sender);
@@ -915,23 +965,27 @@ fn apply_flow_event(
                 }
             }
         }
-        FlowEvent::Data { key, bytes, permit } => {
+        FlowEvent::Data {
+            key, bytes, permit, ..
+        } => {
             if let Some(flow) = flows.get_mut(&key) {
                 metrics.host_to_guest(bytes.len());
                 flow.inbound.push_back((bytes, Some(permit)));
             }
         }
-        FlowEvent::Uploaded { key, bytes } => {
+        FlowEvent::Uploaded { key, bytes, .. } => {
             if flows.contains_key(&key) {
                 metrics.guest_to_host(bytes);
             }
         }
-        FlowEvent::RemoteEof(key) => {
+        FlowEvent::RemoteEof(key, _) => {
             if let Some(flow) = flows.get_mut(&key) {
                 flow.remote_eof = true;
             }
         }
-        FlowEvent::ConnectFailed { key, denied, error } => {
+        FlowEvent::ConnectFailed {
+            key, denied, error, ..
+        } => {
             if let Some(flow) = flows.get_mut(&key) {
                 tracing::debug!(?key, %error, "VM TCP flow failed closed");
                 sockets.get_mut::<tcp::Socket>(flow.handle).abort();
@@ -948,7 +1002,7 @@ fn apply_flow_event(
                 }
             }
         }
-        FlowEvent::BridgeFailed { key, error } => {
+        FlowEvent::BridgeFailed { key, error, .. } => {
             if let Some(flow) = flows.get_mut(&key) {
                 tracing::debug!(?key, %error, "VM TCP bridge failed closed");
                 sockets.get_mut::<tcp::Socket>(flow.handle).abort();
@@ -1517,6 +1571,7 @@ mod tests {
         let mut input = (query.len() as u16).to_be_bytes().to_vec();
         input.extend_from_slice(&query);
         let mut flow = Flow {
+            generation: next_flow_generation(),
             handle,
             destination: FlowDestination::Egress {
                 host: "dns".into(),
@@ -1579,6 +1634,7 @@ mod tests {
             let (events, mut received) = mpsc::channel(TCP_CHANNEL_DEPTH);
             let bridge = tokio::spawn(bridge_upstream(
                 key,
+                next_flow_generation(),
                 stream,
                 outbound,
                 Default::default(),
@@ -1612,7 +1668,7 @@ mod tests {
             loop {
                 match received.recv().await.unwrap() {
                     FlowEvent::Data { bytes: chunk, .. } => bytes.extend(chunk),
-                    FlowEvent::RemoteEof(_) => break,
+                    FlowEvent::RemoteEof(_, _) => break,
                     _ => panic!("download failed while guest resumed"),
                 }
             }
@@ -1639,6 +1695,7 @@ mod tests {
         let mut flows = HashMap::from([(
             key,
             Flow {
+                generation: next_flow_generation(),
                 handle,
                 destination: FlowDestination::Egress {
                     host: "blocked.example".into(),
@@ -1658,6 +1715,7 @@ mod tests {
         apply_flow_event(
             FlowEvent::ConnectFailed {
                 key,
+                generation: flows[&key].generation,
                 denied: true,
                 error: "explicit deny".into(),
             },
@@ -1737,6 +1795,7 @@ mod tests {
         let mut flows = HashMap::from([(
             key,
             Flow {
+                generation: next_flow_generation(),
                 handle,
                 destination: FlowDestination::Egress {
                     host: "slow.example".into(),
@@ -1836,6 +1895,7 @@ mod tests {
         let mut flows = HashMap::from([(
             key,
             Flow {
+                generation: next_flow_generation(),
                 handle,
                 destination: FlowDestination::Gateway("127.0.0.1:443".parse().unwrap()),
                 phase: FlowPhase::Connecting,
@@ -1853,6 +1913,7 @@ mod tests {
         apply_flow_event(
             FlowEvent::Connected {
                 key,
+                generation: flows[&key].generation,
                 sender,
                 policy_authorized: false,
             },
@@ -1990,5 +2051,244 @@ mod tests {
         assert!(guest_handshake_pending(tcp::State::SynReceived));
         assert!(!guest_handshake_pending(tcp::State::Established));
         assert!(!guest_handshake_pending(tcp::State::CloseWait));
+    }
+}
+
+#[cfg(all(test, unix))]
+mod flow_lifecycle_regressions {
+    use super::*;
+
+    #[tokio::test]
+    async fn queued_events_do_not_mutate_reused_flow_key() {
+        let policy = crate::NetworkPolicy::compile(&crate::NetworkConfig::default()).unwrap();
+        let mut config = VmNetworkConfig::new(
+            EgressRuntime::with_bandwidth_registry(
+                policy,
+                Arc::new(pvisor_core::PolicyControlController),
+                crate::BandwidthRegistry::default(),
+            ),
+            EgressContext::default(),
+        );
+        config.gateway = Some(VmGatewayRoute {
+            guest_port: 443,
+            host: "127.0.0.1:443".parse().unwrap(),
+        });
+        let key = FlowKey {
+            guest_port: 40000,
+            destination_addr: ROUTER_IPV4,
+            destination_port: 443,
+        };
+        let mut flows = HashMap::new();
+        let mut sockets = SocketSet::new(Vec::new());
+        let dns = SyntheticDns::default();
+        let metrics = InterceptionMetrics::default();
+        ensure_listener(
+            key,
+            &mut flows,
+            &mut sockets,
+            &dns,
+            &config,
+            &metrics,
+            Instant::ZERO,
+        );
+        let generation = flows[&key].generation;
+        let old_handle = flows[&key].handle;
+        let (events, mut queued) = mpsc::channel(TCP_CHANNEL_DEPTH);
+        let permit = Arc::new(Semaphore::new(1)).acquire_owned().await.unwrap();
+        events
+            .send(FlowEvent::Data {
+                key,
+                generation,
+                bytes: b"old TCP connection payload".to_vec(),
+                permit,
+            })
+            .await
+            .unwrap();
+        events
+            .send(FlowEvent::RemoteEof(key, generation))
+            .await
+            .unwrap();
+        events
+            .send(FlowEvent::BridgeFailed {
+                key,
+                generation,
+                error: "old TCP failure".into(),
+            })
+            .await
+            .unwrap();
+        let (old_sender, _old_receiver) = mpsc::channel(1);
+        for event in [
+            FlowEvent::Connected {
+                key,
+                generation,
+                sender: old_sender,
+                policy_authorized: true,
+            },
+            FlowEvent::Uploaded {
+                key,
+                generation,
+                bytes: 123,
+            },
+            FlowEvent::ConnectFailed {
+                key,
+                generation,
+                denied: true,
+                error: "old denial".into(),
+            },
+        ] {
+            events.send(event).await.unwrap();
+        }
+        // The production guest RST path moves this socket to Closed, then calls reap.
+        sockets.get_mut::<tcp::Socket>(old_handle).abort();
+        reap_closed_flows(&mut sockets, &mut flows, &metrics, Instant::ZERO);
+        assert!(flows.is_empty());
+        // A new SYN can be selected from the input before queued async events drain.
+        ensure_listener(
+            key,
+            &mut flows,
+            &mut sockets,
+            &dns,
+            &config,
+            &metrics,
+            Instant::from_millis(1),
+        );
+        assert!(flows[&key].inbound.is_empty());
+        assert!(!flows[&key].remote_eof);
+        apply_flow_event(
+            queued.recv().await.unwrap(),
+            &mut flows,
+            &mut sockets,
+            &metrics,
+        );
+        assert!(flows[&key].inbound.is_empty());
+        apply_flow_event(
+            queued.recv().await.unwrap(),
+            &mut flows,
+            &mut sockets,
+            &metrics,
+        );
+        assert!(!flows[&key].remote_eof);
+        apply_flow_event(
+            queued.recv().await.unwrap(),
+            &mut flows,
+            &mut sockets,
+            &metrics,
+        );
+        assert_eq!(
+            sockets.get::<tcp::Socket>(flows[&key].handle).state(),
+            tcp::State::Listen
+        );
+        for _ in 0..3 {
+            apply_flow_event(
+                queued.recv().await.unwrap(),
+                &mut flows,
+                &mut sockets,
+                &metrics,
+            );
+        }
+        assert!(flows[&key].upstream.is_none());
+        assert_eq!(flows[&key].phase, FlowPhase::WaitingForSyn);
+        assert_eq!(
+            sockets.get::<tcp::Socket>(flows[&key].handle).state(),
+            tcp::State::Listen
+        );
+        // Current-generation events must still be delivered after stale events.
+        let permit = Arc::new(Semaphore::new(1)).acquire_owned().await.unwrap();
+        apply_flow_event(
+            FlowEvent::Data {
+                key,
+                generation: flows[&key].generation,
+                bytes: b"new".to_vec(),
+                permit,
+            },
+            &mut flows,
+            &mut sockets,
+            &metrics,
+        );
+        assert_eq!(flows[&key].inbound.front().unwrap().0, b"new");
+    }
+
+    #[tokio::test]
+    async fn remote_reset_cancels_idle_upload_and_reports_failure() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let stream = TcpStream::connect(listener.local_addr().unwrap())
+            .await
+            .unwrap();
+        let (server, _) = listener.accept().await.unwrap();
+        socket2::SockRef::from(&server)
+            .set_linger(Some(StdDuration::ZERO))
+            .unwrap();
+        drop(server);
+        tokio::time::timeout(StdDuration::from_secs(2), stream.readable())
+            .await
+            .unwrap()
+            .unwrap();
+        let key = FlowKey {
+            guest_port: 40001,
+            destination_addr: ROUTER_IPV4,
+            destination_port: 443,
+        };
+        let (sender, outbound) = mpsc::channel(FLOW_BUFFER_CHUNKS);
+        let (events, mut received) = mpsc::channel(TCP_CHANNEL_DEPTH);
+        let bridge = tokio::spawn(bridge_upstream(
+            key,
+            next_flow_generation(),
+            stream,
+            outbound,
+            Default::default(),
+            events,
+        ));
+        let event = tokio::time::timeout(StdDuration::from_secs(2), received.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(event, FlowEvent::BridgeFailed { .. }));
+        tokio::time::timeout(StdDuration::from_secs(2), bridge)
+            .await
+            .unwrap()
+            .unwrap();
+        drop(sender);
+    }
+    #[tokio::test]
+    async fn upstream_half_close_keeps_upload_alive() {
+        tokio::time::timeout(StdDuration::from_secs(3), async {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let stream = TcpStream::connect(listener.local_addr().unwrap())
+                .await
+                .unwrap();
+            let (mut server, _) = listener.accept().await.unwrap();
+            let key = FlowKey {
+                guest_port: 40002,
+                destination_addr: ROUTER_IPV4,
+                destination_port: 443,
+            };
+            let (sender, outbound) = mpsc::channel(FLOW_BUFFER_CHUNKS);
+            let (events, mut received) = mpsc::channel(TCP_CHANNEL_DEPTH);
+            let bridge = tokio::spawn(bridge_upstream(
+                key,
+                next_flow_generation(),
+                stream,
+                outbound,
+                Default::default(),
+                events,
+            ));
+            server.shutdown().await.unwrap();
+            assert!(matches!(
+                received.recv().await.unwrap(),
+                FlowEvent::RemoteEof(_, _)
+            ));
+            assert!(!bridge.is_finished());
+            sender.send(b"after EOF".to_vec()).await.unwrap();
+            drop(sender);
+            let mut bytes = Vec::new();
+            server.read_to_end(&mut bytes).await.unwrap();
+            assert_eq!(bytes, b"after EOF");
+            bridge.await.unwrap();
+            while let Some(event) = received.recv().await {
+                assert!(!matches!(event, FlowEvent::BridgeFailed { .. }));
+            }
+        })
+        .await
+        .unwrap();
     }
 }

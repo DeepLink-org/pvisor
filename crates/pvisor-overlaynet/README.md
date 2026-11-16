@@ -61,6 +61,12 @@ the upstream is already connected but the guest ACK is missing, and its
 table slot reclaimed on the next pass, so bursts of short-lived connections
 cannot pin the table until the idle timeout. A full table refuses new SYNs
 (the guest sees `Connection refused`) and emits a rate-limited warning.
+Every flow incarnation has a fresh host-local generation. All asynchronous
+connect, data, accounting, EOF and failure events must match that generation;
+queued events from a reclaimed tuple cannot affect its replacement, and dropped
+data events release their buffer credits. An upstream I/O error cancels the
+companion copy and aborts the guest flow promptly. Normal EOF remains a half-close
+and allows the opposite direction to drain.
 Synthetic DNS answers `localhost` from the guest's loopback address instead
 of allocating a synthetic egress address.
 DNS question names enforce the 63-octet label and 255-octet wire-name limits,
