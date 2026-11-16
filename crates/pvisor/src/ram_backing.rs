@@ -569,6 +569,7 @@ impl CompressedRam {
         let diagnostic = std::env::var("PVISOR_DIAG_COMMIT").as_deref() == Ok("1");
         let started = std::time::Instant::now();
         let dirty_blocks = self.dirty.len();
+        let parent_depth = self.chain.as_ref().map_or(0, SnapshotChain::depth);
         let zero_pages = if diagnostic {
             self.zeros
                 .values()
@@ -645,6 +646,8 @@ impl CompressedRam {
                     "pid": std::process::id(), "logical_bytes": self.logical_bytes,
                     "dirty_blocks": dirty_blocks, "explicit_zero_bytes": zero_pages * PAGE_BYTES as u64,
                     "capture_us": capture_us, "total_us": started.elapsed().as_micros(),
+                    "parent_depth": parent_depth,
+                    "result_depth": result.is_ok().then(|| self.chain.as_ref().map(SnapshotChain::depth)),
                     "complete": result.is_ok(),
                     "unix_ns": std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos()
                 })

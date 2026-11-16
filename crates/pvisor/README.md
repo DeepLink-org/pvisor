@@ -1121,6 +1121,20 @@ publication; a drain/commit error fences subsequent controls until teardown.
 The native RAM report precedes compression and is not a measurement of net host
 memory saved. Compression CPU, staging I/O and page-cache charges remain real costs.
 
+Compressed RAM generation chains still compact into an independent full base at
+8 layers. During compaction, unchanged immutable fill blocks (zero or nonzero)
+reuse their descriptors after validating the decoded checksum once per distinct
+length/fill value and comparing every inherited checksum. Short region tails
+remain distinct. Dirty blocks, partial zero overrides and non-fill blocks retain
+the existing reader, validation and encoding path. This avoids materializing
+large unchanged zero ranges while preserving the format, full-base identity,
+publication ordering, depth bound and ancestor ownership. The caller's dirty
+set must still cover every changed block in a stable epoch.
+`PVISOR_DIAG_COMMIT=1` adds parent/result chain depths to capture timing records.
+The ignored `sparse_compaction_mechanism_probe` compares the former full-reader
+path and clean-fill reuse with identical 512 MiB logical contents and head IDs;
+it is a storage mechanism probe, not evidence of VM density or UKSM savings.
+
 Compressed staging, immutable layers and the FUSE mount are private to this launch
 under the instance directory. The existing container owner retains the FUSE mount outside the VMM process,
 which uses `_exit`. A private inherited socketpair fences generation/inode handoff
