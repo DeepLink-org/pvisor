@@ -127,6 +127,18 @@ grant; only successful Bind releases them. Real pressure or a deficit that
 remains after startup still permits reclaim. A stuck startup must be handled by
 the owner's existing timeout and audited teardown, not by dropping its reservation.
 
+Before offloading a measured-mode waiter solely to fund new creation, check
+that the new VM's full allowance and the largest full recovery allowance
+(including the prospective victim and already offloading/offloaded VMs) can
+coexist within the budget. For example, unloading a 5.25 GiB VM cannot fund
+another 5.25 GiB startup under an 8 GiB budget while preserving recovery space.
+Such peers remain resident and can continue existing work; admission waits for
+fresh capacity or the owner's timeout. Smaller feasible victims can still be
+selected. Real high-watermark reclaim and FIFO restore-driven reclaim remain
+independent of this admission check. It is a necessary feasibility bound only:
+residual/cache charges can still prevent progress, and every grant retains the
+full allowance and requires fresh measured accounting. Reserved mode is unchanged.
+
 This is explicit memory overcommit. It does **not** guarantee simultaneous
 full-guest allocation or prevent every OOM: current tools and background growth
 cannot be reclaimed until the owner establishes safe Wait. Keep an external hard

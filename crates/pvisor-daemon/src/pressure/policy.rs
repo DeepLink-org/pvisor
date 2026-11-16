@@ -401,6 +401,33 @@ impl Policy {
                     .saturating_add(create_extra)
                     .saturating_sub(self.config.memory_bytes)
             };
+            // In measured mode, an admission-driven offload creates a recovery
+            // allowance that was absent while the victim was resident. Parent
+            // charge plus that top-up is at least the VM's full allowance,
+            // regardless of how much of its memory the offload actually frees.
+            // If creation + recovery alone exceed the budget, unloading this
+            // peer cannot fund creation. Preserve resident progress instead.
+            // This is only a necessary feasibility test, never a grant/credit.
+            let mut admission_recovery_floor = (blocked_create
+                && self.config.resident_memory_accounting == ResidentMemoryAccounting::Measured)
+                .then(|| {
+                    let creation =
+                        self.snapshot.entries[self.admission.front().unwrap()].memory_bytes;
+                    let recovery = self
+                        .snapshot
+                        .entries
+                        .values()
+                        .filter(|e| {
+                            matches!(
+                                e.state,
+                                State::Offloading | State::Offloaded | State::RestoreQueued
+                            )
+                        })
+                        .map(|e| e.memory_bytes)
+                        .max()
+                        .unwrap_or(0);
+                    (creation, recovery)
+                });
             // Reserve slots before yielding to I/O. Never reclaim Active/Ready,
             // even when measurements show pressure. Queued resident followers
             // are eligible, avoiding the FIFO head-of-line deadlock.
@@ -418,6 +445,20 @@ impl Policy {
                     if blocked_request && self.requests.front() == Some(id) {
                         continue;
                     }
+                    // Genuine high-water pressure must still reclaim safe
+                    // peers. Blocked native restores use their own deficit and
+                    // FIFO path above, independently of new-admission feasibility.
+                    if physical_relief >= physical_need
+                        && admission_recovery_floor.is_some_and(|(creation, recovery)| {
+                            !fits(
+                                creation,
+                                recovery.max(e.memory_bytes),
+                                self.config.memory_bytes,
+                            )
+                        })
+                    {
+                        continue;
+                    }
                     let charge = charges.get(id).copied().unwrap_or(0);
                     let top_up = reservation_top_up(e, charge, &self.config);
                     // A fully shared VM may have zero private charge but still
@@ -432,6 +473,9 @@ impl Policy {
                         continue;
                     }
                     e.state = State::Offloading;
+                    if let Some((_, recovery)) = &mut admission_recovery_floor {
+                        *recovery = (*recovery).max(e.memory_bytes);
+                    }
                     self.snapshot.writebacks += 1;
                     physical_relief = physical_relief.saturating_add(charge);
                     commitment_relief =

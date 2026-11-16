@@ -1123,3 +1123,132 @@ fn recovery_reclaim_is_opt_in_and_requires_measured_mode() {
     cfg.recovery_reclaim = true;
     assert!(Policy::new(cfg).is_err());
 }
+
+fn measured_admission_pair(first: u64, second: u64) -> Policy {
+    let mut p = Policy::new(measured_config()).unwrap();
+    p.reserve(id(1), first).unwrap();
+    p.plan(0, &BTreeMap::new()).unwrap();
+    p.bound(&id(1)).unwrap();
+    p.wait(&id(1), None).unwrap();
+    p.reserve(id(2), second).unwrap();
+    p.plan(1, &[(id(1), 1)].into()).unwrap();
+    p.bound(&id(2)).unwrap();
+    p.wait(&id(2), None).unwrap();
+    p.reserve(id(3), 12).unwrap();
+    p
+}
+
+#[test]
+fn measured_admission_does_not_offload_when_creation_and_recovery_cannot_fit() {
+    let mut p = measured_admission_pair(12, 12);
+    // Parent 10 + creation 12 exceeds 20, but unloading either peer creates
+    // a 12-byte recovery allowance: creation + recovery alone would be 24.
+    for _ in 0..3 {
+        assert!(p.plan(10, &charges(4, 4)).unwrap().is_empty());
+        assert_eq!(p.snapshot.entries[&id(1)].state, State::Waiting);
+        assert_eq!(p.snapshot.entries[&id(2)].state, State::Waiting);
+        assert_eq!(p.snapshot.entries[&id(3)].state, State::AdmissionQueued);
+        assert_eq!(p.snapshot.writebacks, 0);
+    }
+    // Existing work can execute without native restore and eventually release
+    // capacity. Only a fresh sample then permits the queued creation.
+    p.acquire(&id(1), id(101)).unwrap();
+    assert!(p.plan(10, &charges(4, 4)).unwrap().is_empty());
+    assert_eq!(p.snapshot.entries[&id(1)].state, State::Ready);
+    p.release(&id(1)).unwrap();
+    assert!(p.plan(6, &[(id(2), 4)].into()).unwrap().is_empty());
+    assert_eq!(p.snapshot.entries[&id(3)].state, State::Admitted);
+}
+
+#[test]
+fn measured_admission_can_skip_infeasible_large_victim_for_smaller_peer() {
+    let mut p = measured_admission_pair(12, 6);
+    assert_eq!(
+        p.plan(10, &charges(4, 4)).unwrap(),
+        [Action::Offload(id(2))]
+    );
+    assert_eq!(p.snapshot.entries[&id(1)].state, State::Waiting);
+    p.finish(Action::Offload(id(2)), Ok(()));
+    // Native acknowledgement does not remove parent/cache charges.
+    assert!(p.plan(10, &charges(4, 0)).unwrap().is_empty());
+    assert_eq!(p.snapshot.entries[&id(3)].state, State::AdmissionQueued);
+    assert!(p.plan(2, &charges(2, 0)).unwrap().is_empty());
+    assert_eq!(p.snapshot.entries[&id(3)].state, State::Admitted);
+}
+
+#[test]
+fn measured_admission_checks_existing_recovery_allowance_including_inflight() {
+    for state in [State::Offloading, State::Offloaded] {
+        let mut p = measured_admission_pair(12, 6);
+        p.snapshot.entries.get_mut(&id(1)).unwrap().state = state;
+        p.snapshot.writebacks = usize::from(state == State::Offloading);
+        assert!(p.plan(10, &charges(1, 4)).unwrap().is_empty());
+        assert_eq!(p.snapshot.entries[&id(2)].state, State::Waiting);
+        assert_eq!(p.snapshot.entries[&id(3)].state, State::AdmissionQueued);
+    }
+}
+
+#[test]
+fn measured_infeasible_creation_does_not_block_physical_reclaim_or_restore() {
+    let mut p = measured_admission_pair(12, 12);
+    assert_eq!(
+        p.plan(18, &charges(4, 4)).unwrap(),
+        [Action::Offload(id(1))]
+    );
+    p.finish(Action::Offload(id(1)), Ok(()));
+    p.acquire(&id(1), id(101)).unwrap();
+    // Restore needs 14 + (12 - 1) >20; it may reclaim the safe follower,
+    // even though new creation plus that follower's recovery cannot fit.
+    assert_eq!(
+        p.plan(14, &charges(1, 4)).unwrap(),
+        [Action::Offload(id(2))]
+    );
+    p.finish(Action::Offload(id(2)), Ok(()));
+    assert_eq!(p.plan(3, &charges(1, 1)).unwrap(), [Action::Resume(id(1))]);
+    assert_eq!(p.snapshot.entries[&id(3)].state, State::AdmissionQueued);
+    p.finish(Action::Resume(id(1)), Ok(()));
+    assert_eq!(p.snapshot.entries[&id(1)].state, State::Ready);
+}
+
+#[test]
+fn measured_admission_eight_gib_budget_does_not_churn_five_gib_guests() {
+    const MIB: u64 = 1024 * 1024;
+    let mut p = Policy::new(Config {
+        memory_bytes: 8192 * MIB,
+        high_bytes: 7372 * MIB,
+        low_bytes: 6144 * MIB,
+        ..measured_config()
+    })
+    .unwrap();
+    p.reserve(id(1), 5376 * MIB).unwrap();
+    p.plan(0, &BTreeMap::new()).unwrap();
+    p.bound(&id(1)).unwrap();
+    p.wait(&id(1), None).unwrap();
+    p.reserve(id(2), 5376 * MIB).unwrap();
+    p.plan(1000 * MIB, &[(id(1), 1000 * MIB)].into()).unwrap();
+    p.bound(&id(2)).unwrap();
+    p.wait(&id(2), None).unwrap();
+    p.reserve(id(3), 5376 * MIB).unwrap();
+    assert!(
+        p.plan(3200 * MIB, &charges(1400 * MIB, 1400 * MIB))
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(p.snapshot.entries[&id(3)].state, State::AdmissionQueued);
+    assert_eq!(p.snapshot.writebacks, 0);
+}
+
+#[test]
+fn measured_admission_counts_recovery_created_by_same_plan_pressure_victim() {
+    let mut p = measured_admission_pair(12, 6);
+    // The first victim supplies all physical relief (18 -> 14). Its new
+    // 12-byte recovery allowance makes admission impossible, so do not unload
+    // the smaller peer merely to chase the remaining creation deficit.
+    assert_eq!(
+        p.plan(18, &charges(4, 4)).unwrap(),
+        [Action::Offload(id(1))]
+    );
+    assert_eq!(p.snapshot.entries[&id(2)].state, State::Waiting);
+    assert_eq!(p.snapshot.entries[&id(3)].state, State::AdmissionQueued);
+    assert_eq!(p.snapshot.writebacks, 1);
+}
