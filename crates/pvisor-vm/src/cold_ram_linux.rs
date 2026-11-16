@@ -21,6 +21,86 @@ use crate::cold_ram_scan::{self as scan, deadline, quiesce_nonempty};
 
 const BLOCK: usize = 64 * 1024;
 const BATCH_BYTES: usize = 4 * 1024 * 1024;
+// Diagnostic throttling never gates scan work, reference retirement or health checks.
+struct PagerMetrics {
+    started: Instant,
+    last: Option<Instant>,
+    every_batch: bool,
+    batches: u64,
+    snapshots: u64,
+}
+impl PagerMetrics {
+    fn new(every_batch: bool) -> Self {
+        Self {
+            started: Instant::now(),
+            last: None,
+            every_batch,
+            batches: 0,
+            snapshots: 0,
+        }
+    }
+    fn due(&self, now: Instant) -> bool {
+        self.every_batch
+            || self
+                .last
+                .is_none_or(|last| now.duration_since(last) >= Duration::from_secs(1))
+    }
+    fn report<S: ColdRamStore>(
+        &mut self,
+        pager_state: &Mutex<Pager<S>>,
+        pool: &Mutex<S>,
+        snapshots_batch: usize,
+        final_report: bool,
+    ) {
+        // Pool RPCs never run with the pager or VM barrier held. Pool
+        // payload is global; references and cross-session objects are session-local.
+        // None of these counters measures VM physical savings.
+        let stats = pool
+            .lock()
+            .unwrap_or_else(|_| fatal("store poisoned"))
+            .stats()
+            .unwrap_or_else(|error| fatal(error));
+        let pager = pager_state
+            .lock()
+            .unwrap_or_else(|_| fatal("pager poisoned"));
+        let cold: u64 = pager
+            .pages
+            .iter()
+            .enumerate()
+            .filter(|(_, page)| page.cold.is_some())
+            .map(|(index, _)| pager.pages.range(index).len)
+            .sum();
+        eprintln!(
+            "pvisor-cold-linux cold_bytes_current={cold} discarded_bytes_total={} restored_bytes_total={} invalidated_total={} put_rejections_total={} restore_count_total={} restore_time_us_total={} restore_time_us_max={} snapshots_batch={} pool_encoded_bytes_current={} pool_objects_current={} pool_session_references_current={} pool_cross_session_objects_current={} elapsed_us={} unix_us={} batches_total={} snapshots_total={} final={} pid={}",
+            pager.discarded,
+            pager.restored,
+            pager.rejected,
+            pager.put_rejections,
+            pager.restore_count,
+            pager.restore_total_us,
+            pager.restore_max_us,
+            snapshots_batch,
+            stats.encoded_bytes,
+            stats.objects,
+            stats.session_references,
+            stats.cross_session_objects,
+            self.started.elapsed().as_micros(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_micros(),
+            self.batches,
+            self.snapshots,
+            u8::from(final_report),
+            std::process::id()
+        );
+        if let Some(scanner) = &pager.shared_scan {
+            scanner.report(pager.file_hint_candidates);
+        }
+        self.last = Some(Instant::now());
+    }
+}
+
 const PAGE_PRESENT: u8 = 1;
 const PAGE_FILE: u8 = 2;
 // Keep only these two state bits. PFNs and unrelated pagemap data never escape.
@@ -1490,108 +1570,153 @@ pub(crate) fn start<S: ColdRamStore + 'static>(
     let reclaim_hook = handle.shared_backing_reclaim.clone();
     let worker_pager = pager.clone();
     let worker_stop = stop.clone();
-    let worker = std::thread::Builder::new().name("pvisor-cold-pager".into()).spawn(move || {
-        let pool = worker_pager.lock().unwrap().store.clone();
-        loop {
-            // A full adaptive scan round always yields, even when every region
-            // is productive. Empty/sparse rounds cannot spin at the 1 ms pace.
-            let delay = worker_pager.lock().unwrap_or_else(|_| fatal("pager poisoned"))
-                .shared_scan.as_ref().map_or(scan::REJECT_RETRY, scan::Scanner::delay);
-            std::thread::sleep(delay);
-            // Release detached pool pins outside pager/VMM locks, including while offloaded.
-            let retired = std::mem::take(&mut worker_pager.lock().unwrap_or_else(|_| fatal("pager poisoned")).retired);
-            for object in retired { pool.lock().unwrap_or_else(|_| fatal("store poisoned")).release(object).unwrap_or_else(|e| fatal(e)); }
-            // Empty scans still need to observe VM teardown without a barrier.
-            if handle.vmm.upgrade().is_none() {
-                break;
-            }
-            if let Some(reports) = &free_reports {
-                if let Some(report) = reports.pending() {
-                    let freed = handle.ram_quiesced(|_| {
-                        worker_pager.lock().map_err(|_| "pager poisoned")?
-                            .release_free_pages(&report.ranges).map_err(|error| error.to_string())
-                    });
-                    match freed {
-                        Ok(Some(objects)) => {
-                            for object in objects {
-                                pool.lock().unwrap_or_else(|_| fatal("store poisoned"))
-                                    .release(object).unwrap_or_else(|error| fatal(error));
+    let worker = std::thread::Builder::new()
+        .name("pvisor-cold-pager".into())
+        .spawn(move || {
+            let pool = worker_pager.lock().unwrap().store.clone();
+            // Explicit diagnostic control for same-binary comparisons with the old cadence.
+            let every_batch = std::env::var_os("PVISOR_DIAG_COLD_METRICS_EVERY_BATCH")
+                .is_some_and(|value| value == "1");
+            let mut metrics = PagerMetrics::new(every_batch);
+            loop {
+                // A full adaptive scan round always yields, even when every region
+                // is productive. Empty/sparse rounds cannot spin at the 1 ms pace.
+                let delay = worker_pager
+                    .lock()
+                    .unwrap_or_else(|_| fatal("pager poisoned"))
+                    .shared_scan
+                    .as_ref()
+                    .map_or(scan::REJECT_RETRY, scan::Scanner::delay);
+                std::thread::sleep(delay);
+                // Release detached pool pins outside pager/VMM locks, including while offloaded.
+                let retired = std::mem::take(
+                    &mut worker_pager
+                        .lock()
+                        .unwrap_or_else(|_| fatal("pager poisoned"))
+                        .retired,
+                );
+                for object in retired {
+                    pool.lock()
+                        .unwrap_or_else(|_| fatal("store poisoned"))
+                        .release(object)
+                        .unwrap_or_else(|e| fatal(e));
+                }
+                // Empty scans still need to observe VM teardown without a barrier.
+                if handle.vmm.upgrade().is_none() {
+                    break;
+                }
+                if let Some(reports) = &free_reports {
+                    if let Some(report) = reports.pending() {
+                        let freed = handle.ram_quiesced(|_| {
+                            worker_pager
+                                .lock()
+                                .map_err(|_| "pager poisoned")?
+                                .release_free_pages(&report.ranges)
+                                .map_err(|error| error.to_string())
+                        });
+                        match freed {
+                            Ok(Some(objects)) => {
+                                for object in objects {
+                                    pool.lock()
+                                        .unwrap_or_else(|_| fatal("store poisoned"))
+                                        .release(object)
+                                        .unwrap_or_else(|error| fatal(error));
+                                }
+                                reports
+                                    .complete(&report)
+                                    .unwrap_or_else(|error| fatal(error));
                             }
-                            reports.complete(&report).unwrap_or_else(|error| fatal(error));
+                            Ok(None) => continue,
+                            Err(error) if error == "VMM has stopped" => break,
+                            Err(error) => fatal(error),
                         }
-                        Ok(None) => continue,
-                        Err(error) if error == "VMM has stopped" => break,
-                        Err(error) => fatal(error),
                     }
                 }
-            }
-            let mut candidates = worker_pager.lock().unwrap_or_else(|_| fatal("pager poisoned")).candidates();
-            let sampled = quiesce_nonempty(&mut candidates, |candidates| handle.ram_quiesced(|_| {
-                Ok(worker_pager.lock().map_err(|_| "pager poisoned")?.sample_candidates(candidates))
-            }));
-            let batch = match sampled {
-                Ok(Some(batch)) => batch,
-                Ok(None) => {
-                    // Flush deferred store releases and check owner health even
-                    // when no RAM is eligible. No pager lock or VM barrier is
-                    // held here; release itself performs no publication IPC.
-                    pool.lock().unwrap_or_else(|_| fatal("store poisoned")).stats().unwrap_or_else(|error| fatal(error));
-                    continue;
-                },
-                Err(error) if error == "VMM has stopped" => break,
-                Err(error) => fatal(error),
-            };
-            let mut objects = Vec::new();
-            let mut put_rejections = 0;
-            for snapshot in &batch.0 {
-                // Neither VMM/barrier nor pager state is held during publication.
-                let object = publish_snapshot(&worker_pager, &pool, snapshot)
-                    .unwrap_or_else(|error| fatal(error));
-                if let Some(object) = object {
-                    objects.push((snapshot, Some(object)));
-                } else {
-                    put_rejections += 1;
-                }
-            }
-            worker_pager.lock().unwrap_or_else(|_| fatal("pager poisoned")).put_rejections += put_rejections;
-            let committed = quiesce_nonempty(&mut objects, |objects| handle.ram_quiesced(|_| {
-                let mut pager = worker_pager.lock().map_err(|_| "pager poisoned")?;
-                for (snapshot, object) in objects {
-                    // Successful publication still needs the live-byte recheck
-                    // under the second barrier before destructive discard.
-                    if let Some(published) = object.take() {
-                        *object = pager.commit(snapshot, published).map_err(|error| error.to_string())?;
+                let mut candidates = worker_pager
+                    .lock()
+                    .unwrap_or_else(|_| fatal("pager poisoned"))
+                    .candidates();
+                let sampled = quiesce_nonempty(&mut candidates, |candidates| {
+                    handle.ram_quiesced(|_| {
+                        Ok(worker_pager
+                            .lock()
+                            .map_err(|_| "pager poisoned")?
+                            .sample_candidates(candidates))
+                    })
+                });
+                let batch = match sampled {
+                    Ok(Some(batch)) => batch,
+                    Ok(None) => {
+                        // Flush deferred store releases and check owner health even
+                        // when no RAM is eligible. No pager lock or VM barrier is
+                        // held here; release itself performs no publication IPC.
+                        pool.lock()
+                            .unwrap_or_else(|_| fatal("store poisoned"))
+                            .stats()
+                            .unwrap_or_else(|error| fatal(error));
+                        continue;
+                    }
+                    Err(error) if error == "VMM has stopped" => break,
+                    Err(error) => fatal(error),
+                };
+                let mut objects = Vec::new();
+                let mut put_rejections = 0;
+                for snapshot in &batch.0 {
+                    // Neither VMM/barrier nor pager state is held during publication.
+                    let object = publish_snapshot(&worker_pager, &pool, snapshot)
+                        .unwrap_or_else(|error| fatal(error));
+                    if let Some(object) = object {
+                        objects.push((snapshot, Some(object)));
+                    } else {
+                        put_rejections += 1;
                     }
                 }
-                Ok(())
-            }));
-            for object in objects.into_iter().filter_map(|(_, object)| object) {
-                pool.lock().unwrap_or_else(|_| fatal("store poisoned")).release(object).unwrap_or_else(|error| fatal(error));
-            }
-            match committed {
-                Ok(_) => {},
-                Err(error) if error == "VMM has stopped" => break,
-                Err(error) => fatal(error),
+                worker_pager
+                    .lock()
+                    .unwrap_or_else(|_| fatal("pager poisoned"))
+                    .put_rejections += put_rejections;
+                let committed = quiesce_nonempty(&mut objects, |objects| {
+                    handle.ram_quiesced(|_| {
+                        let mut pager = worker_pager.lock().map_err(|_| "pager poisoned")?;
+                        for (snapshot, object) in objects {
+                            // Successful publication still needs the live-byte recheck
+                            // under the second barrier before destructive discard.
+                            if let Some(published) = object.take() {
+                                *object = pager
+                                    .commit(snapshot, published)
+                                    .map_err(|error| error.to_string())?;
+                            }
+                        }
+                        Ok(())
+                    })
+                });
+                for object in objects.into_iter().filter_map(|(_, object)| object) {
+                    pool.lock()
+                        .unwrap_or_else(|_| fatal("store poisoned"))
+                        .release(object)
+                        .unwrap_or_else(|error| fatal(error));
+                }
+                match committed {
+                    Ok(_) => {}
+                    Err(error) if error == "VMM has stopped" => break,
+                    Err(error) => fatal(error),
+                }
+                metrics.batches += 1;
+                metrics.snapshots += batch.0.len() as u64;
+                if options.metrics && metrics.due(Instant::now()) {
+                    metrics.report(&worker_pager, &pool, batch.0.len(), false);
+                }
             }
             if options.metrics {
-                // Pool RPCs never run with the pager or VM barrier held. Pool
-                // counters are current pool-wide values, not VM physical savings.
-                let stats = pool.lock().unwrap_or_else(|_| fatal("store poisoned")).stats().unwrap_or_else(|error| fatal(error));
-                let pager = worker_pager.lock().unwrap_or_else(|_| fatal("pager poisoned"));
-                let cold: u64 = pager.pages.iter().enumerate().filter(|(_, page)| page.cold.is_some()).map(|(index, _)| pager.pages.range(index).len).sum();
-                eprintln!("pvisor-cold-linux cold_bytes_current={cold} discarded_bytes_total={} restored_bytes_total={} invalidated_total={} put_rejections_total={} restore_count_total={} restore_time_us_total={} restore_time_us_max={} snapshots_batch={} pool_encoded_bytes_current={} pool_objects_current={} pool_session_references_current={} pool_cross_session_objects_current={} pid={}",
-                    pager.discarded, pager.restored, pager.rejected, pager.put_rejections,
-                    pager.restore_count, pager.restore_total_us, pager.restore_max_us,
-                    batch.0.len(), stats.encoded_bytes, stats.objects, stats.session_references,
-                    stats.cross_session_objects, std::process::id());
-                if let Some(scanner) = &pager.shared_scan {
-                    scanner.report(pager.file_hint_candidates);
-                }
+                metrics.report(&worker_pager, &pool, 0, true);
             }
-        }
-        worker_pager.lock().unwrap_or_else(|_| fatal("pager poisoned")).shutdown().unwrap_or_else(|error| fatal(error));
-        worker_stop.store(true, Ordering::Release);
-    });
+            worker_pager
+                .lock()
+                .unwrap_or_else(|_| fatal("pager poisoned"))
+                .shutdown()
+                .unwrap_or_else(|error| fatal(error));
+            worker_stop.store(true, Ordering::Release);
+        });
     if let Err(error) = worker {
         stop.store(true, Ordering::Release);
         if let Some(resolver) = resolver {
@@ -1616,6 +1741,24 @@ mod tests {
     use crate::api::ColdRamPoolStats;
     use std::io::{Read, Write};
     use vm_memory::{Bytes, GuestAddress};
+
+    #[test]
+    fn metrics_cadence_limits_full_censuses_without_losing_batch_totals() {
+        let mut metrics = PagerMetrics::new(false);
+        let start = Instant::now();
+        assert!(metrics.due(start));
+        metrics.last = Some(start);
+        for ms in 1..1000 {
+            metrics.batches += 1;
+            metrics.snapshots += 128;
+            assert!(!metrics.due(start + Duration::from_millis(ms)));
+        }
+        assert!(metrics.due(start + Duration::from_secs(1)));
+        assert_eq!(metrics.batches, 999);
+        assert_eq!(metrics.snapshots, 999 * 128);
+        metrics.every_batch = true;
+        assert!(metrics.due(start));
+    }
 
     #[derive(Default)]
     struct CompressedStore {

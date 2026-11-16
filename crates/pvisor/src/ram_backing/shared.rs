@@ -53,6 +53,24 @@ impl Drop for ResidentMapping {
         }
     }
 }
+/// Typed local admission failures; the existing wire error text stays unchanged.
+#[derive(Debug, Clone, Copy)]
+pub(super) enum SharedRejection {
+    NotDuplicate,
+    Capacity,
+    Busy,
+}
+impl std::fmt::Display for SharedRejection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::NotDuplicate => "page has no cross-session duplicate yet",
+            Self::Capacity => "shared page pool budget exhausted",
+            Self::Busy => "shared pool busy; retain original page",
+        })
+    }
+}
+impl std::error::Error for SharedRejection {}
+
 pub struct SharedPool {
     file: File,
     readonly: Arc<File>,
@@ -183,7 +201,7 @@ impl SharedPool {
         }
         Err(io::Error::new(
             io::ErrorKind::WouldBlock,
-            "page has no cross-session duplicate yet",
+            SharedRejection::NotDuplicate,
         ))
     }
     pub fn forget_candidates(&mut self, session: [u8; 16]) {
@@ -227,7 +245,7 @@ impl SharedPool {
             if self.next / PAGE as u64 >= self.slots as u64 {
                 return Err(io::Error::new(
                     io::ErrorKind::OutOfMemory,
-                    "shared page pool budget exhausted",
+                    SharedRejection::Capacity,
                 ));
             }
             let offset = self.next;

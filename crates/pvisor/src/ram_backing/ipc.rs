@@ -247,7 +247,7 @@ impl Owner {
                         Err(TryLockError::WouldBlock) => {
                             return Err(io::Error::new(
                                 io::ErrorKind::WouldBlock,
-                                "shared pool busy; retain original page",
+                                super::shared::SharedRejection::Busy,
                             ));
                         }
                         Err(TryLockError::Poisoned(_)) => {
@@ -368,6 +368,56 @@ fn timed_pool_lock<'a, T>(
         operation,
     })
 }
+#[derive(Default)]
+struct PublicationCounts {
+    requests: u64,
+    accepted: u64,
+    not_duplicate: u64,
+    capacity: u64,
+    busy: u64,
+    reference_limit: u64,
+    other: u64,
+    processing_us: u64,
+}
+impl PublicationCounts {
+    fn rejected(&mut self, error: &io::Error) {
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        if let Some(reason) = error
+            .get_ref()
+            .and_then(|e| e.downcast_ref::<super::shared::SharedRejection>())
+        {
+            match reason {
+                super::shared::SharedRejection::NotDuplicate => self.not_duplicate += 1,
+                super::shared::SharedRejection::Capacity => self.capacity += 1,
+                super::shared::SharedRejection::Busy => self.busy += 1,
+            }
+            return;
+        }
+        self.other += 1;
+    }
+    fn report(&self, session: [u8; 16], started: Instant, final_report: bool) {
+        eprintln!(
+            "pvisor-pool-publication session={} elapsed_us={} unix_us={} final={} requests_total={} accepted_total={} rejected_not_duplicate_total={} rejected_capacity_total={} rejected_busy_total={} rejected_reference_limit_total={} rejected_other_total={} processing_us_total={} pid={}",
+            uuid::Uuid::from_bytes(session),
+            started.elapsed().as_micros(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_micros(),
+            u8::from(final_report),
+            self.requests,
+            self.accepted,
+            self.not_duplicate,
+            self.capacity,
+            self.busy,
+            self.reference_limit,
+            self.other,
+            self.processing_us,
+            std::process::id()
+        );
+    }
+}
+
 fn serve_inner(mut stream: UnixStream, pool: Owner, max_references: usize) -> io::Result<()> {
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     let peer = if pool.is_shared() || pool.is_sealed() {
@@ -383,6 +433,10 @@ fn serve_inner(mut stream: UnixStream, pool: Owner, max_references: usize) -> io
     stream.write_all(&session)?;
     let mut references: BTreeMap<u64, Reference> = BTreeMap::new();
     let mut local_counts: BTreeMap<ImageId, LocalReferenceCount> = BTreeMap::new();
+    let metrics = std::env::var_os("PVISOR_EXPERIMENTAL_MEMORY_METRICS").is_some();
+    let started = Instant::now();
+    let mut last_report = started;
+    let mut publication = PublicationCounts::default();
     let result = (|| {
         let mut next = 0u64;
         loop {
@@ -401,18 +455,24 @@ fn serve_inner(mut stream: UnixStream, pool: Owner, max_references: usize) -> io
                     }
                     let mut bytes = vec![0; size];
                     stream.read_exact(&mut bytes)?;
+                    publication.requests += 1;
                     if references.len() >= max_references || next == u64::MAX {
+                        publication.reference_limit += 1;
                         reject(&mut stream, "pool reference budget exhausted")?;
                         continue;
                     }
                     if (operation[0] == PUT_SEALED) != pool.is_sealed()
                         || (matches!(operation[0], PUT_SHARED | PUT_DUPLICATE) && !pool.is_shared())
                     {
+                        publication.other += 1;
                         reject(&mut stream, "publication mode unsupported by this pool")?;
                         continue;
                     }
                     let processing = Instant::now();
                     let interned = pool.intern(&bytes, operation[0] == PUT_DUPLICATE, session);
+                    if metrics {
+                        publication.processing_us += processing.elapsed().as_micros() as u64;
+                    }
                     if processing.elapsed() >= Duration::from_millis(50) {
                         eprintln!(
                             "pvisor-pool-slow-publication session={session:?} op={} processing_us={} accepted={}",
@@ -424,10 +484,12 @@ fn serve_inner(mut stream: UnixStream, pool: Owner, max_references: usize) -> io
                     let object = match interned {
                         Ok(object) => object,
                         Err(error) => {
+                            publication.rejected(&error);
                             reject(&mut stream, &error.to_string())?;
                             continue;
                         }
                     };
+                    publication.accepted += 1;
                     next += 1;
                     let id = object.id();
                     let offset = object.offset();
@@ -518,11 +580,18 @@ fn serve_inner(mut stream: UnixStream, pool: Owner, max_references: usize) -> io
                     for value in values {
                         stream.write_all(&value.to_le_bytes())?;
                     }
+                    if metrics && last_report.elapsed() >= Duration::from_secs(1) {
+                        publication.report(session, started, false);
+                        last_report = Instant::now();
+                    }
                 }
                 _ => return Err(invalid("unknown pool operation")),
             }
         }
     })();
+    if metrics {
+        publication.report(session, started, true);
+    }
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     if let Owner::Shared(owner) = &pool {
         // Only cleanup passes serialize here; this gate never blocks live RPCs.
@@ -984,6 +1053,76 @@ impl PoolClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn publication_diagnostics_wire_lifecycle() {
+        use super::super::shared::{PAGE, SharedPool};
+        let pool = Arc::new(Mutex::new(SharedPool::new(PAGE, 1).unwrap()));
+        let (a, sa) = UnixStream::pair().unwrap();
+        let (b, sb) = UnixStream::pair().unwrap();
+        let owner = pool.clone();
+        let ta = std::thread::spawn(move || serve_shared(sa, owner, 2));
+        let owner = pool.clone();
+        let tb = std::thread::spawn(move || serve_shared(sb, owner, 2));
+        let mut a = PoolClient::new(a, Duration::from_secs(5)).unwrap();
+        let mut b = PoolClient::new(b, Duration::from_secs(5)).unwrap();
+        a.enable_shared_mapping().unwrap();
+        b.enable_shared_mapping().unwrap();
+        assert!(a.put_duplicate(&[1; PAGE]).is_err());
+        let b1 = b.put_duplicate(&[1; PAGE]).unwrap();
+        assert!(a.put_duplicate(&[2; PAGE]).is_err());
+        assert!(b.put_duplicate(&[2; PAGE]).is_err());
+        let guard = pool.lock().unwrap();
+        assert!(a.put_duplicate(&[3; PAGE]).is_err());
+        drop(guard);
+        let a1 = a.put_duplicate(&[1; PAGE]).unwrap();
+        let a2 = a.put_duplicate(&[1; PAGE]).unwrap();
+        assert!(a.put_duplicate(&[1; PAGE]).is_err());
+        let b2 = b.put_duplicate(&[1; PAGE]).unwrap();
+        assert_eq!(a.stats().unwrap().cross_session_objects, 1);
+        a.release(a1).unwrap();
+        a.release(a2).unwrap();
+        b.release(b1).unwrap();
+        b.release(b2).unwrap();
+        assert_eq!(a.stats().unwrap().objects, 0);
+        drop((a, b));
+        ta.join().unwrap().unwrap();
+        tb.join().unwrap().unwrap();
+        assert_eq!(pool.lock().unwrap().object_count(), 0);
+    }
+
+    #[test]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn publication_diagnostics_distinguish_real_admission_failures() {
+        use super::super::shared::{PAGE, SharedPool};
+        let pool = Arc::new(Mutex::new(SharedPool::new(PAGE, 1).unwrap()));
+        let owner = Owner::Shared(pool.clone());
+        let mut counts = PublicationCounts::default();
+        // Holding the owner's lock must be classified as contention, not no match.
+        let guard = pool.lock().unwrap();
+        counts.rejected(&owner.intern(&[1; PAGE], true, [1; 16]).err().unwrap());
+        drop(guard);
+        counts.rejected(&owner.intern(&[1; PAGE], true, [1; 16]).err().unwrap());
+        let pinned = owner.intern(&[1; PAGE], true, [2; 16]).unwrap();
+        // First observation is still no-match even when all slots are pinned.
+        counts.rejected(&owner.intern(&[2; PAGE], true, [1; 16]).err().unwrap());
+        counts.rejected(&owner.intern(&[2; PAGE], true, [2; 16]).err().unwrap());
+        // Text and unrelated ENOMEM must never masquerade as typed pool capacity.
+        counts.rejected(&io::Error::other("shared page pool budget exhausted"));
+        counts.rejected(&io::Error::from(io::ErrorKind::OutOfMemory));
+        assert_eq!(
+            (
+                counts.not_duplicate,
+                counts.capacity,
+                counts.busy,
+                counts.other
+            ),
+            (2, 1, 1, 2)
+        );
+        // A full pool still accepts existing content; diagnostics do not alter admission.
+        let reused = owner.intern(&[1; PAGE], true, [3; 16]).unwrap();
+        drop((pinned, reused));
+    }
     #[test]
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     fn busy_duplicate_rejects_without_poisoning_existing_reference() {

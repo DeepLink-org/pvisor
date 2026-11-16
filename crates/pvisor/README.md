@@ -2698,3 +2698,20 @@ remain despite advice. This is a per-writer write budget, **not** a physical
 cache cap, node-wide budget, pressure detector, or automatic policy. It can add
 I/O, backpressure and cold-read latency. Keep it opt-in until real FUSE/VM
 correctness, shutdown and high-density throughput/tail-latency comparisons pass.
+
+### Shared-pool publication diagnostics
+
+With `PVISOR_EXPERIMENTAL_MEMORY_METRICS` set on the pool server, each connection
+reports cumulative publication counts on STATS requests at most once per second
+and once before disconnect cleanup. Records distinguish no cross-session
+duplicate yet, object-slot capacity, pool-lock contention, reference budget,
+and other rejection. Classification uses local typed failures, not matching
+error text; existing wire replies and client behavior are unchanged.
+`accepted_total` counts pool publication, not committed VM mappings or physical
+savings. `processing_us_total` covers pool intern calls, excluding socket I/O,
+client barriers and early reference-budget rejection. `elapsed_us` is local
+monotonic connection time; session UUID and PID identify the stream.
+Diagnostics never relax admission, byte comparison or slot ownership.
+
+Diagnostic `unix_us` provides a wall-clock sample for phase alignment; use local
+`elapsed_us` for durations because the wall clock can be adjusted.

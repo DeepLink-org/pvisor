@@ -2053,3 +2053,20 @@ only with `PVISOR_EXPERIMENTAL_MEMORY_METRICS`; they cover successful runs,
 exclude the optional content census, and do not include later offload commit.
 The sum can be slightly below `elapsed_us` because loop overhead and per-run
 microsecond rounding are excluded. These timings do not identify cache ownership.
+
+### Linux cold-pager diagnostic cadence
+
+With memory metrics enabled, Linux cold-pager full page-state censuses and
+reporting STATS RPCs run at most once per second, plus one final report. Scan
+quotas, barriers, reference retirement and empty-scan health/flush calls are
+unchanged. `elapsed_us` is monotonic time since this worker started;
+`batches_total` and `snapshots_total` include batches between reports.
+`snapshots_batch` describes only the reported batch (zero on final reporting),
+so sparse reports must not be summed to reconstruct submitted pages.
+For same-binary engineering A/B only, host
+`PVISOR_DIAG_COLD_METRICS_EVERY_BATCH=1` restores per-batch reporting; other
+values use the one-second cadence. This has no effect unless metrics are enabled.
+A reporting interval is not a bound on scanning CPU or a claim of net RAM savings.
+
+Diagnostic `unix_us` provides a wall-clock sample for phase alignment; use local
+`elapsed_us` for durations because the wall clock can be adjusted.
