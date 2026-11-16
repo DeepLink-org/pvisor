@@ -921,6 +921,41 @@ pub struct ArtifactRef {
     pub digest: Option<String>,
 }
 
+/// The completion publication step whose acknowledgement was not obtained.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CompletionPhase {
+    /// Updating the non-authoritative Run projection, before receipt publication.
+    RunProjection,
+    /// Validating or publishing the receipt that binds the result to its Bundle.
+    Receipt,
+    /// The completion owner task ended without returning its publication outcome.
+    CommitTask,
+}
+
+/// Publication outcome, independent of the already observed workload outcome.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CompletionPublication {
+    /// This write did not replace its destination; earlier steps may have succeeded.
+    Rejected,
+    /// Publication or its durability cannot be established. Visibility is not durability.
+    Unknown,
+}
+
+/// Completion persistence failed after execution. Reconcile the retained execution;
+/// this error never authorizes repeating the workload or its external effects.
+#[derive(Debug, Clone, Serialize, Deserialize, thiserror::Error)]
+#[error("completion {phase:?} {publication:?}: {message}")]
+pub struct CompletionError {
+    /// Failed persistence step, not the workload's execution phase.
+    pub phase: CompletionPhase,
+    /// Whether this step was rejected or has an uncertain outcome.
+    pub publication: CompletionPublication,
+    /// Original persistence diagnostic, including any underlying I/O error.
+    pub message: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RunResult {
     pub run_id: RunId,
@@ -932,6 +967,13 @@ pub struct RunResult {
     pub exit_code: Option<i32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub failure: Option<RunFailure>,
+    /// Return-time completion diagnostic, separate from the observed workload
+    /// state/exit/failure. Not written back into a possibly published receipt.
+    /// When present, do not retry the workload even if `failure.retryable` is true;
+    /// reconcile retained storage. Absence alone is not a durability receipt
+    /// (executions without retained storage also omit it).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completion_error: Option<CompletionError>,
     #[serde(default)]
     pub output: ProcessOutput,
     /// Small structured workload result. Large outputs belong in `artifacts`.

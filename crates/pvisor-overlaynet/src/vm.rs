@@ -40,8 +40,6 @@ use crate::egress::{
 };
 use crate::interception::{InterceptionMetrics, InterceptionSnapshot};
 use crate::peer::{BoundPeer, PeerNetwork};
-use crate::policy::DenyReason;
-use pvisor_core::is_host_connector_alias;
 
 pub const ROUTER_IPV4: Ipv4Addr = Ipv4Addr::new(192, 0, 2, 1);
 pub const GUEST_IPV4: Ipv4Addr = Ipv4Addr::new(192, 0, 2, 2);
@@ -823,15 +821,6 @@ async fn connect_vm_egress(
     port: u16,
 ) -> Result<(TcpStream, crate::bandwidth::BandwidthSession), EgressError> {
     let (addresses, bandwidth) = egress.authorize_tcp(context, host, port).await?;
-    let addresses = addresses
-        .into_iter()
-        .filter(|address| {
-            !forbidden_host_address(address.ip()) || is_host_connector_alias(host, address.ip())
-        })
-        .collect::<Vec<_>>();
-    if addresses.is_empty() {
-        return Err(EgressError::Denied(DenyReason::ResolvedAddressNotAllowed));
-    }
     let stream = match connect_via_ambient_http_proxy(host, &addresses).await {
         Some(Ok(stream)) => stream,
         Some(Err(source)) => {

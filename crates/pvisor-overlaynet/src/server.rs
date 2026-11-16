@@ -132,12 +132,24 @@ pub struct OverlayServerState<S> {
     interception_metrics: InterceptionMetrics,
     bandwidth_registry: BandwidthRegistry,
     request_slots: Arc<tokio::sync::Semaphore>,
+    resolved_address_policy: crate::resolver::ResolvedAddressPolicy,
 }
 
 impl<S> OverlayServerState<S>
 where
     S: OverlaySink,
 {
+    /// Bind this proxy to the owning execution's resolved-address constraints.
+    /// VM executions must select VmEgress before serving requests; host proxies
+    /// default to HostConnectorAliases. This does not change logical grants.
+    pub fn with_resolved_address_policy(
+        mut self,
+        policy: crate::policy::ResolvedAddressPolicy,
+    ) -> Self {
+        self.resolved_address_policy = policy;
+        self
+    }
+
     pub fn new(
         control_controller: Arc<dyn ControlController>,
         sink: S,
@@ -145,6 +157,7 @@ where
     ) -> Self {
         Self {
             control_controller,
+            resolved_address_policy: crate::resolver::ResolvedAddressPolicy::HostConnectorAliases,
             sink,
             active_requests,
             interception_metrics: InterceptionMetrics::default(),
@@ -479,7 +492,7 @@ where
             transport,
             resolved_ip: None,
         },
-        crate::resolver::ResolvedAddressPolicy::HostConnectorAliases,
+        state.resolved_address_policy,
     )
     .await
 }

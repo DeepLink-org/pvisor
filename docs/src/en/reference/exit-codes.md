@@ -15,11 +15,13 @@ A workload can return `1`, `2`, or `125` itself, so a number alone is insufficie
 | Internal host sandbox setup fails | Launcher uses 125; outer errors may return 1, so inspect diagnostics |
 | Argument parsing error | clap returns 2 |
 | Successful `status`/`apply`/`drop`/`kill` | 0 |
-| Runtime error in those commands | `anyhow` returns 1 with stderr diagnostics |
+| Apply returns `blocked` during preflight or plan validation | 3; inspect blockers before retrying |
+| Quit the interactive apply picker | 130 |
+| Runtime/service error in those commands | 1; inspect stderr and retained recovery evidence |
 | Command under `inspect` | Returns the inspected command's exit code |
 | Companion command | Dispatch preserves its code; also inspect replay result phase/quality |
 
-Apply conflicts, missing Sessions, and UnsupportedPolicy do not currently have distinct numeric codes. Workloads may themselves return 1, 2, 125, or 130; numbers alone cannot distinguish agent failure from pVisor refusal.
+Apply distinguishes a blocked plan (3) from an execution/service error (1). Missing Sessions and UnsupportedPolicy still share exit 1 with other errors. Workloads may themselves return any of these numbers; distinguish command context and diagnostics before deciding whether to retry.
 
 ## Daemon process and API errors {#daemon}
 
@@ -61,6 +63,6 @@ The command returns `7` and may still leave a reviewable `result.txt`. Retain ex
 | `deadline_exceeded` | Task exceeded its wall-clock deadline; inspect progress and retained files |
 | `infrastructure` | Execution machinery failed, such as sandbox setup or I/O; inspect diagnostics |
 
-Parse errors and pre-admission failures can occur before `run.failure` or a Bundle exists. Missing Session selection, apply conflicts, and management-command errors are reported on stderr with exit 1, rather than being fabricated as workload failures. `UnsupportedPolicy` diagnostics describe a rejected capability request; `CAPABILITY_UNSUPPORTED` is used for ordinary execution-checkpoint/suspend requests. Do not grade these as failed model answers.
+Parse errors and pre-admission failures can occur before `run.failure` or a Bundle exists. Missing Session selection and management-command errors return 1 with diagnostics rather than being fabricated as workload failures. Apply reports blocked preflight/plan responses with exit 3; execution/service failures return 1 and may require reconciliation of partially written targets. `UnsupportedPolicy` diagnostics describe a rejected capability request; `CAPABILITY_UNSUPPORTED` is used for ordinary execution-checkpoint/suspend requests. Do not grade these as failed model answers.
 
 The downloadable [nonzero-exit sample](../assets/examples/json/failed-run.json) records `state = "failed"`, `exit_code = 7`, and `failure.kind = "process_exit"`. The [timeout sample](../assets/examples/json/timeout-run.json) records `state = "failed"`, omits `exit_code`, and uses `failure.kind = "deadline_exceeded"`; its CLI returned 1. Both retain staged candidate files. [Collection provenance](../assets/examples/json/provenance.json) includes the commands and observed return codes.

@@ -28,87 +28,99 @@ impl DurableFiles for Persistence {
         mode: u32,
         mut observe: impl FnMut(&'static str, std::time::Duration, bool),
     ) -> anyhow::Result<()> {
-        use std::fs;
-        use std::time::Instant;
-        let mut timings = Vec::with_capacity(6);
-        macro_rules! step {
-            ($phase:literal, $operation:expr) => {{
-                let start = Instant::now();
-                let result = $operation;
-                timings.push(($phase, start.elapsed(), result.is_ok()));
-                result?
-            }};
-        }
-        let result = (|| -> anyhow::Result<()> {
-            let parent = path
-                .parent()
-                .ok_or_else(|| anyhow::anyhow!("{} has no parent directory", path.display()))?;
-            // A bare filename has an empty Path parent, which denotes cwd but
-            // cannot itself be opened for a directory durability barrier.
-            let parent = if parent.as_os_str().is_empty() {
-                Path::new(".")
-            } else {
-                parent
-            };
+        atomic_write_using(path, contents, mode, &mut observe, |_| Ok(()))
+    }
+}
+
+fn atomic_write_using(
+    path: &Path,
+    contents: &[u8],
+    mode: u32,
+    mut observe: impl FnMut(&'static str, std::time::Duration, bool),
+    mut before: impl FnMut(&'static str) -> std::io::Result<()>,
+) -> anyhow::Result<()> {
+    use std::fs;
+    use std::time::Instant;
+    let mut timings = Vec::with_capacity(6);
+    macro_rules! step {
+        ($phase:literal, $operation:expr) => {{
             let start = Instant::now();
-            let mut directory_sync = std::time::Duration::ZERO;
-            let prepared = create_dir_all_durable_using(parent, |directory| {
-                let start = Instant::now();
-                let result = Self::sync_directory(directory);
-                directory_sync += start.elapsed();
-                result
-            });
-            timings.push((
-                "directory_prepare",
-                start.elapsed().saturating_sub(directory_sync),
-                prepared.is_ok(),
-            ));
-            timings.push(("directory_prepare_sync", directory_sync, prepared.is_ok()));
-            prepared?;
-            // Do not amplify a valid destination basename past NAME_MAX.
-            let temporary = parent.join(format!(".pvisor.{}.tmp", uuid::Uuid::new_v4()));
-            let result = (|| -> anyhow::Result<()> {
-                let file = step!(
-                    "file_write",
-                    (|| -> anyhow::Result<_> {
-                        let mut file = OpenOptions::new()
-                            .create_new(true)
-                            .write(true)
-                            .open(&temporary)
-                            .with_context(|| {
-                                format!("create temporary file {}", temporary.display())
-                            })?;
-                        file.set_permissions(fs::Permissions::from_mode(mode))?;
-                        file.write_all(contents)?;
-                        Ok(file)
-                    })()
-                );
-                step!(
-                    "file_sync",
-                    file.sync_all()
-                        .with_context(|| format!("sync temporary file {}", temporary.display()))
-                );
-                step!(
-                    "rename",
-                    fs::rename(&temporary, path).with_context(|| format!(
-                        "replace {} with {}",
-                        path.display(),
-                        temporary.display()
-                    ))
-                );
-                step!("directory_sync", Self::sync_directory(parent));
-                Ok(())
-            })();
-            if result.is_err() {
-                let _ = fs::remove_file(&temporary);
-            }
+            let result = before($phase)
+                .map_err(anyhow::Error::from)
+                .and_then(|()| $operation);
+            timings.push(($phase, start.elapsed(), result.is_ok()));
+            result?
+        }};
+    }
+    let result = (|| -> anyhow::Result<()> {
+        let parent = path
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("{} has no parent directory", path.display()))?;
+        // A bare filename has an empty Path parent, which denotes cwd but
+        // cannot itself be opened for a directory durability barrier.
+        let parent = if parent.as_os_str().is_empty() {
+            Path::new(".")
+        } else {
+            parent
+        };
+        let start = Instant::now();
+        let mut directory_sync = std::time::Duration::ZERO;
+        let prepared = create_dir_all_durable_using(parent, |directory| {
+            let start = Instant::now();
+            let result = Persistence::sync_directory(directory);
+            directory_sync += start.elapsed();
             result
+        });
+        timings.push((
+            "directory_prepare",
+            start.elapsed().saturating_sub(directory_sync),
+            prepared.is_ok(),
+        ));
+        timings.push(("directory_prepare_sync", directory_sync, prepared.is_ok()));
+        prepared?;
+        // Do not amplify a valid destination basename past NAME_MAX.
+        let temporary = parent.join(format!(".pvisor.{}.tmp", uuid::Uuid::new_v4()));
+        let result = (|| -> anyhow::Result<()> {
+            let file = step!(
+                "file_write",
+                (|| -> anyhow::Result<_> {
+                    let mut file = OpenOptions::new()
+                        .create_new(true)
+                        .write(true)
+                        .open(&temporary)
+                        .with_context(|| {
+                            format!("create temporary file {}", temporary.display())
+                        })?;
+                    file.set_permissions(fs::Permissions::from_mode(mode))?;
+                    file.write_all(contents)?;
+                    Ok(file)
+                })()
+            );
+            step!(
+                "file_sync",
+                file.sync_all()
+                    .with_context(|| format!("sync temporary file {}", temporary.display()))
+            );
+            step!(
+                "rename",
+                fs::rename(&temporary, path).with_context(|| format!(
+                    "replace {} with {}",
+                    path.display(),
+                    temporary.display()
+                ))
+            );
+            step!("directory_sync", Persistence::sync_directory(parent));
+            Ok(())
         })();
-        for (phase, elapsed, success) in timings {
-            observe(phase, elapsed, success);
+        if result.is_err() {
+            let _ = fs::remove_file(&temporary);
         }
         result
+    })();
+    for (phase, elapsed, success) in timings {
+        observe(phase, elapsed, success);
     }
+    result
 }
 
 fn create_dir_all_durable_using(
@@ -147,6 +159,52 @@ fn create_dir_all_durable_using(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn atomic_publication_faults_preserve_old_or_complete_new_bytes() {
+        for phase in ["file_sync", "rename", "directory_sync"] {
+            let root = tempfile::tempdir().unwrap();
+            let path = root.path().join("record");
+            Persistence::atomic_write(&path, b"old", 0o600).unwrap();
+            let mut observed = Vec::new();
+            let mut hits = 0;
+            let error = atomic_write_using(
+                &path,
+                b"new",
+                0o600,
+                |step, _, ok| observed.push((step, ok)),
+                |step| {
+                    if step == phase {
+                        hits += 1;
+                        Err(std::io::Error::from_raw_os_error(libc::EIO))
+                    } else {
+                        Ok(())
+                    }
+                },
+            )
+            .unwrap_err();
+            assert_eq!(hits, 1);
+            assert_eq!(
+                error
+                    .downcast_ref::<std::io::Error>()
+                    .unwrap()
+                    .raw_os_error(),
+                Some(libc::EIO)
+            );
+            assert_eq!(observed.last(), Some(&(phase, false)));
+            assert_eq!(
+                std::fs::read(&path).unwrap(),
+                if phase == "directory_sync" {
+                    b"new"
+                } else {
+                    b"old"
+                }
+            );
+            assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 1);
+            Persistence::atomic_write(&path, b"new", 0o600).unwrap();
+            assert_eq!(std::fs::read(path).unwrap(), b"new");
+        }
+    }
+
     #[test]
     fn observed_atomic_write_reports_steps_and_failed_rename_without_leaking_tempfiles() {
         let root = tempfile::tempdir().unwrap();

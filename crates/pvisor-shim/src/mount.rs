@@ -266,9 +266,6 @@ mod linux {
         Ok(())
     }
 
-    /// Bind-mount /dev/null over each masked path (runc semantics: reading a
-    /// masked directory fails with ENOTDIR). Missing paths are skipped, matching
-    /// runc's tolerance for absent kernel paths.
     /// Extract the raw OS error from an anyhow chain (mount syscall errors).
     fn errno_of(error: &anyhow::Error) -> Option<i32> {
         error
@@ -282,23 +279,33 @@ mod linux {
             return Ok(());
         }
         ensure_minimal_dev_nodes()?;
-        let source = Path::new("/dev/null");
         for path in paths {
-            let target = Path::new(path);
-            if !target.exists() {
-                continue;
-            }
-            if let Err(error) = mount(Some(source), target, None, libc::MS_BIND, None) {
-                // Kernel-proc entries that are symlinks or don't support
-                // bind mounts are skipped, matching runc's tolerance.
-                if errno_of(&error) == Some(libc::ENOENT) || errno_of(&error) == Some(libc::ENOTDIR)
-                {
-                    continue;
-                }
-                return Err(error).with_context(|| format!("mask {path}"));
-            }
+            mask_path(Path::new(path)).with_context(|| format!("mask {path}"))?;
         }
         Ok(())
+    }
+
+    fn mask_path(target: &Path) -> Result<()> {
+        crate::masked_path::mask_path(
+            || {
+                mount(
+                    Some(Path::new("/dev/null")),
+                    target,
+                    None,
+                    libc::MS_BIND,
+                    None,
+                )
+            },
+            || {
+                mount(
+                    Some(Path::new("tmpfs")),
+                    target,
+                    Some("tmpfs"),
+                    libc::MS_RDONLY | libc::MS_NOSUID | libc::MS_NODEV | libc::MS_NOEXEC,
+                    Some("mode=000"),
+                )
+            },
+        )
     }
 
     /// Self-bind each readonly path and remount it read-only.
@@ -417,6 +424,42 @@ mod linux {
             )
         })
         .context("remount root read-only")
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        #[ignore = "requires Linux CAP_SYS_ADMIN in an isolated test process"]
+        fn masked_paths_hide_files_and_directories_in_private_mount_namespace() {
+            assert_eq!(
+                unsafe { libc::unshare(libc::CLONE_NEWNS) },
+                0,
+                "{}",
+                std::io::Error::last_os_error()
+            );
+            make_mounts_private().unwrap();
+            let root = tempfile::tempdir().unwrap();
+            let file = root.path().join("file");
+            let dir = root.path().join("dir");
+            fs::write(&file, b"file secret").unwrap();
+            fs::create_dir(&dir).unwrap();
+            fs::write(dir.join("secret"), b"directory secret").unwrap();
+            mask_path(&root.path().join("absent")).unwrap();
+            mask_path(&file).unwrap();
+            mask_path(&dir).unwrap();
+            assert!(fs::read(&file).unwrap().is_empty());
+            assert_eq!(fs::read_dir(&dir).unwrap().count(), 0);
+            assert_eq!(
+                fs::write(dir.join("new"), b"x").unwrap_err().raw_os_error(),
+                Some(libc::EROFS)
+            );
+            assert_eq!(unsafe { libc::umount2(cstr(&file).as_ptr(), 0) }, 0);
+            assert_eq!(unsafe { libc::umount2(cstr(&dir).as_ptr(), 0) }, 0);
+            assert_eq!(fs::read(&file).unwrap(), b"file secret");
+            assert_eq!(fs::read(dir.join("secret")).unwrap(), b"directory secret");
+        }
     }
 }
 

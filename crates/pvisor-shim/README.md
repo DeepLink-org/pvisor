@@ -604,3 +604,20 @@ exec flows to try: `docker run -it --rm
 and `echo hi | docker run -i --rm --runtime=io.containerd.pvisor.v2 busybox cat`.
 
 [containerd Runtime v2]: https://github.com/containerd/containerd/blob/main/docs/runtime-v2.md
+
+OCI `maskedPaths` bind `/dev/null` over files and mount an empty read-only tmpfs
+over directories (`nosuid,nodev,noexec`, mode `000`). Only an absent bind target
+is skipped; ENOTDIR requires the directory mount, and permission or fallback
+mount failures abort initialization. Metadata-probe errors are not treated as
+absence. Portable fault tests cover the syscall outcome branches.
+
+The real Linux mount regression requires CAP_SYS_ADMIN and runs in a private
+mount namespace. It is explicitly ignored by the ordinary suite; run it with:
+
+```sh
+mise run test -- pvisor-shim -- --lib --run-ignored only -E 'test(masked_paths_hide_files_and_directories_in_private_mount_namespace)'
+```
+
+It verifies hidden file/directory contents, read-only directory behavior, missing
+paths and unchanged underlying contents after unmount. Cross-compilation or
+portable fault tests do not constitute this kernel acceptance.

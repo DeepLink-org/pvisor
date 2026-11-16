@@ -1570,6 +1570,135 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn completion_publication_fault_preserves_workload_and_recovery() {
+        use pvisor_core::{CompletionPhase, CompletionPublication};
+        for filename in ["run.json", "completion.json"] {
+            for (published, code) in [false, true]
+                .into_iter()
+                .flat_map(|published| [0, 7].map(|code| (published, code)))
+            {
+                let expected = if code == 0 {
+                    RunState::Completed
+                } else {
+                    RunState::Failed
+                };
+                let expected_record = if code == 0 {
+                    crate::RunRecordState::Completed
+                } else {
+                    crate::RunRecordState::Failed
+                };
+                let storage = tempfile::tempdir().unwrap();
+                let effect = storage.path().join("effect-count");
+                let fault = crate::util::publication_fault::Guard::install(
+                    storage.path().join(filename),
+                    published,
+                );
+                let sink = Arc::new(MemoryEventSink::default());
+                let runtime = PVisor::builder()
+                    .storage(storage.path())
+                    .event_sink(sink.clone())
+                    .build();
+                let mut spec = RunSpec::process("completion-publication-fault", "test", "/bin/sh");
+                let RunInvocation::Process(process) = &mut spec.invocation;
+                process.args = vec![
+                    "-c".into(),
+                    format!("printf x >> \"$1\"; exit {code}"),
+                    "sh".into(),
+                    effect.to_string_lossy().into_owned(),
+                ];
+                let result = runtime.run(spec).await.unwrap().wait().await.unwrap();
+                assert_eq!(fault.hits(), 1);
+                drop(fault);
+                assert_eq!(
+                    result.state, expected,
+                    "{filename}, published={published}: {result:?}"
+                );
+                assert!(
+                    !sink.events().iter().any(|event| matches!(
+                        event.name(),
+                        "completed" | "run.completed" | "run.failed"
+                    )),
+                    "unconfirmed persistence must suppress completion notifications"
+                );
+                assert_eq!(result.exit_code, Some(code));
+                assert_eq!(result.failure.is_none(), code == 0);
+                if let Some(failure) = &result.failure {
+                    assert_eq!(failure.kind, RunFailureKind::ProcessExit);
+                    assert!(!failure.retryable);
+                }
+                let error = result
+                    .completion_error
+                    .as_ref()
+                    .expect("typed persistence failure");
+                assert_eq!(
+                    error.phase,
+                    if filename == "run.json" {
+                        CompletionPhase::RunProjection
+                    } else {
+                        CompletionPhase::Receipt
+                    }
+                );
+                assert_eq!(
+                    error.publication,
+                    if published {
+                        CompletionPublication::Unknown
+                    } else {
+                        CompletionPublication::Rejected
+                    }
+                );
+                assert_eq!(std::fs::read(&effect).unwrap(), b"x");
+                let receipt = storage.path().join("completion.json");
+                let visible = filename == "completion.json" && published;
+                assert_eq!(receipt.exists(), visible);
+                let before = visible.then(|| std::fs::read(&receipt).unwrap());
+                if let Some(bytes) = &before {
+                    let stored: serde_json::Value = serde_json::from_slice(bytes).unwrap();
+                    let observed = serde_json::to_value(&result).unwrap();
+                    for key in [
+                        "state",
+                        "exit_code",
+                        "failure",
+                        "started_at_unix_ms",
+                        "finished_at_unix_ms",
+                        "executor_observations",
+                        "output",
+                    ] {
+                        assert_eq!(stored["result"][key], observed[key], "{key}");
+                    }
+                }
+                let bundle_path = crate::RunBundle::path(storage.path());
+                let bundle = std::fs::read(&bundle_path).unwrap();
+                let mut record = crate::RunRecord::read(storage.path()).unwrap();
+                assert_eq!(
+                    record.state,
+                    if visible {
+                        expected_record
+                    } else {
+                        crate::RunRecordState::Unknown
+                    }
+                );
+                let _lease = crate::runtime::registry::RunLease::acquire(storage.path()).unwrap();
+                for _ in 0..2 {
+                    crate::runtime::completion::reconcile(&mut record).unwrap();
+                    assert_eq!(
+                        record.state,
+                        if visible {
+                            expected_record
+                        } else {
+                            crate::RunRecordState::Unknown
+                        }
+                    );
+                }
+                assert_eq!(std::fs::read(&bundle_path).unwrap(), bundle);
+                if let Some(before) = before {
+                    assert_eq!(std::fs::read(&receipt).unwrap(), before);
+                }
+                assert_eq!(std::fs::read(&effect).unwrap(), b"x");
+            }
+        }
+    }
+
     struct RejectCreatedSink;
 
     #[async_trait]

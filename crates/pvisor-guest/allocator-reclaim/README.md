@@ -11,7 +11,7 @@ Build the preload, test fixtures and engineering payload with Rust and bundled
 
 ```sh
 mise exec -- rustup target add aarch64-unknown-linux-gnu aarch64-unknown-linux-musl
-PVISOR_RECLAIM_LIB_DIR=/path/to/guest/lib mise exec -- sh tools/allocator-reclaim/build.sh aarch64 /tmp/reclaim
+PVISOR_RECLAIM_LIB_DIR=/path/to/guest/lib mise exec -- sh crates/pvisor-guest/allocator-reclaim/build.sh aarch64 /tmp/reclaim
 # Use x86_64 and its GNU/musl targets for an x86_64 guest.
 ```
 
@@ -20,9 +20,11 @@ and `libdl.so.2` files, including resolved symlink targets. Use libraries from
 the oldest supported glibc distribution: newer libraries can require newer
 symbol versions. C headers and a C sysroot are not needed.
 
-The standalone Cargo package owns all sources and produces `libpvisor-reclaim.so`,
+This pvisor-guest-owned standalone Cargo package owns all preload and fixture sources and produces `libpvisor-reclaim.so`,
 `subject`, `interposer.so` (test only), `static-subject` (test only) and `payload`
-(engineering experiment). Ordinary guest builds do not build these tools.
+(engineering experiment). Ordinary guest builds do not build these optional artifacts. The separate Cargo
+manifest keeps the no_std cdylib, guest-glibc linker inputs and abort-only release
+profile isolated from the PID 1 executable and host workspace.
 The preload uses `no_std` and no Rust allocator, resolving allocator symbols in
 the target without replacing malloc/free. Dynamic fixtures explicitly call
 glibc malloc/free/mallopt. They share minimal Rust/glibc startup; the vfork child's
@@ -172,7 +174,7 @@ RSS from 67,555,328 to 454,656 bytes. These are functional checks, not a benchma
 or host physical-memory measurement. All 12 host tests, strict rustdoc,
 aarch64/x86_64 clippy and affected pvisor consumer compilation passed. Both SO
 architectures and x86_64 Rust test executables were cross-built; x86_64 was not
-executed. The separate [whole-VMM memory experiment](../../benchmark/memory/allocator_reclaim_results.md)
+executed. The separate [whole-VMM memory experiment](../../../benchmark/memory/allocator_reclaim_results.md)
 boots the rebuilt PID 1 and uses real vsock on glibc 2.31: all 20 VMs passed
 refill/live-data integrity checks, with measured host footprint reductions.
 glibc 2.17 runtime coverage remains unverified.

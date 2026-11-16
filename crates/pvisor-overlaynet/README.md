@@ -287,3 +287,10 @@ per-destination send budgets stay unchanged. A full receive queue may report
 `ENOBUFS` on Darwin; packet sends treat it as transient congestion, drop the
 remaining burst and retain the connected peer socket. Broken destinations still
 invalidate their link. No global socket settings or application retries change.
+
+VM direct egress and its explicit HTTP / CONNECT proxy both select Core's
+`ResolvedAddressPolicy::VmEgress`. Every resolved address is checked before it
+can enter the connector's pinned address list, including under Public policy.
+The proxy owner binds this through `with_resolved_address_policy`; host proxies
+default to `HostConnectorAliases`. Unit tests cover mixed DNS answers and the
+Gateway integration tests cover both proxy methods with LLM dispatch on and off.

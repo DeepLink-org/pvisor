@@ -227,3 +227,10 @@ macOS and other Unix platforms retain bounded `lsof`/`ps` probes: they receive a
 kill after one second and are reaped before releasing their worker slot;
 uninterruptible kernel waits can delay reaping. Read-back metadata is capped at
 1 MiB. Probe failure leaves metadata absent and does not fail model forwarding.
+
+An embedded VM execution must set `InProcessRuntime.resolved_address_policy` to
+`VmEgress`, including network-only executions with LLM dispatch disabled. pVisor's
+execution driver supplies it automatically. HTTP and CONNECT then share Core's
+VM hard-address constraints with direct virtio-net egress. The default remains
+`HostConnectorAliases` for host proxies. This setting does not introduce policy
+hot reload or restrict the operator's configured model-provider routes.

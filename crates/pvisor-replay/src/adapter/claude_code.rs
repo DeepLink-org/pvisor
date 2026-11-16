@@ -2727,13 +2727,31 @@ mod tests {
         let workspace = tempfile::tempdir().unwrap();
         let log = workspace.path().join("bash.log");
         let started = Instant::now();
-        let (content, is_error, return_code, truncated) =
-            run_bash("sleep 5", workspace.path(), Duration::from_millis(50), &log).unwrap();
-        assert!(started.elapsed() < Duration::from_secs(2));
+        let (content, is_error, return_code, truncated) = run_bash(
+            "printf '%s\\n' \"$$\"; exec /bin/sleep 5",
+            workspace.path(),
+            Duration::from_millis(50),
+            &log,
+        )
+        .unwrap();
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "Bash timeout took {:?}: {content}",
+            started.elapsed()
+        );
         assert!(is_error);
         assert_eq!(return_code, Some(124));
         assert!(content.contains("timed out"));
         assert!(!truncated);
+        let pid = content
+            .lines()
+            .find_map(|line| line.parse::<i32>().ok())
+            .expect("Bash reached the sleeping workload");
+        assert_eq!(unsafe { libc::kill(-pid, 0) }, -1, "process group survived");
+        assert_eq!(
+            std::io::Error::last_os_error().raw_os_error(),
+            Some(libc::ESRCH)
+        );
     }
 
     #[test]

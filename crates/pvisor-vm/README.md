@@ -673,18 +673,31 @@ causing ordinary tools such as GNU `cp` to report a replaced input. Ordinary
 passthrough shares retain their existing native submount behavior.
 
 Nested guest overlayfs (for example dockerd's overlay2 graph driver on the
-shared rootfs) is supported at the FUSE contract level. RENAME2 accepts
-`RENAME_WHITEOUT`; the overlay adapter performs the rename and creates the
-whiteout as a real char(0,0) node in the writable upper layer under the
-guest-visible name, so lookups, `st_rdev` and readdir `DT_CHR` behave like a
-native overlayfs upperdir. Core's own `.wh.` markers stay reserved and hidden.
-Guest `trusted.overlay.*`/`user.overlay.*`/`user.fuseoverlayfs.*` control
-xattrs are translated into the `user.pvisor.overlay.*` stored namespace by
-SETXATTR/GETXATTR/REMOVEXATTR and back by LISTXATTR; direct guest access to
-stored names is rejected so control state cannot be forged. Creating whiteout
-nodes requires the host server to hold `CAP_MKNOD`; without it the guest
-overlayfs mount probe fails closed and dockerd falls back to its vfs storage
-driver.
+shared rootfs) is supported at the FUSE contract level. Guest char(0,0) nodes
+use host-safe regular files carrying private `user.pvisor.virtual_node` metadata;
+lookup/getattr/readdir project char type and zero device number. They do not
+require host CAP_MKNOD. Other device numbers keep native capability checks.
+
+Mandatory metadata is completed in a reserved, guest-invisible temporary file
+before MKNOD or RENAME_WHITEOUT publishes it. Preparation uses native RAII file
+ownership and acquires no passthrough handle or lookup reference; its errors
+cannot leak those resources. Core retains a replaced rename target until the
+whiteout is installed and restores both names on installation failure. A second
+I/O error during rollback is explicit and retains recovery backups; no crash-
+atomic multi-name transaction is claimed. Invalid virtual-node records and
+unexpected xattr-read errors fail replies rather than presenting ordinary files.
+Native lower permission-denied xattr probes retain native stat metadata: ordinary
+mode `0000`/`0200` files remain lookup/getattr/readdirplus-visible without granting
+read access. Imported lower virtual-node records must be host-readable for type
+projection. Managed upper metadata permission errors still fail closed.
+Tests inject EIO/ENOSPC/unsupported metadata errors, verify original names/types/
+contents and retry, and retain same-inode rename no-op behavior.
+
+Core's own `.wh.` markers stay reserved and hidden. Guest
+`trusted.overlay.*`/`user.overlay.*`/`user.fuseoverlayfs.*` control xattrs map to
+the private `user.pvisor.overlay.*` stored namespace and back. Direct guest
+access to stored controls is rejected; these attributes cannot forge Core's
+merged-view whiteouts or opaque state.
 
 ## Physical lower stability contract
 
@@ -1275,6 +1288,10 @@ ROOTFS 须包含 `/usr/bin/python3`，FIRMWARE 是支持 DAX 的 libkrunfw 文�
 `mise run test -- pvisor-vm` 运行设备、快照和接口契约测试；macOS 自动使用仓库既有 Hypervisor entitlement 签署测试程序。真实 HVF/KVM 和本地 socket 测试需要宿主权限。Linux 测试中创建 VM 的用例需要可用 `/dev/kvm`。
 
 `repository_boundary` 检查所有工作区 manifest 与外部 Rust 调用者，保证 VM 核心组件只在本 crate 内编译。`api_contract` 保证 API 无条件编译、无方法体，并禁止私有适配器另设公开固有方法。
+
+外部源码扫描覆盖 `crates/` 和 `benchmark/`，包括迁入 guest 的 allocator reclaim；
+不依赖已退役的顶层 `tools/`。临时仓库回归同时检查缺少该目录仍能扫描，
+以及 guest preload 中引入旧 VM runtime 时仍会失败。
 
 真实 Linux guest 的独立 rootfs/RAM 保存与恢复验证使用 `mise run test-environment-snapshot`，整机冷恢复使用 `mise run test-linux-cold-restore`（均为 Apple Silicon HVF 的私有专项入口）。报告保存到 `${CARGO_TARGET_DIR:-target}/vm-validation/`，可传 `--report PATH` 覆盖；固件需先通过 `mise run fw -- build` 准备，并将 `PVISOR_CASE_VM_LIBRARY_DIR` 指向生成的 dylib 目录，默认读取构建目录的 `release/`。guest 探针在 `src/probes/guest_linux.rs`，readiness 使用原子 rename 发布，避免把探针写文件的中间状态误判为恢复失败。底层 CPU/RAM 与 VMM-thread CPU/RAM/GIC 检查分别使用 `mise run test-hvf-cold-restore` 和 `mise run test-vm-snapshot-state`，它们的报告只描述各自覆盖的范围。mise 负责编译、签名与签名校验；Python 只运行已构建的探针并检查状态和报告。环境快照验证仍为源进程与恢复进程复制同一个已签名 runner 到私有目录。
 
@@ -2069,3 +2086,11 @@ advice 的实例保留原有所有权策略，不进入匿名零映射替换。�
 
 工程验证及 64/256 MiB 整个 VMM 的 footprint/RSS 对照见
 [allocator reclaim 实验](../../benchmark/memory/README.md#pid-1-allocator-reclaim-and-whole-vmm-memory)。
+
+VM MKDIR delegates directory namespace publication to Core's `create_dir_with`.
+Deleting and recreating a lower directory keeps its old children hidden through
+LOOKUP, GETATTR, READDIRPLUS and reopening the backing. Recreation takes exclusive
+namespace admission through opacity/identity publication; fresh directories keep
+disjoint-parent creation concurrency. Native security contexts, guest ownership,
+umask and setgid handling stay in the adapter. No guest entry is published by the
+creating request until Core completes directory initialization.

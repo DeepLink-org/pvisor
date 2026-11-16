@@ -17,7 +17,8 @@
 </div>
 
 pVisor 是一个沙箱框架，有两种模式。Docker style sandbox 为每个容器提供独立 VM。
-Agent style stagebox 是 pVisor 独创的 Agent 模式：文件改动先暂存，由你审查后选择接收。
+Agent style stagebox 是 pVisor 最初的 Agent 模式：显式启用暂存后，文件改动先暂存，
+由你审查后选择接收。
 
 ## 两种模式
 

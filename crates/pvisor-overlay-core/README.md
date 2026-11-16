@@ -57,6 +57,23 @@ are retained. This does not inject process death, mount FUSE, promise automatic
 rename-selection closure or claim transactionality against writers running during
 publication.
 
+## Prepared guest whiteout publication
+
+`create_guest_whiteout` and `rename_with_whiteout` accept a caller-owned regular
+file in the upper root's reserved `.wh..pvisor-node-` namespace, already carrying
+`user.pvisor.virtual_node=c:0:0`. The adapter holds exclusive mutation ownership
+and removes the temporary name after the call. Core records preimages and
+publishes only the fully typed node. Failed creation restores a pre-existing
+lower-hiding marker. Rename retains any overwritten upper entry until the
+whiteout is installed; failed installation restores source, destination and
+markers before returning the original error. Failed rollback is reported with
+both diagnostics and retains available replacement backups for reconciliation.
+This is live-error recovery, not a process-death/power-loss transaction.
+
+Private fault tests cover missing/lower/upper/hidden targets, lower/upper sources,
+reopen, unchanged lower bytes and explicit successful retry. Protocol lookup and
+handle ownership remains in adapters; preparing a node acquires neither.
+
 ## Explicit private VM backing metadata (Linux)
 
 `OverlayLayout::with_private_backing()` opts an exclusively owned fresh upper
@@ -804,3 +821,14 @@ Validation does not repair malformed files or follow replacement symlinks.
 `tests/preimage_file_types.rs` bounds the FIFO check in an independent child
 and verifies valid, corrupt, directory and symlink inputs through the public
 sealed-stage gate.
+
+`create_dir_with` shares directory preimages, checked lower presence, opacity
+and whiteout publication with native adapters. A directory recreated over hidden
+lower state becomes opaque before its whiteout is cleared. Initialization and
+opacity failures remove the new empty upper directory, retaining the old
+whiteout; cleanup failures are explicit. The caller excludes same-name writers,
+and readers during lower-directory recreation. Native initialization retains
+protocol ownership/security metadata; Core temporarily adds owner access to set
+opacity and restores the original native permissions. Fault tests cover EIO /
+ENOSPC after native creation, reopen, retry and unchanged lower contents. This
+does not promise crash-atomic directory creation or cleanup after a second error.

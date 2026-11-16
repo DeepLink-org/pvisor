@@ -86,6 +86,12 @@ new destination visible with uncertain crash durability. Observers run after
 I/O and cleanup, report attempted steps including failure, and exclude observer
 work from durations. There is no portable non-Unix file backend in this crate.
 
+Private atomic-publication regressions inject EIO immediately before file sync,
+rename and the final parent-directory sync. They verify unchanged old bytes or a
+complete visible replacement as appropriate, original errno, attempted-phase
+observations, temporary cleanup and successful explicit retry. These are bounded
+I/O fault tests, not physical power-loss tests.
+
 ## Usage
 
 ```rust

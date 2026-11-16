@@ -233,6 +233,19 @@ impl FilesystemService {
     pub fn create_dir(&self, rel: &Path, mode: u32) -> io::Result<()> {
         self.core.create_dir(rel, mode)
     }
+    /// Checked physical lower presence, including entries hidden by upper whiteouts.
+    pub fn exists_in_lower_checked(&self, rel: &Path) -> io::Result<bool> {
+        self.core.exists_in_lower_checked(rel)
+    }
+    /// Adapter directory creation; see OverlayCore::create_dir_with for the
+    /// exclusive namespace ownership, initialization and failure contract.
+    pub fn create_dir_with(
+        &self,
+        rel: &Path,
+        create: impl FnOnce() -> io::Result<()>,
+    ) -> io::Result<()> {
+        self.core.create_dir_with(rel, create)
+    }
     pub fn create_file(&self, rel: &Path, mode: u32, flags: i32) -> io::Result<File> {
         self.core.create_file(rel, mode, flags)
     }
@@ -322,6 +335,25 @@ impl FilesystemService {
     }
     pub fn rename(&self, old: &Path, new: &Path, no_replace: bool) -> io::Result<()> {
         self.core.rename(old, new, no_replace)
+    }
+    /// Publish a reserved, fully prepared char(0,0) placeholder. Caller holds the
+    /// exclusive namespace guard and retains temporary-file cleanup ownership.
+    /// See OverlayCore::create_guest_whiteout for validation and failure state.
+    pub fn create_guest_whiteout(&self, rel: &Path, prepared: &Path) -> io::Result<()> {
+        self.core.create_guest_whiteout(rel, prepared)
+    }
+    /// Rename with a prepared whiteout under the caller's exclusive namespace
+    /// guard. Both names are restored on install failure; rollback failure is
+    /// explicit and retains backups. This is not process-crash atomicity.
+    pub fn rename_with_whiteout(
+        &self,
+        old: &Path,
+        new: &Path,
+        no_replace: bool,
+        prepared: &Path,
+    ) -> io::Result<()> {
+        self.core
+            .rename_with_whiteout(old, new, no_replace, prepared)
     }
     /// Validate and observe a serialized rename/exchange without publishing it;
     /// returned roots need recursive copy preparation. See Core for ordering.

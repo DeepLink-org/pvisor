@@ -36,6 +36,7 @@ pub(crate) struct GatewayState {
     pub(crate) active_requests: Arc<AtomicUsize>,
     pub(crate) interception_metrics: InterceptionMetrics,
     pub(crate) bandwidth_registry: BandwidthRegistry,
+    pub(crate) resolved_address_policy: pvisor_core::network::ResolvedAddressPolicy,
     pub(crate) execution_id: Option<String>,
     pub(crate) model_wait: Option<Arc<dyn crate::model_wait::ModelWaitLifecycle>>,
 }
@@ -46,6 +47,7 @@ pub(crate) struct GatewayRuntimeControl {
     pub(crate) controller: Arc<dyn ControlController>,
     pub(crate) interception_metrics: InterceptionMetrics,
     pub(crate) bandwidth_registry: BandwidthRegistry,
+    pub(crate) resolved_address_policy: pvisor_core::network::ResolvedAddressPolicy,
     pub(crate) execution_id: Option<String>,
     pub(crate) gateway_enabled: bool,
     pub(crate) model_wait: Option<Arc<dyn crate::model_wait::ModelWaitLifecycle>>,
@@ -119,6 +121,8 @@ pub async fn serve_with_listeners_and_shutdown(
             controller: Arc::new(PolicyControlController),
             interception_metrics: InterceptionMetrics::default(),
             bandwidth_registry: BandwidthRegistry::default(),
+            resolved_address_policy:
+                pvisor_core::network::ResolvedAddressPolicy::HostConnectorAliases,
             execution_id: None,
             gateway_enabled: true,
             model_wait: None,
@@ -157,6 +161,8 @@ pub async fn serve_with_runtime_control(
             controller: control_controller,
             interception_metrics: InterceptionMetrics::default(),
             bandwidth_registry: BandwidthRegistry::default(),
+            resolved_address_policy:
+                pvisor_core::network::ResolvedAddressPolicy::HostConnectorAliases,
             execution_id: None,
             gateway_enabled: true,
             model_wait: None,
@@ -302,6 +308,7 @@ async fn serve_with_bound_listeners(
         active_requests: Arc::clone(&active_requests),
         interception_metrics: interception_metrics.clone(),
         bandwidth_registry: runtime_control.bandwidth_registry,
+        resolved_address_policy: runtime_control.resolved_address_policy,
         execution_id: runtime_control.execution_id,
         gateway_enabled: runtime_control.gateway_enabled,
         model_wait: runtime_control.model_wait,

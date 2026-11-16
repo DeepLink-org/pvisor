@@ -159,21 +159,41 @@ fn byte_order_guard_preserves_paired_declaration_with_windows_line_endings() {
 }
 
 struct CallGuard;
+fn reject_old_runtime(name: &syn::Ident) {
+    let name = name.to_string();
+    assert!(
+        !["krun", "libkrun", "krun_vmm", "krun_devices", "krun_hvf"].contains(&name.as_str()),
+        "old runtime import/call: {name}"
+    );
+}
+
+fn inspect_use_root(tree: &syn::UseTree) {
+    match tree {
+        syn::UseTree::Path(path) => reject_old_runtime(&path.ident),
+        syn::UseTree::Name(name) => reject_old_runtime(&name.ident),
+        syn::UseTree::Rename(rename) => reject_old_runtime(&rename.ident),
+        syn::UseTree::Group(group) => group.items.iter().for_each(inspect_use_root),
+        syn::UseTree::Glob(_) => {}
+    }
+}
+
 impl<'ast> Visit<'ast> for CallGuard {
+    fn visit_item_use(&mut self, item: &'ast syn::ItemUse) {
+        inspect_use_root(&item.tree);
+        visit::visit_item_use(self, item);
+    }
+
     fn visit_path(&mut self, path: &'ast syn::Path) {
         if let Some(first) = path.segments.first() {
-            let name = first.ident.to_string();
-            assert!(
-                !["krun", "libkrun", "krun_vmm", "krun_devices", "krun_hvf"]
-                    .contains(&name.as_str()),
-                "old runtime import/call: {name}"
-            );
+            reject_old_runtime(&first.ident);
         }
         visit::visit_path(self, path);
     }
 }
 fn inspect_sources(directory: &Path) {
-    for entry in std::fs::read_dir(directory).unwrap() {
+    for entry in std::fs::read_dir(directory)
+        .unwrap_or_else(|error| panic!("scan {}: {error}", directory.display()))
+    {
         let path = entry.unwrap().path();
         if path.is_dir() {
             // Benchmark downloads contain third-party rootfs/toolchain sources,
@@ -197,7 +217,35 @@ fn external_rust_callers_do_not_import_the_old_runtime() {
         .unwrap()
         .parent()
         .unwrap();
+    inspect_external_sources(root);
+}
+
+fn inspect_external_sources(root: &Path) {
     inspect_sources(&root.join("crates"));
     inspect_sources(&root.join("benchmark"));
-    inspect_sources(&root.join("tools"));
+}
+
+#[test]
+fn external_source_scan_checks_guest_preload_without_a_tools_directory() {
+    let root = tempfile::tempdir().unwrap();
+    let preload = root.path().join("crates/pvisor-guest/allocator-reclaim");
+    std::fs::create_dir_all(&preload).unwrap();
+    std::fs::create_dir(root.path().join("benchmark")).unwrap();
+    let source = preload.join("reclaim.rs");
+    std::fs::write(&source, "use supported::krun_vmm; fn worker() {}\n").unwrap();
+    assert!(!root.path().join("tools").exists());
+    inspect_external_sources(root.path());
+    for forbidden in [
+        "use krun_vmm::Vmm;",
+        "use ::krun_vmm::Vmm;",
+        "use {supported::Thing, krun_vmm::Vmm};",
+        "use krun_vmm as old;",
+        "fn worker() { krun_vmm::worker(); }",
+    ] {
+        std::fs::write(&source, forbidden).unwrap();
+        assert!(
+            std::panic::catch_unwind(|| inspect_external_sources(root.path())).is_err(),
+            "missed old runtime reference: {forbidden}"
+        );
+    }
 }

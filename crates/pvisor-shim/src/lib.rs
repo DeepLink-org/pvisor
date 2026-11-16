@@ -10,6 +10,8 @@ pub mod caps;
 pub mod cgroup;
 mod device_policy;
 pub mod inject;
+#[cfg(any(target_os = "linux", test))]
+mod masked_path;
 pub mod plan;
 pub mod sockets;
 pub mod spec;

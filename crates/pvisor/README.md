@@ -219,6 +219,17 @@ failure after a lost acknowledgement. Identical receipt commits are idempotent;
 a different result cannot replace one. Without retained storage, event publication
 retains its existing failure semantics.
 
+Completion publication errors preserve the observed workload state, exit code,
+failure and timestamps. `RunResult.completion_error` separately identifies the
+Run-projection/receipt/task phase and Rejected/Unknown publication; it never
+permits rerunning the workload. No terminal fact/event is emitted after that
+error, and the immutable Bundle/receipt is not rewritten. Managed Sessions remain
+Unknown until leased receipt reconciliation. A visible matching receipt is not a
+durability acknowledgement: identical commit retries and reconciliation perform
+a new parent-directory barrier before claiming persistence success. Missing
+receipts stay Unknown and do not authorize apply or workload retry. Executions
+without retained storage omit this field too; omission alone is not durability.
+
 Event delivery is separate from committed execution: rejected/unknown terminal
 appends never replace a committed result or publish a contradictory terminal.
 Post-commit audit gaps appear in the returned result's warnings, without rewriting
@@ -2575,3 +2586,8 @@ identify contention without logging page contents. This is a targeted candidate
 for pressure qualification, not evidence that the 80-VM deadline failure is
 resolved. A protocol test holds the owner lock and checks that rejection leaves
 an existing shared reference restorable and releasable.
+
+Execution preparation binds VM Gateway proxies to Core's VM resolved-address
+constraints, even when LLM Gateway dispatch is disabled. Injected HTTP/HTTPS/ALL
+proxy routes therefore cannot widen direct VM egress to link-local metadata or
+IPv6 destinations. Host execution keeps the host proxy's address policy.

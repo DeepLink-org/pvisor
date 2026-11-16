@@ -57,12 +57,23 @@ pub(crate) fn read_file(path: &Path) -> anyhow::Result<Vec<u8>> {
 
 impl Completion {
     pub(crate) fn commit(record: &RunRecord, result: &RunResult) -> anyhow::Result<()> {
+        use pvisor_journal::api::{DurableFiles, Persistence};
+        Self::commit_using(record, result, Persistence::sync_directory)
+    }
+
+    fn commit_using(
+        record: &RunRecord,
+        result: &RunResult,
+        sync: impl FnOnce(&Path) -> anyhow::Result<()>,
+    ) -> anyhow::Result<()> {
         if let Some(committed) = Self::load(record)? {
             ensure!(
                 serde_json::to_value(&committed.result)? == serde_json::to_value(result)?,
                 "Execution completion is already committed with a different result"
             );
-            return Ok(());
+            // A previous acknowledgement may have been lost after rename.
+            // Reading matching bytes proves visibility, not the parent barrier.
+            return sync(&record.stage_dir());
         }
         let stage = record.stage_dir();
         let bundle_bytes = read_file(&super::bundle::RunBundle::path(&stage))?;
@@ -151,6 +162,10 @@ impl Completion {
 
     fn validate(&self, record: &RunRecord) -> anyhow::Result<()> {
         ensure!(
+            self.result.completion_error.is_none(),
+            "completion receipt cannot contain a return-time persistence error"
+        );
+        ensure!(
             self.version == VERSION && record.completion_protocol == Some(VERSION),
             "unsupported completion protocol"
         );
@@ -199,6 +214,11 @@ pub(crate) fn reconcile_session(
     let previous = serde_json::to_value(&*record)?;
     let completion =
         Completion::observe_record(record).context("read committed Execution completion")?;
+    if completion.is_some() {
+        use pvisor_journal::api::{DurableFiles, Persistence};
+        Persistence::sync_directory(&record.stage_dir())
+            .context("confirm completion directory durability before reconciliation")?;
+    }
     if let Some(session) = session {
         let changed = session.apply(super::execution::SessionTransition::CompletionObserved {
             record,
@@ -298,6 +318,29 @@ mod tests {
                 serde_json::to_value(reconciled).unwrap()
             );
         }
+    }
+
+    #[test]
+    fn identical_receipt_retry_requires_a_new_directory_barrier() {
+        let root = tempfile::tempdir().unwrap();
+        let (record, result) = fixture(root.path());
+        Completion::commit(&record, &result).unwrap();
+        let before = std::fs::read(root.path().join(FILENAME)).unwrap();
+        let error = Completion::commit_using(&record, &result, |path| {
+            assert_eq!(path, root.path());
+            Err(std::io::Error::from_raw_os_error(libc::EIO).into())
+        })
+        .unwrap_err();
+        assert_eq!(
+            error
+                .downcast_ref::<std::io::Error>()
+                .unwrap()
+                .raw_os_error(),
+            Some(libc::EIO)
+        );
+        assert_eq!(std::fs::read(root.path().join(FILENAME)).unwrap(), before);
+        Completion::commit(&record, &result).unwrap();
+        assert_eq!(std::fs::read(root.path().join(FILENAME)).unwrap(), before);
     }
 
     #[test]

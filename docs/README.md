@@ -570,8 +570,10 @@ reading the article tree. This is a host resource failure, not a Markdown error.
 The page checker must still run after the generator.
 
 `mise run docs-build` and `mise run docs-serve` check available native watches before
-invoking Zensical. A failed preflight stops before deleting the existing site.
-The check cannot reserve capacity against concurrent editor activity.
+invoking Zensical. The strict build stops on a failed preflight before deleting the existing site.
+Live preview warns and continues for local iteration; it does not provide the
+strict build's preservation guarantee. The check cannot reserve capacity against
+concurrent editor activity.
 
 Check `cat /proc/sys/fs/inotify/max_user_watches`. Free unnecessary editor watches
 or increase the host limit, for example `sudo sysctl -w fs.inotify.max_user_watches=524288`.

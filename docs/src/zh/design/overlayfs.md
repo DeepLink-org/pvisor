@@ -24,7 +24,7 @@ Agent 修改工作区时，开发者通常希望先看结果，再决定合入�
 | `pvisor-core::overlay` | `OverlayRecord`、`ApplyRecord`、指纹与路径编码 | 跨 runtime / driver 共享的序列化合同 |
 | runtime / 文件服务适配器 | Execution lease、mount、文件 handle、请求与观察 | 停止写入、挂载生命周期、调用共享 core |
 
-OverlayCore 不拥有 FUSE mount、Run 调度或公开 Event Journal。它借用 `pvisor-journal::atomic_write` 持久化元数据，但 `apply-ledger.json` 不是 [Event Journal](journal.md)：前者整体替换 JSON，后者逐行追加事件。
+OverlayCore 不拥有 FUSE mount、Run 调度或公开 Event Journal。它借用 `pvisor_journal::api::Persistence::atomic_write`（`DurableFiles` trait） 持久化元数据，但 `apply-ledger.json` 不是 [Event Journal](journal.md)：前者整体替换 JSON，后者逐行追加事件。
 
 ### 统一文件服务与双入口 {#filesystem-service}
 

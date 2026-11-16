@@ -11,6 +11,26 @@ reference = runpy.run_path(str(ROOT / "scripts/check-reference.py"))
 
 
 class NativeDocumentationTests(unittest.TestCase):
+    def test_ci_tutorial_contains_a_runnable_workflow_structure(self):
+        import re
+
+        import yaml
+
+        for locale in ("en", "zh"):
+            with self.subTest(locale=locale):
+                page = (ROOT / f"docs/src/{locale}/guides/ci.md").read_text()
+                blocks = re.findall(r"^```yaml\n(.*?)^```", page, re.M | re.S)
+                self.assertTrue(blocks, "CI tutorial must contain a workflow")
+                for block in blocks:
+                    workflow = yaml.load(block, Loader=yaml.BaseLoader)
+                    self.assertIn("workflow_dispatch", workflow["on"])
+                    self.assertTrue(workflow["jobs"])
+                    for job in workflow["jobs"].values():
+                        self.assertIn("runs-on", job)
+                        self.assertTrue(job["steps"])
+                        for step in job["steps"]:
+                            self.assertEqual(sum(key in step for key in ("uses", "run")), 1)
+
     def test_site_configs_and_tasks_use_native_markdown_builds(self):
         import tomllib
 

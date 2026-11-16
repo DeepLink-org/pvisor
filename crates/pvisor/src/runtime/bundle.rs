@@ -720,6 +720,7 @@ mod tests {
             started_at_unix_ms: 10,
             finished_at_unix_ms: 20,
             exit_code: Some(0),
+            completion_error: None,
             failure: None,
             output: Default::default(),
             value: None,
