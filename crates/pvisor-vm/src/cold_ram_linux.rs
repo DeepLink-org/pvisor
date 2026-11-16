@@ -1671,6 +1671,9 @@ pub(crate) fn start<S: ColdRamStore + 'static>(
                         put_rejections += 1;
                     }
                 }
+                // Count publication even if VM teardown cancels the second barrier.
+                metrics.batches += 1;
+                metrics.snapshots += batch.0.len() as u64;
                 worker_pager
                     .lock()
                     .unwrap_or_else(|_| fatal("pager poisoned"))
@@ -1701,8 +1704,6 @@ pub(crate) fn start<S: ColdRamStore + 'static>(
                     Err(error) if error == "VMM has stopped" => break,
                     Err(error) => fatal(error),
                 }
-                metrics.batches += 1;
-                metrics.snapshots += batch.0.len() as u64;
                 if options.metrics && metrics.due(Instant::now()) {
                     metrics.report(&worker_pager, &pool, batch.0.len(), false);
                 }
