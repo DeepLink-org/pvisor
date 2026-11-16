@@ -18,6 +18,32 @@ their entry adapters.
 Whiteouts match pVisor's `apply_overlay`, so review → apply works the same
 across host FUSE and virtio-fs.
 
+Ordinary rename between regular-file hardlink aliases is a successful no-op.
+After Core succeeds, the serialized host handler checks whether the source still
+exists before remapping protocol inode paths, matching virtio-fs. A no-op must
+retain both aliases: otherwise unlinking the destination can orphan the cached
+source inode even though its file still exists. NOREPLACE errors and exchange
+keep their existing paths. This relies on the existing exclusive namespace
+writer contract; it does not synchronize with out-of-band backing changes.
+
+The default socket-backed FUSE protocol regression exercises actual INIT,
+LOOKUP, RENAME, UNLINK, GETATTR, OPEN, READ and RELEASE dispatch for lower,
+partly copied-up and upper hardlink fixtures. No source LOOKUP may intervene
+between rename and unlink, because it would repair the lost alias and hide the
+bug. The VM adapter has the same rename/unlink/cached-inode trace.
+`tests/same_inode_rename_mount.rs` additionally compares real host syscalls with
+an independent native filesystem oracle, including inode identity and bytes:
+
+```sh
+mise run test -- pvisor-overlayfs -- --test same_inode_rename_mount --run-ignored all --no-capture
+```
+
+It explicitly requires working host FUSE. macOS uses a uniquely named FSKit
+volume, waits for its mount-table entry, asserts the rename callback was reached,
+and unmounts even after a failed assertion. This confirms user reachability on
+the tested macFUSE/FSKit host. Linux VFS normally short-circuits same-inode
+renames before the FUSE callback; the socket regression bypasses that shortcut.
+
 Linux-only container features are out of scope: UID/GID namespace mapping,
 `metacopy`, `redirect_dir`, SELinux labeling, and capability semantics are not
 emulated.

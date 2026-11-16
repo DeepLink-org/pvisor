@@ -794,3 +794,13 @@ exercise apply/reuse refusal with both ephemeral recording settings.
 
 `LayerMutability` is defined by `pvisor-core::overlay` and re-exported unchanged
 here, so portable VM configuration does not require the Unix filesystem driver.
+
+### Malformed compact logs
+
+Read-only preimage validation opens logs with `O_NOFOLLOW | O_NONBLOCK` and
+checks the opened descriptor is a regular file before parsing. A FIFO without
+a writer is rejected without blocking sealed-stage review/apply/recovery.
+Validation does not repair malformed files or follow replacement symlinks.
+`tests/preimage_file_types.rs` bounds the FIFO check in an independent child
+and verifies valid, corrupt, directory and symlink inputs through the public
+sealed-stage gate.
