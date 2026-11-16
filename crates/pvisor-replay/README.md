@@ -83,6 +83,14 @@ It does not measure CI output throughput. Timeout classification retains its
 separate 50-millisecond fixture, and background-descendant cleanup remains a
 separate assertion with its original two-second command deadline.
 
+The short Bash and foreground process-group timeout fixtures reserve all nextest
+slots, because their outer wall-clock assertions include synchronous process and
+reader-thread startup before the execution watchdog begins. Concurrent cold
+launches on hosted macOS can consume that setup budget. Their original execution
+deadlines and total completion bounds remain enforced, with retries disabled.
+The Bash fixture prints its PID and execs native `/bin/sleep`, then checks timeout
+classification, readiness, reaping and absence of the original process group.
+
 Stdin backpressure and early-close fixtures re-execute the native test binary,
 with an independent alarm to bound a broken supervisor. They do not launch a
 Python interpreter or PATH shim inside the short supervision deadlines. Readiness,
