@@ -37,7 +37,12 @@ fn heavy(opcode: u32) -> bool {
         || x == Opcode::Open as u32 || x == Opcode::Create as u32
         || x == Opcode::Setattr as u32 || x == Opcode::Rename as u32
         || x == Opcode::Rename2 as u32 || x == Opcode::Unlink as u32
-        || x == Opcode::Rmdir as u32 || x == Opcode::Link as u32)
+        || x == Opcode::Rmdir as u32 || x == Opcode::Link as u32
+        // The create family and xattr writes admit through namespace shards,
+        // so a lane stuck on one of them must let its backlog be stolen.
+        || x == Opcode::Mkdir as u32 || x == Opcode::Mknod as u32
+        || x == Opcode::Symlink as u32 || x == Opcode::Setxattr as u32
+        || x == Opcode::Removexattr as u32)
 }
 
 struct Lane {

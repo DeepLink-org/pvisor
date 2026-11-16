@@ -266,6 +266,9 @@ fn name_only_readdir_is_visible_to_libc_without_preallocating_hardlink_inodes() 
 
 #[cfg(target_os = "linux")]
 #[test]
+// st_mode is u16 on macOS and u32 on Linux; u32::from widening is an
+// identity on Linux and a real widening on macOS.
+#[allow(clippy::useless_conversion)]
 fn rename_whiteout_leaves_a_char_zero_device_at_the_old_name() {
     let temp = tempfile::tempdir().unwrap();
     std::fs::create_dir(temp.path().join("lower")).unwrap();
@@ -273,40 +276,43 @@ fn rename_whiteout_leaves_a_char_zero_device_at_the_old_name() {
     std::fs::write(temp.path().join("upper/source"), b"payload").unwrap();
     let ctx = root_context();
     // The guest kernel overlayfs mount probe issues exactly this rename.
-    match fs.rename(
+    // Whiteout devices materialize as host-safe placeholder files (hosts
+    // commonly deny mknod of char 0,0 to sandbox processes), so no
+    // capability is required on the host any more.
+    fs.rename(
         ctx,
         fuse::ROOT_ID,
         c"source",
         fuse::ROOT_ID,
         c"dest",
         bindings::LINUX_RENAME_WHITEOUT as u32,
-    ) {
-        Ok(()) => {}
-        // Unprivileged hosts cannot create device nodes; the guest overlayfs
-        // mount probe fails closed there too, so skipping matches production.
-        Err(error) if error.raw_os_error() == Some(libc::EPERM) => {
-            eprintln!("skipping: host lacks CAP_MKNOD for whiteout nodes");
-            return;
-        }
-        Err(error) => panic!("rename with RENAME_WHITEOUT failed: {error}"),
-    }
+    )
+    .unwrap();
     // The renamed entry keeps its content.
     let dest = fs.lookup(ctx, fuse::ROOT_ID, c"dest").unwrap();
-    assert_eq!(dest.attr.st_mode & S_IFMT, S_IFREG);
+    assert_eq!(u32::from(dest.attr.st_mode) & S_IFMT, S_IFREG);
     let reader = fs.open(ctx, dest.inode, false, 0).unwrap().0.unwrap();
     assert_eq!(correctness_read(&fs, ctx, dest.inode, reader), b"payload");
     fs.release(ctx, dest.inode, 0, reader, false, false, None)
         .unwrap();
     // The old name is a whiteout: char device 0,0, visible to the guest and
-    // stored as a real device node in the host upper layer.
+    // stored as a placeholder regular file carrying the private record.
     let whiteout = fs.lookup(ctx, fuse::ROOT_ID, c"source").unwrap();
-    assert_eq!(whiteout.attr.st_mode & S_IFMT, S_IFCHR);
+    assert_eq!(u32::from(whiteout.attr.st_mode) & S_IFMT, S_IFCHR);
     assert_eq!(whiteout.attr.st_rdev, 0);
     {
-        use std::os::unix::fs::{FileTypeExt, MetadataExt};
+        use std::os::unix::fs::FileTypeExt;
         let metadata = std::fs::symlink_metadata(temp.path().join("upper/source")).unwrap();
-        assert!(metadata.file_type().is_char_device());
-        assert_eq!(metadata.rdev(), 0);
+        assert!(
+            metadata.file_type().is_file(),
+            "whiteout placeholder must be a host-safe regular file"
+        );
+        let record = pvisor_overlay_core::sys::get_xattr(
+            &temp.path().join("upper/source"),
+            std::ffi::OsStr::new(pvisor_overlay_core::VIRTUAL_NODE_XATTR),
+        )
+        .unwrap();
+        assert_eq!(record, b"c:0:0");
     }
     // Name-only readdir reports the whiteout as DT_CHR, which is what the
     // kernel's d_type support probe depends on.
@@ -447,35 +453,146 @@ fn rename_rejects_exchange_combined_with_whiteout() {
 
 #[cfg(target_os = "linux")]
 #[test]
+// st_mode is u16 on macOS and u32 on Linux; u32::from widening is an
+// identity on Linux and a real widening on macOS.
+#[allow(clippy::useless_conversion)]
 fn standalone_whiteout_nodes_are_visible_and_linkable() {
     let temp = tempfile::tempdir().unwrap();
     std::fs::create_dir(temp.path().join("lower")).unwrap();
     let fs = correctness_fixture(temp.path());
     let ctx = root_context();
-    // vfs_whiteout() creates standalone whiteouts through MKNOD.
-    let whiteout = match fs.mknod(
+    // vfs_whiteout() creates standalone whiteouts through MKNOD. The device
+    // node is virtualized into a host-safe placeholder, so no host
+    // capability is required.
+    let whiteout = fs
+        .mknod(
+            ctx,
+            fuse::ROOT_ID,
+            c"whiteout",
+            S_IFCHR | 0o600,
+            0,
+            0,
+            Extensions::default(),
+        )
+        .unwrap();
+    assert_eq!(u32::from(whiteout.attr.st_mode) & S_IFMT, S_IFCHR);
+    assert_eq!(whiteout.attr.st_rdev, 0);
+    // The kernel links one shared whiteout to every hidden name; the link
+    // shares the placeholder inode, so the private record travels with it.
+    let shared = fs.link(ctx, whiteout.inode, fuse::ROOT_ID, c"shared").unwrap();
+    assert_eq!(u32::from(shared.attr.st_mode) & S_IFMT, S_IFCHR);
+    let looked_up = fs.lookup(ctx, fuse::ROOT_ID, c"shared").unwrap();
+    assert_eq!(looked_up.inode, whiteout.inode);
+    assert_eq!(u32::from(looked_up.attr.st_mode) & S_IFMT, S_IFCHR);
+    assert_eq!(looked_up.attr.st_rdev, 0);
+}
+
+#[test]
+// st_mode is u16 on macOS and u32 on Linux; u32::from widening is an
+// identity on Linux and a real widening on macOS.
+#[allow(clippy::useless_conversion)]
+fn guest_whiteout_placeholders_project_across_every_reply_path() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::create_dir(temp.path().join("lower")).unwrap();
+    let fs = correctness_fixture(temp.path());
+    let ctx = root_context();
+    // The tar/docker-store flow: create a whiteout, then verify it through
+    // every observation path the guest uses.
+    fs.mknod(
         ctx,
         fuse::ROOT_ID,
-        c"whiteout",
-        S_IFCHR | 0o600,
+        c"wh-node",
+        S_IFCHR | 0o644,
         0,
         0,
         Extensions::default(),
+    )
+    .unwrap();
+    // Real device numbers still materialize as real host devices; this
+    // genuinely requires CAP_MKNOD, so unprivileged dev machines skip only
+    // this leg (the virtualized whiteout above needs no privileges).
+    let real_device_supported = match fs.mknod(
+        ctx,
+        fuse::ROOT_ID,
+        c"real-null",
+        S_IFCHR | 0o644,
+        libc::makedev(1, 3) as u32,
+        0,
+        Extensions::default(),
     ) {
-        Ok(entry) => entry,
-        Err(error) if error.raw_os_error() == Some(libc::EPERM) => {
-            eprintln!("skipping: host lacks CAP_MKNOD for whiteout nodes");
-            return;
-        }
-        Err(error) => panic!("whiteout mknod failed: {error}"),
+        Ok(_) => true,
+        Err(error) if error.raw_os_error() == Some(libc::EPERM) => false,
+        Err(error) => panic!("real device mknod failed unexpectedly: {error}"),
     };
-    assert_eq!(whiteout.attr.st_mode & S_IFMT, S_IFCHR);
-    assert_eq!(whiteout.attr.st_rdev, 0);
-    // The kernel links one shared whiteout to every hidden name.
-    let shared = fs.link(ctx, whiteout.inode, fuse::ROOT_ID, c"shared").unwrap();
-    assert_eq!(shared.attr.st_mode & S_IFMT, S_IFCHR);
-    let looked_up = fs.lookup(ctx, fuse::ROOT_ID, c"shared").unwrap();
-    assert_eq!(looked_up.inode, whiteout.inode);
-    assert_eq!(looked_up.attr.st_mode & S_IFMT, S_IFCHR);
-    assert_eq!(looked_up.attr.st_rdev, 0);
+
+    // lookup/getattr projection.
+    let node = fs.lookup(ctx, fuse::ROOT_ID, c"wh-node").unwrap();
+    assert_eq!(u32::from(node.attr.st_mode) & S_IFMT, S_IFCHR);
+    assert_eq!(node.attr.st_rdev, 0);
+    let (attr, _) = fs.getattr(ctx, node.inode, None).unwrap();
+    assert_eq!(u32::from(attr.st_mode) & S_IFMT, S_IFCHR);
+    assert_eq!(attr.st_rdev, 0);
+    if real_device_supported {
+        let real = fs.lookup(ctx, fuse::ROOT_ID, c"real-null").unwrap();
+        // Only Linux's passthrough statx reports the created device number in
+        // st_rdev; the darwin passthrough leaves it zero. The char type and
+        // the whiteout projections above carry the contract.
+        #[cfg(target_os = "linux")]
+        assert_eq!(real.attr.st_rdev as u64, libc::makedev(1, 3) as u64);
+        #[cfg(target_os = "macos")]
+        assert_eq!(u32::from(real.attr.st_mode) & S_IFMT, S_IFCHR);
+    }
+
+    // readdirplus reports the projected type without forcing a lookup.
+    let handle = fs.opendir(ctx, fuse::ROOT_ID, 0).unwrap().0.unwrap();
+    let mut plus = Vec::new();
+    fs.readdirplus(ctx, fuse::ROOT_ID, handle, 8192, 0, |entry, _attr| {
+        plus.push((entry.name.to_vec(), entry.type_));
+        Ok(1)
+    })
+    .unwrap();
+    fs.releasedir(ctx, fuse::ROOT_ID, 0, handle).unwrap();
+    assert_eq!(
+        plus.iter().find(|(name, _)| name == b"wh-node").unwrap().1,
+        libc::DT_CHR as u32
+    );
+    if real_device_supported {
+        assert_eq!(
+            plus.iter().find(|(name, _)| name == b"real-null").unwrap().1,
+            libc::DT_CHR as u32
+        );
+    }
+
+    // The private record is invisible and immutable through guest xattrs.
+    match fs.getxattr(ctx, node.inode, c"user.pvisor.virtual_node", 64) {
+        // enodata() carries the Linux wire errno; ENODATA differs on darwin.
+        Err(error) => assert_eq!(
+            error.raw_os_error(),
+            Some(crate::devices::virtio::linux_errno::linux_errno_raw(
+                libc::ENODATA
+            ))
+        ),
+        Ok(_) => panic!("private virtual_node record must be hidden"),
+    }
+    assert!(fs
+        .setxattr(
+            ctx,
+            node.inode,
+            c"user.pvisor.virtual_node",
+            b"c:1:5",
+            0
+        )
+        .is_err());
+    use super::super::filesystem::ListxattrReply;
+    let listed = match fs.listxattr(ctx, node.inode, 4096).unwrap() {
+        ListxattrReply::Names(names) => names,
+        _ => panic!("expected names"),
+    };
+    assert!(!listed
+        .windows(b"user.pvisor.virtual_node".len())
+        .any(|w| w == b"user.pvisor.virtual_node"));
+
+    // unlink removes the placeholder like any file.
+    fs.unlink(ctx, fuse::ROOT_ID, c"wh-node").unwrap();
+    assert!(fs.lookup(ctx, fuse::ROOT_ID, c"wh-node").is_err());
 }

@@ -19,12 +19,19 @@ pub const ROOT_METADATA_NAME: &str = ".wh..pvisor-root-metadata";
 pub const PRIVATE_BACKING_XATTR: &str = "user.pvisor.private_backing";
 /// Per-inode logical Unix identity, encoded as decimal UID:GID:octal mode.
 pub const OVERRIDE_STAT_XATTR: &str = "user.containers.override_stat";
+/// Records a virtual device node: a host-safe placeholder regular file that
+/// the VM adapter projects back as the recorded character/block device.
+/// Encoded as `<c|b>:<major>:<minor>`; written for guest overlayfs whiteouts
+/// (char 0,0) when host policy forbids creating the real device node.
+pub const VIRTUAL_NODE_XATTR: &str = "user.pvisor.virtual_node";
 
 /// Whether an attribute is private backing control state, not a guest user xattr.
 /// Logical fingerprints and apply publication exclude these names; raw snapshots
 /// must retain them together with physical backing metadata.
 pub fn is_private_metadata_xattr(name: &OsStr) -> bool {
-    name == OsStr::new(PRIVATE_BACKING_XATTR) || name == OsStr::new(OVERRIDE_STAT_XATTR)
+    name == OsStr::new(PRIVATE_BACKING_XATTR)
+        || name == OsStr::new(OVERRIDE_STAT_XATTR)
+        || name == OsStr::new(VIRTUAL_NODE_XATTR)
 }
 
 fn optional_metadata_xattr(path: &Path, name: &str) -> io::Result<Option<Vec<u8>>> {
