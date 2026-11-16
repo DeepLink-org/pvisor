@@ -4,6 +4,16 @@
 
 提交说明：源码链接使用仓库相对路径；`target/review-2026-11-16` 下的原始日志、探针和RAM诊断只保留于本地，未随PR上传。相关证据链接仅在保留该目录的本地检出中可用；远端复核请使用文中的命令、回归测试与明确的平台范围。
 
+## PR #150 CI追查（2026-11-16，进行中）
+
+首次CI的失败没有通过重试处理：[CI run](https://github.com/DeepLink-org/pvisor/actions/runs/43817053891)、[Benchmark run](https://github.com/DeepLink-org/pvisor/actions/runs/43817053682)。目前确认三个独立原因：
+
+1. **CLI适配器漏传能力计划**：`TerminalReportingExecutor`没有代理`capability_plan`，丢失rootless执行器按请求声明的Network安装意图，导致Linux Host隔离、CLI native与Gateway-enabled文档任务在执行前被拒绝。补齐代理；新增请求×proxy组合回归在旧实现确定失败，修复后通过。没有把descriptor标签提升为强制证据，完成阶段仍独立检查安装回执。
+2. **硬件夹具测试假定一个模块永远只有一项测试**：H04新增bootstrap用例后`environment_snapshot`有两项，原`countTestCases()==1`失效。现在对实际发现的每项测试验证缺失HVF前提时均报错、零skip、零failure且不调用binary；不是移除缺失前提检查。Python单元161项和Docker回归3项通过。
+3. **H01的Linux清理延迟回归**：Benchmark的Host Run从约45.8ms变为2.045s（约+4364%），触及默认2秒grace；保留的zombie使`kill(-pgid,0)`持续成功。Linux在leader为zombie后扫描`/proc`；仅确认没有live成员时提前执行最后的KILL，再reap。读取/解析不确定则保留原宽限期，扫描不授权省略最终组信号。新增zombie-only组配置30秒grace却必须2秒内完成的原生Linux回归，以及live成员/坏stat保守处理回归；原WNOWAIT fence和TERM-resistant后台管道断言保留。基准门槛未改变。此时本机macOS进程回归19项通过；Linux原生结果待新CI。
+
+CLI单元158项通过。上述结果不关闭原leaky标记；该项继续按输出管道生命周期调查，尚不能归因于产品后代泄漏或runner。新CI及最终严格检查结果随后补记。
+
 ## PR提交前联合验证（2026-11-16）
 
 - `mise run test -- pvisor pvisor-cli pvisor-daemon pvisor-overlay-core pvisor-overlayfs pvisor-overlaynet pvisor-replay pvisor-vm`：**2296 passed（其中1项被nextest标为leaky），65 skipped**；不把此数字与各轮重叠结果累计。[联合日志](target/review-2026-11-16/pr/pvisor-pr-tests.log)。
@@ -58,7 +68,7 @@
 
 [三个回归](crates/pvisor/src/execution_context/lifecycle.rs#L819)分别验证：(1) leader以7退出、TERM-resistant后台子进程继续持有管道，grace中仍可WNOWAIT取得leader，KILL后后台管道EOF，最终reap仍为7；(2) stdin关闭、重复非消费观察、退出码与信号状态保持；(3) 将受控无关子进程的PGID作为陈旧/错配输入时不能杀掉它。原有退出码、取消、PTY和后台管道测试保持断言，定向**19/19通过**。[日志](target/review-2026-11-16/h01-h02/pvisor-h01-after-native.log)。
 
-代价：zombie leader可能使组在grace期间一直可见，因此结束延迟可能达到已配置的termination grace（默认2秒）；不以提前reap换取低延迟。它仍不是追踪脱离进程组后代的机制，也不承诺抵抗嵌入调用方额外安装的外部reaper；namespace/cgroup与单一child所有权边界继续成立。
+原代价：zombie leader使Linux组在grace期间一直可见，导致结束延迟达到已配置的termination grace（默认2秒）；此问题在PR CI的基准门禁中暴露，后续修复见顶部CI追查。身份保留顺序不变；其他Unix平台仍使用组存在性检查。它仍不是追踪脱离进程组后代的机制，也不承诺抵抗嵌入调用方额外安装的外部reaper；namespace/cgroup与单一child所有权边界继续成立。
 
 ### H02：启动失败必须同步收束原生资源
 

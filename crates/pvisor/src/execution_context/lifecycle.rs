@@ -767,6 +767,50 @@ pub(crate) async fn observe_child_exit(
     child.wait().await
 }
 
+#[cfg(target_os = "linux")]
+fn group_has_live_members(proc: &std::path::Path, group: u32) -> std::io::Result<bool> {
+    fn state_and_group(stat: &str) -> std::io::Result<(&str, u32)> {
+        let invalid = || std::io::Error::other("invalid process-group stat");
+        let (_, fields) = stat.rsplit_once(')').ok_or_else(invalid)?;
+        let mut fields = fields.split_whitespace();
+        let state = fields.next().ok_or_else(invalid)?;
+        fields.next().ok_or_else(invalid)?; // parent PID
+        let group = fields
+            .next()
+            .ok_or_else(invalid)?
+            .parse()
+            .map_err(|_| invalid())?;
+        Ok((state, group))
+    }
+    // A running leader itself needs the configured grace; avoid a full scan.
+    let leader = std::fs::read_to_string(proc.join(group.to_string()).join("stat"))?;
+    let (state, _) = state_and_group(&leader)?;
+    if !matches!(state, "Z" | "X") {
+        return Ok(true);
+    }
+    for entry in std::fs::read_dir(proc)? {
+        let entry = entry?;
+        if entry
+            .file_name()
+            .to_str()
+            .and_then(|s| s.parse::<u32>().ok())
+            .is_none()
+        {
+            continue;
+        }
+        let stat = match std::fs::read_to_string(entry.path().join("stat")) {
+            Ok(stat) => stat,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error),
+        };
+        let (state, member_group) = state_and_group(&stat)?;
+        if member_group == group && !matches!(state, "Z" | "X") {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 pub(crate) async fn terminate_process_tree(
     child: &mut tokio::process::Child,
     process_group: Option<u32>,
@@ -792,7 +836,16 @@ pub(crate) async fn terminate_process_tree(
                 {
                     break;
                 }
-                if tokio::time::Instant::now() >= deadline {
+                #[cfg(target_os = "linux")]
+                let idle = matches!(
+                    group_has_live_members(std::path::Path::new("/proc"), pid),
+                    Ok(false)
+                );
+                #[cfg(not(target_os = "linux"))]
+                let idle = false;
+                if idle || tokio::time::Instant::now() >= deadline {
+                    // Even an idle scan is not authority to skip the final group
+                    // signal: members may fork/exit during enumeration. PID stays pinned.
                     unsafe {
                         libc::kill(process_group, libc::SIGKILL);
                     }
@@ -814,6 +867,51 @@ mod process_group_tests {
     use super::*;
     use std::process::Stdio;
     use tokio::io::AsyncReadExt;
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn zombie_only_group_does_not_consume_termination_grace() {
+        let mut child = tokio::process::Command::new("/bin/true")
+            .process_group(0)
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        let pid = child.id().unwrap();
+        assert!(observe_child_exit(&mut child).await.unwrap().success());
+        tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            terminate_process_tree(&mut child, Some(pid), 30_000),
+        )
+        .await
+        .expect("a pinned zombie alone must not consume the 30-second grace");
+        assert!(child.wait().await.unwrap().success());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn group_scan_preserves_live_members_and_propagates_unknown_state() {
+        let root = tempfile::tempdir().unwrap();
+        let write_stat = |pid: u32, state: &str, group: u32| {
+            let dir = root.path().join(pid.to_string());
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(
+                dir.join("stat"),
+                format!("{pid} (name with ) spaces) {state} 1 {group} 0"),
+            )
+            .unwrap();
+        };
+        write_stat(12, "Z", 12);
+        write_stat(13, "S", 99);
+        assert!(!group_has_live_members(root.path(), 12).unwrap());
+        for state in ["S", "R", "D", "T"] {
+            write_stat(13, state, 12);
+            assert!(group_has_live_members(root.path(), 12).unwrap());
+        }
+        write_stat(13, "Z", 12);
+        assert!(!group_has_live_members(root.path(), 12).unwrap());
+        std::fs::write(root.path().join("13/stat"), "invalid").unwrap();
+        assert!(group_has_live_members(root.path(), 12).is_err());
+    }
 
     #[tokio::test]
     async fn group_cleanup_pins_leader_until_escalation_finishes() {

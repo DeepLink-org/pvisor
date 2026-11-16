@@ -21,7 +21,8 @@ class HardwareFixtureTests(unittest.TestCase):
         for module in MODULES:
             with self.subTest(module=module):
                 suite = unittest.TestLoader().loadTestsFromName(module)
-                self.assertEqual(suite.countTestCases(), 1)
+                count = suite.countTestCases()
+                self.assertGreater(count, 0)
                 result = unittest.TestResult()
                 with (
                     mock.patch.object(
@@ -31,7 +32,12 @@ class HardwareFixtureTests(unittest.TestCase):
                 ):
                     suite.run(result)
                 self.assertFalse(result.wasSuccessful())
-                self.assertEqual(len(result.errors), 1)
+                self.assertEqual(result.testsRun, count)
+                self.assertEqual(len(result.errors), count)
+                self.assertEqual(result.failures, [])
+                for test, error in result.errors:
+                    with self.subTest(test=test.id()):
+                        self.assertIn("HVF unavailable", error)
                 self.assertEqual(result.skipped, [])
                 binary.assert_not_called()
 
