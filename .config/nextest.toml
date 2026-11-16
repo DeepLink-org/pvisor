@@ -1,3 +1,8 @@
+[profile.default]
+# Keep the existing detection budget, but never count leaked output handles as PASS.
+leak-timeout = { period = "200ms", result = "fail" }
+retries = 0
+
 [profile.windows-ci]
 # Preserve each test's own deadlines; this is a final watchdog for deadlocks.
 slow-timeout = { period = "60s", terminate-after = 3 }

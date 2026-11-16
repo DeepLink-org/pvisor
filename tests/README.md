@@ -54,6 +54,10 @@ CI runs the unit and process subsets separately.
 `fixtures.py` and `packaging_fixtures.py` contain shared resource/input helpers.
 Import helpers rather than another module's TestCase.
 
+Nextest treats leaked output handles as failures with a 200 ms budget and no
+automatic retries. The pinned runner includes the Apple capture-pipe spawn fix;
+a later passing run alone does not explain an earlier leak report.
+
 Workload drivers and guest probes live directly under `tests/`. Hardware modules
 have explicit names outside the default `test*.py` pattern.
 

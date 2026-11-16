@@ -10,7 +10,7 @@ ruff = "0.17.2"
 actionlint = "1.7.7"
 jq = "1.8.1"
 zig = "0.13.0"
-"github:nextest-rs/nextest" = { version = "0.9.137", version_prefix = "cargo-nextest-", bin = "cargo-nextest" }
+"github:nextest-rs/nextest" = { version = "0.9.152", version_prefix = "cargo-nextest-", bin = "cargo-nextest" }
 "cargo:cargo-zigbuild" = "0.23.4"
 # Keep pinned Cargo plugins ahead of ambient ~/.cargo/bin executables.
 # Suppress rustup self-update while installing the project toolchain.
