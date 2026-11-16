@@ -1,11 +1,7 @@
 """Bilingual docs cannot silently lose a page or drift in examples/revisions."""
 
-import os
 import runpy
-import subprocess
-import sys
 import unittest
-from types import SimpleNamespace
 from unittest import mock
 
 from tests.fixtures import ROOT, workspace
@@ -14,95 +10,18 @@ check_translations = runpy.run_path(str(ROOT / "scripts/check-docs.py"))["check_
 reference = runpy.run_path(str(ROOT / "scripts/check-reference.py"))
 
 
-def table_preprocessor():
-    """Load the process adapter without requiring the site's Python dependencies."""
+class NativeDocumentationTests(unittest.TestCase):
+    def test_site_configs_and_tasks_use_native_markdown_builds(self):
+        import tomllib
 
-    class Preprocessor:
-        def __init__(self, md):
-            self.md = md
-
-    context = mock.Mock()
-    context.from_markdown.return_value = SimpleNamespace(
-        config={"root_dir": "/workspace/docs", "docs_dir": "src/zh"},
-        page=SimpleNamespace(path="page.md"),
-    )
-    modules = {
-        "markdown": SimpleNamespace(Extension=object),
-        "markdown.preprocessors": SimpleNamespace(Preprocessor=Preprocessor),
-        "zensical.extensions.context": SimpleNamespace(ContextPreprocessor=context),
-    }
-    with mock.patch.dict(sys.modules, modules):
-        extension = runpy.run_path(str(ROOT / "docs/semspec_tables.py"))
-    return extension["TablePreprocessor"](None)
-
-
-class LiveTableTests(unittest.TestCase):
-    def test_live_mode_selects_best_effort_and_forwards_warnings(self):
-        lines = ['{{ table("missing.json") }}']
-        preprocessor = table_preprocessor()
-        with (
-            mock.patch.dict(os.environ, {"PVISOR_DOCS_LIVE": "1", "SEMSPEC_BIN": "/semspec"}),
-            mock.patch(
-                "subprocess.run",
-                return_value=SimpleNamespace(
-                    returncode=0,
-                    stdout="warning placeholder\n| valid | 2 |\n",
-                    stderr="missing table: missing.json",
-                ),
-            ) as run,
-            self.assertLogs("<run_path>", level="WARNING") as warnings,
-        ):
-            result = preprocessor.run(lines)
-        self.assertEqual(result[:2], ["warning placeholder", "| valid | 2 |"])
-        self.assertIn("missing.json", warnings.output[0])
-        self.assertEqual(
-            run.call_args.args[0],
-            [
-                "/semspec",
-                "filter",
-                "--source",
-                "/workspace/docs/src/zh/page.md",
-                "--stdin",
-                "--best-effort",
-            ],
-        )
-
-    def test_renderer_failures_leave_page_text_in_live_mode_but_fail_strict_mode(self):
-        lines = ["# Page", "", '{{ table("missing.json") }}', "", "Body"]
-        preprocessor = table_preprocessor()
-        errors = [FileNotFoundError("<renderer>"), subprocess.TimeoutExpired("semspec", 30)]
-        for live in ("0", "1"):
-            for error in errors:
-                with (
-                    self.subTest(live=live, error=type(error).__name__),
-                    mock.patch.dict(os.environ, {"PVISOR_DOCS_LIVE": live}),
-                    mock.patch("subprocess.run", side_effect=error),
-                ):
-                    if live == "1":
-                        with self.assertLogs("<run_path>", level="WARNING"):
-                            rendered = preprocessor.run(lines)
-                        self.assertEqual(rendered[-len(lines) :], lines)
-                        self.assertIn("!!! warning", rendered[0])
-                        self.assertNotIn("<renderer>", "\n".join(rendered))
-                    else:
-                        with self.assertRaises(type(error)):
-                            preprocessor.run(lines)
-        for live in ("0", "1"):
-            with (
-                self.subTest(live=live, error="render"),
-                mock.patch.dict(os.environ, {"PVISOR_DOCS_LIVE": live}),
-                mock.patch(
-                    "subprocess.run",
-                    return_value=SimpleNamespace(returncode=2, stdout="", stderr="invalid table"),
-                ) as run,
-            ):
-                if live == "1":
-                    with self.assertLogs("<run_path>", level="WARNING"):
-                        self.assertEqual(preprocessor.run(lines)[-len(lines) :], lines)
-                else:
-                    with self.assertRaisesRegex(RuntimeError, "invalid table"):
-                        preprocessor.run(lines)
-                    self.assertNotIn("--best-effort", run.call_args.args[0])
+        for locale in ("zh", "en"):
+            config = tomllib.loads((ROOT / f"docs/zensical.{locale}.toml").read_text())
+            extensions = config["project"]["markdown_extensions"]
+            self.assertFalse(any(name.startswith("docs.") for name in extensions))
+            self.assertIn("tables", extensions)
+        tasks = tomllib.loads((ROOT / "mise.toml").read_text())["tasks"]
+        for name in ("docs-build", "docs-serve"):
+            self.assertNotIn("cargo ", tasks[name]["run"])
 
 
 def write_locale_configs(docs):

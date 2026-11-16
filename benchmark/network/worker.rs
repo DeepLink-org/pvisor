@@ -139,7 +139,7 @@ fn serve_connection(mut stream: TcpStream) -> io::Result<()> {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "unknown request",
-            ))
+            ));
         }
     }
     stream.shutdown(Shutdown::Write)
@@ -368,7 +368,7 @@ fn run(name: &str, address: SocketAddr) -> io::Result<()> {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "unknown scenario",
-            ))
+            ));
         }
     }
     io::stdout().flush()

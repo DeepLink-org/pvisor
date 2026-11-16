@@ -19,15 +19,16 @@ mise run lint             # clippy 与 ruff
 mise run docs-build       # 构建并检查文档站点
 ```
 
-平台准备（FUSE/macFUSE、KVM/HVF、OCI runtime）见[开发环境与工程说明](development.md)，测试分工见[测试与 semspec](testing.md)。
+平台准备（FUSE/macFUSE、KVM/HVF、OCI runtime）见[开发环境与工程说明](development.md)，测试分工见[测试与 Scrut](testing.md)。
 
 ## 语义规格的规则
 
-产品承诺写成语义规格（semspec），位于 `docs/src/zh/cases/` 与 [`reference/cases.md`](../reference/cases.md)。测试通过不等于人工批准：
+产品承诺写成 Scrut 原生语义规格，位于 `tests/spec/<feature>/`；
+用户章节和[场景附录](../reference/cases.md)链接唯一检查源码。测试通过不等于人工批准：
 
 - 可以起草新用例、修复实现；
 - 不得为了通过而削弱已有的声明、检查或 `xfail` 标注；
-- 批准用例（`semspec approve`）以及编辑 `REVIEWED.toml`、`.approved/` 快照只能由维护者人工完成。
+- 规格批准／撤销以及编辑 `REVIEWED.toml`、`.approved/` 快照只能由维护者人工完成；Scrut 的摘要审核替代策略仍待决定。
 
 ## 提交 PR
 

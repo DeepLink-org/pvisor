@@ -196,7 +196,7 @@ def coverage():
         if page["page"] == "benchmarks/lazy-image-startup.md" and lazy_stage_evidence is not None:
             current.append("startup/stage_lazy_compare.json " + lazy_stage_evidence["batch"])
         if page["page"] == "benchmarks/lazy-image-startup.md" and lazy_v2_evidence is not None:
-            current.append("storage/lazy_benefits.py accepted current V2 cohorts")
+            current.append("B-LAZY-STARTUP accepted current V2 cohorts")
         rows.append(
             dict(
                 page=page["page"],

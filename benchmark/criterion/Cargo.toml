@@ -1,0 +1,93 @@
+[package]
+name = "pvisor-benchmarks"
+version = "0.1.0"
+edition = "2024"
+publish = false
+default-run = "pvisor-benchmarks"
+
+# Keep experimental dependencies out of the product workspace.
+[workspace]
+
+[features]
+default = ["storage-tls"]
+storage-tls = ["dep:openssl"]
+vm-probes = ["dep:pvisor", "dep:pvisor-vm"]
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+criterion = { version = "=0.7.0", default-features = false, features = ["cargo_bench_support"] }
+flate2 = "1"
+libc = "0.2"
+pvisor = { path = "../../crates/pvisor", optional = true }
+pvisor-vm = { path = "../../crates/pvisor-vm", optional = true }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+sha3 = "0.10"
+tar = "0.4"
+tempfile = "3"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+openssl = { version = "0.10", optional = true }
+
+[[bin]]
+name = "pvisor-benchmarks"
+path = "src/main.rs"
+
+[[bin]]
+name = "benchmark-compare"
+path = "src/compare.rs"
+
+[[bin]]
+name = "filesystem-worker"
+path = "src/filesystem/worker.rs"
+
+[[bin]]
+name = "network-worker"
+path = "../network/worker.rs"
+
+[[bin]]
+name = "pvisor-memory-worker"
+path = "src/memory/worker.rs"
+
+[[bin]]
+name = "dax-guest"
+path = "src/filesystem/dax_guest.rs"
+
+[[bin]]
+name = "dax-driver"
+path = "../filesystem/dax_driver.rs"
+required-features = ["vm-probes"]
+
+[[bin]]
+name = "storage-worker"
+path = "src/storage/main.rs"
+required-features = ["storage-tls"]
+
+[[bin]]
+name = "pvisor-memory-guest"
+path = "../memory/native_worker.rs"
+
+[[bin]]
+name = "pvisor-memory-prepare"
+path = "../memory/prepare.rs"
+
+[[bin]]
+name = "pvisor-memory-vm"
+path = "../memory/pool_vm.rs"
+required-features = ["vm-probes"]
+
+[[bin]]
+name = "startup-stage-mount"
+path = "../startup/lazy_stage_mount.rs"
+required-features = ["vm-probes"]
+
+[[test]]
+name = "observer-contracts"
+path = "src/observer_contract_tests.rs"
+
+# Product probes share the product's reviewed hyper extension.
+[patch.crates-io]
+fuser = { path = "../../vendor/fuser" }
+hyper = { path = "../../vendor/hyper" }

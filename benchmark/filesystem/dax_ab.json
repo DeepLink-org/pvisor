@@ -1,3 +1,6 @@
 {
-  "immutable-share-paired": "$ python3 @HARNESS@/dax_ab.py --measure @BATCH@"
+  "engine": "criterion",
+  "entry": "filesystem/dax_ab.json",
+  "implementation": "../criterion/src/filesystem/mod.rs",
+  "config_env": "PVISOR_BENCH_DAX_DRIVER"
 }

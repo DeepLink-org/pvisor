@@ -74,7 +74,20 @@ Markdown 保留面向用户的表格，仅为必要的用户统计提供共享 C
 
 下表区分新测量与历史证据。仅当指标、输入、配置和正确性门禁一致时才更新相应数据；Ready、完整退出、工具内部计时、内存与正确性互不替代。未准备的实验不会产生新数字，历史结论只适用于原批次。
 
-{{ table("measurement-coverage.render.json", {"markdown":true}) }}
+|  | 数据状态 | 实测范围 |
+| --- | --- | --- |
+| [agent-tasks](agent-tasks.md) | 历史数据 | 保留原始指标与来源；暂无匹配的新测量 |
+| [compare-rl-infra](compare-rl-infra.md) | 历史数据 | 保留原始指标与来源；暂无匹配的新测量 |
+| [density](density.md) | 历史数据 | 保留原始指标与来源；暂无匹配的新测量 |
+| [filesystem](filesystem.md) | 部分复测 | 九种配置（含Docker、Firecracker、QEMU q35/microvm）；12项机制、4项资源边界、3项完整任务；Ready与退出分开，N3新环境、内部三轮 |
+| 总览 | 历史数据 | 保留原始指标与来源；暂无匹配的新测量 |
+| [isolation-tests](isolation-tests.md) | 历史数据 | 保留原始指标与来源；暂无匹配的新测量 |
+| [lazy-image-startup](lazy-image-startup.md) | 部分复测 | 当前 V2 对原生 Docker：四镜像库存 N3；预准备启动 N30／内存 N5；shell、Python、标准库 mmap 冷热各 N30；WAN／并发未测 |
+| [network](network.md) | 历史数据 | 保留原始指标与来源；暂无匹配的新测量 |
+| [replay-fidelity](replay-fidelity.md) | 部分复测 | 固定 task 0 的完整 CLI 时间；20 任务历史分布另列 |
+| [startup](startup.md) | 部分复测 | 启动到首条校验输出；不报告退出时间 |
+| [supervision-cost](supervision-cost.md) | 历史数据 | 保留原始指标与来源；暂无匹配的新测量 |
+| [vm-memory](vm-memory/index.md) | 历史数据 | 保留原始指标与来源；暂无匹配的新测量 |
 
 文件系统覆盖对应九配置、19项负载的N3协议，四个资源单元不完整；历史 N5/N30 数据不填补新协议的缺失。
 

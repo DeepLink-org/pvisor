@@ -14,6 +14,10 @@ ROOT = Path(__file__).resolve().parents[1]
 _spec = importlib.util.spec_from_file_location("benchmark_common", ROOT / "common.py")
 COMMON = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(COMMON)
+_archive_spec = importlib.util.spec_from_file_location("startup_archive", ROOT / "archive.py")
+ARCHIVE = importlib.util.module_from_spec(_archive_spec)
+_archive_spec.loader.exec_module(ARCHIVE)
+FIELDS = (*ARCHIVE.READY_FIELDS, *ARCHIVE.EXIT_FIELDS[1:])
 
 
 def publish_startup(directory, source):
@@ -51,8 +55,7 @@ def publish_startup(directory, source):
         raise ValueError("mixed Ready metric scopes")
     for locale in ("zh", "en"):
         path = source / locale / "benchmarks" / filename
-        from timing import FIELDS
-
+        # Historical publication only: never load the retired sampling entry.
         fields = FIELDS
         translations = {
             "median": "中位数",

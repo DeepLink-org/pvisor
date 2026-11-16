@@ -38,9 +38,17 @@ Mini-SWE-Agent 未触发分簇规则，该行列出全体样本的 P50。分簇�
 
 独立批次为每个适配器固定一条合成轨迹（task 0），采样 60 次，无预热。hyperfine 使用 `--shell=none` 直接启动 `pvisor-replay`；Python 重置和一致性校验在每次计时外执行。所有执行必须保留精确参数、源摘要与历史观测，不执行工具、不改动工作区。数值表示完整命令结束时间，适用范围是这条固定轨迹；上方二十条轨迹的历史分布保留原口径。二进制摘要标识实测制品，与当前源码的构建对应关系未验证。保留宿主缓存；CPU 亲和性和制品标识见批次来源摘要，不据此推导配对改善比例或尾延迟保证。
 
-{{ table("../../../overrides/assets/benchmarks/replay-semspec.render.json") }}
+|  | N | Median ms | Mean ms | SD ms | Min ms | Max ms |
+| --- | --- | --- | --- | --- | --- | --- |
+| claude-code | 60 | 5.74 | 5.86 | 0.88 | 5.11 | 12.14 |
+| codex | 60 | 5.59 | 5.67 | 0.32 | 5.05 | 6.95 |
+| opencode | 60 | 5.56 | 5.62 | 0.30 | 4.99 | 6.62 |
+| mini-swe-agent | 60 | 5.61 | 5.72 | 0.40 | 5.28 | 7.55 |
+| openhands | 60 | 5.68 | 5.73 | 0.40 | 4.81 | 7.40 |
+| pi-agent | 60 | 5.58 | 5.63 | 0.34 | 4.73 | 6.93 |
+| swe-agent | 60 | 5.73 | 5.76 | 0.39 | 4.71 | 7.24 |
 
-[Hyperfine 数据 CSV](../assets/benchmarks/data/replay/replay-semspec.csv) · [批次来源](../assets/benchmarks/replay-semspec.provenance.json) · [JSON benchmark 复现手册](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/README.md#replay)
+[Hyperfine 数据 CSV](../assets/benchmarks/data/replay/replay-command.csv) · [批次来源](../assets/benchmarks/replay-command.provenance.json) · [复现手册](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/replay/README.md)
 
 ### 适用边界 {#acceptance}
 

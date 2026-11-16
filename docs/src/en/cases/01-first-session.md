@@ -10,15 +10,7 @@ Use this for a trusted script whose execution you want to record. The original c
 
 **Violation**: A successful command writes elsewhere or silently stages the file.
 
-<!-- semspec: case id=S-USE-001 -->
-```bash
-journey_setup
-pvisor --name hello --stdio capture -- /bin/sh -c 'printf hello > hello.txt; cat hello.txt'
-assert_content hello.txt hello
-pvisor status last --json > "$CASE_ROOT/status.json"
-json_expect "$CASE_ROOT/status.json" /run/state '"completed"'
-json_expect "$CASE_ROOT/status.json" /run/overlay null
-```
+Execution and assertions: [Scrut S-USE-001](https://github.com/DeepLink-org/pvisor/blob/main/tests/spec/session/S-USE-001.md).
 
 ### S-USE-002: Inspect a failed Session
 
@@ -28,13 +20,7 @@ When a script fails, inspect its Session exit code instead of treating a file as
 
 **Violation**: The exit code is lost or failure is recorded as completion.
 
-<!-- semspec: case id=S-USE-002 -->
-```bash
-journey_setup
-expect_exit 7 pvisor spawn --stdio capture -- /bin/sh -c 'printf failed >&2; exit 7'
-pvisor status last --json > "$CASE_ROOT/status.json"
-json_expect "$CASE_ROOT/status.json" /run/state '"failed"'
-```
+Execution and assertions: [Scrut S-USE-002](https://github.com/DeepLink-org/pvisor/blob/main/tests/spec/session/S-USE-002.md).
 
 ### S-USE-003: Bound a long task
 
@@ -44,13 +30,7 @@ Use `--timeout` for unattended work to bound a stalled script.
 
 **Violation**: The task sleeps to completion or reports success.
 
-<!-- semspec: case id=S-USE-003 -->
-```bash
-journey_setup
-expect_refused pvisor spawn --timeout 100ms --stdio capture -- /bin/sleep 30
-journey_bundle > "$CASE_ROOT/bundle.json"
-json_expect "$CASE_ROOT/bundle.json" /run/failure/kind '"deadline_exceeded"'
-```
+Execution and assertions: [Scrut S-USE-003](https://github.com/DeepLink-org/pvisor/blob/main/tests/spec/session/S-USE-003.md).
 
 ### S-USE-004: Make a task repeatable
 
@@ -60,18 +40,6 @@ Use explicit `--config` to keep a stable task command and name; CLI arguments ca
 
 **Violation**: Implicit configuration is loaded or CLI overrides are ignored.
 
-<!-- semspec: case id=S-USE-004 -->
-```bash
-journey_setup
-cat > task.toml <<'TOML'
-[run]
-agent = "configured"
-command = ["/bin/sh", "-c", "printf configured"]
-TOML
-pvisor spawn --config task.toml --name explicit --stdio capture -- /bin/sh -c 'printf override'
-journey_bundle > "$CASE_ROOT/bundle.json"
-json_expect "$CASE_ROOT/bundle.json" /run/agent '"explicit"'
-json_expect "$CASE_ROOT/bundle.json" /run/output/stdout '"override"'
-```
+Execution and assertions: [Scrut S-USE-004](https://github.com/DeepLink-org/pvisor/blob/main/tests/spec/session/S-USE-004.md).
 
 [Learning path](index.md) · [2. Review and accept file changes](02-review-and-decide.md)

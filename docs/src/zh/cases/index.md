@@ -43,21 +43,19 @@ Gateway 捕获需要启用 `gateway` feature 的构建；wheel 和 `mise run bui
 
 ## 同一份文档，执行同一套检查
 
-每条场景的 Bash 检查块前用一行 `<!-- semspec: case id=S-USE-001 -->` 标记（ID 按场景填写）：产品命令、语义断言和失败条件放在一起。准备步骤和检查函数都在下方 Markdown 代码块中，用 `<!-- semspec: setup -->` 标记。case 注释还可填写 `timeout=60s`、`xfail-on=linux` 和配对的 `xfail-reason`。semspec 自动抽取标记后的代码块，标题层级与测试发现无关；普通教程示例不会被执行；复制本目录的 Markdown 文档即可运行，不需要配置文件或外部 shell 脚本。命令行必须明确提供一个或多个 Markdown 文件/目录；semspec 不推断搜索路径。单独运行一章时，自动读取同目录 index.md 的准备块。
+本章保留学习顺序和语义说明；每条场景链接到 `tests/spec/<feature>/S-ID.md` 中唯一的 Scrut 原生 Markdown 检查。测试按功能归属存放。Scrut 0.4.3 负责发现、执行和匹配；少量产品 fixture 管理独立工作区、严格 Bash、超时与子进程清理。检查脚本和准备函数在 `tests/spec/` 下只维护一份。
 
 ```bash
-mise run semspec -- list docs/src/zh/cases --domain USE
-mise run semspec -- lint docs/src/zh/cases
-mise run semspec -- run docs/src/zh/cases/01-first-session.md
-mise run semspec -- run docs/src/zh/cases --domain USE --require-pass --subject-bin target/release/pvisor
+mise run cases -- --suite use --list
+mise run scrut -- test tests/spec/session/S-USE-001.md
 mise run cases -- --suite use
 mise run cases -- --suite use --case S-USE-005,S-USE-007 --keep
 mise run cases -- --suite use --output target/pvisor-learning-report.json
 ```
 
-`mise run cases -- --suite use` 构建 release 产品及伴随工具，在独立临时工作区、HOME、XDG 和 Session 数据目录执行全部 16 条场景。Linux CI 预先检查 FUSE 和 user/mount/network namespace。此入口不把缺少前提当成 SKIP；环境或实际执行失败会使门禁失败。输出 `target/pvisor-learning-report.json`，失败保留现场，`--keep` 保留成功现场。逐条选择时门禁检查选定 ID 的精确集合；全量执行时从本目录文档发现全部 S-USE ID，新增场景自动纳入门禁。空报告、漏项、重复 ID、SKIP、XFAIL 或非 PASS 都不能通过。入口直接使用 semspec 的 `--require-pass`；发现、选择和报告校验使用同一份解析结果。指定 `--output` 时，选择校验通过后先清理旧报告，再原子写入本次结果；不依赖额外的验证脚本。
+`mise run cases -- --suite use` 构建 release 产品及伴随工具，在独立临时工作区、HOME、XDG 和 Session 数据目录执行全部 16 条场景。Linux CI 预先检查 FUSE 和 user/mount/network namespace。缺少前提会使门禁失败，不算通过。输出 Scrut 原生 JSON 到 `target/pvisor-learning-report.json`；失败保留现场，`--keep` 也保留成功现场。入口按文件名选择 ID，校验原生报告中的源文件集合恰好等于选定集合；空报告、漏项、重复结果、SKIP、XFAIL 和其他非 PASS 不能通过 USE 门禁。合法选择后先清理旧报告，再原子发布本次结果。`--feature stage` 等功能选择会包含该功能下所有历史域的场景。
 
-规格和包含准备块的完整 Markdown 文档都参与 semspec 摘要。新规格保持 UNREVIEWED；执行成功与人工语义批准是两件事。人工完成引擎、词汇和规格审核后，可增加 `--require-reviewed`。测试执行不会批准规格或更新审核账本。
+这些规格与 fixture 仍待人工语义审核；Scrut 通过不等于批准。历史审核台账保持原样。Scrut 没有原生摘要审核机制，审核策略尚待维护者决定；`--require-reviewed` 当前明确拒绝执行，不能悄悄跳过这一门禁。测试不会写入批准记录。
 
 [DOC cases](../reference/cases.md)、[VM 控制 cases](../reference/cases-vm.md)、STAGE 和 USE 场景统一由 `mise run cases` 执行，用 `--suite doc/stage/use/vm` 选择；`examples/pvisor` 由 `mise run examples` 执行。CI 同时运行原有隔离回归、网络/Gateway mock 场景和新学习路线。旧独立 snapshot 的硬件记录保留作历史证据；旧 Controller/Worker 验收记录不验证新 daemon。完整原生执行恢复按 [execution checkpoint 契约](../reference/cli.md#full-vm-execution-checkpoints)单独验证；daemon 的[运行时边界](../guides/daemon/index.md)不包含 VM 恢复；本学习路线没有把未运行的 VM/Gateway 能力算作成功。
 
@@ -65,129 +63,6 @@ mise run cases -- --suite use --output target/pvisor-learning-report.json
 
 ## 准备步骤与检查函数
 
-下面的函数供各章共用。手动执行时，先安装 semspec 和 pvisor，在临时目录设置 `CASE_ROOT`、`WS` 和 `SEMSPEC_BIN`（semspec 的绝对路径），复制此块，再执行选定场景。自动执行时 runner 为每个场景提供这些变量和独立工作区；`pvisor` 默认从 PATH 查找，也可用 `--subject-bin` 选择待测二进制。准备块不读仓库中的其他脚本。
+产品 fixture 为每条场景创建独立的 `CASE_ROOT`、`WS`、HOME、XDG 和 Session 数据目录。检查在新的 `bash -euo pipefail` 中执行，不继承前一条 Scrut 检查的 shell 状态。`--subject-bin` 选择已有待测二进制；直接运行 Scrut 时可通过 `SUBJECT_BIN` 传入绝对路径，否则 USE 场景从 PATH 查找 `pvisor`。
 
-<!-- semspec: setup -->
-```bash
-# Sealed assertion vocabulary. Exact bytes matter, including final newlines.
-fail() { printf 'SEMANTIC VIOLATION: %s\n' "$*" >&2; exit 1; }
-expect_exit() {
-  local want=$1 got=0; shift
-  "$@" || got=$?
-  [ "$got" -eq "$want" ] || fail "expected exit $want, got $got: $*"
-}
-expect_refused() { if "$@"; then fail "expected refusal: $*"; fi; }
-snapshot() {
-  [[ $1 =~ ^[a-zA-Z0-9_-]+$ ]] || fail 'invalid snapshot name'
-  "$SEMSPEC_BIN" helper tree-state "$2" > "$CASE_ROOT/snapshot.$1"
-}
-assert_unchanged() {
-  [[ $1 =~ ^[a-zA-Z0-9_-]+$ ]] || fail 'invalid snapshot name'
-  "$SEMSPEC_BIN" helper tree-state "$2" > "$CASE_ROOT/current.tree"
-  "$SEMSPEC_BIN" helper diff "$CASE_ROOT/snapshot.$1" "$CASE_ROOT/current.tree" || fail "tree changed: $2"
-}
-assert_same_tree() {
-  "$SEMSPEC_BIN" helper tree-state "$1" > "$CASE_ROOT/a.tree"
-  "$SEMSPEC_BIN" helper tree-state "$2" > "$CASE_ROOT/b.tree"
-  "$SEMSPEC_BIN" helper diff "$CASE_ROOT/a.tree" "$CASE_ROOT/b.tree" || fail 'trees differ'
-}
-assert_content() {
-  [ -f "$1" ] && [ ! -L "$1" ] || fail "not a regular file: $1"
-  cmp -s -- "$1" <(printf '%s' "$2") || fail "content differs: $1"
-}
-assert_absent() { if [ -e "$1" ] || [ -L "$1" ]; then fail "path exists: $1"; fi; }
-
-# Independent learning-path fixtures. No simulated Sessions or product internals.
-journey_setup() {
-  export HOME="$CASE_ROOT/home"
-  export XDG_CONFIG_HOME="$HOME/config" XDG_DATA_HOME="$HOME/data" XDG_CACHE_HOME="$HOME/cache"
-  export PVISOR_RUN_HOME="$CASE_ROOT/sessions"
-  mkdir -p "$HOME" "$XDG_CONFIG_HOME" "$XDG_DATA_HOME" "$XDG_CACHE_HOME" "$PVISOR_RUN_HOME"
-}
-pvisor() { command "${SUBJECT_BIN:-pvisor}" "$@"; }
-journey_json() { journey_tools get "$@"; }
-json_expect() { journey_tools expect "$@"; }
-json_length() { journey_tools length "$@"; }
-json_paths() { journey_tools paths "$@"; }
-journey_bundle() { journey_tools bundle "$PVISOR_RUN_HOME"; }
-journey_contains() {
-  if ! LC_ALL=C grep -Fq -- "$2" "$1"; then fail "missing '$2' in $1"; fi
-}
-journey_wait_file() {
-  local path=$1 pid=$2
-  for ((execution=0; execution<200; execution++)); do
-    [ ! -f "$path" ] || return 0
-    kill -0 "$pid" 2>/dev/null || fail "process exited before creating $path"
-    sleep 0.025
-  done
-  fail "timed out waiting for $path"
-}
-
-# Assertions and fixture code participate in the semspec vocabulary digest.
-journey_tools() {
-  python3 - "$@" <<'PYTHON'
-#!/usr/bin/env python3
-"""Fixture services and assertions for the executable learning path."""
-
-import json
-import socket
-import sys
-import time
-from pathlib import Path
-
-
-def lookup(document, pointer):
-    for key in pointer.removeprefix("/").split("/") if pointer else []:
-        key = key.replace("~1", "/").replace("~0", "~")
-        document = document[int(key)] if isinstance(document, list) else document[key]
-    return document
-
-
-def main(args):
-    action, filename, *rest = args
-    path = Path(filename)
-    if action == "listen":
-        with socket.socket() as listener:
-            listener.bind(("127.0.0.1", 0))
-            listener.listen()
-            path.write_text(str(listener.getsockname()[1]))
-            # Accept and close all probes; no public network or API key needed.
-            listener.settimeout(0.2)
-            deadline = time.monotonic() + 45
-            while time.monotonic() < deadline:
-                try:
-                    connection, _ = listener.accept()
-                    connection.close()
-                except TimeoutError:
-                    pass
-        return
-    if action == "bundle":
-        paths = list(path.rglob("run-bundle.json"))
-        if len(paths) != 1:
-            raise AssertionError(f"expected one Run Bundle, found {len(paths)}")
-        print(paths[0].read_text())
-        return
-    document = json.loads(path.read_text())
-    if action == "paths":
-        actual = sorted(item["path"] for item in document["filesystem"]["changes"])
-        expected = sorted(rest)
-    else:
-        value = lookup(document, rest[0])
-        if action == "get":
-            print(value if isinstance(value, str) else json.dumps(value))
-            return
-        if action == "expect":
-            actual, expected = value, json.loads(rest[1])
-        elif action == "length":
-            actual, expected = len(value), int(rest[1])
-        else:
-            raise ValueError(f"unknown assertion: {action}")
-    if actual != expected or type(actual) is not type(expected):
-        raise AssertionError(f"{path}: {action} {rest}: got {actual!r}, wanted {expected!r}")
-
-
-if __name__ == "__main__":
-    main(sys.argv[1:])
-PYTHON
-}
-```
+准备与断言源码：[fixtures/use.bash](https://github.com/DeepLink-org/pvisor/blob/main/tests/spec/fixtures/use.bash)。

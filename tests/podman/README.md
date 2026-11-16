@@ -1,6 +1,7 @@
 # Docker CLI contracts
 
-The active Bats suites in `system/` and Go tests in `e2e/` exercise the pVisor
+The active Bats suites in `../spec/docker-cli/regression/system/` and Go tests
+in `../spec/docker-cli/regression/e2e/` exercise the pVisor
 container CLI as a black box. Each test owns a private store and checks public
 commands, exact output, exit status and lifecycle effects.
 
@@ -14,8 +15,8 @@ Prepare Linux/KVM or Apple Silicon/HVF, matching firmware, Python, Bats and Go.
 Build the product with `mise run build`, then run from the repository root:
 
 ```sh
-PVISOR_BINARY="$PWD/target/debug/pvisor" bats tests/podman/system
-PVISOR_BINARY="$PWD/target/debug/pvisor" go test -v tests/podman/e2e/*.go
+PVISOR_BINARY="$PWD/target/debug/pvisor" bats tests/spec/docker-cli/regression/system
+PVISOR_BINARY="$PWD/target/debug/pvisor" go test -v tests/spec/docker-cli/regression/e2e/*.go
 ```
 
 `PVISOR_BINARY` is one executable path. `PVISOR_TEST_IMAGE` selects an Alpine
@@ -61,7 +62,8 @@ logs, volumes, TCP publication, image operations and local builds/cache.
 They port selected contracts, not the complete upstream corpus.
 
 Cases outside this profile are recorded with reasons in
-`system/900-unsupported.bats.disabled` and `e2e/unsupported_test.go.disabled`.
+`../spec/docker-cli/regression/system/900-unsupported.bats.disabled` and
+`../spec/docker-cli/regression/e2e/unsupported_test.go.disabled`.
 Those files produce no pass or skip results. Other unported upstream cases
 remain unvalidated. Public command support is defined by the
 [CLI reference](../../docs/src/en/reference/cli.md).

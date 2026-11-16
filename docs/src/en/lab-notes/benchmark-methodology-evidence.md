@@ -42,20 +42,19 @@ Start every report with this table:
 
 ## Start from the existing measurement entry points
 
-```bash
-mise run benchmark -- smoke --output benchmark/process/.data/candidate
-mise run benchmark -- nightly --output benchmark/process/.data/nightly-new
-mise run benchmark-compare -- benchmark/process/.data/candidate/in.bench.json benchmark/process/.data/main/in.bench.json
-mise run benchmark -- startup/timing --output benchmark/startup/.data/measurement
-```
+Use the [current benchmark manual](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/README.md)
+for Rust/Criterion measurement and comparison commands. The historical process
+and startup protocols below retain their frozen harnesses, input records and
+comparison receipts; their `in.bench.json` files are not Criterion comparison
+roots and cannot be passed to the current `benchmark-compare` command.
 
-The process regression gate uses semspec bench and a Python `perf_counter_ns` command timer; preparation and correctness hooks are outside timing: smoke has 2 warmups/10 samples, nightly has 10 warmups/50 samples. It measures native launch, minimal host Run, status and review as independent conditions. `benchmark-compare` accepts validated `in.bench.json` files from matching configurations and harnesses; measure the baseline separately with the same suite into `.data/main`.
+The recorded process cohort uses a Python `perf_counter_ns` command timer; preparation and correctness hooks are outside timing: smoke has 2 warmups/10 samples, nightly has 10 warmups/50 samples. It measures native launch, minimal host Run, status and review as independent conditions. Comparisons require validated `in.bench.json` files from matching configurations and harnesses, with a separately measured baseline.
 
 The startup event-clock table uses 3 warmups/60 samples per condition and records Ready and normal Exit from the same launch. It does not replace the retired startup/resource matrix or reproduce its historical sampling settings. See the [current benchmark manual](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/README.md) for prepared binary, rootfs, image and kernel prerequisites. Every explicit output directory must be new; failures retain evidence and block publication. Building and input preparation occur outside these timers.
 
 ## Interpretation and archiving
 
-Compare candidate and baseline on the same host, suite, and inputs. `benchmark-compare` defaults to a 15% regression threshold and exits nonzero when a regression is detected. Save raw samples, summaries, complete parameters, input hashes, and commits; distinguish cold images, warm disk caches, and warm page caches, and record background load and power state.
+Compare candidate and baseline on the same host, suite, and inputs. The recorded process comparison used a 15% regression threshold and returned nonzero when a regression was detected. Its comparison inputs and receipts remain with the archived harness, separately from current Criterion baselines. Save raw samples, summaries, complete parameters, input hashes, and commits; distinguish cold images, warm disk caches, and warm page caches, and record background load and power state.
 
 The first product measurements are recorded below; real-model success, human supervision and cloud timings remain unmeasured.
 
@@ -106,7 +105,7 @@ Local raw record `docs/src/assets/benchmarks/.data/product-v1-20261004/manifest.
 
 `mise run lint` passed. `mise run test`: Rust 1,075 passed / 8 skipped, Python 84 passed / 16 skipped. Benchmark tests alone: 19 passed. STAGE semantics: 14/14 PASS, with human review still UNREVIEWED; test success is not human approval. Large syscall traces and non-crash apply ledgers remain in local target artifacts; the public archive retains reports, Bundles, diagnostics and crash ledgers.
 
-Recompute with `python3 benchmark/pvisor/summarize_product_v1.py <batch>/report.json --output-csv /tmp/summary.csv`; Local raw record `docs/src/assets/benchmarks/.data/product-v1-20261004/summary.csv` keeps batches separate.
+Recompute with the batch's frozen summarizer; local raw record `docs/src/assets/benchmarks/.data/product-v1-20261004/summary.csv` keeps batches separate. The recorded Python-coordinated measurements retain their original sampling and clocks, independently of current Rust/Criterion entry points.
 
 Performance describes pinned artifacts, not later parallel changes or other release builds; source was not a clean commit. Workspace lint/tests validate the then-current source, while the pinned CLI is checked by benchmarks and STAGE specifications.
 
@@ -132,30 +131,7 @@ Image/kernel/initrd hashes and sources are in the Local raw record `docs/src/ass
 
 Requires Linux x86_64, KVM, FUSE, user/network namespaces, Firecracker 1.13.1, QEMU, curl, zstd, e2fsprogs, sfdisk, and installed host Python/Node/Rust/GCC/Git/rg/Claude/Codex. Use fresh output directories; downloads and tool installation require networking. Preparation modifies regular files under its output directory, without changing host services or block devices. Preflight with `--samples 1 --warmups 0` before formal runs. The fixture contains only project/workload inputs, not an OS root directory.
 
-```bash
-python3 benchmark/pvisor/prepare_ubuntu_reference.py \
-  --output target/ubuntu-reference-new
-python3 benchmark/pvisor/ubuntu_baselines.py \
-  --assets target/ubuntu-reference-new --fixture target/ubuntu-reference-new/fixture \
-  --binary /absolute/path/to/frozen/pvisor --output target/ubuntu-ready-new \
-  --backends native,pvisor-staged,pvisor-vm-hostroot,firecracker-ubuntu,firecracker-ubuntu-firstboot \
-  --modes ready --samples 30 --warmups 3
-python3 benchmark/pvisor/ubuntu_baselines.py \
-  --assets target/ubuntu-reference-new --fixture target/ubuntu-reference-new/fixture \
-  --binary /absolute/path/to/frozen/pvisor --output target/ubuntu-workflows-new \
-  --backends native,pvisor-staged,pvisor-vm-hostroot,firecracker-ubuntu \
-  --modes env,filesystem,tools,claude,codex --samples 10 --warmups 3
-python3 benchmark/pvisor/ubuntu_baselines.py \
-  --assets target/ubuntu-reference-new --fixture target/ubuntu-reference-new/fixture \
-  --binary /absolute/path/to/frozen/pvisor --output target/ubuntu-clients-new \
-  --backends firecracker-ubuntu --modes claude,codex --samples 10 --warmups 3
-uv run --no-project --with matplotlib python benchmark/pvisor/render_ubuntu_baselines.py \
-  --report target/ubuntu-ready-new/report.json \
-  --report target/ubuntu-workflows-new/report.json \
-  --report target/ubuntu-clients-new/report.json \
-  --replace-cohort claude/firecracker-ubuntu --replace-cohort codex/firecracker-ubuntu \
-  --assets target/ubuntu-reference-new --output /tmp/full-ubuntu-report-new
-```
+The frozen batch retains preparation, measurement and rendering commands, with separate Ready, workflow and client reports. Rendering selects the independently rerun Firecracker Claude/Codex cohorts instead of pooling them with invalid earlier client observations. Use the archived harness and artifact receipts to audit these historical results; the current checkout is not their measurement entry point.
 
 Local raw record `docs/src/assets/benchmarks/.data/full-ubuntu-20261004/samples.csv` · Local raw record `docs/src/assets/benchmarks/.data/full-ubuntu-20261004/summary.tsv` · [Method and reproduction](../benchmarks/index.md#full-ubuntu)
 
@@ -169,15 +145,7 @@ QEMU 10.2.2 q35 and microvm reuse the same complete Ubuntu Agent disk measured o
 
 Each QEMU process supplies built-in user-mode NAT/DNS; Firecracker needs a separate QEMU `-machine none` helper whose time and RSS are included. Differences therefore cannot all be assigned to VMM or block-device cost. Each trial clones the same template; cases have 3 warmups and N=10, plus a functional preflight. They require the same OS-service readiness, tool checks and normal zero exit as Firecracker. `reboot=t` and `-no-reboot` allow normal termination rather than counting a host kill as success.
 
-The follow-up runs separately on the same host without pooling earlier samples; plotted pVisor/Firecracker distributions come from their previous batches. N=10 supplies an initial budget, not a tail guarantee. Commands, logs, OS proofs and artifact hashes are archived with the results. This command reuses the official Ubuntu prepared above:
-
-```bash
-python3 benchmark/pvisor/ubuntu_baselines.py \
-  --assets target/ubuntu-reference-new --fixture target/ubuntu-reference-new/fixture \
-  --binary /absolute/path/to/frozen/pvisor --output target/ubuntu-qemu-new \
-  --backends qemu-ubuntu,qemu-microvm-ubuntu \
-  --modes ready,tools,claude,codex --samples 10 --warmups 3
-```
+The follow-up runs separately on the same host without pooling earlier samples; plotted pVisor/Firecracker distributions come from their previous batches. N=10 supplies an initial budget, not a tail guarantee. Commands, logs, OS proofs and artifact hashes are archived with the results. The q35/microvm selection reused the official Ubuntu inputs for Ready, tools and Claude/Codex, with ten samples and three warmups.
 
 
 The follow-up Local raw record `docs/src/assets/benchmarks/.data/full-ubuntu-qemu-20261004/manifest.tsv` all pass. The prerequisite for disabling PIC/PIT was checked by a Local raw record `docs/src/assets/benchmarks/.data/full-ubuntu-qemu-20261004/qemu-cpu-capabilities.tsv`: the guest model exposes `tsc-deadline`. This is a capability check, not a performance sample.
@@ -243,27 +211,7 @@ Local raw record `docs/src/assets/benchmarks/.data/reference-env-20261004/follow
 
 Build a rootfs from installed tools, import the matching Docker image and create ext4. Automatic Fedora 44 layout supports Python 3.14/Node 24; another system can supply an equivalent prepared `--tools-rootfs`. Prerequisites are KVM, FUSE, private rootless Docker, Firecracker, QEMU, Claude/Codex, the Rust musl target, GCC/e2fsprogs and clean Linux 6.12.109 sources. Tools and fake credentials are copied, not login authentication.
 
-Start a user-owned private daemon following the rootless Docker instructions, with a short socket path. Replace `12345` below with its actual host PID and select two allowed physical cores. Owner/socket checks precede pinning only that daemon; system Docker is untouched. Output directories must be new. Start with `--samples 1 --warmups 0`. Downloads, kernel compilation and image preparation are outside task timing; offline preparation and per-run cloning are recorded separately.
-
-```bash
-bash benchmark/pvisor/prepare_reference_kernel.sh \
-  /absolute/path/to/clean/linux-6.12.109 target/reference-kernel-new
-python3 benchmark/pvisor/prepare_reference_env.py \
-  --binary /absolute/path/to/pinned/pvisor --output target/reference-env-new \
-  --kernel-elf target/reference-kernel-new/vmlinux \
-  --kernel-bzimage target/reference-kernel-new/arch/x86/boot/bzImage \
-  --kernel-config target/reference-kernel-new/.config \
-  --docker-host unix:///tmp/pvisor-reference-docker/docker.sock
-python3 benchmark/pvisor/reference_baselines.py \
-  --assets target/reference-env-new --binary /absolute/path/to/pinned/pvisor \
-  --output target/reference-results-new \
-  --docker-host unix:///tmp/pvisor-reference-docker/docker.sock \
-  --docker-root-pid 12345 --cpu-affinity 0,1 --memory-mib 16384 \
-  --samples 30 --warmups 3
-uv run --no-project --with matplotlib python benchmark/pvisor/render_reference_baselines.py \
-  --report target/reference-results-new/report.json \
-  --assets target/reference-env-new --output /tmp/reference-report-new
-```
+The recorded protocol used a user-owned private rootless daemon, checked its owner/socket and pinned only that daemon to two physical cores, leaving system Docker untouched. Each output directory was new. A one-sample preflight without warmups preceded 30 samples and three warmups at affinity 0,1 with 16 GiB configured VM memory. Downloads, kernel compilation and image preparation are outside task timing; offline preparation and per-run cloning are recorded separately. Exact preparation, measurement and rendering commands remain in the frozen archive.
 
 The archive uses `pvisor-reference-environment/v1`, distinct from the old smoke schema. It includes samples, commands, pinned scripts, guest/tool versions, failures, minimized real tool-return evidence, and Bundle isolation/resource proof, excluding multi-GB rootfs and inherited host credentials. Reports contain tool/kernel/pVisor identities. See the [benchmark directory](https://github.com/DeepLink-org/pvisor/tree/555e750105e8072e0b85030dfb36226c66dae206/benchmark/pvisor) for automatic preparation and reproduction.
 

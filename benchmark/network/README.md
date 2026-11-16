@@ -1,5 +1,67 @@
 # 网络场景与编译优化对照
 
+## Rust/Criterion active entry
+
+`profile_ab.json` is now a Criterion locator for
+`benchmark/criterion/src/network/mod.rs::register`. The Python commands below
+describe the historical protocol and its read-only audit, not a new measurement
+entry. The active runner starts the existing integrity-checked Rust `worker.rs`
+directly for the loopback origin, native client and guest; it never shells out
+to a Python measurement adapter.
+
+The parent standalone crate owns Criterion 0.7.0 wiring. Direct execution uses:
+
+```sh
+export PVISOR_BENCH_FAMILY=network
+export PVISOR_BENCH_ENTRY=network/profile_ab.json
+export PVISOR_BENCH_OUTPUT=/absolute/benchmark/network/.data/NEW_BATCH
+export PVISOR_BENCH_BASELINE=/frozen/release-pvisor
+export PVISOR_BENCH_CANDIDATE=/frozen/net-o3-pvisor
+export PVISOR_BENCH_NET_WORKER=/frozen/static-net-worker
+export PVISOR_BENCH_FIRMWARE=/frozen/firmware-directory
+export PVISOR_BENCH_CPUS=0,1,2,3
+export PVISOR_BENCH_SERVER_CPUS=4,5
+```
+
+Optional `PVISOR_BENCH_BUILD_RECEIPT` supplies separately audited build records;
+digests alone do not prove same-source/package-profile provenance. The worker
+must be built once, statically, for the guest and host. The runner freezes both
+CLI artifacts, worker, firmware and the supplied receipt, checks exclusive
+loopback resolution, and starts a bounded-readiness private origin. It requires
+Linux x86_64/KVM. Four client CPUs and two server CPUs must be disjoint.
+Build first, then execute the frozen runner directly: do not measure under
+`cargo run`/`cargo bench`, whose still-running Cargo parent is correctly
+identified as build interference.
+
+Three checked randomized warmup cohorts precede Criterion. A real Criterion
+operation randomizes the three arms and scenario order, gives every VM arm a
+new private rootfs/workspace/Session, and retains each worker's internal clocks,
+per-request samples and exact byte/flow/DNS policy accounting. The entire
+process group has a 150-second deadline; network connections retain the Rust
+worker's 15-second I/O deadlines. Origin and CLI process groups are always
+reaped. External cargo/rustc interference invalidates the batch rather than
+killing someone else's build. Slow valid samples remain in the evidence.
+
+Criterion owns a new >=30-sample cohort; its calibration invocations
+also receive full checks and raw evidence. These are not historical fixed
+3/30 Python samples. Raw worker clocks, not the whole paired operation time,
+define the measured network intervals. `PVISOR_BENCH_METRIC` selects a scenario
+(default `rpc_fresh`) or `stream_first_byte`. Separate `release`/`net_o3`
+benchmarks each still execute the full random three-arm cohort but submit only
+that arm's selected **complete request-batch** interval, named ns per batch.
+They do not sum or normalize per-request medians. Raw per-request clocks and
+bulk byte counts remain available for distribution and goodput interpretation.
+Criterion owns all statistical estimation. Its independent arm intervals are
+not paired-bootstrap contrast intervals; there is no automatic paired
+inferential publication. Complete randomized raw pairs are retained for review.
+Do not combine scenarios from one VM as independent samples, derive request
+P95 from Criterion estimates or publish the outer cohort wall time as latency.
+
+Offline tests cover result inventories; existing standalone worker tests still cover duplex payload
+checking and upload receipts. A compile/test pass does not establish KVM,
+firmware, endpoint policy or same-source build-profile equivalence. No
+historical report, publication binding or user-network table is rewritten.
+
 问题：网络热路径从体积优化改成速度优化后，真实 VM 的哪些网络场景有改善？
 本入口属于 [B-NETWORK-PROFILE-ENG](../REGISTRY.md#b-network-profile-eng)，
 不填充仍未准备的用户网络表，不改历史数据。

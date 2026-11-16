@@ -1,29 +1,27 @@
-"""Fixed JSON subjects, fresh trial evidence and paired document data publication."""
+"""Retained subject/helpers and publication from synthetic frozen Ready evidence."""
 
 import csv
 import importlib.util
 import io
 import json
-import os
-import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+
+from test_ready import frozen_ready_batch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "startup"))
-SPEC = importlib.util.spec_from_file_location("startup_prepare", ROOT / "startup/common.py")
-STARTUP = importlib.util.module_from_spec(SPEC)
-SPEC.loader.exec_module(STARTUP)
-from hooks import archive, prepare, validate, validate_output  # noqa: E402
+SPEC = importlib.util.spec_from_file_location("startup_archive_identity", ROOT / "common.py")
+COMMON = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(COMMON)
+from hooks import validate_output  # noqa: E402
 from public_assets import csv_path as public_csv_path  # noqa: E402 - import after module-loading setup
 from publish import compact_configuration, publish_startup  # noqa: E402
 
 OUTPUT = 'REFERENCE_READY\nREFERENCE_RESULT {"mode":"ready","correctness":"passed"}\n'
-SEMSPEC = Path(os.environ.get("SEMSPEC_BIN", ROOT.parent / "target/semspec/debug/semspec"))
 
 
 class StartupContracts(unittest.TestCase):
@@ -92,7 +90,7 @@ class StartupContracts(unittest.TestCase):
                 validate_output(stdout, stderr, guest)
 
     def test_publisher_rejects_retired_measurement_protocols_before_writing(self):
-        for scope in (STARTUP.COMMON.METRIC_SCOPE, STARTUP.COMMON.READY_SCOPE):
+        for scope in (COMMON.METRIC_SCOPE, COMMON.READY_SCOPE):
             with self.subTest(scope=scope), tempfile.TemporaryDirectory() as temporary:
                 root = Path(temporary)
                 batch = root / "batch"
@@ -102,27 +100,40 @@ class StartupContracts(unittest.TestCase):
                     publish_startup(batch, root / "docs")
                 self.assertFalse((root / "docs").exists())
 
-    def test_non_native_preparation_requires_explicit_current_inputs(self):
-        with (
-            tempfile.TemporaryDirectory() as temporary,
-            patch.dict(os.environ, {}, clear=True),
-            patch.object(os, "sched_getaffinity", return_value={0}, create=True),
-            patch.object(os, "sched_setaffinity", create=True),
-        ):
-            destination = Path(temporary) / ".data/batch"
-            with self.assertRaisesRegex(ValueError, "prepared inputs required"):
-                STARTUP.prepare_template(
-                    ROOT / "startup/pvisor_vm_timing.json",
-                    destination,
-                    cpu_affinity="0",
-                )
-            self.assertFalse((destination / "protocol.json").exists())
+    def test_subjects_require_explicit_prepared_paths_without_shell_splitting(self):
+        from subjects import subject
+
+        with self.assertRaisesRegex(ValueError, "unresolved subject path"):
+            subject("pvisor-vm", {})
+        argv = subject(
+            "pvisor-vm",
+            {
+                "BINARY": "/prepared path/pvisor",
+                "ASSETS": "/prepared path/assets",
+                "BATCH": "/prepared path/batch",
+            },
+        )
+        self.assertEqual(argv[0], "/prepared path/pvisor")
+        self.assertIn("/prepared path/assets/rootfs", argv)
+        self.assertIn("/prepared path/batch/current/stage", argv)
 
     def test_eight_subjects_exclude_python_taskset_and_timeout_wrappers(self):
         from subjects import SUBJECTS
 
         subjects = SUBJECTS
-        self.assertEqual(set(subjects), set(STARTUP.BACKENDS))
+        self.assertEqual(
+            set(subjects),
+            {
+                "native",
+                "pvisor-host",
+                "pvisor-staged",
+                "pvisor-vm",
+                "docker",
+                "fc-system",
+                "qemu",
+                "qemu-microvm",
+            },
+        )
         for subject in subjects.values():
             self.assertNotIn(subject[0], ("python3", "taskset", "timeout"))
         self.assertIn("128MiB", subjects["pvisor-vm"])
@@ -138,68 +149,13 @@ class StartupContracts(unittest.TestCase):
             "microvm,acpi=off,x-option-roms=off,pit=off,pic=off,rtc=on", subjects["qemu-microvm"]
         )
 
-    def test_archive_discards_only_validated_scratch_disks(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            for validated in (False, True):
-                current = root / "current"
-                current.mkdir()
-                (current / "rootfs.ext4").write_bytes(b"scratch disk")
-                (current / "condition.json").write_text(json.dumps({"validated": validated}))
-                archive(root)
-                trial = root / "trials" / ("00001" if validated else "00000")
-                self.assertEqual((trial / "rootfs.ext4").exists(), not validated)
-                self.assertTrue((trial / "condition.json").is_file())
 
-    def test_listener_mismatch_is_refused_before_launch(self):
-        with (
-            patch.object(STARTUP.Path, "exists", return_value=True),
-            patch.object(
-                STARTUP.Path,
-                "read_text",
-                return_value=json.dumps(dict(pid=123, capability="never-print-this")),
-            ),
-            patch.object(STARTUP.os, "kill", return_value=None),
-            patch.object(STARTUP.COMMON, "digest", side_effect=["listener", "different"]),
-        ):
-            with self.assertRaisesRegex(ValueError, "differs from existing Host"):
-                STARTUP.preserve_listener(Path("/candidate"))
-
-    def test_each_trial_has_fresh_staging_and_checks_host_content(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            (root / "protocol.json").write_text(json.dumps(dict(assets=None, backends=["native"])))
-            prepare(root, "native")
-            (root / "current/stdout").write_text(OUTPUT)
-            (root / "current/stderr").write_text("")
-            validate(root, "native")
-            archive(root)
-            prepare(root, "native")
-            self.assertFalse((root / "current/stage").exists())
-            (root / "current/stdout").write_text(OUTPUT)
-            (root / "current/stderr").write_text("")
-            (root / "current/workspace/startup-canary").write_text("changed")
-            with self.assertRaisesRegex(ValueError, "workspace was modified"):
-                validate(root, "native")
-            self.assertEqual(len(list((root / "trials").iterdir())), 1)
-
-
-@unittest.skipUnless(SEMSPEC.is_file(), "built semspec required")
-@unittest.skipUnless(hasattr(os, "sched_getaffinity"), "Linux CPU affinity required")
-class StartupIntegration(unittest.TestCase):
-    def test_native_event_row_publishes_paired_metrics_for_eight_backends(self):
+class StartupArchivePublication(unittest.TestCase):
+    def test_frozen_native_row_publishes_paired_metrics_for_eight_backends(self):
         with tempfile.TemporaryDirectory(prefix="paired startup ") as temporary:
             root = Path(temporary)
-            affinity = str(min(os.sched_getaffinity(0)))
-            batch = STARTUP.prepare_template(
-                ROOT / "startup/native_timing.json", root / ".data/batch", cpu_affinity=affinity
-            )
-            result = subprocess.run(
-                [str(SEMSPEC), "bench", "--cwd", str(batch / "workspace"), str(batch / "in.json")],
-                capture_output=True,
-                text=True,
-            )
-            self.assertEqual(result.returncode, 0, result.stderr)
+            batch = root / ".data/batch"
+            frozen_ready_batch(batch, "native")
             source = root / "docs/src"
             publish_startup(batch, source)
             ready = json.loads(
@@ -259,32 +215,11 @@ class StartupIntegration(unittest.TestCase):
                 self.assertFalse((base / "startup-timing.provenance.json").exists())
                 self.assertFalse((base / "startup-timing.render.json").exists())
 
-    def test_native_checks_all_trials_and_publishes_json_without_editing_source_md(self):
-        with tempfile.TemporaryDirectory(prefix="startup semspec ") as temporary:
+    def test_archive_checks_all_trials_and_publishes_json_without_editing_source_md(self):
+        with tempfile.TemporaryDirectory(prefix="startup evidence ") as temporary:
             root = Path(temporary)
-            affinity = {min(os.sched_getaffinity(0))}
-            batch = STARTUP.prepare_template(
-                ROOT / "startup/native_timing.json",
-                root / ".data" / "startup",
-                cpu_affinity=str(next(iter(affinity))),
-            )
-            original = os.sched_getaffinity(0)
-            try:
-                os.sched_setaffinity(0, affinity)
-                result = subprocess.run(
-                    [
-                        str(SEMSPEC),
-                        "bench",
-                        "--cwd",
-                        str(batch / "workspace"),
-                        str(batch / "in.json"),
-                    ],
-                    capture_output=True,
-                    text=True,
-                )
-            finally:
-                os.sched_setaffinity(0, original)
-            self.assertEqual(result.returncode, 0, result.stderr)
+            batch = root / ".data/startup"
+            frozen_ready_batch(batch, "native")
             self.assertEqual(len(list((batch / "trials").iterdir())), 64)
             evidence = json.loads((batch / "in.bench.json").read_text())
             self.assertEqual(len(evidence["commands"]), 1)
@@ -310,13 +245,11 @@ class StartupIntegration(unittest.TestCase):
             for locale in ("zh", "en"):
                 page = source / locale / "benchmarks/startup.md"
                 self.assertEqual(page.read_bytes(), original_md[locale])
-                render = subprocess.run(
-                    [str(SEMSPEC), "render", str(page)], capture_output=True, text=True
-                )
-                self.assertEqual(render.returncode, 0, render.stderr)
-                self.assertIn("| Native | 60 |", render.stdout)
+                table = json.loads((page.parent / "startup-timing.ready.render.json").read_text())
+                self.assertEqual(table["Native"]["N"], 60)
                 expected = evidence["commands"][0]["raw"]["Ready median ms"]
-                self.assertIn(f"{expected:.2f}", render.stdout)
+                # Both locales retain the same numeric values despite translated headers.
+                self.assertIn(f"{expected:.2f}", table["Native"].values())
             (next((batch / "trials").iterdir()) / "condition.json").unlink()
             with self.assertRaisesRegex(ValueError, "missing preflight"):
                 publish_startup(batch, source)

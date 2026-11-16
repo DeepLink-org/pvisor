@@ -1,15 +1,15 @@
 # VM 暂停、恢复与文件 RAM 场景
 
 这些 DOC 规格补充 [现有场景](cases.md)，支持 Linux/KVM 和 Apple Silicon macOS/HVF。
-新规格均为 UNREVIEWED；未编译或执行。使用的 SDK 驱动源码是
+这些规格仍待人工审核；执行成功不等于批准。使用的 SDK 驱动源码是
 `crates/pvisor/examples/vm_control_case.rs`，应连同规格一起审查。
 
-`mise run cases` 发现本页；SDK 驱动未准备时，四条 SDK 场景明确报告 SKIP。
+`mise run cases` 发现链接的原生规格；SDK 驱动未准备时，四条 SDK 场景明确报告 SKIP 并使门禁失败。
 `mise run cases -- --suite vm` 构建并在 macOS 签名驱动，再执行本页的全部六条场景。
 也可以对已有二进制运行：
 
 ```sh
-mise run semspec -- run docs/src/zh/reference/cases-vm.md --subject-bin target/release/pvisor
+mise run cases -- --suite vm --subject-bin target/release/pvisor
 ```
 
 macOS 必须设置 `PVISOR_CASE_ROOTFS` 为 Linux guest rootfs；Linux 默认使用 `/`。
@@ -26,22 +26,7 @@ SDK 场景需要 guest `/usr/bin/python3`，可用 `PVISOR_CASE_VM_PYTHON` 改�
 
 **违反示例**：文件未被创建、权限向其他用户开放，或正常退出删除了调用者指定的文件。
 
-<!-- semspec: case id=S-DOC-057 -->
-```bash
-require_vm_case
-vm_case_setup
-pvisor spawn --no-agent-defaults --gateway-mode off --rootfs "$PVISOR_CASE_ROOTFS" \
-  --vm-ram-backing "$CASE_ROOT/startup.ram" --stdio capture -- /bin/sh -c 'printf ram-startup-ok'
-bundle_expect run.state completed
-bundle_expect run.exit_code 0
-bundle_contains run.output.stdout ram-startup-ok
-python3 - "$CASE_ROOT/startup.ram" <<'PY'
-import pathlib, stat, sys
-p = pathlib.Path(sys.argv[1])
-assert p.is_file() and p.stat().st_size > 0
-assert stat.S_IMODE(p.stat().st_mode) == 0o600
-PY
-```
+运行与断言：[Scrut S-DOC-057](https://github.com/DeepLink-org/pvisor/blob/main/tests/spec/vm/S-DOC-057.md)。
 
 ### S-DOC-058：N02 已有 RAM 文件不能被启动覆盖
 
@@ -50,24 +35,7 @@ PY
 
 **违反示例**：截断已有文件以建立 RAM backing，或者报错后仍执行 guest。
 
-<!-- semspec: case id=S-DOC-058 -->
-```bash
-require_vm_case
-vm_case_setup
-printf 'keep-existing-ram' > "$CASE_ROOT/startup.ram"
-expect_refused pvisor spawn --no-agent-defaults --gateway-mode off --rootfs "$PVISOR_CASE_ROOTFS" \
-  --vm-ram-backing "$CASE_ROOT/startup.ram" --stdio capture -- /bin/sh -c 'printf unexpected-guest'
-assert_content "$CASE_ROOT/startup.ram" 'keep-existing-ram'
-bundle_expect run.state failed
-python3 - "$PVISOR_CASE_RECORDS" <<'PY'
-import json, pathlib, sys
-bundles = list(pathlib.Path(sys.argv[1]).rglob('run-bundle.json'))
-assert bundles
-bundle = json.loads(max(bundles, key=lambda p: p.stat().st_mtime).read_text())
-assert bundle['run']['state'] == 'failed'
-assert bundle['run']['output'].get('stdout') is None
-PY
-```
+运行与断言：[Scrut S-DOC-058](https://github.com/DeepLink-org/pvisor/blob/main/tests/spec/vm/S-DOC-058.md)。
 
 ### S-DOC-059：N03 pause/resume 幂等，使用启动 backing 回收
 
@@ -76,14 +44,7 @@ PY
 
 **违反示例**：暂停返回成功但 heartbeat 继续变化、恢复不推进，或第二次回收后 guest 内存校验失败。
 
-<!-- semspec: case id=S-DOC-059 -->
-```bash
-require_vm_sdk
-vm_case_setup
-vm_run_sdk pause
-grep -Fq 'vm-control-case-ok pause' "$CASE_ROOT/sdk.log"
-test -s "$CASE_ROOT/startup.ram"
-```
+运行与断言：[Scrut S-DOC-059](https://github.com/DeepLink-org/pvisor/blob/main/tests/spec/vm/S-DOC-059.md)。
 
 ### S-DOC-060：N04 offload 发布新文件并保持 live inode
 
@@ -92,18 +53,7 @@ test -s "$CASE_ROOT/startup.ram"
 
 **违反示例**：复制到了另一个 inode、回报错误的路径、回收后 guest 内存损坏，或下次 offload 悄悄换回原文件。
 
-<!-- semspec: case id=S-DOC-060 -->
-```bash
-require_vm_sdk
-vm_case_setup
-vm_run_sdk offload
-grep -Fq 'vm-control-case-ok offload' "$CASE_ROOT/sdk.log"
-python3 - "$CASE_ROOT/startup.ram" "$CASE_ROOT/offloaded.ram" <<'PY'
-import os, stat, sys
-assert os.path.samefile(sys.argv[1], sys.argv[2])
-assert stat.S_IMODE(os.stat(sys.argv[2]).st_mode) == 0o600
-PY
-```
+运行与断言：[Scrut S-DOC-060](https://github.com/DeepLink-org/pvisor/blob/main/tests/spec/vm/S-DOC-060.md)。
 
 ### S-DOC-061：N05 offload 拒绝覆盖，VM 继续运行
 
@@ -112,14 +62,7 @@ PY
 
 **违反示例**：拒绝路径后截断目标、暂停或取消了 VM，或使后续命令的确认串线。
 
-<!-- semspec: case id=S-DOC-061 -->
-```bash
-require_vm_sdk
-vm_case_setup
-vm_run_sdk reject
-grep -Fq 'vm-control-case-ok reject' "$CASE_ROOT/sdk.log"
-assert_content "$CASE_ROOT/occupied.ram" keep
-```
+运行与断言：[Scrut S-DOC-061](https://github.com/DeepLink-org/pvisor/blob/main/tests/spec/vm/S-DOC-061.md)。
 
 ### S-DOC-062：N06 Seekable 增量 backing 回收与恢复
 
@@ -130,108 +73,10 @@ Linux 需要 FUSE；macOS 需要 macFUSE 内核后端。
 
 **违反示例**：写入的只是普通 RAM 文件、缺失父层被当作零、manifest 未生成新的 head、Seekable 索引损坏、guest 缺页读回压缩字节而不是原文、回收后可变页面丢失，或 compaction 后旧层持续累积。
 
-<!-- semspec: case id=S-DOC-062 -->
-```bash
-require_vm_compression
-vm_case_setup
-vm_run_sdk compressed
-grep -Fq 'vm-control-case-ok compressed' "$CASE_ROOT/sdk.log"
-grep -Fq 'compressed-cycle=9 depth=1 layers=1 ' "$CASE_ROOT/sdk.log"
-grep -Fq 'compressed-cycle=10 depth=2 layers=2 ' "$CASE_ROOT/sdk.log"
-python3 - "$CASE_ROOT/startup.ram" <<'PY'
-import hashlib, json, pathlib, struct, sys
-manifest = pathlib.Path(sys.argv[1]).read_bytes()
-assert manifest[:8] == b'PVZRAM\0\0'
-n = struct.unpack_from('<I', manifest, 8)[0]
-descriptor = json.loads(manifest[12:12+n])
-assert descriptor['version'] == 2
-assert hashlib.sha256(manifest[12:12+n]).digest() == manifest[12+n:44+n]
-records = manifest[44+n:]
-assert len(records) >= 800 and len(records) % 80 == 0
-heads = []
-for i in range(0, len(records), 80):
-    record = records[i:i+80]
-    assert record[:8] == b'PVHEAD2\0'
-    assert hashlib.sha256(record[:48]).digest() == record[48:]
-    heads.append(record[16:48])
-assert len(set(heads)) >= 10
-root = pathlib.Path(descriptor['directory'])
-head, seen = heads[-1], set()
-while head is not None:
-    assert head not in seen and len(seen) < 8
-    seen.add(head)
-    with (root / (head.hex() + '.pvdelta')).open('rb') as f:
-        f.seek(-64, 2)
-        footer = f.read(64)
-        assert footer[:8] == b'PVSNAP2\0' and footer[32:] == head
-        offset, size, seek_size = struct.unpack_from('<QQQ', footer, 8)
-        assert offset + size + 64 == f.seek(0, 2)
-        f.seek(offset)
-        encoded = f.read(size)
-        assert hashlib.sha256(encoded).digest() == head
-        metadata = json.loads(encoded)
-        assert metadata['version'] == 2 and metadata['block_bytes'] == 65536
-        f.seek(offset - 9)
-        count, flags, magic = struct.unpack('<IBI', f.read(9))
-        assert flags == 0 and magic == 0x8F92EAB1 and seek_size == 17 + count * 8
-        f.seek(offset - seek_size)
-        magic, frame_size = struct.unpack('<II', f.read(8))
-        assert magic == 0x184D2A5E and frame_size == seek_size - 8
-        head = None if metadata['parent'] is None else bytes(metadata['parent'])
-assert {p.name for p in root.glob('*.pvdelta')} == {h.hex() + '.pvdelta' for h in seen}
-PY
-```
+运行与断言：[Scrut S-DOC-062](https://github.com/DeepLink-org/pvisor/blob/main/tests/spec/vm/S-DOC-062.md)。
 
 ## VM 检查准备
 
 下列准备块声明硬件前提并保留 SDK 失败诊断。
 
-<!-- semspec: setup -->
-````bash
-# VM case prerequisites and SDK driver selection; no product failure becomes SKIP.
-require_vm_case() {
-  require_python3
-  case "$(uname -s)" in
-    Linux)
-      [ -r /dev/kvm ] && [ -w /dev/kvm ] || skip '/dev/kvm unavailable'
-      export PVISOR_CASE_ROOTFS="${PVISOR_CASE_ROOTFS:-/}"
-      ;;
-    Darwin)
-      [ "$(uname -m)" = arm64 ] || skip 'Apple Silicon required'
-      [ -n "${PVISOR_CASE_ROOTFS:-}" ] || skip 'explicit Linux guest rootfs required'
-      ;;
-    *) skip 'VM unsupported on this OS' ;;
-  esac
-  [ -d "$PVISOR_CASE_ROOTFS" ] || skip 'guest rootfs unavailable'
-}
-
-vm_case_setup() {
-  case_setup
-  export XDG_CACHE_HOME="$CASE_ROOT/cache"
-  mkdir -p "$XDG_CACHE_HOME"
-}
-
-require_vm_sdk() {
-  require_vm_case
-  export VM_CASE_DRIVER="${PVISOR_CASE_VM_DRIVER:-$(dirname "$SUBJECT_BIN")/examples/vm_control_case}"
-  [ -x "$VM_CASE_DRIVER" ] || skip 'SDK driver unavailable; prepare with mise run cases -- --suite vm'
-  export PVISOR_CASE_VM_PYTHON="${PVISOR_CASE_VM_PYTHON:-/usr/bin/python3}"
-  [ -x "$PVISOR_CASE_ROOTFS/$PVISOR_CASE_VM_PYTHON" ] || skip 'guest Python unavailable'
-}
-
-require_vm_compression() {
-  require_vm_sdk
-  case "$(uname -s)" in
-    Linux) [ -r /dev/fuse ] && [ -w /dev/fuse ] || skip '/dev/fuse unavailable' ;;
-    Darwin) [ -d /Library/Filesystems/macfuse.fs ] || skip 'macFUSE kernel backend unavailable' ;;
-  esac
-}
-
-# Preserve driver diagnostics even when errexit aborts a failing DOC case.
-vm_run_sdk() {
-  local status=0
-  "$VM_CASE_DRIVER" "$1" > "$CASE_ROOT/sdk.log" 2>&1 || status=$?
-  cat "$CASE_ROOT/sdk.log"
-  [ "$status" -eq 0 ] || fail "VM SDK driver failed: exit=$status"
-}
-````
+准备与断言源码：[fixtures/vm.bash](https://github.com/DeepLink-org/pvisor/blob/main/tests/spec/fixtures/vm.bash)。

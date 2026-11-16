@@ -1,3 +1,6 @@
 {
-  "pVisor VM": "$ python3 @REPO@/benchmark/startup/pvisor_vm_timing.py @BATCH@"
+  "engine": "criterion",
+  "entry": "startup/pvisor_vm_timing.json",
+  "implementation": "../criterion/src/startup/mod.rs",
+  "config_env": "PVISOR_BENCH_OUTPUT"
 }

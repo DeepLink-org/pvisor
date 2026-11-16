@@ -15,6 +15,10 @@
 
 Local adaptations (Apache-2.0, pVisor contributors):
 
+Active `system/` and `e2e/` paths in this map are relative to
+`../spec/docker-cli/regression/`; `command.py` and the verbatim upstream
+inventory remain here. Moving the ports does not change their provenance.
+
 | Active file/case | Upstream source | Adaptation |
 | --- | --- | --- |
 | `system/helpers.bash`, `command.py` | `test/system/helpers.bash` | pVisor-only dispatch, private store, exact-name cleanup, 120-second timeout; no Podman environment setup/reset |

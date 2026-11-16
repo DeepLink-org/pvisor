@@ -10,7 +10,7 @@ from pathlib import Path
 PUBLIC_CSV = frozenset(
     {
         "startup-timing.csv",
-        "replay-semspec.csv",
+        "replay-command.csv",
         "filesystem-layered-references-levels.csv",
         "filesystem-layered-references-ready.csv",
         "filesystem-layered-references-failures.csv",
@@ -21,7 +21,7 @@ PUBLIC_CSV = frozenset(
 PUBLIC_PROVENANCE = frozenset(
     {
         "startup-timing.provenance.json",
-        "replay-semspec.provenance.json",
+        "replay-command.provenance.json",
         "lazy-stage.provenance.json",
         "lazy-image-v2.provenance.json",
         "filesystem-layered-references/provenance.json",
@@ -137,7 +137,7 @@ def check_public_assets(repository):
             raise ValueError(f"unneeded or duplicate public CSV: {path}")
     for path in assets.rglob("*.json"):
         relative = path.relative_to(assets).as_posix()
-        if relative not in PUBLIC_PROVENANCE | {"replay-semspec.render.json"}:
+        if relative not in PUBLIC_PROVENANCE | {"replay-command.render.json"}:
             raise ValueError(f"unneeded public JSON: {path}")
     for path in assets.rglob("*.pdf"):
         raise ValueError(f"PDF belongs in local evidence: {path}")

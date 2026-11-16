@@ -961,12 +961,13 @@ same-container file-bind restarts, retained writable uppers, read-only/rw
 enforcement after restart, and nonzero `start` status for a conflicting internal
 mountpoint.
 
-Additional native edge cases live in `tests/common/compose_edge_cases.rs`:
+Additional native edge cases live in
+`../../tests/spec/docker-compose/regression/compose_edge_cases.rs`:
 
 | Case | Assertions |
 | --- | --- |
-| [`compose_native_gnu_atomic_replacement_preserves_virtual_permissions`](tests/common/compose_edge_cases.rs#L106) | Linux real GNU sed/cp preserve guest UID/GID/mode across atomic replacement on rootfs and managed volume; `PVISOR_COMPOSE_TEST_GNU` selects a GNU-tool image (default Debian bookworm-slim) |
-| [`compose_native_rootfs_symlink_ownership_survives_restart_without_changing_target`](tests/common/compose_edge_cases.rs#L138) | Linux rootfs lower/upper symlink `lchown`, unchanged managed-volume target ownership, and retained link identity/data across same-container restart |
+| [`compose_native_gnu_atomic_replacement_preserves_virtual_permissions`](../../tests/spec/docker-compose/regression/compose_edge_cases.rs#L106) | Linux real GNU sed/cp preserve guest UID/GID/mode across atomic replacement on rootfs and managed volume; `PVISOR_COMPOSE_TEST_GNU` selects a GNU-tool image (default Debian bookworm-slim) |
+| [`compose_native_rootfs_symlink_ownership_survives_restart_without_changing_target`](../../tests/spec/docker-compose/regression/compose_edge_cases.rs#L138) | Linux rootfs lower/upper symlink `lchown`, unchanged managed-volume target ownership, and retained link identity/data across same-container restart |
 | `compose_native_nonroot_unix_socket_and_boot_hostname_survive_restart` | Rootfs AF_UNIX bind/health as UID 65534, socket identity/umask and cross-user denial, unique non-loopback boot hostname, generated-hosts refresh across restart |
 | `compose_native_nonroot_atomic_file_replacement_and_missing_source_recovery` | UID 65534 health/exec identity, cwd/env, ro/rw authority, old inode after atomic host replacement, new inode on restart, deleted-source failure and retry without replacing the container |
 | `compose_native_failed_completion_job_recovers_without_rerunning_success` | Exit 17 blocks the dependent, fixing input retries the same job container, successful jobs are reused across repeated up and dependent restart |

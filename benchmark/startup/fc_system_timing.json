@@ -1,3 +1,6 @@
 {
-  "Firecracker": "$ python3 @REPO@/benchmark/startup/fc_system_timing.py @BATCH@"
+  "engine": "criterion",
+  "entry": "startup/fc_system_timing.json",
+  "implementation": "../criterion/src/startup/mod.rs",
+  "config_env": "PVISOR_BENCH_OUTPUT"
 }

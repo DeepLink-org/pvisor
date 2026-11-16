@@ -1,143 +1,149 @@
-"""Process Markdown profiles: inventory, preparation, execution and audit."""
+"""Rust process migration guards and read-only historical comparison contracts."""
 
-import hashlib
+import csv
 import importlib.util
-import json
-import os
-import subprocess
 import sys
 import unittest
 from pathlib import Path
-
-from tests.fixtures import workspace
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-import common as COMMON  # noqa: E402
-from update import validate_batch  # noqa: E402
-
-SEMSPEC = Path(os.environ.get("SEMSPEC_BIN", ROOT.parent / "target/semspec/debug/semspec"))
-SOURCE = ROOT / "process/smoke.md"
 
 
-def module(name, path):
-    spec = importlib.util.spec_from_file_location(name, path)
-    result = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(result)
-    return result
+def comparison():
+    spec = importlib.util.spec_from_file_location(
+        "retained_process_compare", ROOT / "process/compare.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
-@unittest.skipUnless(SEMSPEC.is_file(), "built semspec required")
-class ProcessSmokeContracts(unittest.TestCase):
-    def test_markdown_is_the_only_source_and_preserves_existing_controls(self):
-        config = COMMON.command_definition(SOURCE)
-        previous = COMMON.command_definition(ROOT / "process/nightly.md")
-        self.assertEqual((config["warmup"], config["runs"]), (2, 10))
-        self.assertEqual(config["commands"], previous["commands"])
-        self.assertEqual((previous["warmup"], previous["runs"]), (10, 50))
-        canonical = json.dumps(previous, sort_keys=True, separators=(",", ":")).encode()
-        self.assertEqual(
-            hashlib.sha256(canonical).hexdigest(),
-            "eafabb66bb710f349e8801b75aef70fa2cb70389875a3fc7dad3c134075d8490",
+class ProcessCriterionContracts(unittest.TestCase):
+    def test_profiles_use_registered_rust_implementations(self):
+        with (ROOT / "registry.csv").open() as stream:
+            rows = {row["entry"]: row for row in csv.DictReader(stream)}
+        for name in ("smoke", "nightly"):
+            with self.subTest(name=name):
+                entry = f"process/{name}.md"
+                row = rows[entry]
+                self.assertEqual(row["benchmark_id"], "B-PROCESS")
+                self.assertEqual(row["role"], "engineering A/B")
+                self.assertEqual(row["status"], "criterion-rust")
+                implementation = ROOT / row["implementation"]
+                self.assertTrue(implementation.is_file())
+                text = (ROOT / entry).read_text()
+                self.assertIn("Criterion", text)
+                self.assertNotIn("<!--", text)
+                self.assertFalse((ROOT / f"process/{name}.json").exists())
+                self.assertFalse((ROOT / f"process/{name}.commands.json").exists())
+
+    def test_process_implementation_keeps_controls_and_native_bundle_validation(self):
+        source = (ROOT / "criterion/src/process.rs").read_text()
+        for required in (
+            '"native"',
+            '"host-run"',
+            '"status"',
+            '"review"',
+            '"--no-agent-defaults"',
+            '"--overlaynet"',
+            '"off"',
+            '"capture"',
+            '"PVISOR_RUN_HOME"',
+            '"PVISOR_STARTUP_TIMING"',
+            '"PVISOR_FS_PROFILE"',
+            '"run-bundle.json"',
+            '"completed"',
+            '"exit_code"',
+            "SamplingMode::Flat",
+            "iter_custom",
+            "measured_total",
+            "bundle_success_is_not_inferred_from_process_exit",
+        ):
+            self.assertIn(required, source)
+        # Sampling/profile behavior belongs to Rust's contract tests. These
+        # guards prevent restoring the old executable Markdown/Python pipeline.
+        self.assertNotIn("command_timing.py", source)
+        self.assertNotIn('Command::new("python', source)
+
+
+class HistoricalProcessComparisonContracts(unittest.TestCase):
+    def setUp(self):
+        self.module = comparison()
+        self.values = {name: 1.0 for name in ("native", "host-run", "status", "review")}
+        self.manifest = dict(
+            runs=10,
+            warmup=2,
+            measurement_engine="python-perf_counter_ns",
+            python_version="historical",
+            platform="historical",
+            cpu_affinity=[0, 1],
+            conditions=list(self.values),
+            metric_scope="historical",
+            harness={"frozen.py": "bytes"},
         )
-        self.assertFalse((ROOT / "process/nightly.json").exists())
-        self.assertFalse((ROOT / "process/nightly.commands.json").exists())
-        self.assertEqual(list(config["commands"]), ["native", "host-run", "status", "review"])
-        self.assertEqual(list(COMMON.table_template(SOURCE)), list(config["commands"]))
-        self.assertFalse(SOURCE.with_suffix(".json").exists())
-        self.assertFalse(SOURCE.with_suffix(".commands.json").exists())
-        self.assertEqual(COMMON.registered(SOURCE)["benchmark_id"], "B-PROCESS")
-        self.assertEqual(COMMON.registered(SOURCE)["role"], "engineering A/B")
 
-    def test_smoke_and_nightly_sampling_cannot_be_compared(self):
-        compare = module("process_profile_compare", ROOT / "process/compare.py")
-        from unittest.mock import patch
+    def test_different_sampling_clock_host_or_harness_cannot_be_compared(self):
+        for key, altered in (
+            ("runs", 50),
+            ("warmup", 10),
+            ("measurement_engine", "criterion"),
+            ("python_version", "different"),
+            ("platform", "different"),
+            ("cpu_affinity", [2, 3]),
+            ("conditions", ["native"]),
+            ("metric_scope", "different"),
+            ("harness", {"other": "bytes"}),
+        ):
+            with (
+                self.subTest(key=key),
+                patch.object(
+                    self.module,
+                    "read",
+                    side_effect=[
+                        (self.values, self.manifest),
+                        (self.values, self.manifest | {key: altered}),
+                    ],
+                ),
+                self.assertRaises(ValueError),
+            ):
+                self.module.compare(
+                    Path("candidate/in.bench.json"), Path("baseline/in.bench.json"), 15
+                )
 
+    def test_threshold_counts_all_four_conditions_and_candidate_only_remains_explicit(self):
         with patch.object(
-            compare,
+            self.module,
             "read",
             side_effect=[
-                ({"native": 1.0}, {"runs": 50, "warmup": 10}),
-                ({"native": 1.0}, {"runs": 10, "warmup": 2}),
+                ({name: 1.16 for name in self.values}, self.manifest),
+                (self.values, self.manifest),
             ],
         ):
-            with self.assertRaisesRegex(ValueError, "incompatible measurement configuration: runs"):
-                compare.compare(Path("candidate/in.bench.json"), Path("baseline/in.bench.json"), 15)
+            report, regressions = self.module.compare(
+                Path("candidate/in.bench.json"), Path("baseline/in.bench.json"), 15
+            )
+        self.assertEqual(regressions, 4)
+        self.assertEqual(report.count("| regression |"), 4)
+        with patch.object(self.module, "read", return_value=(self.values, self.manifest)):
+            report, regressions = self.module.compare(Path("candidate/in.bench.json"), None, 15)
+        self.assertEqual(regressions, 0)
+        self.assertEqual(report.count("candidate-only"), 4)
 
-    def test_inventory_is_read_only_and_rejects_inconsistent_sampling(self):
-        with workspace() as (root, resources):
-            source = root / "experiment.md"
-            source.write_text(
-                "# Experiment\n<!-- semspec: bench id=first -->\n```toml\n"
-                'argv = ["touch", "executed"]\nruns = 2\n```\n'
-            )
-            config = COMMON.command_definition(source)
-            self.assertEqual(config["commands"]["first"]["argv"], ["touch", "executed"])
-            self.assertFalse((root / "executed").exists())
-            source.write_text(
-                source.read_text()
-                + '<!-- semspec: bench id=second -->\n```toml\nargv = ["true"]\nruns = 3\n```\n'
-            )
-            with self.assertRaisesRegex(ValueError, "one runs/warmup"):
-                COMMON.command_definition(source)
-            source.write_text(source.read_text().replace("runs = 3", 'runs = "typo"'))
-            with self.assertRaises(subprocess.CalledProcessError):
-                COMMON.command_definition(source)
-            self.assertFalse((root / "executed").exists())
+    def test_read_requires_successful_complete_process_archive(self):
+        with (
+            patch.object(
+                self.module.UPDATE,
+                "validate_batch",
+                return_value=({"benchmark_id": "B-PROCESS"}, {}, {"native": {}}),
+            ),
+            self.assertRaisesRegex(ValueError, "successful complete"),
+        ):
+            self.module.read(Path("retained/in.bench.json"))
+        with self.assertRaisesRegex(ValueError, "evidence file"):
+            self.module.read(Path("retained/in.render.json"))
 
-    def test_complete_protocol_retains_all_trials_and_rejects_altered_evidence(self):
-        # A protocol fixture proves data flow without claiming product performance.
-        with workspace() as (root, resources):
-            binary = root / "it's a fake pvisor"
-            binary.write_text(
-                "#!" + sys.executable + "\n"
-                "import json,os,pathlib,sys,uuid\n"
-                "if sys.argv[1:] == ['--help']:\n"
-                " print('Commands:\\n  spawn  Run a Session')\n"
-                "elif sys.argv[1] == 'spawn':\n"
-                " d=pathlib.Path(os.environ['PVISOR_RUN_HOME'])/('run-'+uuid.uuid4().hex);d.mkdir(parents=True)\n"
-                " (d/'run-bundle.json').write_text(json.dumps({'run':{'state':'completed','exit_code':0}}))\n"
-                "elif sys.argv[1] in ('status','review'):\n"
-                " print((pathlib.Path(sys.argv[-1])/'run-bundle.json').read_text())\n"
-                "else: sys.exit(9)\n"
-            )
-            binary.chmod(0o700)
-            prepare = module("process_smoke_prepare", ROOT / "process/prepare.py")
-            batch = prepare.prepare_template(SOURCE, binary, root / ".data/measurement")
-            manifest = json.loads((batch / "manifest.json").read_text())
-            self.assertEqual((manifest["warmup"], manifest["runs"]), (2, 10))
-            self.assertIn("process-smoke.md", manifest["harness"])
-            self.assertIn("semspec-runtime.py", manifest["harness"])
-            self.assertIn(str(SEMSPEC.resolve()), manifest["artifacts"])
-            self.assertFalse(
-                any(name.endswith("smoke.commands.json") for name in manifest["harness"])
-            )
-            subprocess.run(
-                [str(SEMSPEC), "bench", "--cwd", manifest["cwd"], str(batch / "in.json")],
-                check=True,
-                capture_output=True,
-                text=True,
-            )
-            manifest, table, results = validate_batch(batch)
-            self.assertEqual(manifest["status"], "passed")
-            self.assertEqual(set(results), {"native", "host-run", "status", "review"})
-            self.assertEqual(len(list((batch / "command-trials").glob("*/*.json"))), 48)
-            self.assertEqual(len(list((batch / "runs").glob("run-*/run-bundle.json"))), 13)
-            for condition in results:
-                self.assertEqual(table[condition]["N"], 10)
-                for phase, count in (("warmup", 2), ("sample", 10)):
-                    paths = sorted((batch / "command-trials" / condition).glob(phase + "-*.json"))
-                    self.assertEqual(len(paths), count)
-                    self.assertTrue(
-                        all(json.loads(path.read_text())["exit_code"] == 0 for path in paths)
-                    )
-            compare = module("process_smoke_compare", ROOT / "process/compare.py")
-            report, failed = compare.compare(batch / "in.bench.json", None, 15)
-            self.assertEqual(failed, 0)
-            self.assertIn("candidate-only", report)
-            trial = batch / "command-trials/host-run/sample-0000.json"
-            record = json.loads(trial.read_text())
-            record["duration_ns"] += 1
-            COMMON.save(trial, record)
-            with self.assertRaisesRegex(ValueError, "checksum mismatch"):
-                validate_batch(batch)
+
+if __name__ == "__main__":
+    unittest.main()

@@ -258,22 +258,14 @@ python3 benchmark/filesystem/workloads_v2.py --profile curves \
 并与处理适用性取交集。当前编码7类deferred轴及其子集取点；混合比例、突发量和
 上表中更广的网格仍是未编码的扩展蓝图。native参考须显式选择，不混入A/B区间。
 
-当前实际采集入口为：
-
-```sh
-python3 benchmark/filesystem/workloads_v2_run.py --prepare NEW_BATCH_UNDER_DOT_DATA \
-  --rootfs PREPARED_ROOTFS --firmware PREPARED_FIRMWARE \
-  --firmware-source FIRMWARE_SOURCE_JSON --samples 3
-target/semspec/debug/semspec bench NEW_BATCH_UNDER_DOT_DATA/in.json
-python3 benchmark/filesystem/workloads_v2_analysis.py NEW_BATCH_UNDER_DOT_DATA
-```
+当前 Rust/Criterion 入口、制品准备条件及指标选择见[运行说明](README.md#user-workloads)。
 
 准备冻结来源、编译静态payload与SDK driver并生成fixture，在测量外完成；
 `--cases M06,M07`可采集明确子集，正式19点省略该选项。计数使用独立新批次的
 `--diagnostic --samples 1`，其计数是包含setup、验证和退出的case生命周期范围，
 不是逐轮工作阶段计数。分析需要matplotlib才能生成SVG/PDF；`--no-plots`仅生成
-CSV/JSON和报告。测量必须经真实`semspec bench`入口，不能把离线计划JSON交给
-旧发布器或填进用户表作为新结果。现有`curves.py`、`guest_writeback_curves.py`
+CSV/JSON和报告。不能把离线计划JSON交给
+发布器或填进用户表作为新结果。`curves.py`、`guest_writeback_curves.py`
 和CLI冻结入口不改写；扩展曲线、阶段压力插桩与新对照继续单独实施。
 
 ## 方法参考

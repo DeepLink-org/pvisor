@@ -6,7 +6,7 @@ import json
 import statistics
 from pathlib import Path
 
-from pool_compare import (
+from pool_evidence import (
     ARMS,
     CURRENT_SCHEMA,
     PATTERNS,

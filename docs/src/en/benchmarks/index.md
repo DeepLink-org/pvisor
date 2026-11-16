@@ -74,7 +74,20 @@ Markdown retains user-facing tables, with shared CSV downloads only for necessar
 
 This table separates new measurements from historical evidence. Data is updated only when metrics, inputs, configurations and correctness gates match. Ready, normal exit, internal tool timings, memory and correctness do not substitute for one another. Unprepared experiments produce no new numbers; historical conclusions apply to their original cohorts.
 
-{{ table("measurement-coverage.render.json", {"markdown":true}) }}
+|  | Data status | Measured scope |
+| --- | --- | --- |
+| [agent-tasks](agent-tasks.md) | Historical data | Original metrics and sources retained; no matching new measurements |
+| [compare-rl-infra](compare-rl-infra.md) | Historical data | Original metrics and sources retained; no matching new measurements |
+| [density](density.md) | Historical data | Original metrics and sources retained; no matching new measurements |
+| [filesystem](filesystem.md) | Partially rerun | Nine modes including Docker, Firecracker, QEMU q35/microvm; 12 mechanisms, four resource anchors, three tasks; Ready excludes exit; N3 fresh environments with three resident rounds |
+| Overview | Historical data | Original metrics and sources retained; no matching new measurements |
+| [isolation-tests](isolation-tests.md) | Historical data | Original metrics and sources retained; no matching new measurements |
+| [lazy-image-startup](lazy-image-startup.md) | Partially rerun | Current V2 vs native Docker: four-image storage N3; prepared startup N30/memory N5; shell, Python and library mmap cold/warm N30 each; WAN/concurrency unmeasured |
+| [network](network.md) | Historical data | Original metrics and sources retained; no matching new measurements |
+| [replay-fidelity](replay-fidelity.md) | Partially rerun | Whole CLI time for fixed task 0; historical 20-task distributions are separate |
+| [startup](startup.md) | Partially rerun | Launch to first checked output; exit time is not reported |
+| [supervision-cost](supervision-cost.md) | Historical data | Original metrics and sources retained; no matching new measurements |
+| [vm-memory](vm-memory/index.md) | Historical data | Original metrics and sources retained; no matching new measurements |
 
 Filesystem coverage refers to the nine-mode, 19-workload N3 protocol, with four incomplete resource cells; historical N5/N30 data does not fill those gaps.
 

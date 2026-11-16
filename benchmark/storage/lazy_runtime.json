@@ -1,1 +1,6 @@
-{"runtime":"$ python3 @REPO@/benchmark/storage/lazy_benefits.py --phase runtime --binary @BINARY@ --inputs @INPUTS@ --output @OUTPUT@"}
+{
+  "engine": "criterion",
+  "entry": "storage/lazy_runtime.json",
+  "implementation": "../criterion/src/storage/mod.rs",
+  "config_env": "PVISOR_STORAGE_CONFIG"
+}

@@ -2213,8 +2213,7 @@ All normal staged writes remain in upper, with lower unchanged.
 
 Validation passes: **97 Core tests (five skipped)**, **12 overlayfs tests**,
 **294 VM tests (two skipped)**, **25 benchmark tests**, all-targets Clippy for
-three relevant packages and benchmark Ruff. No semspec ledgers/snapshots were
-modified or approved. Evidence includes samples and failures, not only successful
+three relevant packages and benchmark Ruff. Evidence includes samples and failures, not only successful
 summaries. These numbers do not update macOS, startup, networking or complete
 Agent-loop measurements.
 
@@ -2326,19 +2325,12 @@ benchmark Ruff. The wider executor subset in the worktree at measurement time ha
 VM-control test failures, retained separately in the validation archive. This
 change does not modify control implementation or count those checks as passed.
 
-Build both GNU/Linux binaries from the same source, applying only the proposed
-change between builds. Use a fresh output directory and start with
-`--samples 1 --warmups 0` for preflight.
-
-```bash
-python3 benchmark/pvisor/filesystem_ab.py \
-  --assets target/reference-env-final-20261004 \
-  --baseline /absolute/path/to/pvisor-before \
-  --candidate /absolute/path/to/pvisor-after \
-  --firmware /absolute/path/to/libkrunfw-directory \
-  --output target/filesystem-ab-new \
-  --cpu-affinity 0,1 --samples 30 --warmups 3
-```
+The recorded A/B protocol built both GNU/Linux binaries from the same source,
+applying only the proposed change between builds. It used separate output
+directories, a one-sample preflight without warmups, then 30 samples and three
+warmups with CPU affinity 0,1. The Python coordinator and exact artifact/input
+arguments are preserved in the frozen batch harness; these are not Criterion
+samples or commands for the current checkout.
 
 Local raw record `docs/src/assets/benchmarks/.data/filesystem-ab-20261005/samples.csv` ·
 Local raw record `docs/src/assets/benchmarks/.data/filesystem-ab-20261005/summary.tsv` ·
@@ -2552,14 +2544,9 @@ Main VM sessions use host rootfs `/`, 2 vCPU/1 GiB and a host read view. This is
 ## Sources and reproduction {#run}
 
 Batch archival conventions are documented in the [lab-notes index](index.md).
-
-```bash
-python3 benchmark/pvisor/product_v1.py \
-  --binary /absolute/path/to/gnu-linux/pvisor \
-  --firmware /absolute/path/to/libkrunfw-directory \
-  --replay-binary /absolute/path/to/pvisor-replay \
-  --output target/product-benchmark-new \
-  --suites filesystem --samples 30 --warmups 3
-```
+The historical filesystem selection requested 30 samples and three warmups
+through its Python coordinator, using pinned GNU/Linux CLI, dynamic firmware
+and replay binaries. Exact commands remain in the batch harness; current
+Rust/Criterion entry points do not reproduce this cohort's sampling protocol.
 
 Harness environment, preflight and failure-classification conventions match the [end-to-end task analysis reproduction section](agent-task-performance-analysis.md#run); the local raw-record cohort is likewise product-v1-20261004, and the executable SHA256 identifies the measured artifact.

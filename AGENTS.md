@@ -72,9 +72,12 @@ required.
 
 ## Semantic preservation specifications
 
-Follow `tools/semspec/DESIGN.md` for semspec. AI may draft new cases, repair the
-subject implementation and maintain conventional runner tests. AI must not run
-`semspec approve`/`revoke`, edit real `REVIEWED.toml` ledgers or `.approved/`
-snapshots, or weaken existing claims/checks/xfail annotations to obtain PASS.
-Use `mise run test-semspec` to validate the standalone runner and `mise run semspec -- lint docs/src/zh/cases`
-for specifications. Human approval is distinct from a passing test.
+AI may draft new cases, repair the subject implementation and maintain
+conventional fixture tests. AI must not approve/revoke specifications, edit real
+`REVIEWED.toml` ledgers or `.approved/` snapshots, or weaken existing
+claims/checks/xfail annotations to obtain PASS.
+Product specifications live in `tests/spec/<feature>/` and run through native
+Scrut using `mise run cases`. Use `mise run test-spec-fixtures` for their
+preservation, isolation and failure contracts. Human approval remains
+distinct from a passing test; the Scrut digest-review replacement is pending
+an explicit maintainer decision and `--require-reviewed` fails closed.

@@ -418,17 +418,9 @@ QEMU q35 的 218 ms 不能代表 QEMU 的最低启动成本；关闭可选传统
 
 ### macOS / HVF
 
-先准备 release CLI、Alpine rootfs 和两个 firmware 目录，再运行：
-
-```bash
-python3 benchmark/pvisor/vm_ready.py \
-  --binary target/release/pvisor \
-  --rootfs target/guest-init-benchmark/rootfs \
-  --official target/firmware-official-compare-20261003/official \
-  --trimmed target/firmware-official-compare-20261003/trimmed \
-  --output target/vm-startup-new \
-  --samples 100 --warmups 5 --profile-samples 20
-```
+冻结的 Python 协调协议使用 release CLI、Alpine rootfs 和官方／裁剪 firmware
+目录，100 次采样、五次预热与独立 20 次 profile 采样。实际命令随归档 harness
+保留；这些观测不是 Criterion 样本。
 
 输出目录必须尚不存在。harness 只依赖 Python 标准库，复用已有百分位数计算和 Bundle 验证。主矩阵与诊断矩阵隔离；预热不计入摘要；输出包括 `results.json`、逐行刷新的 `samples.jsonl`、输入 hash 和逐次 stdout/stderr。它使用独立 schema `pvisor-vm-readiness/v1`，不要与 `startup.py` 的命令完成耗时 schema 混用。
 
@@ -438,16 +430,10 @@ python3 benchmark/pvisor/vm_ready.py \
 
 ### Linux / KVM {#linux-reproduce}
 
-使用已准备的 guest 根目录和 firmware；输出目录必须不存在。脚本复用首条输出的计时与运行结果检查，并复制 CLI 和 firmware 固定制品身份。
-
-```bash
-python3 benchmark/pvisor/linux_vm_ready.py \
-  --binary target/release/pvisor \
-  --rootfs / \
-  --firmware /path/to/libkrunfw-5.5.0-directory \
-  --output target/vm-startup-linux-new \
-  --samples 100 --warmups 5
-```
+冻结的 Linux 协议使用宿主根 `/`、固定 firmware 与 release CLI，100 次采样、
+五次预热。Python 协调器测首条输出、检查每次运行，并复制 CLI 与 firmware
+固定制品身份。实际命令随批次 harness 保留；当前启动测量入口见
+[启动实验手册](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/startup/README.md)。
 
 本地原始记录 `docs/src/assets/benchmarks/.data/startup-linux-20261003.tsv`。本机逐次 stdout/stderr、预热日志和固定二进制保存在 `target/local-vm-validation-20261003/startup-linux-100/`。更换制品或 rootfs 后应重新测量，保留为新批次。
 

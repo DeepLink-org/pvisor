@@ -16,7 +16,7 @@ pVisor V2 在这组真实镜像上明显减少磁盘库存；原生 Docker 容�
 
 容量在运行校验前采集，硬链接 inode 只计一次，symlink 不跟随；不可读的子树使测量失败，不静默漏计。双方实验目录关闭 Btrfs 透明压缩，宿主全局配置未改。分配量为 `st_blocks × 512`，不等于独占物理设备字节，也不含全局文件系统元数据。逐实例校验 `/etc/os-release`、`/bin/sh` 摘要一致，重复 pull 不增加池内容。
 
-启动使用同 digest Ubuntu，镜像和私有 daemon 预先准备。每次创建新实例，3 对预热、30 对 seed 819 随机交替；保留宿主页缓存，不含镜像拉取和服务启动。双方执行相同 shell：检查私有文件不存在、写入并读回 token、输出唯一 Ready 行，然后正常退出。时钟包含同一小型 cgroup launcher、CLI 创建和输出管道；由 semspec observer 在 Popen 前启动、Ready 行接收时停止，正常退出另计。不是存储索引 Open、冷磁盘或 SDK 创建耗时。所有有效慢样本保留，30 个样本不报告 P99。
+启动使用同 digest Ubuntu，镜像和私有 daemon 预先准备。每次创建新实例，3 对预热、30 对 seed 819 随机交替；保留宿主页缓存，不含镜像拉取和服务启动。双方执行相同 shell：检查私有文件不存在、写入并读回 token、输出唯一 Ready 行，然后正常退出。时钟包含同一小型 cgroup launcher、CLI 创建和输出管道；观察者在 Popen 前启动、Ready 行接收时停止，正常退出另计。不是存储索引 Open、冷磁盘或 SDK 创建耗时。所有有效慢样本保留，30 个样本不报告 P99。
 
 运行组限制为 4 CPU quota、4 GiB、零 swap；CLI/服务固定 CPU 0–3。宿主没有委派 cpuset，使用同镜像 taskset 在应用前设置 Docker 的宿主 CPU mask 与单 vCPU VM 的 guest CPU 0；窗口内验证实际成员亲和性，不能据此证明所有短暂 init 线程过去的亲和性。双方请求 1 CPU/256 MiB，VM 的 guest RAM 与容器内存 limit 范围不同，不能称为等价隔离或相同应用可用内存。
 

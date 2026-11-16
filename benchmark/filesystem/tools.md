@@ -1,44 +1,57 @@
-# Native filesystem：metadata 与 read
+# Native filesystem: metadata and read
 
 Benchmark: B-FS-TOOLS ([注册表](../REGISTRY.md#b-fs-tools)), role user-facing.
 
 ## Motivation
 
-观察固定热缓存输入上，原生 metadata/read 完整 Python 命令的耗时。
-本实验不代表 VM、七工具内部阶段或跨后端任务性能，不推导配对改善比例。
+Measure complete native Rust metadata/read commands over fixed warm-cache inputs.
+These probes do not represent VM, seven-tool phase or cross-runtime task costs,
+and do not support paired improvement claims.
 
 ## Experiment design
 
-两行共享 32 个目录、2,048 个小文件和一个 64 MiB 数据文件。准备器流式生成输入，
-完整校验目录、大小和内容，并为选中行各执行一次不计入统计的预检。
-每行顺序执行 3 次预热、30 个正式样本，保留全部有效慢值；单次超时为 30 秒。
+Both rows share 32 directories, 2,048 small files and a 64 MiB data file.
+The Rust worker streams fixture generation and verifies the exact inventory,
+types and complete contents outside each measurement. The measured child checks
+metadata counts/sizes or reads the complete data file and checks SHA-256.
 
-`fs_timing.py` 用公共 runtime 的 `perf_counter_ns`，从创建子进程前计到正常退出并收集输出后。
-解释器启动、管道和负载自身校验计入时间；输入准备、观察者启动、行前后完整 fixture 校验及审计不计时。
-每次要求对应操作的精确成功 JSON。semspec 每行调用脚本一次，接收完整统计行，不再套一层计时。
+Criterion 0.7 owns sampling, warmup and statistics (30 statistical samples).
+Every invocation, including calibration and warmup, starts a new Rust worker,
+has a 30-second process-group deadline, requires exact success JSON and rechecks
+the complete fixture before and after. The clock spans process creation through
+normal exit, stamped by the waiter rather than the periodic observer. Fixture
+preparation and subsequent audit are excluded. This is a new Rust whole-command
+metric: it does not include a Python interpreter and must not replace historical
+Python/hyperfine observations or their provenance.
 
 ```sh
 mise run benchmark -- filesystem/tools
-mise run benchmark -- filesystem/tools --row native-read
+# Select a Criterion benchmark filter using the parent runner's filter option.
 mise run benchmark -- filesystem/tools --output benchmark/filesystem/.data/native-new
 ```
 
-以下路径占位符由准备器展开；正式执行入口先准备、冻结并预检，再执行和审计。
-不要直接对未展开的源文件执行 `filter --execute` 或 `bench`。
+The entry is a locator, not a shell command. The parent Rust crate wires
+`filesystem::register` and the `filesystem-worker` binary. Set
+`PVISOR_BENCH_FS_WORKER` to an explicitly built worker when running the binary
+directly, and `PVISOR_BENCH_OUTPUT` to a new directory under `.data`.
 
-<!-- semspec: table id=native-filesystem -->
 ```json
 {
-  "native-metadata": "$ python3 @REPO@/benchmark/filesystem/fs_timing.py @BATCH@ metadata",
-  "native-read": "$ python3 @REPO@/benchmark/filesystem/fs_timing.py @BATCH@ read"
+  "engine": "criterion",
+  "entry": "filesystem/tools.md",
+  "implementation": "../criterion/src/filesystem/mod.rs"
 }
 ```
 
 ## Data and analysis
 
-每行保留 1 次预检、3 次预热和 30 次正式记录、原始纳秒样本及样本标准差。
-审计复算时钟、统计、逐次 argv、退出和输出，核对输入与冻结 harness 后才更新 `tools.render.json`。
-失败和超时阻止发布；`--row` 仅更新选中行，`--output` 保留成功或失败的批次证据。
+Each actual invocation retains its command, stdout/stderr, completion time,
+exit result and host observations. Criterion retains its own statistical samples.
+The raw invocation inventory includes calibration, not just statistical samples;
+do not infer a historical fixed 3/30 inventory from Criterion's sample count.
+Failures and timeouts abort the benchmark and retain diagnostic evidence.
 
-默认临时批次在成功后清理。新 Python 时钟数据与历史 hyperfine 结果分开，
-不覆盖历史用户页；详细证据结构见 [README](README.md#代码与证据)。
+Historical Python batch auditing remains read-only in `audit.py` and
+`historical.py`. No historical result, table or artifact is rewritten by the
+Rust runner. See [README](README.md#rustcriterion-active-experiments) for the
+layered and engineering protocols and their execution requirements.
