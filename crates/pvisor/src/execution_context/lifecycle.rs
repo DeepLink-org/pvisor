@@ -811,6 +811,50 @@ fn group_has_live_members(proc: &std::path::Path, group: u32) -> std::io::Result
     Ok(false)
 }
 
+#[cfg(target_os = "macos")]
+fn group_has_live_members(group: u32) -> std::io::Result<bool> {
+    #[link(name = "proc")]
+    unsafe extern "C" {}
+    // SAFETY: a null buffer with zero size requests the required PID count.
+    let count = unsafe { libc::proc_listpgrppids(group as i32, std::ptr::null_mut(), 0) };
+    if count <= 0 {
+        return Err(std::io::Error::other("cannot enumerate process group"));
+    }
+    let mut pids = vec![0i32; count as usize + 16];
+    let size = std::mem::size_of_val(pids.as_slice()) as i32;
+    // SAFETY: the initialized PID buffer is writable for exactly size bytes.
+    let count = unsafe { libc::proc_listpgrppids(group as i32, pids.as_mut_ptr().cast(), size) };
+    if count <= 0 || count as usize >= pids.len() {
+        return Err(std::io::Error::other("incomplete process-group census"));
+    }
+    for pid in pids.into_iter().take(count as usize).filter(|pid| *pid > 0) {
+        // SAFETY: proc_bsdinfo contains only integer and byte-array fields.
+        let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+        let size = std::mem::size_of_val(&info) as i32;
+        // SAFETY: info is aligned and writable for size bytes; libproc retains no pointer.
+        let read = unsafe {
+            libc::proc_pidinfo(
+                pid,
+                libc::PROC_PIDTBSDINFO,
+                0,
+                (&mut info as *mut libc::proc_bsdinfo).cast(),
+                size,
+            )
+        };
+        if read != size {
+            let error = std::io::Error::last_os_error();
+            if error.raw_os_error() == Some(libc::ESRCH) {
+                continue;
+            }
+            return Err(error);
+        }
+        if info.pbi_pgid == group && info.pbi_status != libc::SZOMB {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 pub(crate) async fn terminate_process_tree(
     child: &mut tokio::process::Child,
     process_group: Option<u32>,
@@ -841,7 +885,9 @@ pub(crate) async fn terminate_process_tree(
                     group_has_live_members(std::path::Path::new("/proc"), pid),
                     Ok(false)
                 );
-                #[cfg(not(target_os = "linux"))]
+                #[cfg(target_os = "macos")]
+                let idle = matches!(group_has_live_members(pid), Ok(false));
+                #[cfg(not(any(target_os = "linux", target_os = "macos")))]
                 let idle = false;
                 if idle || tokio::time::Instant::now() >= deadline {
                     // Even an idle scan is not authority to skip the final group
@@ -868,10 +914,11 @@ mod process_group_tests {
     use std::process::Stdio;
     use tokio::io::AsyncReadExt;
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[tokio::test]
     async fn zombie_only_group_does_not_consume_termination_grace() {
-        let mut child = tokio::process::Command::new("/bin/true")
+        let mut child = tokio::process::Command::new("/bin/sh")
+            .args(["-c", "exit 0"])
             .process_group(0)
             .kill_on_drop(true)
             .spawn()
