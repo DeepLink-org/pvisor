@@ -2655,6 +2655,24 @@ normal reconstruction. Compaction, content IDs, synchronization and failure
 fencing retain the existing contract.
 
 
+### Committed compressed RAM cache reclamation
+
+On Linux, writable compressed RAM commits advise `POSIX_FADV_DONTNEED` on
+all immutable generation descriptors after successful durable publication.
+This releases compressed output and ancestor cache that could otherwise consume
+the measured node budget while guests are offloaded. Compaction also advises
+old ancestors retained by pins. A commit with no dirty blocks advises its
+existing chain after syncing the manifest, covering cache refilled by restore.
+Read-only inspectors and other platforms retain their existing behavior.
+
+This policy is independent of the experimental staging-cache setting below.
+It changes no data, generation ownership, pins, format, durability ordering or
+scheduler reservations. Advice failures warn without failing a durable commit.
+Reclamation is advisory, not a guaranteed memory cap: concurrent reads can refill
+cache, and publication can still have a transient output-cache peak. Subsequent
+restores may require more disk reads. High-density VM performance remains a
+separate acceptance gate; this policy does not establish UKSM/offload benefits.
+
 ### Experimental compressed staging cache control
 
 `PVISOR_EXPERIMENTAL_STAGING_CACHE=1` enables a Linux-only experiment for each

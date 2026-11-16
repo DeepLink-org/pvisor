@@ -564,7 +564,12 @@ impl CompressedRam {
         }
         self.writable()?;
         if self.logical_bytes == 0 || (self.chain.is_some() && self.dirty.is_empty()) {
-            return self.manifest.sync_all();
+            self.manifest.sync_all()?;
+            // A restore can refill immutable file cache without changing RAM.
+            if let Some(chain) = &self.chain {
+                chain.advise_cold();
+            }
+            return Ok(());
         }
         let diagnostic = std::env::var("PVISOR_DIAG_COMMIT").as_deref() == Ok("1");
         let started = std::time::Instant::now();
@@ -628,6 +633,16 @@ impl CompressedRam {
                     .write_all_at(&record, self.manifest.metadata()?.len())?;
                 self.manifest.sync_all()?;
             }
+            // Compaction may have read ancestors that a pin keeps alive even
+            // after collection. Release their cache too, after the new head is
+            // durable. Normal deltas already include every ancestor below.
+            if chain.depth() == 1
+                && let Some(parent) = &self.chain
+                && parent.head_id() != chain.head_id()
+            {
+                parent.advise_cold();
+            }
+            chain.advise_cold();
             self.chain = Some(chain);
             self.dirty.clear();
             self.zeros.clear();
@@ -920,6 +935,41 @@ mod tests {
         assert_eq!(store.read_block(0).unwrap(), expected);
         store.sync_all().unwrap();
         assert_eq!(store.read_block(0).unwrap(), expected);
+    }
+
+    #[test]
+    fn cold_commits_preserve_pinned_ancestors_and_clean_restore_refills() {
+        let directory = tempfile::tempdir().unwrap();
+        let manifest = tempfile::tempfile().unwrap();
+        let mut store =
+            CompressedRam::create(manifest.try_clone().unwrap(), directory.path()).unwrap();
+        let mut expected: Vec<u8> = (0..BLOCK_BYTES + 17).map(|i| (i % 251) as u8).collect();
+        store.set_len(expected.len() as u64).unwrap();
+        store.write_at(0, &expected).unwrap();
+        store.sync_all().unwrap();
+        let ancestor = SnapshotChain::open(directory.path(), store.head_id().unwrap()).unwrap();
+        ancestor.pin().unwrap();
+        let original = expected.clone();
+        for value in 1..=8 {
+            expected[17] = value;
+            store.write_at(17, &[value]).unwrap();
+            store.sync_all().unwrap();
+        }
+        assert_eq!(store.chain_depth(), 1);
+        let mut actual = vec![0; expected.len()];
+        assert_eq!(store.read_at(0, &mut actual).unwrap(), expected.len());
+        assert_eq!(actual, expected);
+        let head = store.head_id();
+        let manifest_len = manifest.metadata().unwrap().len();
+        store.sync_all().unwrap(); // Reclaim restored cache without a new head.
+        assert_eq!(store.head_id(), head);
+        assert_eq!(manifest.metadata().unwrap().len(), manifest_len);
+        let reopened = CompressedRam::open(manifest).unwrap();
+        reopened.read_at(0, &mut actual).unwrap();
+        assert_eq!(actual, expected);
+        ancestor.read_at(0, &mut actual).unwrap();
+        assert_eq!(actual, original);
+        ancestor.unpin().unwrap();
     }
 
     #[test]

@@ -311,6 +311,23 @@ pub struct SnapshotChain {
 }
 
 impl SnapshotChain {
+    // The writer calls this only after durable publication. Advise existing
+    // descriptors, never reopen paths or change ownership/pins. This is a hint:
+    // readers can refill pages and failures must not invalidate a durable head.
+    pub(super) fn advise_cold(&self) {
+        #[cfg(target_os = "linux")]
+        for layer in &self.layers {
+            use std::os::fd::AsRawFd;
+            let result = unsafe {
+                libc::posix_fadvise(layer.file.as_raw_fd(), 0, 0, libc::POSIX_FADV_DONTNEED)
+            };
+            if result != 0 {
+                tracing::warn!(error = %io::Error::from_raw_os_error(result),
+                    "compressed RAM generation cache advice failed");
+            }
+        }
+    }
+
     pub fn open(directory: &Path, head: ImageId) -> io::Result<Self> {
         let mut layers = Vec::new();
         let mut seen = BTreeSet::new();
