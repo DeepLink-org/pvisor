@@ -78,10 +78,13 @@ PY
             assert_eq!(report.exit_code, 0, "{:#?}", report.result);
             assert_eq!(report.result.agent_status, AgentStatus::MaxSteps);
         } else {
-            assert_eq!(report.exit_code, 40, "{:#?}", report.result);
-            assert_eq!(
-                report.result.failure.unwrap().category,
-                "continuation_error"
+            assert_eq!(report.exit_code, 31, "{:#?}", report.result);
+            let failure = report.result.failure.unwrap();
+            assert_eq!(failure.category, "ambiguous_execution");
+            assert!(
+                failure
+                    .message
+                    .contains("original failure: opencode replay/continuation exited")
             );
             assert!(
                 fs::read_to_string(report.result.output_dir.join("logs/opencode-events.jsonl"))

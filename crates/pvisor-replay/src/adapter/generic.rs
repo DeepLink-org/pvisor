@@ -1329,6 +1329,7 @@ fn continue_native_cli(
         ));
     }
     write_jsonl(&output_path, &continued_events)?;
+    journal.append("continuation_finished", [])?;
     Ok((output_path, continued_steps, step_limited))
 }
 

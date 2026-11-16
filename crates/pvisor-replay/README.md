@@ -14,6 +14,15 @@ An unresolved start remains ambiguous after run failure and blocks retry in
 that state directory; use a new sandbox and run ID rather than silently
 repeating uncertain side effects.
 
+Native agent/SDK continuation also has a durable start/finish fence, because
+its subprocess can execute tools without host-owned per-tool receipts. A start
+without a validated finish is ambiguous even after a terminal run failure;
+changing only the output root cannot authorize repeating those effects. Failed
+continuations report `ambiguous_execution` and are not retryable in the same
+state. Fully validated continuations remain eligible for explicit replay.
+Existing journals with an unresolved continuation marker also fail closed;
+operators must use a fresh sandbox and run ID rather than clear the marker.
+
 Replay observations require object payloads; tool start/finish receipts also
 require a string call ID (including empty IDs accepted by native adapters).
 Admission and diagnostic reads reject malformed

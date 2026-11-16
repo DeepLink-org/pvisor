@@ -92,8 +92,11 @@ impl Journal {
 pub(crate) fn ambiguous(events: impl IntoIterator<Item = Value>) -> Option<String> {
     let mut started = BTreeSet::new();
     let mut finished = BTreeSet::new();
+    let mut continuation_pending = false;
     for event in events {
         match event["event"].as_str() {
+            Some("continuation_started") => continuation_pending = true,
+            Some("continuation_finished") => continuation_pending = false,
             Some("tool_started") => {
                 if let Some(call_id) = event["call_id"].as_str() {
                     // Native trajectories may reuse IDs across turns. A prior
@@ -115,6 +118,9 @@ pub(crate) fn ambiguous(events: impl IntoIterator<Item = Value>) -> Option<Strin
             }
             _ => {}
         }
+    }
+    if continuation_pending {
+        return Some("unresolved agent continuation".into());
     }
     started.into_iter().next()
 }
@@ -198,6 +204,36 @@ pub(crate) fn read_observations(path: &Path) -> Result<Vec<Value>, ReplayError> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unresolved_continuation_blocks_reopen_after_terminal_failure() {
+        for terminal in ["run_finished", "run_failed"] {
+            let temporary = tempfile::tempdir().unwrap();
+            {
+                let mut journal = Journal::open(temporary.path()).unwrap();
+                journal.append("continuation_started", []).unwrap();
+                journal.append("continuation_finished", []).unwrap();
+                journal.append("continuation_started", []).unwrap();
+                journal.append(terminal, []).unwrap();
+            }
+            assert_eq!(
+                Journal::open(temporary.path()).err().unwrap().kind,
+                ReplayErrorKind::AmbiguousExecution
+            );
+        }
+    }
+
+    #[test]
+    fn resolved_continuation_allows_explicit_rerun() {
+        let temporary = tempfile::tempdir().unwrap();
+        {
+            let mut journal = Journal::open(temporary.path()).unwrap();
+            journal.append("continuation_started", []).unwrap();
+            journal.append("continuation_finished", []).unwrap();
+            journal.append("run_finished", []).unwrap();
+        }
+        assert!(Journal::open(temporary.path()).is_ok());
+    }
 
     #[test]
     fn legacy_jsonl_is_rejected() {
