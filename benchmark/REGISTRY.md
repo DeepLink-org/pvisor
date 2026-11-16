@@ -1155,7 +1155,7 @@ Design: 负载、对照、控制变量与有效样本判据。
 - **角色：** engineering A/B
 - **Motivation：** 防止 Run 的启动和 Bundle 读取在日常开发中出现回归。
 - **想要的结论：** "候选版本相对主干，最小 Run 的耗时和 status 读取耗时没有超过阈值的回归"。
-- **实验设计：** 同机同套件，smoke 使用 2 次预热、10 个样本，nightly 使用 10 次预热、50 个样本；默认 15% 阈值。
+- **实验设计：** 同机同套件；smoke 至少2次正确性预热、nightly至少10次，两者均为50个统计样本、每条件5秒目标测量预算。Criterion额外预热仍为100ms。保留所有慢样本与失败，不重测择优；默认15%中位数阈值不变。
 - **入口：** `mise run benchmark -- smoke` / `nightly` 通过 Rust/Criterion 测量四种条件；设计见 `benchmark/process/smoke.md` 与 `nightly.md`。准备与正确性检查不计入返回的耗时，逐操作证据与 Criterion 统计分别保存。
 
 ## 检查清单 {#checklist}
