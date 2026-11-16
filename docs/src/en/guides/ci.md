@@ -22,7 +22,7 @@ Assign the `pvisor` label to the prepared runner, commit executable `ci-agent.sh
 ```yaml
 name: Staged task
 on: workflow_dispatch
-sessions:
+jobs:
   run:
     runs-on: [self-hosted, linux, pvisor]
     steps:
@@ -79,4 +79,4 @@ printf 'failure=%s review=%s timeout=%s review=%s\n' \
 
 Expect `failure=7 review=0 timeout=1 review=0`. Check the two Bundles before dropping these test Stages. The recorded [failure](../assets/examples/json/failed-run.json) and [timeout](../assets/examples/json/timeout-run.json) examples show the corresponding outcomes. A preparation failure can instead leave `review` nonzero; upload whatever records exist and retain the original run exit status.
 
-Regression coverage lives in `tests/documentation_json.rs` (real nonzero-exit/timeout runs, retained candidates, and recorded output formats). These local Linux checks validate the CLI behavior used by the workflow; they are not measurements from a hosted GitHub Actions runner.
+Regression coverage lives in `crates/pvisor-cli/tests/documentation_json.rs` (real nonzero-exit/timeout runs, retained candidates, and recorded output formats). These local Linux checks validate the CLI behavior used by the workflow; they are not measurements from a hosted GitHub Actions runner.

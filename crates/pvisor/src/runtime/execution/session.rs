@@ -777,6 +777,11 @@ impl Session {
                 && self.active_execution == result.execution_id.as_str(),
             "terminal Execution identity mismatch"
         );
+        if result.completion_error.is_some() {
+            // Only a later leased receipt observation can settle persistence.
+            self.state = SessionState::Unknown;
+            return Ok(());
+        }
         if result.state == RunState::Hibernated {
             let receipt = ExecutionSuspension::from_result(result)?;
             let id = receipt.checkpoint.snapshot_id.clone();

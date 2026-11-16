@@ -18,7 +18,8 @@
 
 pVisor is a sandbox framework with two modes. Docker style sandbox runs each
 container in its own VM. Agent style stagebox is pVisor's original mode for coding
-agents: file changes stay staged until you review them and choose what to keep.
+agents: with staging enabled, file changes stay staged until you review them
+and choose what to keep.
 
 ## Two modes
 

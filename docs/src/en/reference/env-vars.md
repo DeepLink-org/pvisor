@@ -41,9 +41,18 @@ Proxy mode also injects upper/lowercase `HTTP_PROXY`, `HTTPS_PROXY`, and `ALL_PR
 
 `PVISOR_STARTUP_TIMING=1` enables startup checkpoints, persistence timings and frontend/owner correlation logs. They are disabled by default; `0` keeps them disabled. This changes diagnostic output only; task policy, Run records, workload output, errors, warnings and staging notices are unchanged. `PVISOR_STARTUP_PROFILE=1` independently enables detailed JSON timing spans.
 
+The following private Host-side diagnostic selectors affect the guest kernel command line when guest idle is enabled and the VM has exactly one vCPU. They are read by `pvisor-vm/src/builder.rs`; other configurations ignore them. They change guest behavior, not just diagnostic output, and are not stable product settings. In the applicable configuration, each accepts only `0` or `1`; invalid values or encoding fail startup.
+
+| Variable | Default when unset | Guest command-line effect |
+| --- | --- | --- |
+| `PVISOR_DIAG_PSI_IDLE_QUIESCE` | `1` | `psi_idle_quiesce=0` or `1` |
+| `PVISOR_DIAG_PSI_IDLE_DEFER` | `1` | `psi_idle_defer=0` or `1` |
+| `PVISOR_DIAG_WATCHDOG_IDLE_DEFER` | `1` | `pvisor_watchdog_defer=0` or `1` |
+| `PVISOR_DIAG_GUEST_PSI` | No override; retain the kernel default | Add `psi=0` or `1` when set |
+
 `PVISOR_VM_FS_WRITEBACK` controls guest writeback. New staged VM sessions default to off; `1` explicitly requests it and `0` disables it. Restored sessions without an override preserve their negotiated mode; explicit `0` rejects a writeback-enabled snapshot. It is mutually exclusive with the host write cache below. Validation covers Linux x86_64/KVM, without extending that evidence to macOS.
 
-The firmware negotiates bit 42 and applies pressure using actual dirty pages and temporary FUSE WRITE pages, without accumulating user write bytes. Each connection/BDI has a soft pressure target of one eighth of actual kernel RAM, clamped to 16–256 MiB, and retains at most 256 handle leases. Submission and completion use separate queues. Clean pagecache is outside this target; independent rootfs/workspace BDIs can each have a target, while Linux global dirty/reclaim rules still constrain the total. The native BDI separately executions a 16 MiB minimum reservation, warning on failure; it is not a fixed-byte guarantee.
+The firmware negotiates bit 42 and applies pressure using actual dirty pages and temporary FUSE WRITE pages, without accumulating user write bytes. Each connection/BDI has a soft pressure target of one eighth of actual kernel RAM, clamped to 16–256 MiB, and retains at most 256 handle leases. Submission and completion use separate queues. Clean pagecache is outside this target; independent rootfs/workspace BDIs can each have a target, while Linux global dirty/reclaim rules still constrain the total. The native BDI separately attempts a 16 MiB minimum reservation, warning on failure; it is not a fixed-byte guarantee.
 
 The early-submission hint is one quarter of the pressure target, clamped to 1–16 MiB. Small writes progress on the 10 ms timer, and the negotiated maximum WRITE is 1 MiB. Queue admission reads an approximate dirty-page counter outside the connection lock, avoids repeating the per-folio pressure check, and does not schedule an empty pending list. Actual pressure checks, both WRITE barriers around integrity writeback, and error propagation remain. Bounded scatterlist metadata is preallocated before starting request virtqueues and reused under the VQ lock. File pages and per-request argument buffers retain completion ownership; other atomic allocations remain.
 

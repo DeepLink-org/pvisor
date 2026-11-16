@@ -2640,6 +2640,17 @@ impl OverlayCore {
             .any(|lower| layer_path(lower, rel).ok().flatten().is_some())
     }
 
+    /// Check physical lower presence without treating policy or I/O errors as absence.
+    /// This ignores upper whiteouts; the caller must still resolve merged visibility.
+    pub fn exists_in_lower_checked(&self, rel: &Path) -> io::Result<bool> {
+        self.require_visible(rel)?;
+        let mut found = false;
+        for lower in &self.layout.lowers {
+            found |= layer_path(lower, rel)?.is_some();
+        }
+        Ok(found)
+    }
+
     fn copy_metadata(
         &self,
         source: &Path,
@@ -3385,22 +3396,76 @@ impl OverlayCore {
     }
 
     pub fn create_dir(&self, rel: &Path, mode: u32) -> io::Result<()> {
+        self.create_dir_with(rel, || {
+            let path = self.upper_path(rel);
+            fs::create_dir(&path)?;
+            fs::set_permissions(&path, fs::Permissions::from_mode(mode & 0o7777))
+        })
+    }
+
+    /// Create an empty directory through an adapter's native creation routine.
+    /// The caller excludes writers to this name until return, and also readers
+    /// when replacing a hidden lower directory. `create`
+    /// must only create this upper directory and set its
+    /// protocol metadata; no children or guest lookup references may escape.
+    /// Core owns preimages, opacity and whiteout publication, temporarily adding
+    /// owner rwx for opacity and restoring the adapter's native permissions.
+    /// On failure the new empty directory is removed and the old whiteout stays;
+    /// a secondary cleanup failure is reported explicitly. This is not crash atomic.
+    pub fn create_dir_with(
+        &self,
+        rel: &Path,
+        create: impl FnOnce() -> io::Result<()>,
+    ) -> io::Result<()> {
         self.require_visible(rel)?;
-        if self.resolve_checked(rel)?.is_some() {
-            return Err(error(libc::EEXIST));
+        let path = self.upper_path(rel);
+        match fs::symlink_metadata(&path) {
+            Ok(_) => return Err(error(libc::EEXIST)),
+            Err(err) if err.kind() == io::ErrorKind::NotFound => {}
+            Err(err) => return Err(err),
         }
-        self.record_preimage(rel)?;
-        let shadows_lower = self.exists_in_lower(rel);
+        let shadows_lower = self.exists_in_lower_checked(rel)?;
         if shadows_lower {
+            if self.resolve_checked(rel)?.is_some() {
+                return Err(error(libc::EEXIST));
+            }
             self.require_tree_access(rel, rel)?;
         }
+        self.record_preimage(rel)?;
         self.ensure_upper_parents(rel)?;
-        self.clear_whiteout(rel)?;
-        let path = self.upper_path(rel);
-        fs::create_dir(&path)?;
-        fs::set_permissions(&path, fs::Permissions::from_mode(mode & 0o7777))?;
-        if shadows_lower {
-            self.mark_opaque(rel)?;
+        let result = (|| {
+            create()?;
+            if shadows_lower {
+                let permissions = fs::symlink_metadata(&path)?.permissions();
+                fs::set_permissions(
+                    &path,
+                    fs::Permissions::from_mode(permissions.mode() | 0o700),
+                )?;
+                self.mark_opaque(rel)?;
+                fs::set_permissions(&path, permissions)?;
+            }
+            self.clear_whiteout(rel)
+        })();
+        if let Err(cause) = result {
+            let cleanup = (|| {
+                match fs::symlink_metadata(&path) {
+                    Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(()),
+                    Err(err) => return Err(err),
+                    Ok(_) => {}
+                }
+                fs::set_permissions(&path, fs::Permissions::from_mode(0o700))?;
+                match fs::remove_file(path.join(OPAQUE_NAME)) {
+                    Err(err) if err.kind() != io::ErrorKind::NotFound => return Err(err),
+                    _ => {}
+                }
+                fs::remove_dir(&path)
+            })();
+            if let Err(cleanup) = cleanup {
+                return Err(io::Error::other(format!(
+                    "mkdir failed: {cause}; cleanup failed: {cleanup}"
+                )));
+            }
+            return Err(cause);
         }
         Ok(())
     }
@@ -3584,7 +3649,78 @@ impl OverlayCore {
         }
     }
 
+    /// Publish a prepared guest char(0,0) placeholder after recording absence.
+    /// The caller exclusively owns the upper and a reserved sibling temporary
+    /// regular file carrying VIRTUAL_NODE_XATTR=c:0:0. It retains and removes
+    /// that temporary name on every outcome. No protocol lookup/handle is acquired.
+    /// Failure before publication preserves the destination; failed marker
+    /// restoration is reported with the original error and requires reconciliation.
+    pub fn create_guest_whiteout(&self, rel: &Path, prepared: &Path) -> io::Result<()> {
+        self.validate_prepared_whiteout(prepared)?;
+        self.require_visible(rel)?;
+        if self.resolve_checked(rel)?.is_some() {
+            return Err(error(libc::EEXIST));
+        }
+        self.record_preimage(rel)?;
+        self.ensure_upper_parents(rel)?;
+        let parent = rel.parent().unwrap_or_else(|| Path::new(""));
+        let hidden =
+            self.is_whiteouted(parent, rel.file_name().ok_or_else(|| error(libc::EINVAL))?);
+        self.clear_whiteout(rel)?;
+        let publish = link_prepared_whiteout(prepared, &self.upper_path(rel));
+        if let Err(failure) = publish {
+            if hidden && let Err(restore) = self.create_whiteout(rel) {
+                return Err(io::Error::new(
+                    failure.kind(),
+                    format!("{failure}; restore whiteout: {restore}"),
+                ));
+            }
+            return Err(failure);
+        }
+        Ok(())
+    }
+
+    fn validate_prepared_whiteout(&self, prepared: &Path) -> io::Result<()> {
+        if prepared.parent() != Some(self.upper())
+            || !prepared
+                .file_name()
+                .is_some_and(|name| name.as_bytes().starts_with(b".wh..pvisor-node-"))
+            || !fs::symlink_metadata(prepared)?.is_file()
+            || sys::get_xattr(prepared, OsStr::new(VIRTUAL_NODE_XATTR))? != b"c:0:0"
+        {
+            return Err(error(libc::EINVAL));
+        }
+        Ok(())
+    }
+
+    /// Rename and install a prepared guest whiteout at the old name. The caller
+    /// serializes mutations and owns the temporary exactly as create_guest_whiteout.
+    /// Metadata preparation precedes namespace changes; a failed whiteout install
+    /// restores both names before returning. Rollback I/O failure is explicit and
+    /// retains any replacement backup for reconciliation. This is live-error
+    /// recovery, not an atomic multi-name operation across process/power loss.
+    pub fn rename_with_whiteout(
+        &self,
+        old: &Path,
+        new: &Path,
+        no_replace: bool,
+        prepared: &Path,
+    ) -> io::Result<()> {
+        self.validate_prepared_whiteout(prepared)?;
+        self.rename_inner(old, new, no_replace, Some(prepared))
+    }
+
     pub fn rename(&self, old: &Path, new: &Path, no_replace: bool) -> io::Result<()> {
+        self.rename_inner(old, new, no_replace, None)
+    }
+
+    fn rename_inner(
+        &self,
+        old: &Path,
+        new: &Path,
+        no_replace: bool,
+        whiteout: Option<&Path>,
+    ) -> io::Result<()> {
         self.require_visible(old)?;
         self.require_visible(new)?;
         let source_meta = self.metadata(old)?;
@@ -3620,6 +3756,11 @@ impl OverlayCore {
             self.copy_up(old)?
         };
         self.ensure_upper_parents(new)?;
+        let new_was_hidden = whiteout.is_some()
+            && self.is_whiteouted(
+                new.parent().unwrap_or_else(|| Path::new("")),
+                new.file_name().ok_or_else(|| error(libc::EINVAL))?,
+            );
         self.clear_whiteout(new)?;
         let source_needs_whiteout = self.exists_in_lower(old);
         if source_needs_whiteout {
@@ -3644,6 +3785,33 @@ impl OverlayCore {
                 let _ = self.clear_whiteout(old);
             }
             return Err(error);
+        }
+        if let Some(prepared) = whiteout {
+            // Keep the replacement backup until the whiteout is fully installed.
+            let install = (|| {
+                self.clear_whiteout(old)?;
+                link_prepared_whiteout(prepared, &self.upper_path(old))
+            })();
+            if let Err(failure) = install {
+                let rollback = (|| -> io::Result<()> {
+                    fs::rename(self.upper_path(new), &source)?;
+                    if let (Some(destination), Some(backup)) = (&replaced_upper, &backup) {
+                        fs::rename(backup, destination)?;
+                    }
+                    self.clear_whiteout(old)?;
+                    if new_was_hidden {
+                        self.create_whiteout(new)?;
+                    }
+                    Ok(())
+                })();
+                return match rollback {
+                    Ok(()) => Err(failure),
+                    Err(restore) => Err(io::Error::new(
+                        failure.kind(),
+                        format!("{failure}; rename rollback failed (backup retained): {restore}"),
+                    )),
+                };
+            }
         }
         if let Some(backup) = backup
             && let Err(error) = Self::remove_physical(&backup)
@@ -3772,8 +3940,204 @@ impl OverlayCore {
     }
 }
 
+fn link_prepared_whiteout(prepared: &Path, destination: &Path) -> io::Result<()> {
+    #[cfg(test)]
+    whiteout_publication_fault()?;
+    fs::hard_link(prepared, destination)
+}
+
+#[cfg(test)]
+thread_local! {
+    static WHITEOUT_PUBLICATION_FAULT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+#[cfg(test)]
+fn whiteout_publication_fault() -> io::Result<()> {
+    if WHITEOUT_PUBLICATION_FAULT.replace(false) {
+        Err(error(libc::EIO))
+    } else {
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn directory_initialization_failure_keeps_whiteout_and_allows_retry() {
+        use super::*;
+        for errno in [libc::EIO, libc::ENOSPC] {
+            let root = tempfile::tempdir().unwrap();
+            let core = upper_absence_fixture(root.path());
+            fs::create_dir(root.path().join("lower/dir")).unwrap();
+            fs::write(root.path().join("lower/dir/old"), b"unchanged").unwrap();
+            core.remove(Path::new("dir/old"), false).unwrap();
+            core.remove(Path::new("dir"), true).unwrap();
+            let rel = Path::new("dir");
+            let failure = core
+                .create_dir_with(rel, || {
+                    fs::create_dir(core.upper_path(rel))?;
+                    // Native mkdir succeeded, but mandatory adapter metadata did not.
+                    Err(io::Error::from_raw_os_error(errno))
+                })
+                .unwrap_err();
+            assert_eq!(failure.raw_os_error(), Some(errno));
+            assert!(!core.upper_path(rel).exists());
+            assert!(core.resolve_checked(rel).unwrap().is_none());
+            let reopened = upper_absence_fixture(root.path());
+            assert!(reopened.resolve_checked(rel).unwrap().is_none());
+            reopened.create_dir(rel, 0o500).unwrap();
+            assert!(is_opaque_directory(&reopened.upper_path(rel)));
+            assert!(
+                reopened
+                    .resolve_checked(Path::new("dir/old"))
+                    .unwrap()
+                    .is_none()
+            );
+            assert_eq!(
+                fs::metadata(reopened.upper_path(rel)).unwrap().mode() & 0o777,
+                0o500
+            );
+            assert_eq!(
+                fs::read(root.path().join("lower/dir/old")).unwrap(),
+                b"unchanged"
+            );
+        }
+    }
+    #[test]
+    fn whiteout_creation_publication_failure_preserves_hidden_lower() {
+        use super::*;
+        let root = tempfile::tempdir().unwrap();
+        let core = upper_absence_fixture(root.path());
+        fs::write(root.path().join("lower/node"), b"hidden").unwrap();
+        core.remove(Path::new("node"), false).unwrap();
+        let prepared = tempfile::Builder::new()
+            .prefix(".wh..pvisor-node-")
+            .tempfile_in(core.upper())
+            .unwrap();
+        sys::set_xattr(prepared.path(), OsStr::new(VIRTUAL_NODE_XATTR), b"c:0:0", 0).unwrap();
+        WHITEOUT_PUBLICATION_FAULT.set(true);
+        assert_eq!(
+            core.create_guest_whiteout(Path::new("node"), prepared.path())
+                .unwrap_err()
+                .raw_os_error(),
+            Some(libc::EIO)
+        );
+        assert!(!WHITEOUT_PUBLICATION_FAULT.get());
+        assert!(core.resolve_checked(Path::new("node")).unwrap().is_none());
+        let reopened = upper_absence_fixture(root.path());
+        assert!(
+            reopened
+                .resolve_checked(Path::new("node"))
+                .unwrap()
+                .is_none()
+        );
+        reopened
+            .create_guest_whiteout(Path::new("node"), prepared.path())
+            .unwrap();
+        assert_eq!(
+            sys::get_xattr(
+                &reopened.upper_path(Path::new("node")),
+                OsStr::new(VIRTUAL_NODE_XATTR)
+            )
+            .unwrap(),
+            b"c:0:0"
+        );
+        assert_eq!(fs::read(root.path().join("lower/node")).unwrap(), b"hidden");
+    }
+
+    #[test]
+    fn whiteout_publication_failure_restores_both_names_and_retries() {
+        use super::*;
+        for source_upper in [false, true] {
+            for destination in ["missing", "lower", "upper", "hidden"] {
+                let root = tempfile::tempdir().unwrap();
+                let core = upper_absence_fixture(root.path());
+                let lower = root.path().join("lower");
+                fs::write(lower.join("old"), b"source").unwrap();
+                if source_upper {
+                    core.copy_up(Path::new("old")).unwrap();
+                }
+                if destination != "missing" {
+                    fs::write(lower.join("new"), b"destination").unwrap();
+                    if destination == "upper" {
+                        core.copy_up(Path::new("new")).unwrap();
+                    }
+                    if destination == "hidden" {
+                        core.remove(Path::new("new"), false).unwrap();
+                    }
+                }
+                let prepared = tempfile::Builder::new()
+                    .prefix(".wh..pvisor-node-")
+                    .tempfile_in(core.upper())
+                    .unwrap();
+                sys::set_xattr(prepared.path(), OsStr::new(VIRTUAL_NODE_XATTR), b"c:0:0", 0)
+                    .unwrap();
+                WHITEOUT_PUBLICATION_FAULT.set(true);
+                assert_eq!(
+                    core.rename_with_whiteout(
+                        Path::new("old"),
+                        Path::new("new"),
+                        false,
+                        prepared.path()
+                    )
+                    .unwrap_err()
+                    .raw_os_error(),
+                    Some(libc::EIO)
+                );
+                assert!(!WHITEOUT_PUBLICATION_FAULT.get());
+                let assert_original = |core: &OverlayCore| {
+                    assert_eq!(
+                        fs::read(
+                            core.resolve_checked(Path::new("old"))
+                                .unwrap()
+                                .unwrap()
+                                .path
+                        )
+                        .unwrap(),
+                        b"source"
+                    );
+                    let new = core.resolve_checked(Path::new("new")).unwrap();
+                    if matches!(destination, "missing" | "hidden") {
+                        assert!(new.is_none());
+                    } else {
+                        assert_eq!(fs::read(new.unwrap().path).unwrap(), b"destination");
+                    }
+                    assert!(!fs::read_dir(core.upper()).unwrap().any(|entry| {
+                        entry
+                            .unwrap()
+                            .file_name()
+                            .to_string_lossy()
+                            .starts_with(TEMP_PREFIX)
+                    }));
+                };
+                assert_original(&core);
+                let reopened = upper_absence_fixture(root.path());
+                assert_original(&reopened);
+                reopened
+                    .rename_with_whiteout(
+                        Path::new("old"),
+                        Path::new("new"),
+                        false,
+                        prepared.path(),
+                    )
+                    .unwrap();
+                assert_eq!(
+                    fs::read(reopened.upper_path(Path::new("new"))).unwrap(),
+                    b"source"
+                );
+                assert_eq!(
+                    sys::get_xattr(
+                        &reopened.upper_path(Path::new("old")),
+                        OsStr::new(VIRTUAL_NODE_XATTR)
+                    )
+                    .unwrap(),
+                    b"c:0:0"
+                );
+                assert_eq!(fs::read(lower.join("old")).unwrap(), b"source");
+            }
+        }
+    }
+
     #[test]
     fn copy_up_collision_preserves_unowned_temporary_entries() {
         use super::*;

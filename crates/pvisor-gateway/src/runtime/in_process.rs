@@ -34,6 +34,8 @@ pub struct InProcessRuntime {
     pub controller: Arc<dyn ControlController>,
     pub interception_metrics: InterceptionMetrics,
     pub bandwidth_registry: BandwidthRegistry,
+    /// Resolved-address constraints for the owning execution; use VmEgress for VMs.
+    pub resolved_address_policy: pvisor_core::network::ResolvedAddressPolicy,
     pub execution_id: Option<String>,
     /// Disable LLM dispatch for pVisor runs that only need the network proxy.
     pub gateway_enabled: bool,
@@ -48,6 +50,8 @@ impl Default for InProcessRuntime {
             controller: Arc::new(PolicyControlController),
             interception_metrics: InterceptionMetrics::default(),
             bandwidth_registry: BandwidthRegistry::default(),
+            resolved_address_policy:
+                pvisor_core::network::ResolvedAddressPolicy::HostConnectorAliases,
             execution_id: None,
             gateway_enabled: true,
             model_wait: None,
@@ -93,6 +97,7 @@ impl InProcessCapture {
                         controller: runtime.controller,
                         interception_metrics: thread_metrics,
                         bandwidth_registry: runtime.bandwidth_registry,
+                        resolved_address_policy: runtime.resolved_address_policy,
                         execution_id: runtime.execution_id,
                         gateway_enabled: runtime.gateway_enabled,
                         model_wait: runtime.model_wait,

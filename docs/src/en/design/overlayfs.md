@@ -24,7 +24,7 @@ For example, a compose lower contains `config` B while the host target contains 
 | `pvisor-core::overlay` | `OverlayRecord`, `ApplyRecord`, fingerprints and path encoding | Shared serialization contracts |
 | Runtime/filesystem adapters | Execution lease, mount, handles, requests and observations | Stop writers, manage mounts and call the shared core |
 
-OverlayCore does not own FUSE mounts, Run scheduling or the public Event Journal. It uses `pvisor-journal::atomic_write` for metadata, but `apply-ledger.json` is distinct from the [Event Journal](journal.md): the former replaces complete JSON documents; the latter appends event lines.
+OverlayCore does not own FUSE mounts, Run scheduling or the public Event Journal. It uses `pvisor_journal::api::Persistence::atomic_write` (the `DurableFiles` trait) for metadata, but `apply-ledger.json` is distinct from the [Event Journal](journal.md): the former replaces complete JSON documents; the latter appends event lines.
 
 ### Shared filesystem service with two entry points {#filesystem-service}
 

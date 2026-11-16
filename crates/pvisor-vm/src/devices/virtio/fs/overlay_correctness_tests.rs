@@ -236,9 +236,10 @@ fn hardlink_aliases_and_future_lower_identity_survive_snapshot_roundtrip() {
     };
     std::fs::write(lower.join("unrelated"), b"other").unwrap();
     malformed.node_aliases.push((inode, b"unrelated".to_vec()));
-    assert!(fs
-        .restore_state(&super::super::snapshot::FsSnapshot::Overlay(malformed))
-        .is_err());
+    assert!(
+        fs.restore_state(&super::super::snapshot::FsSnapshot::Overlay(malformed))
+            .is_err()
+    );
 }
 
 #[test]
@@ -249,9 +250,10 @@ fn failed_rename_pin_preserves_later_append_and_truncate_flags() {
     std::fs::write(temp.path().join("upper/victim"), b"old").unwrap();
     let ctx = root_context();
     let inode = fs.lookup(ctx, fuse::ROOT_ID, c"victim").unwrap().inode;
-    assert!(fs
-        .rename(ctx, fuse::ROOT_ID, c"missing", fuse::ROOT_ID, c"victim", 0)
-        .is_err());
+    assert!(
+        fs.rename(ctx, fuse::ROOT_ID, c"missing", fuse::ROOT_ID, c"victim", 0)
+            .is_err()
+    );
     let flags = (1 | bindings::LINUX_O_APPEND) as u32;
     let handle = fs.open(ctx, inode, false, flags).unwrap().0.unwrap();
     fs.write(
@@ -277,11 +279,12 @@ fn failed_rename_pin_preserves_later_append_and_truncate_flags() {
     let handle = fs.open(ctx, inode, false, flags).unwrap().0.unwrap();
     fs.release(ctx, inode, flags, handle, false, false, None)
         .unwrap();
-    assert!(std::fs::read(temp.path().join("upper/victim"))
-        .unwrap()
-        .is_empty());
+    assert!(
+        std::fs::read(temp.path().join("upper/victim"))
+            .unwrap()
+            .is_empty()
+    );
 }
-
 
 #[test]
 fn name_only_readdir_is_visible_to_libc_without_preallocating_hardlink_inodes() {
@@ -304,14 +307,21 @@ fn name_only_readdir_is_visible_to_libc_without_preallocating_hardlink_inodes() 
     };
     let entries = read(0);
     assert_eq!(entries.len(), 2);
-    assert!(entries.iter().all(|entry| entry.1 != 0), "libc drops zero-inode entries");
+    assert!(
+        entries.iter().all(|entry| entry.1 != 0),
+        "libc drops zero-inode entries"
+    );
     assert_eq!(entries[0].0, b"alias");
     assert_eq!(entries[1].0, b"file");
     assert_eq!(read(entries[0].2), entries[1..]);
     let file = fs.lookup(ctx, fuse::ROOT_ID, c"file").unwrap();
     let alias = fs.lookup(ctx, fuse::ROOT_ID, c"alias").unwrap();
     assert_eq!(file.inode, alias.inode);
-    assert_eq!(read(0), entries, "LOOKUP must not change the open directory snapshot");
+    assert_eq!(
+        read(0),
+        entries,
+        "LOOKUP must not change the open directory snapshot"
+    );
     fs.releasedir(ctx, fuse::ROOT_ID, 0, handle).unwrap();
 }
 
@@ -530,7 +540,9 @@ fn standalone_whiteout_nodes_are_visible_and_linkable() {
     assert_eq!(whiteout.attr.st_rdev, 0);
     // The kernel links one shared whiteout to every hidden name; the link
     // shares the placeholder inode, so the private record travels with it.
-    let shared = fs.link(ctx, whiteout.inode, fuse::ROOT_ID, c"shared").unwrap();
+    let shared = fs
+        .link(ctx, whiteout.inode, fuse::ROOT_ID, c"shared")
+        .unwrap();
     assert_eq!(u32::from(shared.attr.st_mode) & S_IFMT, S_IFCHR);
     let looked_up = fs.lookup(ctx, fuse::ROOT_ID, c"shared").unwrap();
     assert_eq!(looked_up.inode, whiteout.inode);
@@ -609,7 +621,10 @@ fn guest_whiteout_placeholders_project_across_every_reply_path() {
     );
     if real_device_supported {
         assert_eq!(
-            plus.iter().find(|(name, _)| name == b"real-null").unwrap().1,
+            plus.iter()
+                .find(|(name, _)| name == b"real-null")
+                .unwrap()
+                .1,
             libc::DT_CHR as u32
         );
     }
@@ -625,25 +640,364 @@ fn guest_whiteout_placeholders_project_across_every_reply_path() {
         ),
         Ok(_) => panic!("private virtual_node record must be hidden"),
     }
-    assert!(fs
-        .setxattr(
-            ctx,
-            node.inode,
-            c"user.pvisor.virtual_node",
-            b"c:1:5",
-            0
-        )
-        .is_err());
+    assert!(
+        fs.setxattr(ctx, node.inode, c"user.pvisor.virtual_node", b"c:1:5", 0)
+            .is_err()
+    );
     use super::super::filesystem::ListxattrReply;
     let listed = match fs.listxattr(ctx, node.inode, 4096).unwrap() {
         ListxattrReply::Names(names) => names,
         _ => panic!("expected names"),
     };
-    assert!(!listed
-        .windows(b"user.pvisor.virtual_node".len())
-        .any(|w| w == b"user.pvisor.virtual_node"));
+    assert!(
+        !listed
+            .windows(b"user.pvisor.virtual_node".len())
+            .any(|w| w == b"user.pvisor.virtual_node")
+    );
 
     // unlink removes the placeholder like any file.
     fs.unlink(ctx, fuse::ROOT_ID, c"wh-node").unwrap();
     assert!(fs.lookup(ctx, fuse::ROOT_ID, c"wh-node").is_err());
+}
+
+#[test]
+fn virtual_whiteout_metadata_failure_preserves_namespace_and_retry() {
+    for (rename, errno) in [false, true]
+        .into_iter()
+        .flat_map(|rename| [libc::EIO, libc::ENOSPC, libc::ENOTSUP].map(|errno| (rename, errno)))
+    {
+        let temp = tempfile::tempdir().unwrap();
+        let lower = temp.path().join("lower");
+        std::fs::create_dir(&lower).unwrap();
+        if rename {
+            std::fs::write(lower.join("source"), b"source").unwrap();
+            std::fs::write(lower.join("dest"), b"destination").unwrap();
+        }
+        let fs = correctness_fixture(temp.path());
+        let ctx = root_context();
+        let native_resources = || {
+            let super::super::snapshot::FsSnapshot::Passthrough(state) =
+                fs.layers[0].capture_state().unwrap()
+            else {
+                panic!("expected native layer")
+            };
+            let mut refs: Vec<_> = state
+                .inodes
+                .iter()
+                .map(|inode| (inode.inode, inode.refs))
+                .collect();
+            refs.sort_unstable();
+            (refs, state.handles.len(), state.next_handle)
+        };
+        let resources_before = native_resources();
+        VIRTUAL_NODE_FAULT.set(Some(errno));
+        let attempt = || {
+            if rename {
+                fs.rename(
+                    ctx,
+                    fuse::ROOT_ID,
+                    c"source",
+                    fuse::ROOT_ID,
+                    c"dest",
+                    RENAME_WHITEOUT,
+                )
+            } else {
+                fs.mknod(
+                    ctx,
+                    fuse::ROOT_ID,
+                    c"source",
+                    S_IFCHR | 0o600,
+                    0,
+                    0,
+                    Extensions::default(),
+                )
+                .map(|_| ())
+            }
+        };
+        assert_eq!(
+            attempt().unwrap_err().raw_os_error(),
+            linux_error(io::Error::from_raw_os_error(errno)).raw_os_error()
+        );
+        assert!(
+            VIRTUAL_NODE_FAULT.get().is_none(),
+            "injection was not reached"
+        );
+        assert_eq!(
+            native_resources(),
+            resources_before,
+            "failed preparation acquired native resources"
+        );
+        assert!(!temp.path().join("upper/source").exists());
+        if rename {
+            for (name, expected) in [
+                (c"source", b"source".as_slice()),
+                (c"dest", b"destination".as_slice()),
+            ] {
+                let entry = fs.lookup(ctx, fuse::ROOT_ID, name).unwrap();
+                let handle = fs.open(ctx, entry.inode, false, 0).unwrap().0.unwrap();
+                assert_eq!(correctness_read(&fs, ctx, entry.inode, handle), expected);
+                fs.release(ctx, entry.inode, 0, handle, false, false, None)
+                    .unwrap();
+                fs.forget(ctx, entry.inode, 1);
+            }
+        } else {
+            assert_eq!(
+                fs.lookup(ctx, fuse::ROOT_ID, c"source")
+                    .err()
+                    .unwrap()
+                    .raw_os_error(),
+                Some(libc::ENOENT)
+            );
+        }
+        assert!(
+            !std::fs::read_dir(temp.path().join("upper"))
+                .unwrap()
+                .any(|entry| entry
+                    .unwrap()
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(".wh..pvisor-node-"))
+        );
+        attempt().unwrap();
+        let entry = fs.lookup(ctx, fuse::ROOT_ID, c"source").unwrap();
+        assert_eq!(entry.attr.st_mode & libc::S_IFMT, libc::S_IFCHR);
+        assert_eq!(entry.attr.st_nlink, 1);
+        fs.forget(ctx, entry.inode, 1);
+    }
+}
+
+#[test]
+fn invalid_virtual_node_metadata_is_not_projected_as_a_regular_file() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::create_dir(temp.path().join("lower")).unwrap();
+    let fs = correctness_fixture(temp.path());
+    let ctx = root_context();
+    let entry = fs
+        .mknod(
+            ctx,
+            fuse::ROOT_ID,
+            c"whiteout",
+            S_IFCHR | 0o600,
+            0,
+            0,
+            Extensions::default(),
+        )
+        .unwrap();
+    pvisor_overlay_core::sys::set_xattr(
+        &temp.path().join("upper/whiteout"),
+        OsStr::new(pvisor_overlay_core::VIRTUAL_NODE_XATTR),
+        b"invalid",
+        0,
+    )
+    .unwrap();
+    assert_eq!(
+        fs.lookup(ctx, fuse::ROOT_ID, c"whiteout")
+            .err()
+            .unwrap()
+            .raw_os_error(),
+        Some(libc::EIO)
+    );
+    assert_eq!(
+        fs.getattr(ctx, entry.inode, None)
+            .err()
+            .unwrap()
+            .raw_os_error(),
+        Some(libc::EIO)
+    );
+    assert_eq!(
+        fs.directory_names(Path::new(""))
+            .err()
+            .unwrap()
+            .raw_os_error(),
+        Some(libc::EIO)
+    );
+    fs.forget(ctx, entry.inode, 1);
+}
+
+#[test]
+fn same_inode_whiteout_rename_does_not_prepare_a_new_node() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::create_dir(temp.path().join("lower")).unwrap();
+    let fs = correctness_fixture(temp.path());
+    let upper = temp.path().join("upper");
+    std::fs::write(upper.join("old"), b"same inode").unwrap();
+    std::fs::hard_link(upper.join("old"), upper.join("new")).unwrap();
+    let ctx = root_context();
+    VIRTUAL_NODE_FAULT.set(Some(libc::EIO));
+    fs.rename(
+        ctx,
+        fuse::ROOT_ID,
+        c"old",
+        fuse::ROOT_ID,
+        c"new",
+        RENAME_WHITEOUT,
+    )
+    .unwrap();
+    assert_eq!(
+        fs.rename(
+            ctx,
+            fuse::ROOT_ID,
+            c"old",
+            fuse::ROOT_ID,
+            c"new",
+            RENAME_WHITEOUT | RENAME_NOREPLACE
+        )
+        .unwrap_err()
+        .raw_os_error(),
+        Some(libc::EEXIST)
+    );
+    assert_eq!(VIRTUAL_NODE_FAULT.take(), Some(libc::EIO));
+    assert_eq!(std::fs::read(upper.join("old")).unwrap(), b"same inode");
+    assert_eq!(
+        std::fs::metadata(upper.join("old")).unwrap().ino(),
+        std::fs::metadata(upper.join("new")).unwrap().ino()
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn unreadable_native_lower_remains_statable_without_xattr_read_permission() {
+    use std::os::unix::fs::PermissionsExt;
+    assert_ne!(
+        unsafe { libc::geteuid() },
+        0,
+        "run this permission regression as an unprivileged user"
+    );
+    let temp = tempfile::tempdir().unwrap();
+    let lower = temp.path().join("lower");
+    std::fs::create_dir(&lower).unwrap();
+    let fs = correctness_fixture(temp.path());
+    let ctx = root_context();
+    for (name, mode) in [(c"unreadable", 0), (c"write-only", 0o200)] {
+        let path = lower.join(OsStr::from_bytes(name.to_bytes()));
+        std::fs::write(&path, b"private").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode)).unwrap();
+        assert!(std::fs::metadata(&path).is_ok());
+        assert_eq!(
+            pvisor_overlay_core::sys::get_xattr(
+                &path,
+                OsStr::new(pvisor_overlay_core::VIRTUAL_NODE_XATTR)
+            )
+            .unwrap_err()
+            .kind(),
+            io::ErrorKind::PermissionDenied
+        );
+        let entry = fs.lookup(ctx, fuse::ROOT_ID, name).unwrap();
+        let (attr, _) = fs.getattr(ctx, entry.inode, None).unwrap();
+        assert_eq!(attr.st_mode & libc::S_IFMT, libc::S_IFREG);
+        assert_eq!(u32::from(attr.st_mode) & 0o777, mode);
+        assert!(
+            fs.open(ctx, entry.inode, false, 0).is_err(),
+            "stat must not grant read access"
+        );
+        fs.forget(ctx, entry.inode, 1);
+    }
+    let handle = fs.opendir(ctx, fuse::ROOT_ID, 0).unwrap().0.unwrap();
+    let mut names = Vec::new();
+    fs.readdirplus(ctx, fuse::ROOT_ID, handle, 8192, 0, |entry, _| {
+        names.push(entry.name.to_vec());
+        Ok(1)
+    })
+    .unwrap();
+    fs.releasedir(ctx, fuse::ROOT_ID, 0, handle).unwrap();
+    assert!(names.contains(&b"unreadable".to_vec()));
+    assert!(names.contains(&b"write-only".to_vec()));
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn unreadable_managed_upper_metadata_still_fails_closed() {
+    use std::os::unix::fs::PermissionsExt;
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::create_dir(temp.path().join("lower")).unwrap();
+    let fs = correctness_fixture(temp.path());
+    let ctx = root_context();
+    let entry = fs
+        .mknod(
+            ctx,
+            fuse::ROOT_ID,
+            c"whiteout",
+            u32::from(libc::S_IFCHR),
+            0,
+            0,
+            Extensions::default(),
+        )
+        .unwrap();
+    let path = fs.core.upper_path(Path::new("whiteout"));
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o0)).unwrap();
+    assert_eq!(
+        fs.getattr(ctx, entry.inode, None)
+            .unwrap_err()
+            .raw_os_error(),
+        Some(libc::EACCES)
+    );
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    assert_eq!(
+        fs.getattr(ctx, entry.inode, None).unwrap().0.st_mode & libc::S_IFMT,
+        libc::S_IFCHR
+    );
+    fs.forget(ctx, entry.inode, 1);
+}
+
+#[test]
+#[allow(clippy::useless_conversion)] // mode_t differs between Linux and macOS.
+fn recreated_lower_directory_stays_empty_through_vm_replies_and_reopen() {
+    let temp = tempfile::tempdir().unwrap();
+    let lower = temp.path().join("lower");
+    std::fs::create_dir_all(lower.join("dir")).unwrap();
+    std::fs::write(lower.join("dir/old"), b"lower preserved").unwrap();
+    let fs = correctness_fixture(temp.path());
+    let ctx = root_context();
+    let old = fs.lookup(ctx, fuse::ROOT_ID, c"dir").unwrap();
+    fs.unlink(ctx, old.inode, c"old").unwrap();
+    fs.rmdir(ctx, fuse::ROOT_ID, c"dir").unwrap();
+    fs.forget(ctx, old.inode, 1);
+    for mode in [0o755, 0o500] {
+        let dir = fs
+            .mkdir(ctx, fuse::ROOT_ID, c"dir", mode, 0, Extensions::default())
+            .unwrap();
+        assert_eq!(
+            u32::from(fs.getattr(ctx, dir.inode, None).unwrap().0.st_mode) & 0o777,
+            mode
+        );
+        assert_eq!(
+            fs.lookup(ctx, dir.inode, c"old")
+                .err()
+                .unwrap()
+                .raw_os_error(),
+            Some(libc::ENOENT)
+        );
+        let handle = fs.opendir(ctx, dir.inode, 0).unwrap().0.unwrap();
+        let mut names = Vec::new();
+        fs.readdirplus(ctx, dir.inode, handle, 8192, 0, |entry, _| {
+            names.push(entry.name.to_vec());
+            Ok(1)
+        })
+        .unwrap();
+        fs.releasedir(ctx, dir.inode, 0, handle).unwrap();
+        assert!(!names.contains(&b"old".to_vec()));
+        assert!(pvisor_overlay_core::is_opaque_directory(
+            &temp.path().join("upper/dir")
+        ));
+        if mode == 0o755 {
+            fs.rmdir(ctx, fuse::ROOT_ID, c"dir").unwrap();
+        }
+        fs.forget(ctx, dir.inode, 1);
+    }
+    drop(fs);
+    let reopened = correctness_fixture(temp.path());
+    let dir = reopened.lookup(ctx, fuse::ROOT_ID, c"dir").unwrap();
+    assert_eq!(
+        reopened
+            .lookup(ctx, dir.inode, c"old")
+            .err()
+            .unwrap()
+            .raw_os_error(),
+        Some(libc::ENOENT)
+    );
+    reopened.forget(ctx, dir.inode, 1);
+    assert_eq!(
+        std::fs::read(lower.join("dir/old")).unwrap(),
+        b"lower preserved"
+    );
 }

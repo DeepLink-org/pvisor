@@ -188,6 +188,39 @@ mod tests {
     use pvisor_core::{ControlReason, ControlRequest, ControlTransition, PolicyControlController};
     use pvisor_core::{NetworkAccessRule, NetworkTransport};
 
+    #[test]
+    fn vm_resolution_pins_only_safe_addresses_from_mixed_dns_answers() {
+        let policy = NetworkPolicy::compile(&NetworkConfig {
+            mode: NetworkMode::Public,
+            ..Default::default()
+        })
+        .unwrap();
+        let target = authorize_resolved_target_with_policy(
+            &PolicyControlController,
+            &policy,
+            request("mixed.example"),
+            ["169.254.169.254:443", "[::1]:443", "8.8.8.8:443"].map(|ip| ip.parse().unwrap()),
+            ResolvedAddressPolicy::VmEgress,
+        )
+        .unwrap();
+        assert_eq!(
+            target.addresses,
+            vec!["8.8.8.8:443".parse::<SocketAddr>().unwrap()]
+        );
+        assert!(matches!(
+            authorize_resolved_target_with_policy(
+                &PolicyControlController,
+                &policy,
+                request("metadata.example"),
+                ["169.254.169.254:443".parse().unwrap()],
+                ResolvedAddressPolicy::VmEgress
+            ),
+            Err(TargetAuthorizationError::Denied(
+                DenyReason::ResolvedAddressNotAllowed
+            ))
+        ));
+    }
+
     fn request(host: &str) -> NetworkAccessRequest {
         NetworkAccessRequest {
             run_id: None,

@@ -13,11 +13,16 @@ pub use crate::{
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 
-/// Whether resolution came from a host connector that can return opaque fake IPs.
+/// Address constraints imposed by the transport after DNS resolution.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ResolvedAddressPolicy {
+    /// Apply the configured address policy without connector exceptions.
     Strict,
+    /// Permit trusted host connector aliases for logical hostnames.
     HostConnectorAliases,
+    /// VM IPv4 egress: reject reserved/link-local/IPv6 destinations even under
+    /// Public policy, retaining the logical-host connector alias exception.
+    VmEgress,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
@@ -195,9 +200,17 @@ impl NetworkPolicy {
         request: &NetworkAccessRequest,
         resolution: ResolvedAddressPolicy,
     ) -> Result<(), DenyReason> {
+        if resolution == ResolvedAddressPolicy::VmEgress
+            && request.resolved_ip.is_none_or(|ip| {
+                crate::forbidden_vm_egress_address(ip)
+                    && !crate::is_host_connector_alias(&request.host, ip)
+            })
+        {
+            return Err(DenyReason::ResolvedAddressNotAllowed);
+        }
         self.authorize(controller, request).or_else(|reason| {
             if reason != DenyReason::ResolvedAddressNotAllowed
-                || resolution != ResolvedAddressPolicy::HostConnectorAliases
+                || resolution == ResolvedAddressPolicy::Strict
                 || !request
                     .resolved_ip
                     .is_some_and(|ip| crate::is_host_connector_alias(&request.host, ip))
@@ -472,6 +485,93 @@ pub fn authorize_egress(
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn vm_resolution_rejects_forbidden_addresses_even_under_public_policy() {
+        let policy = NetworkPolicy::compile(&NetworkConfig {
+            mode: NetworkMode::Public,
+            ..Default::default()
+        })
+        .unwrap();
+        for host in ["169.254.169.254", "metadata.example"] {
+            for ip in [
+                "169.254.169.254",
+                "::1",
+                "2001:4860:4860::8888",
+                "192.0.2.1",
+            ] {
+                let request = NetworkAccessRequest {
+                    run_id: None,
+                    execution_id: None,
+                    host: host.into(),
+                    port: Some(80),
+                    transport: crate::NetworkTransport::Http,
+                    resolved_ip: Some(ip.parse().unwrap()),
+                };
+                assert_eq!(
+                    policy.authorize_resolved(
+                        &PolicyControlController,
+                        &request,
+                        ResolvedAddressPolicy::VmEgress
+                    ),
+                    Err(DenyReason::ResolvedAddressNotAllowed),
+                    "{host} -> {ip}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn vm_address_constraints_preserve_host_proxy_and_connector_contracts() {
+        let policy = NetworkPolicy::compile(&NetworkConfig {
+            mode: NetworkMode::Public,
+            ..Default::default()
+        })
+        .unwrap();
+        for (host, ip, allowed) in [
+            ("public.example", "8.8.8.8", true),
+            ("local.example", "127.0.0.1", true),
+            ("connector.example", "198.18.0.1", true),
+            ("198.18.0.1", "198.18.0.1", false),
+        ] {
+            let request = NetworkAccessRequest {
+                run_id: None,
+                execution_id: None,
+                host: host.into(),
+                port: Some(80),
+                transport: crate::NetworkTransport::Http,
+                resolved_ip: Some(ip.parse().unwrap()),
+            };
+            assert_eq!(
+                policy
+                    .authorize_resolved(
+                        &PolicyControlController,
+                        &request,
+                        ResolvedAddressPolicy::VmEgress
+                    )
+                    .is_ok(),
+                allowed,
+                "{host}"
+            );
+        }
+        let request = NetworkAccessRequest {
+            run_id: None,
+            execution_id: None,
+            host: "::1".into(),
+            port: Some(80),
+            transport: crate::NetworkTransport::Http,
+            resolved_ip: Some("::1".parse().unwrap()),
+        };
+        assert!(
+            policy
+                .authorize_resolved(
+                    &PolicyControlController,
+                    &request,
+                    ResolvedAddressPolicy::HostConnectorAliases
+                )
+                .is_ok()
+        );
+    }
     use super::*;
     use crate::NetworkAccessRequest;
     use crate::NetworkTransport;

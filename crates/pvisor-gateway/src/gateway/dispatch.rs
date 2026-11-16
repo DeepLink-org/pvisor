@@ -28,6 +28,7 @@ pub(crate) fn build_router(state: GatewayState) -> Router {
         state.clone(),
         state.active_requests.clone(),
     )
+    .with_resolved_address_policy(state.resolved_address_policy)
     .with_interception_metrics(state.interception_metrics.clone())
     .with_bandwidth_registry(state.bandwidth_registry.clone());
     let router = pvisor_overlaynet::server::build_router(server);

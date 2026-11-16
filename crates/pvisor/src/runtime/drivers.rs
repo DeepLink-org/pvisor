@@ -350,6 +350,7 @@ impl SessionDrivers {
             started_at_unix_ms,
             finished_at_unix_ms: crate::util::unix_now_ms(),
             exit_code: None,
+            completion_error: None,
             failure: Some(pvisor_core::RunFailure {
                 kind: pvisor_core::RunFailureKind::Infrastructure,
                 message,
@@ -415,9 +416,23 @@ impl ExecutionTeardown {
         Ok(())
     }
 
-    pub(crate) fn complete(&mut self, result: &pvisor_core::RunResult) -> anyhow::Result<()> {
-        self.commit_state(result.state)?;
+    pub(crate) fn complete(
+        &mut self,
+        result: &pvisor_core::RunResult,
+    ) -> Result<(), pvisor_core::CompletionError> {
+        use pvisor_core::{CompletionError, CompletionPhase, CompletionPublication};
+        let failure = |phase, error: anyhow::Error| CompletionError {
+            phase,
+            publication: match error.downcast_ref::<crate::util::PublicationError>() {
+                Some(error) if !error.published => CompletionPublication::Rejected,
+                _ => CompletionPublication::Unknown,
+            },
+            message: format!("{error:#}"),
+        };
+        self.commit_state(result.state)
+            .map_err(|error| failure(CompletionPhase::RunProjection, error))?;
         super::completion::Completion::commit(self.run_record(), result)
+            .map_err(|error| failure(CompletionPhase::Receipt, error))
     }
 
     pub(crate) fn commit_state(&mut self, state: RunState) -> anyhow::Result<()> {
@@ -640,6 +655,11 @@ pub(crate) fn prepare_execution(
             controller: Arc::clone(&opts.controller),
             interception_metrics: network_metrics.clone(),
             bandwidth_registry: bandwidth_registry.clone(),
+            resolved_address_policy: if opts.vm_network {
+                pvisor_core::network::ResolvedAddressPolicy::VmEgress
+            } else {
+                pvisor_core::network::ResolvedAddressPolicy::HostConnectorAliases
+            },
             execution_id: Some(opts.execution_id.to_owned()),
             gateway_enabled: opts.config.gateway_enabled,
             model_wait: opts

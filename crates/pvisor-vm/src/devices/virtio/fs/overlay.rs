@@ -442,19 +442,32 @@ impl OverlaySnapshot {
     }
     pub(super) fn prepare_protected_workspace_seed(&mut self) -> io::Result<()> {
         use super::snapshot::invalid;
-        if self.config.lower_dirs.len() != 1 || self.layers.len() != 2
-            || !self.hard_links.is_empty() || !self.hard_link_origins.is_empty()
+        if self.config.lower_dirs.len() != 1
+            || self.layers.len() != 2
+            || !self.hard_links.is_empty()
+            || !self.hard_link_origins.is_empty()
         {
-            return Err(invalid("protected workspace seed requires one unmodified lower"));
+            return Err(invalid(
+                "protected workspace seed requires one unmodified lower",
+            ));
         }
         let baseline = Path::new(&self.config.lower_dirs[0]);
-        for alias in [self.config.apply_target.as_deref(), self.config.baseline_lower.as_deref()].into_iter().flatten() {
+        for alias in [
+            self.config.apply_target.as_deref(),
+            self.config.baseline_lower.as_deref(),
+        ]
+        .into_iter()
+        .flatten()
+        {
             if Path::new(alias) != baseline {
-                return Err(invalid("protected workspace seed has a distinct target or baseline"));
+                return Err(invalid(
+                    "protected workspace seed has a distinct target or baseline",
+                ));
             }
         }
         for private in std::iter::once(self.config.upper_dir.as_str())
-            .chain(self.config.work_dir.as_deref()).chain(self.config.preimage_dir.as_deref())
+            .chain(self.config.work_dir.as_deref())
+            .chain(self.config.preimage_dir.as_deref())
         {
             if baseline.starts_with(private) || Path::new(private).starts_with(baseline) {
                 return Err(invalid("protected workspace seed overlaps private backing"));
@@ -937,7 +950,11 @@ struct LowerDataObjects {
 #[derive(Clone, Copy, Hash, Eq, PartialEq)]
 enum LowerDataKey {
     Native((usize, u64, u64, u64, u64)),
-    Logical { layer: usize, object: u64, size: u64 },
+    Logical {
+        layer: usize,
+        object: u64,
+        size: u64,
+    },
 }
 
 impl LowerDataObjects {
@@ -947,13 +964,7 @@ impl LowerDataObjects {
             LowerDataKey::Logical { size, .. } => size,
         };
         if let Some(id) = self.ids.get(&key) {
-            return Some((
-                LowerDataObject {
-                    id: *id,
-                    size,
-                },
-                false,
-            ));
+            return Some((LowerDataObject { id: *id, size }, false));
         }
         if self.ids.len() >= MAX_LOWER_DATA_OBJECTS {
             return None;
@@ -987,6 +998,20 @@ impl DirectoryNames {
 struct DirectoryNamesCache {
     entry: Option<DirectoryNames>,
     version: u64,
+}
+
+#[cfg(test)]
+thread_local! {
+    static VIRTUAL_NODE_FAULT: std::cell::Cell<Option<i32>> = const { std::cell::Cell::new(None) };
+}
+
+#[cfg(test)]
+fn virtual_node_fault() -> io::Result<()> {
+    if let Some(errno) = VIRTUAL_NODE_FAULT.take() {
+        Err(io::Error::from_raw_os_error(errno))
+    } else {
+        Ok(())
+    }
 }
 
 /// A device node recorded in the private `user.pvisor.virtual_node` attribute
@@ -1208,8 +1233,10 @@ impl OverlayFs {
 
     pub(super) fn configure_object_read_barriers(&mut self, requested: bool) {
         self.host_writeback_options.object_barriers = requested && self.host_writeback;
-        self.profile.add("object_read_barriers_enabled",
-            u64::from(self.host_writeback_options.object_barriers));
+        self.profile.add(
+            "object_read_barriers_enabled",
+            u64::from(self.host_writeback_options.object_barriers),
+        );
     }
 
     /// Wait for the accepted prefix. Errors remain sticky in the queue until
@@ -1536,10 +1563,7 @@ impl OverlayFs {
 
     /// Admission for an xattr write on an existing inode, keyed by the
     /// inode's parent directory.
-    fn write_inode_operation(
-        &self,
-        inode: u64,
-    ) -> io::Result<(NamespaceOperation<'_>, PathBuf)> {
+    fn write_inode_operation(&self, inode: u64) -> io::Result<(NamespaceOperation<'_>, PathBuf)> {
         if !self.namespace_sharding_available() {
             let operation = self.write_operation()?;
             let path = self.path(inode)?;
@@ -2484,10 +2508,10 @@ impl OverlayFs {
             // Virtual device nodes are placeholder regular files; project the
             // recorded type and numbers so the guest sees the device it
             // created. One attribute read per reply, ENODATA fast path.
-            if let Some(node) = self.virtual_node(path) {
+            if let Some(node) = self.virtual_node(path)? {
                 #[allow(clippy::useless_conversion)] // mode_t differs by platform
-                let projected = (u32::from(attr.st_mode) & !u32::from(libc::S_IFMT))
-                    | node.mode_bits();
+                let projected =
+                    (u32::from(attr.st_mode) & !u32::from(libc::S_IFMT)) | node.mode_bits();
                 // mode_t differs by platform; the narrowing store is exact.
                 #[allow(clippy::unnecessary_cast)]
                 let narrowed = projected as _;
@@ -2615,9 +2639,15 @@ impl OverlayFs {
     }
 
     pub(super) fn configure_logical_data_cache(&mut self, requested: bool) {
-        self.logical_data_cache = requested && self.logical_directory_cache_enabled
-            && cfg!(target_os = "linux") && !self.host_writeback && !self.new_session_writeback;
-        self.profile.add("logical_data_cache_enabled", u64::from(self.logical_data_cache));
+        self.logical_data_cache = requested
+            && self.logical_directory_cache_enabled
+            && cfg!(target_os = "linux")
+            && !self.host_writeback
+            && !self.new_session_writeback;
+        self.profile.add(
+            "logical_data_cache_enabled",
+            u64::from(self.logical_data_cache),
+        );
     }
 
     // The caller holds read_operation through handle publication. A writer
@@ -2657,9 +2687,11 @@ impl OverlayFs {
             // Virtual device placeholders are physical regular files; plain
             // readdir reports their projected type from the private record.
             if *type_ == libc::DT_REG as u32 {
-                if let Some(node) = self
-                    .virtual_node(&self.core.upper_path(&path.join(OsStr::from_bytes(name.as_slice()))))
-                {
+                if let Some(node) = self.virtual_node(
+                    &self
+                        .core
+                        .upper_path(&path.join(OsStr::from_bytes(name.as_slice()))),
+                )? {
                     *type_ = if node.block {
                         libc::DT_BLK as u32
                     } else {
@@ -2781,86 +2813,70 @@ impl OverlayFs {
         ))
     }
 
-    /// Create a guest overlayfs whiteout (char device 0,0) at `path` in the
-    /// writable upper layer. Follows the MKNOD path so Core records the
-    /// absence preimage and clears any outer `.wh.` marker that the preceding
-    /// rename left at the old name; the guest sees the same char node it
-    /// would see on a native overlayfs upperdir.
-    fn create_guest_whiteout(&self, ctx: Context, path: &Path) -> io::Result<Entry> {
-        let (upper_parent, upper_name) = self.upper_parent(ctx, path)?;
-        let created = self.create_virtual_node(
-            ctx,
-            path,
-            upper_parent,
-            &upper_name,
+    // Complete mandatory type metadata in a reserved, guest-invisible name.
+    // The native file/temporary owner needs no passthrough handle or lookup ref.
+    fn prepare_guest_whiteout(&self) -> io::Result<tempfile::TempPath> {
+        let file = tempfile::Builder::new()
+            .prefix(".wh..pvisor-node-")
+            .tempfile_in(self.core.upper())
+            .map_err(linux_error)?;
+        #[cfg(test)]
+        virtual_node_fault().map_err(linux_error)?;
+        pvisor_overlay_core::sys::set_xattr(
+            file.path(),
+            OsStr::new(pvisor_overlay_core::VIRTUAL_NODE_XATTR),
             VirtualNode {
                 block: false,
                 major: 0,
                 minor: 0,
-            },
-        );
-        if upper_parent != fuse::ROOT_ID {
-            self.layers[0].forget(ctx, upper_parent, 1);
-        }
-        let created = created?;
+            }
+            .encode()
+            .as_bytes(),
+            0,
+        )
+        .map_err(linux_error)?;
+        Ok(file.into_temp_path())
+    }
+
+    fn create_guest_whiteout(&self, ctx: Context, path: &Path) -> io::Result<Entry> {
+        let prepared = self.prepare_guest_whiteout()?;
+        self.core
+            .create_guest_whiteout(path, &prepared)
+            .map_err(linux_error)?;
+        drop(prepared);
+        let created = self.inner_entry(Layer(0), path, ctx)?;
         self.layers[0].forget(ctx, created.inode, 1);
         self.created_entry(path.to_path_buf(), created)
     }
 
-    /// Create the host-safe representation of a guest device node. The
-    /// `upper_parent`/`prepare_create` admission has already run; this only
-    /// replaces the physical `mknod` (which host security policies commonly
-    /// deny to sandbox processes for whiteout devices) with a placeholder
-    /// regular file carrying the private record. Guests stat and list device
-    /// nodes but never open them, so the projected placeholder preserves
-    /// every observable semantic.
-    fn create_virtual_node(
-        &self,
-        ctx: Context,
-        path: &Path,
-        upper_parent: u64,
-        upper_name: &CStr,
-        node: VirtualNode,
-    ) -> io::Result<Entry> {
-        let (created, handle, _) = self.layers[0].create(
-            ctx,
-            upper_parent,
-            upper_name,
-            backend::FileType::RegularFile.mode() | 0o600,
-            false,
-            (libc::O_WRONLY | libc::O_EXCL) as u32,
-            0,
-            Extensions::default(),
-        )?;
-        if let Some(handle) = handle {
-            self.layers[0].release(
-                ctx,
-                created.inode,
-                (libc::O_WRONLY | libc::O_EXCL) as u32,
-                handle,
-                false,
-                false,
-                None,
-            )?;
-        }
-        pvisor_overlay_core::sys::set_xattr(
-            &self.core.upper_path(path),
-            OsStr::new(pvisor_overlay_core::VIRTUAL_NODE_XATTR),
-            node.encode().as_bytes(),
-            0,
-        )
-        .map_err(linux_error)?;
-        Ok(created)
-    }
-
     /// The virtual device recorded at `path`, if any.
-    fn virtual_node(&self, path: &Path) -> Option<VirtualNode> {
-        pvisor_overlay_core::sys::get_xattr(
+    fn virtual_node(&self, path: &Path) -> io::Result<Option<VirtualNode>> {
+        let bytes = match pvisor_overlay_core::sys::get_xattr(
             path,
             OsStr::new(pvisor_overlay_core::VIRTUAL_NODE_XATTR),
-        )
-        .ok()
-        .and_then(|bytes| VirtualNode::decode(&bytes))
+        ) {
+            Ok(bytes) => bytes,
+            Err(error)
+                if error.kind() == io::ErrorKind::NotFound
+                    || matches!(error.raw_os_error(), Some(libc::ENODATA | libc::ENOTSUP)) =>
+            {
+                return Ok(None);
+            }
+            #[cfg(target_os = "macos")]
+            Err(error) if error.raw_os_error() == Some(libc::ENOATTR) => return Ok(None),
+            // Native lower metadata remains stat-able without read access;
+            // managed upper placeholders must never silently lose their type.
+            Err(error)
+                if error.kind() == io::ErrorKind::PermissionDenied
+                    && !path.starts_with(self.core.upper()) =>
+            {
+                return Ok(None);
+            }
+            Err(error) => return Err(linux_error(error)),
+        };
+        VirtualNode::decode(&bytes)
+            .map(Some)
+            .ok_or_else(|| io::Error::from_raw_os_error(libc::EIO))
     }
 
     fn allocate_handle(&self, handle: Handle) -> u64 {
@@ -3195,13 +3211,21 @@ impl OverlayFs {
             }
             let key = if logical {
                 let pinned = self.stable_namespace_leases.get(&h.layer.0)?;
-                let content = pinned.content_identity(
-                    Path::new(OsStr::from_bytes(&h.relative_path))
-                ).ok()??;
+                let content = pinned
+                    .content_identity(Path::new(OsStr::from_bytes(&h.relative_path)))
+                    .ok()??;
                 if !self.layers[h.layer.0].logical_data_fd_eligible(
-                    &lease.native, content.size, &self.profile,
-                ) { return None; }
-                LowerDataKey::Logical { layer: h.layer.0, object: content.object, size: content.size }
+                    &lease.native,
+                    content.size,
+                    &self.profile,
+                ) {
+                    return None;
+                }
+                LowerDataKey::Logical {
+                    layer: h.layer.0,
+                    object: content.object,
+                    size: content.size,
+                }
             } else {
                 let identity = match qualification {
                     Some(identity) => {
@@ -4183,72 +4207,58 @@ impl FileSystem for OverlayFs {
             // accessible to its host owner, with guest identity stored below.
             // FIFO/device nodes retain the original checks: Linux does not
             // support our user-xattr identity record on those native types.
-            (self.private_create_context(ctx), (mode & libc::S_IFMT) | 0o600, 0)
+            (
+                self.private_create_context(ctx),
+                (mode & libc::S_IFMT) | 0o600,
+                0,
+            )
         } else {
             (ctx, mode, umask)
         };
         #[cfg(target_os = "macos")]
         let (native_ctx, native_mode, native_umask) = (ctx, mode, umask);
-        let (upper_parent, upper_name) = self.upper_parent(ctx, &path)?;
-        // Guest whiteouts (char 0,0, written by docker overlay2 stores) become
-        // host-safe placeholder files; hosts commonly deny mknod of whiteout
-        // devices to sandbox processes. All other device numbers keep the
-        // real passthrough so opened devices behave natively. The virtual
-        // parent path never applies to a whiteout: it only matches regular
-        // files and sockets, not char devices.
         #[allow(clippy::useless_conversion)] // mode_t differs by platform
         let guest_whiteout =
             mode & u32::from(libc::S_IFMT) == u32::from(libc::S_IFCHR) && rdev == 0;
-        let created = if guest_whiteout {
-            self.create_virtual_node(
-                ctx,
-                &path,
-                upper_parent,
-                &upper_name,
-                VirtualNode {
-                    block: false,
-                    major: 0,
-                    minor: 0,
-                },
-            )
-        } else {
-            self.layers[0]
-                .mknod(
-                    native_ctx,
-                    upper_parent,
-                    &upper_name,
-                    native_mode,
-                    rdev,
-                    native_umask,
-                    extensions,
-                )
-                .and_then(|created| {
-                    #[cfg(target_os = "linux")]
-                    if let Some(parent_attr) = virtual_parent {
-                        let gid = if parent_attr.st_mode & libc::S_ISGID != 0 {
-                            parent_attr.st_gid
-                        } else {
-                            ctx.gid
-                        };
-                        let guest_mode =
-                            (created.attr.st_mode & libc::S_IFMT) | (mode & !umask & 0o7777);
-                        let mut identity = created.attr;
-                        identity.st_uid = ctx.uid;
-                        identity.st_gid = gid;
-                        identity.st_mode = guest_mode;
-                        if let Err(error) =
-                            self.store_private_identity(&self.core.upper_path(&path), &identity)
-                        {
-                            // No guest lookup has been published. Do not leave a
-                            // host-owned node behind after essential metadata failed.
-                            let _ = self.layers[0].unlink(native_ctx, upper_parent, &upper_name);
-                            self.layers[0].forget(ctx, created.inode, 1);
-                            return Err(linux_error(error));
-                        }
-                    }
-                    Ok(created)
-                })
-        };        if upper_parent != fuse::ROOT_ID {
+        if guest_whiteout {
+            return self.create_guest_whiteout(ctx, &path);
+        }
+        let (upper_parent, upper_name) = self.upper_parent(ctx, &path)?;
+        let created = self.layers[0].mknod(
+            native_ctx,
+            upper_parent,
+            &upper_name,
+            native_mode,
+            rdev,
+            native_umask,
+            extensions,
+        );
+        #[cfg(target_os = "linux")]
+        let created = created.and_then(|created| {
+            if let Some(parent_attr) = virtual_parent {
+                let gid = if parent_attr.st_mode & libc::S_ISGID != 0 {
+                    parent_attr.st_gid
+                } else {
+                    ctx.gid
+                };
+                let guest_mode = (created.attr.st_mode & libc::S_IFMT) | (mode & !umask & 0o7777);
+                let mut identity = created.attr;
+                identity.st_uid = ctx.uid;
+                identity.st_gid = gid;
+                identity.st_mode = guest_mode;
+                if let Err(error) =
+                    self.store_private_identity(&self.core.upper_path(&path), &identity)
+                {
+                    // No guest lookup has been published. Do not leave a
+                    // host-owned node behind after essential metadata failed.
+                    let _ = self.layers[0].unlink(native_ctx, upper_parent, &upper_name);
+                    self.layers[0].forget(ctx, created.inode, 1);
+                    return Err(linux_error(error));
+                }
+            }
+            Ok(created)
+        });
+        if upper_parent != fuse::ROOT_ID {
             self.layers[0].forget(ctx, upper_parent, 1);
         }
         let created = created?;
@@ -4265,59 +4275,79 @@ impl FileSystem for OverlayFs {
         umask: u32,
         extensions: Extensions,
     ) -> io::Result<Entry> {
-        let (_operation, path) = self.write_child_operation(parent, name)?;
+        let (operation, path) = self.write_child_operation(parent, name)?;
+        // Recreating lower state changes visibility of an entire subtree.
+        // Fresh directories retain disjoint-parent creation concurrency.
+        let (_operation, path) = if self
+            .core
+            .exists_in_lower_checked(&path)
+            .map_err(linux_error)?
+        {
+            drop(operation);
+            let operation = self.write_operation()?;
+            let path = self.child(parent, name)?;
+            (NamespaceOperation::Global(operation), path)
+        } else {
+            (operation, path)
+        };
         #[cfg(target_os = "linux")]
         let virtual_parent = if self.virtual_metadata {
             Some(self.entry(ctx, &self.path(parent)?, parent)?.attr)
         } else {
             None
         };
-        let (upper_parent, upper_name) = self.upper_parent(ctx, &path)?;
         #[cfg(target_os = "linux")]
-        let (native_mode, native_umask) = if virtual_parent.is_some() {
-            (0o700, 0)
+        let native_mode = if virtual_parent.is_some() {
+            0o700
         } else {
-            (mode, umask)
+            mode & !umask
         };
         #[cfg(target_os = "macos")]
-        let (native_mode, native_umask) = (mode, umask);
-        let created = self.layers[0]
-            .mkdir(
-                self.private_create_context(ctx),
-                upper_parent,
-                &upper_name,
-                native_mode,
-                native_umask,
-                extensions,
-            )
-            .inspect_err(|error| log::error!("overlay native mkdir failed: {error}"));
-        if upper_parent != fuse::ROOT_ID {
-            self.layers[0].forget(ctx, upper_parent, 1);
-        }
-        let created = created?;
-        self.layers[0].forget(ctx, created.inode, 1);
-        #[cfg(target_os = "linux")]
-        if let Some(parent_attr) = virtual_parent {
-            // Rootless OCI ownership is virtual: native mkdir may use the host
-            // UID. Record the guest creator and virtual setgid inheritance.
-            let inherit_group = parent_attr.st_mode & libc::S_ISGID != 0;
-            let gid = if inherit_group {
-                parent_attr.st_gid
-            } else {
-                ctx.gid
-            };
-            let guest_mode = (created.attr.st_mode & libc::S_IFMT)
-                | (mode & !umask & 0o7777)
-                | if inherit_group { libc::S_ISGID } else { 0 };
-            let identity = format!("{}:{}:0{:o}", ctx.uid, gid, guest_mode);
-            pvisor_overlay_core::sys::set_xattr(
-                &self.core.upper_path(&path),
-                OsStr::new("user.containers.override_stat"),
-                identity.as_bytes(),
-                0,
-            )
+        let native_mode = mode & !umask;
+        self.core
+            .create_dir_with(&path, || {
+                let upper_parent = self.inner_inode(
+                    Layer(0),
+                    path.parent().unwrap_or_else(|| Path::new("")),
+                    ctx,
+                )?;
+                let created = self.layers[0].mkdir(
+                    self.private_create_context(ctx),
+                    upper_parent,
+                    name,
+                    native_mode,
+                    0,
+                    extensions,
+                );
+                if upper_parent != fuse::ROOT_ID {
+                    self.layers[0].forget(ctx, upper_parent, 1);
+                }
+                let created = created?;
+                self.layers[0].forget(ctx, created.inode, 1);
+                #[cfg(target_os = "linux")]
+                if let Some(parent_attr) = virtual_parent {
+                    let inherit_group = parent_attr.st_mode & libc::S_ISGID != 0;
+                    let gid = if inherit_group {
+                        parent_attr.st_gid
+                    } else {
+                        ctx.gid
+                    };
+                    let guest_mode = libc::S_IFDIR
+                        | (mode & !umask & 0o7777)
+                        | if inherit_group { libc::S_ISGID } else { 0 };
+                    let identity = format!("{}:{}:0{:o}", ctx.uid, gid, guest_mode);
+                    pvisor_overlay_core::sys::set_xattr(
+                        &self.core.upper_path(&path),
+                        OsStr::new("user.containers.override_stat"),
+                        identity.as_bytes(),
+                        0,
+                    )?;
+                }
+                Ok(())
+            })
             .map_err(linux_error)?;
-        }
+        let created = self.inner_entry(Layer(0), &path, ctx)?;
+        self.layers[0].forget(ctx, created.inode, 1);
         self.created_entry(path, created)
     }
 
@@ -4351,10 +4381,51 @@ impl FileSystem for OverlayFs {
         newname: &CStr,
         flags: u32,
     ) -> io::Result<()> {
+        if !matches!(
+            flags,
+            0 | RENAME_WHITEOUT | RENAME_NOREPLACE | RENAME_EXCHANGE
+        ) && flags != RENAME_NOREPLACE | RENAME_WHITEOUT
+        {
+            return Err(io::Error::from_raw_os_error(libc::EINVAL));
+        }
         let _operation = self.write_operation()?;
         let old = self.child(olddir, oldname)?;
         let new = self.child(newdir, newname)?;
         let _io = self.fence_paths(&[&old, &new]);
+        // Preserve same-inode no-ops even on hosts unable to create xattrs.
+        if matches!(flags, RENAME_WHITEOUT) || flags == RENAME_NOREPLACE | RENAME_WHITEOUT {
+            let (source, copied_source) = self
+                .core
+                .metadata_with_copied_hard_link(&old)
+                .map_err(linux_error)?;
+            if old == new
+                || (source.is_file()
+                    && self
+                        .core
+                        .resolve_checked(&new)
+                        .map_err(linux_error)?
+                        .is_some()
+                    && {
+                        let (target, copied_target) = self
+                            .core
+                            .metadata_with_copied_hard_link(&new)
+                            .map_err(linux_error)?;
+                        let source = copied_source.as_ref().unwrap_or(&source);
+                        let target = copied_target.as_ref().unwrap_or(&target);
+                        (source.dev(), source.ino()) == (target.dev(), target.ino())
+                    })
+            {
+                return self
+                    .core
+                    .rename(&old, &new, flags & RENAME_NOREPLACE != 0)
+                    .map_err(linux_error);
+            }
+        }
+        let prepared = if flags & RENAME_WHITEOUT != 0 {
+            Some(self.prepare_guest_whiteout()?)
+        } else {
+            None
+        };
         // Plain renames and RENAME_WHITEOUT unconditionally replace an
         // existing target, so the overwritten entry needs detached writeback.
         // NOREPLACE (with or without WHITEOUT) fails with EEXIST instead and
@@ -4373,18 +4444,28 @@ impl FileSystem for OverlayFs {
         } else {
             None
         };
-        let whiteout = flags & RENAME_WHITEOUT != 0;
         match flags {
-            0 | RENAME_WHITEOUT => self.core.rename(&old, &new, false).map_err(linux_error)?,
+            0 => self.core.rename(&old, &new, false).map_err(linux_error)?,
             RENAME_NOREPLACE => self.core.rename(&old, &new, true).map_err(linux_error)?,
             RENAME_EXCHANGE => self.core.exchange(&old, &new).map_err(linux_error)?,
-            combined if combined == RENAME_NOREPLACE | RENAME_WHITEOUT => {
-                self.core.rename(&old, &new, true).map_err(linux_error)?
+            combined
+                if combined == RENAME_WHITEOUT
+                    || combined == RENAME_NOREPLACE | RENAME_WHITEOUT =>
+            {
+                self.core
+                    .rename_with_whiteout(
+                        &old,
+                        &new,
+                        combined & RENAME_NOREPLACE != 0,
+                        prepared.as_ref().unwrap(),
+                    )
+                    .map_err(linux_error)?;
             }
             _ => return Err(linux_error(io::Error::from_raw_os_error(libc::EINVAL))),
         }
         if old == new
             || (flags != RENAME_EXCHANGE
+                && prepared.is_none()
                 && self
                     .core
                     .resolve_checked(&old)
@@ -4401,14 +4482,6 @@ impl FileSystem for OverlayFs {
         } else {
             self.remove_path(&new);
             self.remap_path(&old, &new);
-        }
-        if whiteout {
-            // renameat2(RENAME_WHITEOUT) leaves a whiteout at the old name so a
-            // guest overlayfs mount can atomically hide its own lower entries.
-            // The whiteout is a real char(0,0) node in the upper layer, in the
-            // same namespace the guest sees; Core's own `.wh.` markers stay
-            // untouched and keep hiding merged-view deletions.
-            self.create_guest_whiteout(ctx, &old)?;
         }
         self.commit_detached_writeback(retired);
         Ok(())
@@ -5747,45 +5820,79 @@ mod tests {
             drop(fs);
             let fs = OverlayFs::new(config.clone(), Arc::new(InodeAllocator::new())).unwrap();
             fs.init(FsOptions::empty()).unwrap();
-            let guest = Context { uid: 70, gid: 70, pid: 123 };
-            let socket = fs.mknod(guest, fuse::ROOT_ID, c"socket",
-                libc::S_IFSOCK | 0o644, 0, 0, Extensions::default()).unwrap();
-            let alias = fs.link(root, socket.inode, fuse::ROOT_ID, c"alias").unwrap();
+            let guest = Context {
+                uid: 70,
+                gid: 70,
+                pid: 123,
+            };
+            let socket = fs
+                .mknod(
+                    guest,
+                    fuse::ROOT_ID,
+                    c"socket",
+                    libc::S_IFSOCK | 0o644,
+                    0,
+                    0,
+                    Extensions::default(),
+                )
+                .unwrap();
+            let alias = fs
+                .link(root, socket.inode, fuse::ROOT_ID, c"alias")
+                .unwrap();
             assert_eq!((alias.attr.st_uid, alias.attr.st_gid), (70, 70));
             let mut requested = socket.attr;
             requested.st_uid = 88;
             requested.st_gid = 99;
             requested.st_mode = libc::S_IFSOCK | 0o640;
-            fs.setattr(root, socket.inode, requested, None,
-                SetattrValid::UID | SetattrValid::GID | SetattrValid::MODE).unwrap();
+            fs.setattr(
+                root,
+                socket.inode,
+                requested,
+                None,
+                SetattrValid::UID | SetattrValid::GID | SetattrValid::MODE,
+            )
+            .unwrap();
             let observed = fs.getattr(root, alias.inode, None).unwrap().0;
-            assert_eq!((observed.st_uid, observed.st_gid, observed.st_mode),
-                (88, 99, libc::S_IFSOCK | 0o640));
+            assert_eq!(
+                (observed.st_uid, observed.st_gid, observed.st_mode),
+                (88, 99, libc::S_IFSOCK | 0o640)
+            );
             let native = std::fs::symlink_metadata(temp.path().join("upper/socket")).unwrap();
             assert!(native.file_type().is_socket());
             assert_eq!(native.uid(), unsafe { libc::geteuid() });
             assert_eq!(native.mode() & 0o7777, 0o600);
-            assert!(pvisor_overlay_core::sys::get_xattr(
-                &temp.path().join("upper/socket"),
-                OsStr::new("user.containers.override_stat"),
-            ).is_err(), "socket identities must not require native user xattrs");
+            assert!(
+                pvisor_overlay_core::sys::get_xattr(
+                    &temp.path().join("upper/socket"),
+                    OsStr::new("user.containers.override_stat"),
+                )
+                .is_err(),
+                "socket identities must not require native user xattrs"
+            );
             let name = c".wh..pvisor-socket-metadata";
             assert!(fs.lookup(root, fuse::ROOT_ID, name).is_err());
-            assert!(fs.mkdir(root, fuse::ROOT_ID, name, 0o700, 0, Extensions::default()).is_err());
+            assert!(
+                fs.mkdir(root, fuse::ROOT_ID, name, 0o700, 0, Extensions::default())
+                    .is_err()
+            );
             let handle = fs.opendir(root, fuse::ROOT_ID, 0).unwrap().0.unwrap();
             fs.readdir(root, fuse::ROOT_ID, handle, 4096, 0, |entry| {
                 assert!(!entry.name.starts_with(b".wh."));
                 Ok(1)
-            }).unwrap();
+            })
+            .unwrap();
             fs.releasedir(root, fuse::ROOT_ID, 0, handle).unwrap();
-            fs.rename(root, fuse::ROOT_ID, c"alias", fuse::ROOT_ID, c"moved", 0).unwrap();
+            fs.rename(root, fuse::ROOT_ID, c"alias", fuse::ROOT_ID, c"moved", 0)
+                .unwrap();
             fs.unlink(root, fuse::ROOT_ID, c"socket").unwrap();
             drop(fs);
             let reopened = OverlayFs::new(config, Arc::new(InodeAllocator::new())).unwrap();
             reopened.init(FsOptions::empty()).unwrap();
             let moved = reopened.lookup(root, fuse::ROOT_ID, c"moved").unwrap();
-            assert_eq!((moved.attr.st_uid, moved.attr.st_gid, moved.attr.st_mode),
-                (88, 99, libc::S_IFSOCK | 0o640));
+            assert_eq!(
+                (moved.attr.st_uid, moved.attr.st_gid, moved.attr.st_mode),
+                (88, 99, libc::S_IFSOCK | 0o640)
+            );
         }
 
         fn truncate_detached(replace: bool) {
@@ -6875,24 +6982,34 @@ mod tests {
             fs.directory_names(Path::new("dir")).unwrap().names
         };
         let initial = cache(&fs);
-        fs.mkdir(ctx, fuse::ROOT_ID, c"unrelated", 0o755, 0, Extensions::default()).unwrap();
+        fs.mkdir(
+            ctx,
+            fuse::ROOT_ID,
+            c"unrelated",
+            0o755,
+            0,
+            Extensions::default(),
+        )
+        .unwrap();
         let after_create = cache(&fs);
         assert!(!Arc::ptr_eq(&initial, &after_create));
-        fs.rename(ctx, fuse::ROOT_ID, c"unrelated", fuse::ROOT_ID, c"other", 0).unwrap();
+        fs.rename(ctx, fuse::ROOT_ID, c"unrelated", fuse::ROOT_ID, c"other", 0)
+            .unwrap();
         assert!(!Arc::ptr_eq(&after_create, &cache(&fs)));
-        fs.mkdir(ctx, dir, c"child", 0o755, 0, Extensions::default()).unwrap();
+        fs.mkdir(ctx, dir, c"child", 0o755, 0, Extensions::default())
+            .unwrap();
         let changed = cache(&fs);
         assert!(!Arc::ptr_eq(&initial, &changed));
         assert!(changed.iter().any(|name| name == b"child"));
-        fs.rename(ctx, fuse::ROOT_ID, c"dir", fuse::ROOT_ID, c"moved", 0).unwrap();
+        fs.rename(ctx, fuse::ROOT_ID, c"dir", fuse::ROOT_ID, c"moved", 0)
+            .unwrap();
         assert!(fs.directory_names_cache.lock().unwrap().entry.is_none());
         {
             let _guard = fs.read_operation().unwrap();
             fs.directory_names(Path::new("moved")).unwrap();
         }
-        fs.snapshot_config.access_policy = pvisor_overlay_core::FileAccessPolicy::new(
-            vec!["private/**".into()], vec![],
-        ).unwrap();
+        fs.snapshot_config.access_policy =
+            pvisor_overlay_core::FileAccessPolicy::new(vec!["private/**".into()], vec![]).unwrap();
         assert!(fs.unlink(ctx, dir, c"missing").is_err());
         assert!(fs.directory_names_cache.lock().unwrap().entry.is_none());
     }
@@ -9297,15 +9414,8 @@ mod tests {
         let (done, ready) = std::sync::mpsc::channel();
         std::thread::scope(|scope| {
             scope.spawn(move || {
-                done.send(fs_ref.mkdir(
-                    ctx,
-                    second_dir,
-                    c"other",
-                    0o755,
-                    0,
-                    Extensions::default(),
-                ))
-                .unwrap();
+                done.send(fs_ref.mkdir(ctx, second_dir, c"other", 0o755, 0, Extensions::default()))
+                    .unwrap();
             });
             let result = ready.recv_timeout(Duration::from_secs(2));
             drop(guard);
@@ -9368,10 +9478,8 @@ mod tests {
         let (done, ready) = std::sync::mpsc::channel();
         std::thread::scope(|scope| {
             scope.spawn(move || {
-                done.send(
-                    fs_ref.rename(ctx, fuse::ROOT_ID, c"dir", fuse::ROOT_ID, c"moved", 0),
-                )
-                .unwrap();
+                done.send(fs_ref.rename(ctx, fuse::ROOT_ID, c"dir", fuse::ROOT_ID, c"moved", 0))
+                    .unwrap();
             });
             let blocked = ready.recv_timeout(Duration::from_millis(150));
             drop(guard);
@@ -9422,10 +9530,8 @@ mod tests {
         let (done, ready) = std::sync::mpsc::channel();
         std::thread::scope(|scope| {
             scope.spawn(move || {
-                done.send(
-                    fs_ref.rename(ctx, fuse::ROOT_ID, c"dir", fuse::ROOT_ID, c"moved", 0),
-                )
-                .unwrap();
+                done.send(fs_ref.rename(ctx, fuse::ROOT_ID, c"dir", fuse::ROOT_ID, c"moved", 0))
+                    .unwrap();
             });
             let blocked = ready.recv_timeout(Duration::from_millis(150));
             drop(guard);
@@ -10059,8 +10165,15 @@ mod tests {
     fn lower_data_object_ids_are_bounded_never_recycled_and_layer_specific() {
         let mut table = LowerDataObjects::default();
         let mut domains = LowerDataObjects::default();
-        let native = domains.register(LowerDataKey::Native((1, 2, 3, 4, 5))).unwrap().0;
-        let key = LowerDataKey::Logical { layer: 1, object: 3, size: 5 };
+        let native = domains
+            .register(LowerDataKey::Native((1, 2, 3, 4, 5)))
+            .unwrap()
+            .0;
+        let key = LowerDataKey::Logical {
+            layer: 1,
+            object: 3,
+            size: 5,
+        };
         let logical = domains.register(key).unwrap().0;
         assert_ne!(native.id, logical.id);
         assert_eq!(domains.register(key), Some((logical, false)));
@@ -10593,18 +10706,44 @@ mod tests {
             let branch = temp.path().join(name);
             std::fs::create_dir(&branch).unwrap();
             for role in ["upper", "journal"] {
-                pvisor::environment_snapshot::copy_owned_tree(&source.join(role), &branch.join(role)).unwrap();
+                pvisor::environment_snapshot::copy_owned_tree(
+                    &source.join(role),
+                    &branch.join(role),
+                )
+                .unwrap();
             }
             let mut state = seed.clone();
-            state.validate_shared_readonly_layers(std::slice::from_ref(&baseline)).unwrap();
-            state.rebind_roots(|path| {
-                let path = Path::new(path);
-                Ok(if path == baseline { path.to_owned() } else { branch.join(path.strip_prefix(&source).unwrap()) }.to_string_lossy().into_owned())
-            }, std::slice::from_ref(&baseline), false, &[]).unwrap();
-            let restored = OverlayFs::open_existing(state.config.clone(), Arc::new(InodeAllocator::new())).unwrap();
+            state
+                .validate_shared_readonly_layers(std::slice::from_ref(&baseline))
+                .unwrap();
+            state
+                .rebind_roots(
+                    |path| {
+                        let path = Path::new(path);
+                        Ok(if path == baseline {
+                            path.to_owned()
+                        } else {
+                            branch.join(path.strip_prefix(&source).unwrap())
+                        }
+                        .to_string_lossy()
+                        .into_owned())
+                    },
+                    std::slice::from_ref(&baseline),
+                    false,
+                    &[],
+                )
+                .unwrap();
+            let restored =
+                OverlayFs::open_existing(state.config.clone(), Arc::new(InodeAllocator::new()))
+                    .unwrap();
             restored.init(FsOptions::empty()).unwrap();
-            restored.restore_state(&super::super::snapshot::FsSnapshot::Overlay(state)).unwrap();
-            assert_eq!(pvisor_overlay_core::load_preimages(&branch.join("journal")).unwrap(), observations);
+            restored
+                .restore_state(&super::super::snapshot::FsSnapshot::Overlay(state))
+                .unwrap();
+            assert_eq!(
+                pvisor_overlay_core::load_preimages(&branch.join("journal")).unwrap(),
+                observations
+            );
             branches.push((branch, restored));
         }
         branches[0].1.core.copy_up(Path::new("file")).unwrap();
@@ -12254,15 +12393,29 @@ mod tests {
             fs.init(FsOptions::PVISOR_DATA_OBJECT).unwrap();
             let ctx = root_context();
             let entry = fs.lookup(ctx, fuse::ROOT_ID, c"file").unwrap();
-            let receipt = fs.open_for_reply(ctx, entry.inode, false, libc::O_RDONLY as u32, true).unwrap();
-            assert_eq!(receipt.data_object.is_some(), stable && cfg!(target_os = "linux"));
-            fs.release(ctx, entry.inode, 0, receipt.handle.unwrap(), false, false, None).unwrap();
+            let receipt = fs
+                .open_for_reply(ctx, entry.inode, false, libc::O_RDONLY as u32, true)
+                .unwrap();
+            assert_eq!(
+                receipt.data_object.is_some(),
+                stable && cfg!(target_os = "linux")
+            );
+            fs.release(
+                ctx,
+                entry.inode,
+                0,
+                receipt.handle.unwrap(),
+                false,
+                false,
+                None,
+            )
+            .unwrap();
             assert_eq!(entry.attr.st_uid, 1234);
             assert_eq!(entry.attr.st_gid, 2345);
             assert_eq!(entry.attr.st_mode as u32 & 0o7777, 0o755);
             fs.access(ctx, entry.inode, libc::X_OK as u32).unwrap();
-            assert!(fs
-                .access(
+            assert!(
+                fs.access(
                     Context {
                         uid: 3456,
                         gid: 3456,
@@ -12290,9 +12443,23 @@ mod tests {
             let (attr, _) = fs.getattr(ctx, entry.inode, Some(handle)).unwrap();
             assert_eq!(attr.st_uid, 1234);
             fs.core.copy_up(Path::new("file")).unwrap();
-            let upper_reply = fs.open_for_reply(ctx, entry.inode, false, libc::O_RDONLY as u32, true).unwrap();
-            assert!(upper_reply.data_object.is_none(), "upper must not reuse lower content identity");
-            fs.release(ctx, entry.inode, 0, upper_reply.handle.unwrap(), false, false, None).unwrap();
+            let upper_reply = fs
+                .open_for_reply(ctx, entry.inode, false, libc::O_RDONLY as u32, true)
+                .unwrap();
+            assert!(
+                upper_reply.data_object.is_none(),
+                "upper must not reuse lower content identity"
+            );
+            fs.release(
+                ctx,
+                entry.inode,
+                0,
+                upper_reply.handle.unwrap(),
+                false,
+                false,
+                None,
+            )
+            .unwrap();
             assert_eq!(
                 std::fs::read(temp.path().join("upper/file")).unwrap(),
                 b"real image data"

@@ -9,7 +9,83 @@ use pvisor_journal::api::{DurableFiles, Persistence};
 
 /// Publish owner-only JSON using the same durable replacement as Run records.
 pub fn write_private_json(path: &Path, value: &impl serde::Serialize) -> anyhow::Result<()> {
-    Persistence::atomic_write(path, &serde_json::to_vec_pretty(value)?, 0o600)
+    atomic_write(path, &serde_json::to_vec_pretty(value)?, |_, _, _| {})
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("atomic publication (published={published})")]
+pub(crate) struct PublicationError {
+    pub(crate) published: bool,
+}
+
+fn atomic_write(
+    path: &Path,
+    body: &[u8],
+    mut observe: impl FnMut(&'static str, std::time::Duration, bool),
+) -> anyhow::Result<()> {
+    #[cfg(test)]
+    publication_fault::check(path, body, false)?;
+    let mut published = false;
+    let result = Persistence::atomic_write_observed(path, body, 0o600, |phase, elapsed, ok| {
+        published |= phase == "rename" && ok;
+        observe(phase, elapsed, ok);
+    });
+    result.map_err(|source| source.context(PublicationError { published }))?;
+    #[cfg(test)]
+    publication_fault::check(path, body, true)?;
+    Ok(())
+}
+
+// Path-scoped acknowledgement faults compose the real persistence protocol
+// tests with async runtime completion, without process-global environment flags.
+#[cfg(test)]
+pub(crate) mod publication_fault {
+    use super::*;
+    use std::{collections::HashMap, path::PathBuf, sync::Mutex};
+    static FAULTS: std::sync::LazyLock<Mutex<HashMap<PathBuf, (bool, usize)>>> =
+        std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
+
+    pub(crate) struct Guard(PathBuf);
+    impl Guard {
+        pub(crate) fn install(path: PathBuf, published: bool) -> Self {
+            assert!(
+                FAULTS
+                    .lock()
+                    .unwrap()
+                    .insert(path.clone(), (published, 0))
+                    .is_none()
+            );
+            Self(path)
+        }
+        pub(crate) fn hits(&self) -> usize {
+            FAULTS.lock().unwrap()[&self.0].1
+        }
+    }
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            FAULTS.lock().unwrap().remove(&self.0);
+        }
+    }
+    pub(super) fn check(path: &Path, body: &[u8], published: bool) -> anyhow::Result<()> {
+        let mut faults = FAULTS.lock().unwrap();
+        let Some((at, hits)) = faults.get_mut(path) else {
+            return Ok(());
+        };
+        let value: serde_json::Value = serde_json::from_slice(body)?;
+        // Run projections are also written during startup; fault only completion.
+        if *at == published
+            && (value.get("result").is_some()
+                || value["state"] == "completed"
+                || value["state"] == "failed")
+        {
+            *hits += 1;
+            return Err(
+                anyhow::Error::from(std::io::Error::from_raw_os_error(libc::EIO))
+                    .context(PublicationError { published }),
+            );
+        }
+        Ok(())
+    }
 }
 
 /// Persistence diagnostics carry durations, not additional startup checkpoints.
@@ -65,7 +141,7 @@ pub(crate) fn write_run_bytes(
     run_id: &str,
     object: &str,
 ) -> anyhow::Result<()> {
-    Persistence::atomic_write_observed(path, body, 0o600, |phase, elapsed, success| {
+    atomic_write(path, body, |phase, elapsed, success| {
         persistence_log(run_id, object, phase, elapsed, success);
     })
 }

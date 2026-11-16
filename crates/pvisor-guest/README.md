@@ -230,6 +230,12 @@ concurrent exec routing; native CLI acceptance exercises the same behavior in a 
 
 ### Native daemon operations
 
+The guest owns both sides of allocator reclamation: PID 1 channel/control code
+in `src/linux/reclaim/` and the optional preload SO, native fixtures and build
+entry in [`allocator-reclaim/`](allocator-reclaim/README.md). The preload has a
+separate Cargo manifest because it targets guest glibc with `no_std` and a
+cdylib-specific linker/profile; it is not linked into PID 1.
+
 The host-only adapter exposes the opt-in experimental `ReclaimAllocator`
 operation for a live registered PID/generation. Set
 `GuestConfig.process.allocator_reclaim` to an absolute guest path to the matching
@@ -266,7 +272,7 @@ workload continues: there is no stop/kill or cancellation of an in-flight trim.
 A timed-out call may still complete. The channel is cooperative instrumentation,
 not a security boundary against the target manipulating its own descriptors or
 libraries. Main exit retains normal descendant teardown and shared reaping.
-See the [SO build, activation and native tests](../../tools/allocator-reclaim/README.md).
+See the [SO build, activation and native tests](allocator-reclaim/README.md).
 
 The optional control adapter also accepts tracked `Start` requests with explicit
 `Started { pid }` acknowledgements, PID-fenced `Signal`/`Resize`, guest-local

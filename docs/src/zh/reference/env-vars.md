@@ -41,6 +41,15 @@ PVISOR_RUN_HOME="$HOME/.pvisor/runs" pvisor spawn --safe \
 
 `PVISOR_STARTUP_TIMING=1` 启用启动阶段 checkpoint、持久化计时和 frontend/owner 关联日志。默认关闭；`0` 保持关闭。它只影响诊断输出；任务策略、Run 记录、工作负载输出、错误、警告和暂存提示不变。`PVISOR_STARTUP_PROFILE=1` 独立启用详细 JSON 计时 span。
 
+以下是宿主侧私有诊断开关，仅在 guest idle 已启用且 VM 恰有一个 vCPU 时影响 guest 内核命令行，由 `pvisor-vm/src/builder.rs` 读取；其他配置忽略它们。它们会改变 guest 行为，不只影响诊断输出，也不是稳定产品设置。在适用配置中，各变量仅接受 `0` 或 `1`，非法值或编码会使启动失败。
+
+| 变量 | 未设置时的默认值 | guest 命令行效果 |
+| --- | --- | --- |
+| `PVISOR_DIAG_PSI_IDLE_QUIESCE` | `1` | `psi_idle_quiesce=0` 或 `1` |
+| `PVISOR_DIAG_PSI_IDLE_DEFER` | `1` | `psi_idle_defer=0` 或 `1` |
+| `PVISOR_DIAG_WATCHDOG_IDLE_DEFER` | `1` | `pvisor_watchdog_defer=0` 或 `1` |
+| `PVISOR_DIAG_GUEST_PSI` | 不覆盖，沿用内核默认值 | 设置时追加 `psi=0` 或 `1` |
+
 `PVISOR_VM_FS_WRITEBACK` 控制 guest 写回：新建 staged VM 会话默认关闭，`1` 显式请求，`0` 关闭；未覆盖的恢复会话保留原协商模式，显式 `0` 拒绝已开启写回的快照。它与下方 host 写缓存互斥。验证范围为 Linux x86_64/KVM，不能据此外推 macOS。
 
 固件协商 bit 42，按实际脏页与临时 FUSE WRITE 页施加背压，不累计 write 字节。每连接/BDI 的软压力目标是内核实际 RAM 的1/8，截在16–256 MiB，最多保留256个句柄 lease；提交与完成使用独立队列。干净页缓存不计入目标，rootfs/workspace独立BDI可各有一份，Linux全局dirty/回收规则继续约束总量。原生BDI另尽力申请16 MiB最低份额，失败有警告，不是固定字节保证。

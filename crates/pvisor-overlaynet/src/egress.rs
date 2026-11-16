@@ -157,7 +157,7 @@ impl EgressRuntime {
             self.controller.as_ref(),
             &policy,
             request,
-            ResolvedAddressPolicy::HostConnectorAliases,
+            ResolvedAddressPolicy::VmEgress,
         )
         .await
         .map_err(|error| match error {

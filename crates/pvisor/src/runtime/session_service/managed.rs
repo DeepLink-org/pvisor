@@ -470,6 +470,53 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn completion_persistence_error_keeps_session_unknown_until_receipt_observation() {
+        for published in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let stage = temp.path().join("stage");
+            let fault = crate::util::publication_fault::Guard::install(
+                stage.join("completion.json"),
+                published,
+            );
+            let runtime = PVisor::builder().storage(&stage).build();
+            let run =
+                SessionService::start_managed(&runtime, spec(), config(ExecutorKind::Process))
+                    .await
+                    .unwrap();
+            let result = run.wait().await.unwrap();
+            assert_eq!(fault.hits(), 1);
+            drop(fault);
+            assert_eq!(result.state, RunState::Completed);
+            assert!(result.completion_error.is_some());
+            let mut record = RunRecord::read(&stage).unwrap();
+            assert_eq!(
+                Session::read(&record).unwrap().unwrap().state(),
+                SessionState::Unknown
+            );
+            let session = Session::read(&record).unwrap().unwrap();
+            let _session_lease = session.lock().unwrap();
+            let _execution_lease = RunLease::acquire(&stage).unwrap();
+            crate::runtime::completion::reconcile(&mut record).unwrap();
+            assert_eq!(
+                record.state,
+                if published {
+                    RunRecordState::Completed
+                } else {
+                    RunRecordState::Unknown
+                }
+            );
+            assert_eq!(
+                Session::read(&record).unwrap().unwrap().state(),
+                if published {
+                    SessionState::Terminal
+                } else {
+                    SessionState::Unknown
+                }
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn public_host_start_persists_the_shared_session_ledger_and_result() {
         let temp = tempfile::tempdir().unwrap();
         let stage = temp.path().join("stage");

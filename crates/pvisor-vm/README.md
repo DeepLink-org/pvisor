@@ -673,18 +673,31 @@ causing ordinary tools such as GNU `cp` to report a replaced input. Ordinary
 passthrough shares retain their existing native submount behavior.
 
 Nested guest overlayfs (for example dockerd's overlay2 graph driver on the
-shared rootfs) is supported at the FUSE contract level. RENAME2 accepts
-`RENAME_WHITEOUT`; the overlay adapter performs the rename and creates the
-whiteout as a real char(0,0) node in the writable upper layer under the
-guest-visible name, so lookups, `st_rdev` and readdir `DT_CHR` behave like a
-native overlayfs upperdir. Core's own `.wh.` markers stay reserved and hidden.
-Guest `trusted.overlay.*`/`user.overlay.*`/`user.fuseoverlayfs.*` control
-xattrs are translated into the `user.pvisor.overlay.*` stored namespace by
-SETXATTR/GETXATTR/REMOVEXATTR and back by LISTXATTR; direct guest access to
-stored names is rejected so control state cannot be forged. Creating whiteout
-nodes requires the host server to hold `CAP_MKNOD`; without it the guest
-overlayfs mount probe fails closed and dockerd falls back to its vfs storage
-driver.
+shared rootfs) is supported at the FUSE contract level. Guest char(0,0) nodes
+use host-safe regular files carrying private `user.pvisor.virtual_node` metadata;
+lookup/getattr/readdir project char type and zero device number. They do not
+require host CAP_MKNOD. Other device numbers keep native capability checks.
+
+Mandatory metadata is completed in a reserved, guest-invisible temporary file
+before MKNOD or RENAME_WHITEOUT publishes it. Preparation uses native RAII file
+ownership and acquires no passthrough handle or lookup reference; its errors
+cannot leak those resources. Core retains a replaced rename target until the
+whiteout is installed and restores both names on installation failure. A second
+I/O error during rollback is explicit and retains recovery backups; no crash-
+atomic multi-name transaction is claimed. Invalid virtual-node records and
+unexpected xattr-read errors fail replies rather than presenting ordinary files.
+Native lower permission-denied xattr probes retain native stat metadata: ordinary
+mode `0000`/`0200` files remain lookup/getattr/readdirplus-visible without granting
+read access. Imported lower virtual-node records must be host-readable for type
+projection. Managed upper metadata permission errors still fail closed.
+Tests inject EIO/ENOSPC/unsupported metadata errors, verify original names/types/
+contents and retry, and retain same-inode rename no-op behavior.
+
+Core's own `.wh.` markers stay reserved and hidden. Guest
+`trusted.overlay.*`/`user.overlay.*`/`user.fuseoverlayfs.*` control xattrs map to
+the private `user.pvisor.overlay.*` stored namespace and back. Direct guest
+access to stored controls is rejected; these attributes cannot forge Core's
+merged-view whiteouts or opaque state.
 
 ## Physical lower stability contract
 
@@ -2069,3 +2082,11 @@ advice 的实例保留原有所有权策略，不进入匿名零映射替换。�
 
 工程验证及 64/256 MiB 整个 VMM 的 footprint/RSS 对照见
 [allocator reclaim 实验](../../benchmark/memory/README.md#pid-1-allocator-reclaim-and-whole-vmm-memory)。
+
+VM MKDIR delegates directory namespace publication to Core's `create_dir_with`.
+Deleting and recreating a lower directory keeps its old children hidden through
+LOOKUP, GETATTR, READDIRPLUS and reopening the backing. Recreation takes exclusive
+namespace admission through opacity/identity publication; fresh directories keep
+disjoint-parent creation concurrency. Native security contexts, guest ownership,
+umask and setgid handling stay in the adapter. No guest entry is published by the
+creating request until Core completes directory initialization.

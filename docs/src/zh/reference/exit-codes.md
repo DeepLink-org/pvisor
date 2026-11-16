@@ -15,11 +15,13 @@
 | 内部 host sandbox 安装失败 | 启动器使用 125；外层错误也可能以 1 返回，需结合诊断 |
 | 参数解析错误 | clap 返回 2 |
 | `status` / `apply` / `drop` / `kill` 成功 | 返回 0 |
-| 上述命令发生解析后的运行错误 | `anyhow` 错误返回 1，stderr 说明原因 |
+| apply 在预检或计划校验中返回 `blocked` | 返回 3；重试前检查阻断原因 |
+| 退出交互式 apply 选择器 | 返回 130 |
+| 上述命令发生运行或服务错误 | 返回 1；检查 stderr 和保留的恢复证据 |
 | `inspect` 中的命令结束 | 返回该检查命令的退出码 |
 | 伴随工具 | 派发保留其退出码；replay 成功与质量还要查看结果协议 |
 
-应用冲突、Session 未找到与 UnsupportedPolicy 目前没有独占的数字退出码。工作负载自身也可能返回 1、2、125 或 130，所以数字不能单独区分“Agent 失败”和“pVisor 拒绝”。
+apply 区分计划被阻断（3）与执行或服务错误（1）。Session 未找到与 UnsupportedPolicy 仍和其他错误共用退出码 1。工作负载自身也可能返回这些数字，应结合具体命令和诊断决定是否重试。
 
 ## Daemon 进程与 API 错误 {#daemon}
 
@@ -61,6 +63,6 @@ printf 'run=%s review=%s\n' "$run_code" "$review_code"
 | `deadline_exceeded` | 任务超过实际经过时间限制；检查进度与保留文件 |
 | `infrastructure` | sandbox 设置或 I/O 等执行基础设施失败；检查诊断 |
 
-解析错误和准入前失败可能发生在 `run.failure` 或 Bundle 生成之前。找不到 Session、apply 冲突和管理命令错误写到 stderr 并返回 1，不会伪装成任务失败。`UnsupportedPolicy` 诊断表示能力请求被拒绝；普通 execution checkpoint/suspend 请求使用 `CAPABILITY_UNSUPPORTED`。不要把这些情况评分为模型回答失败。
+解析错误和准入前失败可能发生在 `run.failure` 或 Bundle 生成之前。找不到 Session 和管理命令错误通过诊断与退出码 1 报告，不会伪装成任务失败。apply 的预检或计划阻断返回 3；执行或服务失败返回 1，可能需要调和已经部分写入的目标。`UnsupportedPolicy` 诊断表示能力请求被拒绝；普通 execution checkpoint/suspend 请求使用 `CAPABILITY_UNSUPPORTED`。不要把这些情况评分为模型回答失败。
 
 可下载的[非零退出样例](../assets/examples/json/failed-run.json) 记录 `state = "failed"`、`exit_code = 7`、`failure.kind = "process_exit"`。[超时样例](../assets/examples/json/timeout-run.json) 记录 `state = "failed"`，省略 `exit_code`，`failure.kind = "deadline_exceeded"`，CLI 返回 1。两者都保留了暂存的候选文件。[采集来源](../assets/examples/json/provenance.json) 包含命令与实际退出码。

@@ -1663,3 +1663,63 @@ fn shutdown_interrupts_uploads_and_ordinary_proxy_headers_and_bodies() {
         drop(client);
     }
 }
+
+#[tokio::test]
+async fn vm_proxy_public_policy_rejects_metadata_and_ipv6_before_connecting() {
+    let config = ProxyConfig::from_toml_str(
+        r#"
+listen = "127.0.0.1:0"
+admin_listen = "127.0.0.1:0"
+agent_id = "vm-address-regression"
+models = []
+[network]
+mode = "public"
+"#,
+    )
+    .unwrap();
+    for gateway_enabled in [false, true] {
+        let storage = tempfile::tempdir().unwrap();
+        let proxy = InProcessCapture::start_with_runtime(
+            config.clone(),
+            storage.path().to_owned(),
+            Arc::new(NoopCaptureObserver::new()),
+            InProcessRuntime {
+                gateway_enabled,
+                resolved_address_policy: pvisor_core::network::ResolvedAddressPolicy::VmEgress,
+                ..InProcessRuntime::default()
+            },
+        )
+        .unwrap();
+        let url = format!("http://{}", proxy.listen);
+        let client = reqwest::Client::builder()
+            .proxy(reqwest::Proxy::all(&url).unwrap())
+            .timeout(Duration::from_secs(5))
+            .build()
+            .unwrap();
+        for host in ["169.254.169.254", "[::1]", "[2001:4860:4860::8888]"] {
+            assert_eq!(
+                client
+                    .get(format!("http://{host}/metadata"))
+                    .send()
+                    .await
+                    .unwrap()
+                    .status(),
+                StatusCode::FORBIDDEN
+            );
+            assert_eq!(
+                raw_connect(&url, &format!("{host}:443")).await.0,
+                StatusCode::FORBIDDEN
+            );
+        }
+        let (port, stop) = spawn_mock_http().await;
+        let response = client
+            .get(format!("http://127.0.0.1:{port}/"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.text().await.unwrap(), "ok");
+        proxy.shutdown().unwrap();
+        let _ = stop.send(());
+    }
+}

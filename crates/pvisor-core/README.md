@@ -131,3 +131,19 @@ fixtures are deleted only after assertions. `PVISOR_CHAOS_FIRST_SEED` and
 `PVISOR_CHAOS_SEED_COUNT` select a finite reproducible interval (default 8 seeds,
 maximum 65536). These checks cover Core's parse/validation/serialization
 contracts, not VM suspension or runtime crash recovery.
+
+## Completion persistence diagnostics
+
+`RunResult.completion_error` is an optional return-time diagnostic distinct from
+workload `state`, `exit_code`, timestamps and `failure`. `CompletionPhase` locates
+the Run projection, receipt or owner task; `CompletionPublication` distinguishes
+Rejected from Unknown for that step, not for the workload's external effects.
+When present, reconcile retained execution state; do not rerun the workload even
+if its own failure was marked retryable. Missing fields in older records default
+to None. Absence is not a durability guarantee for volatile executions.
+
+VM transports select `ResolvedAddressPolicy::VmEgress` after resolution. It
+rejects the VM hard-denied addresses even under Public policy, with the existing
+logical-host connector alias exception. Direct TCP and the execution's HTTP /
+CONNECT proxy use this same check; ordinary host proxies retain their existing
+resolved-address policy. An unresolved VM address cannot be authorized here.

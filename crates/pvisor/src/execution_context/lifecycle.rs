@@ -50,6 +50,7 @@ impl ExecutorOutput {
             finished_at_unix_ms: unix_now_ms(),
             exit_code: self.exit_code,
             failure: self.failure,
+            completion_error: None,
             output: self.output,
             value: self.value,
             metrics: self.metrics,
@@ -511,20 +512,18 @@ impl ExecutionContext {
                 Ok((_owned, Err(error))) => {
                     // Publication may have succeeded before a failed fsync. Never
                     // rewrite the Bundle/result or announce an unconfirmed commit.
-                    let message = format!("commit Execution completion: {error:#}");
-                    if result
-                        .failure
-                        .as_ref()
-                        .is_some_and(|failure| failure.kind == RunFailureKind::Infrastructure)
-                    {
-                        result.warnings.push(message);
-                    } else {
-                        fail_finalization(result, message);
-                    }
+                    result.warnings.push(format!(
+                        "{error}; reconcile retained execution; do not repeat workload"
+                    ));
+                    result.completion_error = Some(error);
                     return;
                 }
                 Err(error) => {
-                    fail_finalization(result, format!("completion commit task failed: {error}"));
+                    result.completion_error = Some(pvisor_core::CompletionError {
+                        phase: pvisor_core::CompletionPhase::CommitTask,
+                        publication: pvisor_core::CompletionPublication::Unknown,
+                        message: format!("completion commit task failed: {error}"),
+                    });
                     return;
                 }
             }

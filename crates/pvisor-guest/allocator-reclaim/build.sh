@@ -8,7 +8,7 @@ case "$1" in aarch64) loader=/lib/ld-linux-aarch64.so.1 ;; x86_64) loader=/lib64
 : "${PVISOR_RECLAIM_LIB_DIR:?select the guest directory containing libc.so.6, libpthread.so.0 and libdl.so.2}"
 source_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 lib_dir=$(CDPATH= cd -- "$PVISOR_RECLAIM_LIB_DIR" && pwd)
-target_dir="$source_dir/../../target/allocator-reclaim"
+target_dir="$source_dir/../../../target/allocator-reclaim"
 guest_arch=$1
 for library in libc.so.6 libpthread.so.0 libdl.so.2; do
     test -f "$lib_dir/$library" || { echo "missing $lib_dir/$library" >&2; exit 2; }
