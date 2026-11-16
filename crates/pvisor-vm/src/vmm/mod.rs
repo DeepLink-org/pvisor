@@ -208,6 +208,9 @@ pub(crate) struct RawKernelMapping {
 /// Contains the state and associated methods required for the Firecracker VMM.
 pub struct Vmm {
     pub(crate) vcpu_observation: Arc<crate::vcpu_observation::Collector>,
+    // Field drop order: join CPUs, destroy the native VM, then release its RAM.
+    vcpus_handles: Vec<VcpuHandle>,
+    vm: Vm,
     // Guest VM core resources.
     guest_memory: GuestMemoryMmap,
     // Mixed anonymous/file reservations cannot be classified from vm-memory's
@@ -217,9 +220,7 @@ pub struct Vmm {
 
     kernel_cmdline: KernelCmdline,
 
-    vcpus_handles: Vec<VcpuHandle>,
     exit_evt: EventFd,
-    vm: Vm,
     exit_observers: Vec<Arc<Mutex<dyn VmmExitObserver>>>,
     exit_code: Arc<AtomicI32>,
     paused: bool,
@@ -474,7 +475,9 @@ impl Vmm {
     /// Pause and flush/reclaim file-backed RAM. Host device mappings stay valid.
     pub fn offload_ram(&mut self) -> Result<ram::RamReclaim> {
         if self.compact_restore_ram {
-            return Err(Error::VcpuControl("offload cannot discard private snapshot RAM; save a new snapshot instead".into()));
+            return Err(Error::VcpuControl(
+                "offload cannot discard private snapshot RAM; save a new snapshot instead".into(),
+            ));
         }
         ram::check_reclaim(&self.guest_memory).map_err(Error::VcpuControl)?;
         if self.device_memory_gate.has_prepare() {
@@ -613,12 +616,12 @@ impl Vmm {
                 .push(vcpu.start_threaded().map_err(Error::VcpuHandle)?);
         }
 
-        // The vcpus start off in the `Paused` state, let them run.
+        // Keep every fresh or restored CPU parked until its owner releases it.
         #[cfg(any(
             all(target_os = "macos", target_arch = "aarch64"),
             all(target_os = "linux", target_arch = "x86_64")
         ))]
-        if self.snapshot_devices_frozen {
+        if self.snapshot_devices_frozen || cfg!(target_os = "macos") {
             let deadline = Instant::now() + Duration::from_secs(3);
             for handle in &self.vcpus_handles {
                 match handle
@@ -628,41 +631,14 @@ impl Vmm {
                     Ok(VcpuResponse::Paused) => (),
                     response => {
                         return Err(Error::VcpuControl(format!(
-                            "restored CPU not parked: {response:?}"
+                            "initial CPU not parked: {response:?}"
                         )));
                     }
                 }
             }
-            self.paused = true;
-            return Ok(());
         }
-        self.resume_vcpus()?;
+        self.paused = true;
 
-        Ok(())
-    }
-
-    /// Sends a resume command to the vcpus.
-    #[cfg(target_os = "linux")]
-    pub fn resume_vcpus(&mut self) -> Result<()> {
-        for handle in self.vcpus_handles.iter() {
-            handle
-                .send_event(VcpuEvent::Resume)
-                .map_err(Error::VcpuEvent)?;
-        }
-        for handle in self.vcpus_handles.iter() {
-            match handle
-                .response_receiver()
-                .recv_timeout(Duration::from_millis(1000))
-            {
-                Ok(VcpuResponse::Resumed) => (),
-                _ => return Err(Error::VcpuResume),
-            }
-        }
-        Ok(())
-    }
-
-    #[cfg(target_os = "macos")]
-    pub fn resume_vcpus(&mut self) -> Result<()> {
         Ok(())
     }
 

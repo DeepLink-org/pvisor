@@ -4,7 +4,7 @@ use std::{
     io::{Read, Seek, SeekFrom, Write},
     sync::{
         Arc,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicU8, AtomicU64, Ordering},
     },
     thread,
     time::Duration,
@@ -18,8 +18,50 @@ unsafe extern "C" {
         data: *const std::ffi::c_void,
     ) -> i32;
     fn getpid() -> i32;
+    fn mkdir(path: *const std::ffi::c_char, mode: u32) -> i32;
+    fn fcntl(fd: i32, command: i32, ...) -> i32;
 }
+static MISSING_STDIO: AtomicU8 = AtomicU8::new(0);
+
+// Like the production PID 1 constructor, run before std sanitizes fd 0..2.
+// This standalone probe cannot depend on Rust main to mount /dev/null.
+extern "C" fn bootstrap_stdio() {
+    // SAFETY: Linux libc calls use fixed NUL-terminated paths and no Rust I/O,
+    // allocation or threads. Mounting is confined to the guest's PID 1.
+    unsafe {
+        if getpid() != 1 {
+            return;
+        }
+        let mut missing = 0;
+        for fd in 0..3 {
+            if fcntl(fd, 1 /* F_GETFD */) < 0 {
+                missing |= 1 << fd;
+            }
+        }
+        MISSING_STDIO.store(missing, Ordering::Relaxed);
+        if missing != 0 {
+            mkdir(c"/dev".as_ptr(), 0o755);
+            mount(
+                c"devtmpfs".as_ptr(),
+                c"/dev".as_ptr(),
+                c"devtmpfs".as_ptr(),
+                1 << 21, /* MS_RELATIME */
+                std::ptr::null(),
+            );
+        }
+    }
+}
+
+#[used]
+#[unsafe(link_section = ".init_array")]
+static BOOTSTRAP_STDIO: extern "C" fn() = bootstrap_stdio;
+
 fn main() {
+    fs::write(
+        "/bootstrap-stdio",
+        MISSING_STDIO.load(Ordering::Relaxed).to_string(),
+    )
+    .unwrap();
     fs::create_dir_all("/proc").unwrap();
     assert_eq!(
         unsafe {

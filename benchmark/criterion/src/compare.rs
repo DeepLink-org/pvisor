@@ -33,8 +33,7 @@ fn median(path: &Path) -> Result<f64> {
     Ok(point)
 }
 
-fn run() -> Result<()> {
-    let args = Args::parse();
+fn run(args: Args) -> Result<()> {
     ensure!(
         args.threshold.is_finite() && args.threshold >= 0.0,
         "invalid threshold"
@@ -83,7 +82,7 @@ Criterion 0.7.0 median estimates; sequential cohorts, not a causal A/B result.\n
 }
 
 fn main() {
-    if let Err(error) = run() {
+    if let Err(error) = run(Args::parse()) {
         eprintln!("{error:#}");
         std::process::exit(1);
     }
@@ -92,6 +91,46 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn gate_accepts_fifteen_percent_and_rejects_sixteen_percent() {
+        let d = tempfile::tempdir().unwrap();
+        for (index, candidate) in [115.0, 116.0].into_iter().enumerate() {
+            for condition in ["native", "host-run", "status", "review"] {
+                for (arm, value) in [
+                    ("main", 100.0),
+                    (
+                        "new",
+                        if condition == "status" {
+                            candidate
+                        } else {
+                            100.0
+                        },
+                    ),
+                ] {
+                    let root = d.path().join("process_smoke").join(condition).join(arm);
+                    fs::create_dir_all(&root).unwrap();
+                    fs::write(
+                        root.join("estimates.json"),
+                        serde_json::to_vec(&json!({"median":{"point_estimate":value}})).unwrap(),
+                    )
+                    .unwrap();
+                }
+            }
+            let output = d.path().join(format!("comparison-{index}"));
+            let result = run(Args {
+                root: d.path().into(),
+                candidate: "new".into(),
+                baseline: "main".into(),
+                threshold: 15.0,
+                output: output.clone(),
+            });
+            assert_eq!(result.is_ok(), index == 0);
+            let report: Value =
+                serde_json::from_slice(&fs::read(output.join("comparison.json")).unwrap()).unwrap();
+            assert_eq!(report["threshold_pct"], 15.0);
+            assert_eq!(report["passed"], index == 0);
+        }
+    }
     #[test]
     fn invalid_estimates_are_errors_not_zero() {
         let d = tempfile::tempdir().unwrap();

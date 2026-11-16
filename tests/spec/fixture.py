@@ -143,6 +143,24 @@ def stop_adopted_children():
         time.sleep(0.01)
 
 
+def wait_for_child_exit(process, timeout, parent, owner):
+    """Observe exit without reaping; a live child at the deadline times out."""
+    deadline = time.monotonic() + timeout
+    while True:
+        if child_exited(process):
+            return True
+        time.sleep(min(0.05, max(0.001, deadline - time.monotonic())))
+        if time.monotonic() >= deadline:
+            # The observer may resume after the deadline with the child already exited.
+            return child_exited(process)
+        if os.getppid() != parent:
+            raise InterruptedError(signal.SIGTERM)
+        try:
+            os.kill(owner, 0)
+        except ProcessLookupError:
+            raise InterruptedError(signal.SIGTERM) from None
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("vocabulary", choices=("use", "stage", "doc", "vm", "none"))
@@ -232,20 +250,7 @@ def main(argv=None):
                 stderr=stderr,
                 start_new_session=True,
             )
-            deadline = time.monotonic() + args.timeout
-            while True:
-                if child_exited(process):
-                    break
-                time.sleep(min(0.05, max(0.001, deadline - time.monotonic())))
-                if time.monotonic() >= deadline:
-                    timed_out = True
-                    break
-                if os.getppid() != parent:
-                    raise InterruptedError(signal.SIGTERM)
-                try:
-                    os.kill(owner, 0)
-                except ProcessLookupError:
-                    raise InterruptedError(signal.SIGTERM) from None
+            timed_out = not wait_for_child_exit(process, args.timeout, parent, owner)
     except InterruptedError as error:
         interrupted = int(error.args[0])
     finally:

@@ -434,9 +434,10 @@ fn http_repository_opens_and_reads_lazily_without_the_publishers_pool() {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     listener.set_nonblocking(true).unwrap();
     let address = format!(
-        "http://{}/ipfs/{}",
+        "http://{}/ipfs/{}/{}",
         listener.local_addr().unwrap(),
-        "b".repeat(59)
+        "b".repeat(59),
+        uuid::Uuid::new_v4()
     );
     let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
     let task = std::thread::spawn(move || {
@@ -453,7 +454,8 @@ fn http_repository_opens_and_reads_lazily_without_the_publishers_pool() {
                             let export = export.clone();
                             let observed = observed.clone();
                             async move {
-                                let key = path.splitn(3, '/').nth(2).unwrap();
+                                // A private repository namespace keeps the persistent cache cold.
+                                let key = path.splitn(4, '/').nth(3).unwrap();
                                 let bytes = fs::read(export.join(key)).unwrap();
                                 let range = headers
                                     .get("range")

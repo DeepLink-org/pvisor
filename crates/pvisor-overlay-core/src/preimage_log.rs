@@ -461,7 +461,7 @@ impl PreimageLog {
     fn read_prefix(path: &Path, complete: bool) -> io::Result<Vec<PathPreimage>> {
         let file = OpenOptions::new()
             .read(true)
-            .custom_flags(libc::O_NOFOLLOW)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
             .open(path)?;
         let metadata = file.metadata()?;
         if !metadata.is_file() {

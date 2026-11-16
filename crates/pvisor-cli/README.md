@@ -43,7 +43,8 @@ Embed [`pvisor`](../pvisor/README.md) for `PVisor`, Session/Execution execution 
 modules, not a compatibility re-export of the runtime. Frontends call explicit
 runtime APIs and retain request-local cancellation, admission fences and terminal
 ownership. Managed startup consumes the runtime's admitted Session plan;
-executor wrappers forward the selected executor's continuation settings. Session
+executor wrappers forward the selected executor's continuation settings and
+request-dependent capability plan, including terminal-reporting wrappers. Session
 state is read through immutable accessors, and native checkpoint deletion delegates
 to the runtime service with the same request-local admission hooks. VM launch options are assembled through
 `VmExecutionInputs`; RunSpec's existing wire encoding remains compatible, while

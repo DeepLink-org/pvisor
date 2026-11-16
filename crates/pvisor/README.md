@@ -17,6 +17,47 @@ It is not an Agent framework, an OCI runtime, or an operating system.
 
 OverlayFS, OverlayNet, Gateway, and AgentCtl are pVisor runtime drivers.
 
+### Session authority capacity
+
+Every persisted Session is bounded to the reader's 64 MiB limit; an oversized
+replacement leaves the previous authority intact. Task capture/reuse, resume,
+fork and store admissions reserve 64 KiB for lifecycle recovery plus 64 KiB per
+unresolved capture before dispatching native work. New work reports
+`SESSION_CAPACITY` when this budget is exhausted; existing request identities
+remain retained. Capture error receipts retain at most 4096 Unicode characters;
+the caller still receives the original error. Capacity refusal does not erase
+idempotency receipts or prevent recording an already accepted result.
+
+### Backend capability admission
+
+`RunExecutor::capability_plan` declares request-dependent installation intent.
+Custom executors default to their descriptor's explicit plan; wrappers delegate
+this method to retain a wrapped backend's controls. Isolation labels do not
+imply Seatbelt or a Linux network namespace. Completion observations still require
+successful installation evidence, independently of admission.
+
+Linux Landlock-only confines filesystem access on the host view and creates no
+network namespace. Requests requiring network isolation (including deny-all)
+are rejected before workload launch, including in audit mode. Ambient or
+cooperative proxy traffic retains host network access; use the full rootless
+or VM backend for non-bypassable network controls.
+
+### Host process-group cleanup
+
+Host process-group teardown observes leader exit with `waitid(WNOWAIT)` and
+keeps that child unreaped through TERM/grace/KILL, then reaps it. The reserved
+leader PID prevents a cached PGID from being reused by an unrelated group while
+cleanup still signals it. An already reaped or mismatched child cannot authorize
+a group signal. Exit observation preserves exit codes, signals, stdin EOF and
+the existing exit/cancel/deadline priority. Linux checks `/proc` for live group
+members once the leader is a zombie, including the thread count when a main
+thread has exited before its workers; macOS uses libproc's group census and
+process states. A zombie-only group receives its final KILL without consuming
+the grace. Unknown process state retains the configured grace (2 seconds by
+default). The leader stays unreaped through that final signal. Other Unix
+platforms retain the group-existence check. Descendants that leave
+the group still require the existing namespace/cgroup boundary.
+
 ### Live Host Session exec
 
 Linux filesystem-isolated Host Sessions create a private exec broker inside

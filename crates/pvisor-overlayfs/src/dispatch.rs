@@ -1334,6 +1334,98 @@ impl Filesystem for DispatchFs {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn same_inode_rename_keeps_aliases_through_protocol_unlink_and_getattr() {
+        use std::io::{Read, Write};
+        use std::os::unix::net::UnixStream;
+
+        fn request(socket: &mut UnixStream, opcode: u32, inode: u64, body: &[u8]) -> Vec<u8> {
+            let mut bytes = Vec::new();
+            for word in [40 + body.len() as u32, opcode] {
+                bytes.extend(word.to_ne_bytes());
+            }
+            bytes.extend(1u64.to_ne_bytes());
+            bytes.extend(inode.to_ne_bytes());
+            for word in [
+                unsafe { libc::geteuid() },
+                unsafe { libc::getegid() },
+                std::process::id(),
+                0,
+            ] {
+                bytes.extend(word.to_ne_bytes());
+            }
+            bytes.extend(body);
+            socket.write_all(&bytes).unwrap();
+            let mut header = [0; 16];
+            socket.read_exact(&mut header).unwrap();
+            let length = u32::from_ne_bytes(header[..4].try_into().unwrap()) as usize;
+            let error = i32::from_ne_bytes(header[4..8].try_into().unwrap());
+            assert_eq!(error, 0, "opcode={opcode} inode={inode}");
+            assert!((16..65536).contains(&length));
+            let mut reply = vec![0; length - 16];
+            socket.read_exact(&mut reply).unwrap();
+            reply
+        }
+
+        for layer in ["lower", "copied", "upper"] {
+            let root = tempfile::tempdir().unwrap();
+            let lower = root.path().join("lower");
+            let upper = root.path().join("upper");
+            fs::create_dir(&lower).unwrap();
+            fs::write(lower.join("one"), b"original").unwrap();
+            fs::hard_link(lower.join("one"), lower.join("two")).unwrap();
+            if layer == "upper" {
+                fs::create_dir(&upper).unwrap();
+                fs::write(upper.join("one"), b"original").unwrap();
+                fs::hard_link(upper.join("one"), upper.join("two")).unwrap();
+            }
+            let overlay = OverlayFs::new(vec![lower.clone()], upper, None).unwrap();
+            if layer == "copied" {
+                service(&overlay).copy_up(Path::new("one")).unwrap();
+            }
+            let dispatcher = DispatchFs::new(overlay).unwrap();
+            let (mut socket, server) = UnixStream::pair().unwrap();
+            socket
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let thread = std::thread::spawn(move || {
+                fuser::Session::from_fd(dispatcher, server.into(), fuser::SessionACL::Owner)
+                    .run()
+                    .unwrap();
+            });
+            let init: Vec<_> = [7u32, 19, 0, 0]
+                .into_iter()
+                .flat_map(u32::to_ne_bytes)
+                .collect();
+            request(&mut socket, 26, 0, &init); // INIT
+            let entry = request(&mut socket, 1, 1, b"one\0"); // LOOKUP
+            let inode = u64::from_ne_bytes(entry[..8].try_into().unwrap());
+            let alias = request(&mut socket, 1, 1, b"two\0");
+            assert_eq!(u64::from_ne_bytes(alias[..8].try_into().unwrap()), inode);
+            let mut rename = 1u64.to_ne_bytes().to_vec();
+            if cfg!(target_os = "macos") {
+                rename.extend([0; 8]); // macFUSE's legacy rename includes flags/padding.
+            }
+            rename.extend(b"one\0two\0");
+            request(&mut socket, 12, 1, &rename); // RENAME, deliberately bypass VFS short-circuit
+            request(&mut socket, 10, 1, b"two\0"); // UNLINK destination
+            request(&mut socket, 3, inode, &[0; 16]); // GETATTR using cached source inode
+            let opened = request(&mut socket, 14, inode, &[0; 8]); // OPEN
+            let mut read = opened[..8].to_vec();
+            read.extend(0u64.to_ne_bytes());
+            read.extend(8u32.to_ne_bytes());
+            read.resize(40, 0);
+            assert_eq!(request(&mut socket, 15, inode, &read), b"original");
+            let mut release = opened[..8].to_vec();
+            release.resize(24, 0);
+            request(&mut socket, 18, inode, &release); // RELEASE
+            drop(socket);
+            thread.join().unwrap();
+            assert_eq!(fs::read(lower.join("one")).unwrap(), b"original");
+            assert_eq!(fs::read(lower.join("two")).unwrap(), b"original");
+        }
+    }
+
     use super::*;
     use pvisor_overlay_core::backend::{self, BackendAttachment, ReadOnlyBackend};
     use std::fs;

@@ -1,4 +1,4 @@
-use crate::execution_context::lifecycle::terminate_process_tree;
+use crate::execution_context::lifecycle::{observe_child_exit, terminate_process_tree};
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use crate::executor::sandbox::{INTERNAL_SANDBOX_ARG, NetworkIsolation};
 #[cfg(target_os = "macos")]
@@ -1133,6 +1133,12 @@ fn rootless_plan(
     network: NetworkIsolation,
     filesystem: FilesystemPlan,
 ) -> std::io::Result<SandboxPlan> {
+    if filesystem.landlock_only && network.is_loopback_only() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "Landlock-only filesystem isolation cannot enforce network isolation",
+        ));
+    }
     let cwd = invocation
         .cwd
         .as_deref()
@@ -1540,6 +1546,46 @@ impl RunExecutor for ProcessExecutor {
         }
     }
 
+    fn capability_plan(
+        &self,
+        spec: &RunSpec,
+        proxy_network_configured: bool,
+    ) -> CapabilityEnforcementPlan {
+        let mut plan = self.descriptor().capability_plan;
+        if !self.is_landlock_only()
+            && self.is_rootless()
+            && matches!(
+                spec.capabilities.network,
+                pvisor_core::NetworkCapability::Deny
+            )
+        {
+            plan = plan.planned(CapabilityDimension::Network, "linux-network-namespace");
+        }
+        if self.is_seatbelt() {
+            if matches!(
+                spec.capabilities.network,
+                pvisor_core::NetworkCapability::Deny
+            ) {
+                plan = plan.planned(CapabilityDimension::Network, "macos-seatbelt-network-deny");
+            }
+            if crate::executor::sandbox::sandbox_required(spec) {
+                plan = plan.planned(
+                    CapabilityDimension::FilesystemRead,
+                    "macos-seatbelt-read-policy",
+                );
+                if proxy_network_configured
+                    || matches!(
+                        spec.capabilities.network,
+                        pvisor_core::NetworkCapability::Deny
+                    )
+                {
+                    plan = plan.planned(CapabilityDimension::Network, "macos-seatbelt-proxy-only");
+                }
+            }
+        }
+        plan
+    }
+
     fn supports(&self, invocation: &RunInvocation) -> bool {
         matches!(invocation, RunInvocation::Process(_))
     }
@@ -1684,7 +1730,7 @@ impl RunExecutor for ProcessExecutor {
         context.execution().ready().await;
 
         let end = context
-            .wait_child(&mut child, spec.runtime.timeout_ms)
+            .wait_exit(observe_child_exit(&mut child), spec.runtime.timeout_ms)
             .await;
 
         terminate_process_tree(&mut child, process_group, spec.runtime.termination_grace_ms).await;
@@ -2542,6 +2588,85 @@ mod tests {
                 assert_eq!(plan.staged_workspace_source, Some(workspace.clone()));
             }
         }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn landlock_only_never_promises_network_and_rejects_deny_before_launch() {
+        let executor = ProcessExecutor {
+            sandbox_launcher: Some(PathBuf::from("/bin/true")),
+            landlock_only: true,
+        };
+        let mut spec = RunSpec::process("deny", "agent", "/bin/true");
+        spec.capabilities.network = NetworkCapability::Deny;
+        for required in [false, true] {
+            spec.metadata.insert(
+                crate::executor::sandbox::REQUIRED_SANDBOX_KEY.into(),
+                required.into(),
+            );
+            for proxy in [false, true] {
+                assert!(
+                    !executor
+                        .capability_plan(&spec, proxy)
+                        .is_planned(CapabilityDimension::Network)
+                );
+            }
+            let RunInvocation::Process(invocation) = &spec.invocation;
+            let error = rootless_plan(
+                &spec,
+                invocation,
+                Path::new("/bin/true"),
+                PathBuf::from("/unused"),
+                PathBuf::from("/unused"),
+                NetworkIsolation::LoopbackOnly,
+                FilesystemPlan {
+                    isolated: true,
+                    landlock_only: true,
+                },
+            )
+            .unwrap_err();
+            assert_eq!(error.kind(), std::io::ErrorKind::Unsupported);
+        }
+        let rootless = ProcessExecutor {
+            sandbox_launcher: Some(PathBuf::from("/bin/true")),
+            landlock_only: false,
+        };
+        assert!(
+            rootless
+                .capability_plan(&spec, false)
+                .is_planned(CapabilityDimension::Network)
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn seatbelt_promises_only_its_requested_network_controls() {
+        let executor = ProcessExecutor {
+            sandbox_launcher: Some(PathBuf::from("/bin/true")),
+            landlock_only: false,
+        };
+        let mut spec = RunSpec::process("deny", "agent", "/bin/true");
+        spec.capabilities.network = NetworkCapability::Deny;
+        assert!(
+            executor
+                .capability_plan(&spec, false)
+                .is_planned(CapabilityDimension::Network)
+        );
+        spec.capabilities.network = pvisor_core::NetworkCapability::Ambient;
+        assert!(
+            !executor
+                .capability_plan(&spec, false)
+                .is_planned(CapabilityDimension::Network)
+        );
+        spec.metadata.insert(
+            crate::executor::sandbox::REQUIRED_SANDBOX_KEY.into(),
+            true.into(),
+        );
+        assert!(
+            executor
+                .capability_plan(&spec, true)
+                .is_planned(CapabilityDimension::Network)
+        );
     }
 
     #[cfg(target_os = "linux")]

@@ -379,8 +379,15 @@ pub trait VmConfiguration: Sized {
 /// Normal guest shutdown exits the process; setup failure returns an error.
 pub trait VmRuntime: Sized {
     /// Consume the builder and retain resources through the VM event loop.
-    /// Invoke on_ready before CPU execution; it must not block and may resume a
-    /// restored VM. An error aborts startup; normal guest shutdown exits the runner.
+    /// Invoke on_ready with all CPUs initially paused, before any guest instruction.
+    /// It must return promptly. Fresh VMs resume after callback and worker setup
+    /// succeed; restored VMs remain paused until explicitly resumed by the caller
+    /// (which may do so inside the callback). An error aborts startup without an
+    /// automatic resume. On KVM/HVF, a rejected callback joins installed vCPUs
+    /// and releases runtime-owned VM resources before returning its original
+    /// error; a later builder can retry in the same runner. Cleanup can block on
+    /// host kernel/device operations, so the caller still supervises the process.
+    /// Normal guest shutdown exits the runner.
     fn run(self, on_ready: impl FnOnce(VmmHandle) -> io::Result<()>) -> io::Result<()>;
 }
 

@@ -125,6 +125,57 @@ fn lower_hardlinks_keep_one_inode_and_current_bytes_after_copyup_and_unlink() {
 }
 
 #[test]
+fn same_inode_rename_preserves_cached_identity_and_surviving_alias() {
+    for layer in ["lower", "copied", "upper"] {
+        let temp = tempfile::tempdir().unwrap();
+        let lower = temp.path().join("lower");
+        std::fs::create_dir(&lower).unwrap();
+        std::fs::write(lower.join("one"), b"original").unwrap();
+        std::fs::hard_link(lower.join("one"), lower.join("two")).unwrap();
+        let fs = correctness_fixture(temp.path());
+        if layer == "upper" {
+            std::fs::write(temp.path().join("upper/one"), b"original").unwrap();
+            std::fs::hard_link(temp.path().join("upper/one"), temp.path().join("upper/two"))
+                .unwrap();
+        }
+        let ctx = root_context();
+        let inode = fs.lookup(ctx, fuse::ROOT_ID, c"one").unwrap().inode;
+        assert_eq!(fs.lookup(ctx, fuse::ROOT_ID, c"two").unwrap().inode, inode);
+        if layer == "copied" {
+            let writer = fs.open(ctx, inode, false, 2).unwrap().0.unwrap();
+            fs.release(ctx, inode, 2, writer, false, false, None)
+                .unwrap();
+        }
+        assert_eq!(
+            fs.rename(
+                ctx,
+                fuse::ROOT_ID,
+                c"one",
+                fuse::ROOT_ID,
+                c"two",
+                RENAME_NOREPLACE
+            )
+            .unwrap_err()
+            .raw_os_error(),
+            Some(17),
+        );
+        fs.rename(ctx, fuse::ROOT_ID, c"one", fuse::ROOT_ID, c"two", 0)
+            .unwrap();
+        assert!(fs.detached_writeback.lock().unwrap().is_empty());
+        fs.unlink(ctx, fuse::ROOT_ID, c"two").unwrap();
+        // No source LOOKUP between rename and unlink: it could repair a lost alias.
+        assert_eq!(fs.getattr(ctx, inode, None).unwrap().0.st_size, 8);
+        let reader = fs.open(ctx, inode, false, 0).unwrap().0.unwrap();
+        assert_eq!(correctness_read(&fs, ctx, inode, reader), b"original");
+        fs.release(ctx, inode, 0, reader, false, false, None)
+            .unwrap();
+        assert_eq!(fs.lookup(ctx, fuse::ROOT_ID, c"one").unwrap().inode, inode);
+        assert_eq!(std::fs::read(lower.join("one")).unwrap(), b"original");
+        assert_eq!(std::fs::read(lower.join("two")).unwrap(), b"original");
+    }
+}
+
+#[test]
 fn rename_keeps_a_looked_up_victim_openable_until_forget_without_writeback() {
     for victim_layer in ["upper", "lower"] {
         let temp = tempfile::tempdir().unwrap();

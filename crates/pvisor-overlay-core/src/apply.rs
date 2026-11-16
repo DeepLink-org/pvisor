@@ -1723,7 +1723,9 @@ fn publish_project_apply(
                     verify()?;
                     if change.new_type == Some(ChangeEntryType::Directory) {
                         // Directory creation must not replace even an empty concurrent directory.
+                        #[cfg(target_os = "linux")]
                         let from = c_path(&temporary)?;
+                        #[cfg(target_os = "linux")]
                         let to = c_path(&destination)?;
                         #[cfg(target_os = "linux")]
                         // SAFETY: both C paths are live; flags prohibit destination replacement.
@@ -4193,6 +4195,7 @@ mod tests {
         }
     }
 
+    #[cfg(target_os = "linux")]
     fn tree_observation(root: &Path) -> BTreeMap<PathBuf, (u32, i64, i64, Vec<u8>)> {
         fn visit(
             root: &Path,

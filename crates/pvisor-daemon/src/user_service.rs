@@ -367,6 +367,24 @@ pub(super) fn stop(location: &Location) -> Result<ServiceStatus> {
 }
 
 struct Endpoint(PathBuf);
+impl Endpoint {
+    fn prepare(socket: &Path) -> Result<(tokio::net::UnixListener, Self)> {
+        // Keep the temporary basename shorter than control.sock for sockaddr_un.
+        let pending = socket.with_file_name(format!(
+            ".{}",
+            &uuid::Uuid::new_v4().simple().to_string()[..8]
+        ));
+        let listener = tokio::net::UnixListener::bind(&pending)?;
+        let endpoint = Self(pending);
+        fs::set_permissions(&endpoint.0, fs::Permissions::from_mode(0o600))?;
+        Ok((listener, endpoint))
+    }
+    fn publish(mut self, socket: PathBuf) -> Result<Self> {
+        fs::rename(&self.0, &socket)?;
+        self.0 = socket;
+        Ok(self)
+    }
+}
 impl Drop for Endpoint {
     fn drop(&mut self) {
         let _ = fs::remove_file(&self.0);
@@ -433,9 +451,8 @@ pub(super) async fn serve(options: StartOptions) -> Result<()> {
         instance_id: uuid::Uuid::new_v4(),
         memory_pool: pool,
     };
-    let listener = tokio::net::UnixListener::bind(&socket)?;
-    let endpoint = Endpoint(socket.clone());
-    fs::set_permissions(&socket, fs::Permissions::from_mode(0o600))?;
+    let (listener, endpoint) = Endpoint::prepare(&socket)?;
+    let endpoint = endpoint.publish(socket)?;
     let monitor = crate::wait_pool(status.memory_pool.as_ref().map(|pool| pool.socket.clone()));
     tokio::pin!(monitor);
     let (stop_tx, mut stop_rx) = tokio::sync::mpsc::channel(1);
@@ -477,4 +494,43 @@ pub(super) async fn serve(options: StartOptions) -> Result<()> {
     drop(endpoint);
     drop(owner);
     result
+}
+
+#[cfg(test)]
+mod publication_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn startup_observes_absence_until_private_endpoint_is_published() {
+        let root = tempfile::tempdir().unwrap();
+        let socket = root.path().join("control.sock");
+        let (listener, pending) = Endpoint::prepare(&socket).unwrap();
+        let identity = fs::symlink_metadata(&pending.0).unwrap();
+        assert_eq!(identity.mode() & 0o777, 0o600);
+        // Deterministically pause publication while the current starter queries.
+        assert!(absent(&query(root.path()).unwrap_err()));
+        let endpoint = pending.publish(socket.clone()).unwrap();
+        let published = socket_metadata(&socket).unwrap();
+        assert_eq!(
+            (published.dev(), published.ino()),
+            (identity.dev(), identity.ino())
+        );
+        let client = tokio::net::UnixStream::connect(&socket).await.unwrap();
+        let (server, _) = listener.accept().await.unwrap();
+        drop((client, server, listener, endpoint));
+        assert!(!socket.exists());
+    }
+
+    #[tokio::test]
+    async fn failed_publication_removes_only_the_unpublished_socket() {
+        let root = tempfile::tempdir().unwrap();
+        let socket = root.path().join("control.sock");
+        let (listener, pending) = Endpoint::prepare(&socket).unwrap();
+        let path = pending.0.clone();
+        fs::create_dir(&socket).unwrap();
+        assert!(pending.publish(socket.clone()).is_err());
+        assert!(!path.exists());
+        assert!(socket.is_dir());
+        drop(listener);
+    }
 }

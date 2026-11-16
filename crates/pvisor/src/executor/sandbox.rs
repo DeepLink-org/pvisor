@@ -345,6 +345,9 @@ fn run_landlock_only(
     if !plan.filesystem_isolated {
         bail!("Landlock-only plan requires filesystem isolation");
     }
+    if plan.network.is_loopback_only() {
+        bail!("Landlock-only filesystem isolation cannot enforce network isolation");
+    }
     // No PID namespace is created here, so the supervisor keeps RLIMIT_NPROC on
     // the launched process instead of lifting it for the launcher.
     // The parent keeps the already-open inode and validates these bytes after
@@ -1274,7 +1277,7 @@ fn write_rootless_attestation(
             .enforced(pvisor_core::CapabilityDimension::FilesystemRead, mechanism)
             .enforced(pvisor_core::CapabilityDimension::FilesystemWrite, mechanism);
     }
-    if plan.network.is_loopback_only() {
+    if !plan.filesystem_landlock_only && plan.network.is_loopback_only() {
         controls = controls.enforced(
             pvisor_core::CapabilityDimension::Network,
             "linux-network-namespace",
@@ -2382,5 +2385,45 @@ for source in ['0.0.0.0', '127.0.0.1']:
         )
         .unwrap_err();
         assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod landlock_attestation_tests {
+    use super::*;
+
+    #[test]
+    fn landlock_plan_cannot_attest_an_uninstalled_network_namespace() {
+        let mut file = tempfile::tempfile().unwrap();
+        let plan = SandboxPlan {
+            root: "/unused".into(),
+            cwd: "/unused".into(),
+            attestation: "/unused".into(),
+            read_only: vec![],
+            read_write: vec![],
+            staged_roots: vec![],
+            staged_workspace: None,
+            staged_workspace_source: None,
+            network: NetworkIsolation::LoopbackOnly,
+            filesystem_isolated: true,
+            filesystem_landlock_only: true,
+            probe_only: false,
+            process_limit: None,
+            exec_fd: None,
+        };
+        write_rootless_attestation(&mut file, &plan).unwrap();
+        use std::io::{Seek, SeekFrom};
+        file.seek(SeekFrom::Start(0)).unwrap();
+        let receipt: SandboxAttestation = serde_json::from_reader(file).unwrap();
+        assert!(
+            receipt
+                .controls
+                .is_enforced(pvisor_core::CapabilityDimension::FilesystemRead)
+        );
+        assert!(
+            !receipt
+                .controls
+                .is_enforced(pvisor_core::CapabilityDimension::Network)
+        );
     }
 }

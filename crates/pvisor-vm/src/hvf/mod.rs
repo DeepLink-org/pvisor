@@ -259,28 +259,32 @@ static HVF: LazyLock<libloading::Library> = LazyLock::new(|| unsafe {
 impl HvfVm {
     pub fn new(nested_enabled: bool) -> Result<Self, Error> {
         let config = unsafe { hv_vm_config_create() };
-        if nested_enabled {
-            let set_el2_enabled: libloading::Symbol<
-                'static,
-                unsafe extern "C" fn(hv_vm_config_t, bool) -> hv_return_t,
-            > = unsafe {
-                HVF.get(b"hv_vm_config_set_el2_enabled")
-                    .map_err(Error::FindSymbol)?
-            };
+        let result = (|| {
+            if nested_enabled {
+                let set_el2_enabled: libloading::Symbol<
+                    'static,
+                    unsafe extern "C" fn(hv_vm_config_t, bool) -> hv_return_t,
+                > = unsafe {
+                    HVF.get(b"hv_vm_config_set_el2_enabled")
+                        .map_err(Error::FindSymbol)?
+                };
 
-            let ret = unsafe { (set_el2_enabled)(config, true) };
-            if ret != HV_SUCCESS {
-                return Err(Error::EnableEL2);
+                let ret = unsafe { (set_el2_enabled)(config, true) };
+                if ret != HV_SUCCESS {
+                    return Err(Error::EnableEL2);
+                }
             }
-        }
 
-        let ret = unsafe { hv_vm_create(config) };
+            let ret = unsafe { hv_vm_create(config) };
 
-        if ret != HV_SUCCESS {
-            Err(Error::VmCreate)
-        } else {
-            Ok(Self {})
-        }
+            if ret != HV_SUCCESS {
+                Err(Error::VmCreate)
+            } else {
+                Ok(Self {})
+            }
+        })();
+        unsafe { os_release(config.cast()) };
+        result
     }
 
     pub fn map_memory(
@@ -326,6 +330,16 @@ impl HvfVm {
             Err(Error::MemoryUnmap)
         } else {
             Ok(())
+        }
+    }
+}
+
+impl Drop for HvfVm {
+    fn drop(&mut self) {
+        // The owner must join/destroy every vCPU before releasing this VM.
+        let ret = unsafe { hv_vm_destroy() };
+        if ret != HV_SUCCESS {
+            log::error!("HVF VM destruction failed: {ret:#x}");
         }
     }
 }
@@ -400,6 +414,7 @@ impl HvfVcpu<'_> {
         // when using HVF in-kernel GICv3.
         let ret = unsafe { hv_vcpu_set_sys_reg(vcpuid, hv_sys_reg_t_HV_SYS_REG_MPIDR_EL1, mpidr) };
         if ret != HV_SUCCESS {
+            unsafe { hv_vcpu_destroy(vcpuid) };
             return Err(Error::VcpuCreate);
         }
 

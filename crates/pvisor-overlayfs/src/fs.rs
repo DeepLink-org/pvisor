@@ -1712,16 +1712,20 @@ impl OverlayFs {
             }
             if flags & RENAME_EXCHANGE != 0 {
                 self.core.exchange(&old, &new)?;
-                Ok((old, new, true))
+                Ok(Some((old, new, true)))
             } else {
                 self.core
                     .rename(&old, &new, flags & RENAME_NOREPLACE != 0)?;
-                Ok((old, new, false))
+                // Same-inode rename succeeds without moving either alias.
+                if self.core.resolve_checked(&old)?.is_some() {
+                    return Ok(None);
+                }
+                Ok(Some((old, new, false)))
             }
         })();
         self.observe_result(old_path.as_deref(), "rename_from", &result, 0, true);
         self.observe_result(new_path.as_deref(), "rename_to", &result, 0, true);
-        if let Ok((old, new, exchange)) = &result {
+        if let Ok(Some((old, new, exchange))) = &result {
             if *exchange {
                 self.exchange_inode_prefixes(old, new);
             } else {

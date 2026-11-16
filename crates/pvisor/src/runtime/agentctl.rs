@@ -753,16 +753,88 @@ mod tests {
 
     fn drop_promptly(server: AgentCtlServer) {
         let path = server.socket_path.clone();
+        let stop = server.stop.clone();
+        let active = server.active.clone();
+        let (arm, armed) = std::sync::mpsc::channel::<std::time::Instant>();
         let (done, stopped) = std::sync::mpsc::channel();
-        let worker = std::thread::spawn(move || {
-            drop(server);
-            done.send(()).unwrap();
+        let watchdog = std::thread::spawn(move || {
+            let started = armed.recv().unwrap();
+            let remaining = Duration::from_secs(1).saturating_sub(started.elapsed());
+            if matches!(
+                stopped.recv_timeout(remaining),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+            ) {
+                eprintln!(
+                    "AgentCtl shutdown exceeded one second: stop={}, active={:?}",
+                    stop.load(Ordering::Acquire),
+                    active.try_lock().map(|active| active.is_some())
+                );
+                std::process::exit(1);
+            }
         });
-        stopped
-            .recv_timeout(Duration::from_secs(1))
-            .expect("AgentCtl shutdown did not interrupt its blocking wait");
-        worker.join().unwrap();
+        // Measure synchronous Drop itself, excluding an auxiliary thread's dispatch.
+        let started = std::time::Instant::now();
+        arm.send(started).unwrap();
+        drop(server);
+        let elapsed = started.elapsed();
+        done.send(()).unwrap();
+        watchdog.join().unwrap();
+        assert!(
+            elapsed < Duration::from_secs(1),
+            "AgentCtl Drop took {elapsed:?}"
+        );
         assert!(!path.exists());
+    }
+
+    #[test]
+    fn blocked_shutdown_cannot_pass_the_watchdog() {
+        const CHILD: &str = "PVISOR_TEST_AGENTCTL_WATCHDOG";
+        if std::env::var_os(CHILD).is_some() {
+            let server =
+                AgentCtlServer::start(&RunId::new("blocked"), &ExecutionId::new("one")).unwrap();
+            fs::remove_file(&server.socket_path).unwrap();
+            let active = server.active.clone();
+            let _blocked = active.lock().unwrap();
+            drop_promptly(server);
+            panic!("blocked shutdown unexpectedly completed");
+        }
+        let name = concat!(
+            module_path!(),
+            "::blocked_shutdown_cannot_pass_the_watchdog"
+        );
+        let name = name.split_once("::").unwrap().1;
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", name, "--nocapture"])
+            .env(CHILD, "1")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        let status = loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                break status;
+            }
+            if std::time::Instant::now() >= deadline {
+                child.kill().unwrap();
+                child.wait().unwrap();
+                panic!("shutdown watchdog failed to stop its blocked child");
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        let mut error = String::new();
+        child
+            .stderr
+            .take()
+            .unwrap()
+            .take(4096)
+            .read_to_string(&mut error)
+            .unwrap();
+        assert_eq!(status.code(), Some(1), "{error}");
+        assert!(
+            error.contains("AgentCtl shutdown exceeded one second"),
+            "{error}"
+        );
     }
 
     fn wait_until_serving(server: &AgentCtlServer) {

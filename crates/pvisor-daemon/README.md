@@ -1368,3 +1368,11 @@ uv run --no-project --with e2b==2.59.0 python \
   --images-dir /srv/pvi --template e2b-base \
   --cgroup-root /sys/fs/cgroup/pvd --state /tmp/pvisor-sdk-restart
 ```
+
+### Atomic user-service endpoint publication
+
+The same-user manager binds a private temporary socket in its owned state
+directory, sets mode 0600, then atomically renames it to `control.sock`.
+Starters observe absence until publication; the published inode is already
+private. Startup locking still serializes starters, and unsafe existing
+endpoints remain fatal. Unpublished sockets are removed on setup failure.

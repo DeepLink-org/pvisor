@@ -14,6 +14,9 @@ use std::{
     time::Duration,
 };
 
+const PROCESS_SAMPLE_SIZE: usize = 50;
+const PROCESS_MEASUREMENT_TIME: Duration = Duration::from_secs(5);
+
 fn bundle_paths(root: &Path) -> Result<BTreeSet<PathBuf>> {
     let mut paths = BTreeSet::new();
     if root.exists() {
@@ -225,6 +228,8 @@ fn prepare(binary: &Path, batch: &Path) -> Result<Suite> {
             "timer":"Rust Instant, self-reported operation total",
             "scope":"direct-command-spawn-through-pipe-eof",
             "sampling":"Criterion Flat; operation records include preflight/calibration/warmup",
+            "statistical_samples":PROCESS_SAMPLE_SIZE,
+            "target_measurement_seconds":PROCESS_MEASUREMENT_TIME.as_secs(),
             "source_build_claim":false, "os":std::env::consts::OS,
             "arch":std::env::consts::ARCH, "kernel":String::from_utf8_lossy(&kernel.stdout),
             "affinity":affinity,
@@ -323,9 +328,9 @@ pub(crate) fn register(c: &mut Criterion, nightly: bool) -> Result<()> {
         });
         group
             .sampling_mode(SamplingMode::Flat)
-            .sample_size(if nightly { 50 } else { 10 })
+            .sample_size(PROCESS_SAMPLE_SIZE)
             .warm_up_time(Duration::from_millis(100))
-            .measurement_time(Duration::from_secs(1));
+            .measurement_time(PROCESS_MEASUREMENT_TIME);
         for condition in ["native", "host-run", "status", "review"] {
             // Minimum explicit validated operations before adaptive Criterion warmup.
             suite.phase = "correctness-warmup";

@@ -287,6 +287,16 @@ impl<B: Backend> Builder<B> {
             all(target_os = "macos", target_arch = "aarch64"),
             all(target_os = "linux", target_arch = "x86_64")
         ))]
+        let restoring = self.resources.machine_restore.is_some();
+        #[cfg(not(any(
+            all(target_os = "macos", target_arch = "aarch64"),
+            all(target_os = "linux", target_arch = "x86_64")
+        )))]
+        let restoring = false;
+        #[cfg(any(
+            all(target_os = "macos", target_arch = "aarch64"),
+            all(target_os = "linux", target_arch = "x86_64")
+        ))]
         let snapshot_kernel = self
             .resources
             .machine_restore
@@ -430,6 +440,12 @@ impl<B: Backend> Builder<B> {
         on_ready(handle.clone())?;
         startup = startup.next("vm.start_worker");
         B::start_worker(&self.resources, vm.clone(), receiver)?;
+        if !restoring {
+            vm.lock()
+                .map_err(|_| io::Error::other("VMM lock poisoned"))?
+                .resume()
+                .map_err(|error| io::Error::other(format!("initial CPU resume: {error:?}")))?;
+        }
         startup.complete(None);
         drop(startup);
         loop {

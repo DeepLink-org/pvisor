@@ -5,8 +5,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use std::io;
-use std::os::unix::io::{AsRawFd, RawFd};
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::ptr;
+use std::sync::Arc;
 use std::time::Duration;
 
 use bitflags::bitflags;
@@ -143,7 +144,7 @@ impl EpollEvent {
 
 #[derive(Clone, Debug)]
 pub struct Epoll {
-    queue: RawFd,
+    queue: Arc<OwnedFd>,
 }
 
 impl Epoll {
@@ -152,7 +153,9 @@ impl Epoll {
         if queue == -1 {
             Err(io::Error::last_os_error())
         } else {
-            Ok(Epoll { queue })
+            Ok(Epoll {
+                queue: Arc::new(unsafe { OwnedFd::from_raw_fd(queue) }),
+            })
         }
     }
 
@@ -197,7 +200,7 @@ impl Epoll {
                 }
                 let ret = unsafe {
                     libc::kevent(
-                        self.queue,
+                        self.queue.as_raw_fd(),
                         kevs.as_ptr() as *const libc::kevent,
                         kevs.len() as i32,
                         ptr::null_mut(),
@@ -245,7 +248,7 @@ impl Epoll {
                 }
                 let _ = unsafe {
                     libc::kevent(
-                        self.queue,
+                        self.queue.as_raw_fd(),
                         kevs.as_ptr() as *const libc::kevent,
                         kevs.len() as i32,
                         ptr::null_mut(),
@@ -279,7 +282,7 @@ impl Epoll {
         debug!("kevs len: {}", kevs.len());
         let ret = unsafe {
             libc::kevent(
-                self.queue,
+                self.queue.as_raw_fd(),
                 ptr::null(),
                 0,
                 kevs.as_mut_ptr() as *mut libc::kevent,
@@ -336,14 +339,23 @@ impl Epoll {
             data: delay_us as isize,
             udata: udata as *mut libc::c_void,
         };
-        let ret = unsafe { libc::kevent(self.queue, &kev, 1, ptr::null_mut(), 0, ptr::null()) };
+        let ret = unsafe {
+            libc::kevent(
+                self.queue.as_raw_fd(),
+                &kev,
+                1,
+                ptr::null_mut(),
+                0,
+                ptr::null(),
+            )
+        };
         assert_eq!(ret, 0);
     }
 }
 
 impl AsRawFd for Epoll {
     fn as_raw_fd(&self) -> RawFd {
-        self.queue
+        self.queue.as_raw_fd()
     }
 }
 
@@ -352,6 +364,25 @@ mod tests {
     use super::*;
 
     use crate::utils::eventfd::{EventFd, EFD_NONBLOCK};
+
+    #[test]
+    fn cloned_queue_keeps_registrations_after_original_owner_drops() {
+        let queue = Epoll::new().unwrap();
+        let event = EventFd::new(EFD_NONBLOCK).unwrap();
+        queue
+            .ctl(
+                ControlOperation::Add,
+                event.as_raw_fd(),
+                &EpollEvent::new(EventSet::IN, 42),
+            )
+            .unwrap();
+        let clone = queue.clone();
+        drop(queue);
+        event.write(1).unwrap();
+        let mut events = [EpollEvent::default()];
+        assert_eq!(clone.wait(1, 100, &mut events).unwrap(), 1);
+        assert_eq!(events[0].data(), 42);
+    }
 
     #[test]
     fn test_event_ops() {
@@ -380,7 +411,7 @@ mod tests {
         const MAX_EVENTS: usize = 10;
 
         let epoll = Epoll::new().unwrap();
-        assert_eq!(epoll.queue, epoll.as_raw_fd());
+        assert_eq!(epoll.queue.as_raw_fd(), epoll.as_raw_fd());
 
         // Let's test different scenarios for `epoll_ctl()` and `epoll_wait()` functionality.
 
@@ -396,11 +427,7 @@ mod tests {
         // For EPOLL_CTL_ADD behavior we will try to add some fds with different event masks into
         // the interest list of epoll instance.
         assert!(epoll
-            .ctl(
-                ControlOperation::Add,
-                event_fd_1.as_raw_fd(),
-                &event_1
-            )
+            .ctl(ControlOperation::Add, event_fd_1.as_raw_fd(), &event_1)
             .is_ok());
 
         let event_fd_2 = EventFd::new(EFD_NONBLOCK).unwrap();
@@ -415,24 +442,19 @@ mod tests {
             )
             .is_ok());
 
-
         let mut ready_events = vec![EpollEvent::default(); EVENT_BUFFER_SIZE];
         let mut ev_count = epoll
             .wait(MAX_EVENTS, DEFAULT_TIMEOUT, &mut ready_events[..])
             .unwrap();
 
-
         assert_eq!(ev_count, 2);
-
 
         assert_eq!(ready_events[0].data(), event_fd_1.as_raw_fd() as u64);
         assert_eq!(ready_events[1].data(), 10_u64);
 
-
         assert_eq!(ready_events[0].events(), EventSet::IN.bits());
 
         assert_eq!(ready_events[1].events(), EventSet::IN.bits());
-
 
         assert!(epoll
             .ctl(
@@ -441,7 +463,6 @@ mod tests {
                 &EpollEvent::default()
             )
             .is_ok());
-
 
         ev_count = epoll
             .wait(MAX_EVENTS, DEFAULT_TIMEOUT, &mut ready_events[..])

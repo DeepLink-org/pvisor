@@ -165,6 +165,16 @@ where
         !stage.exists() || std::fs::read_dir(&stage)?.next().is_none(),
         "execution fork requires an empty stage"
     );
+    // Pin before launching; a crash cannot leave a child with a deletable source.
+    parent.apply(crate::runtime::execution::SessionTransition::ForkAdmitted {
+        id: &request_id,
+        request: &session_execution::ForkRequest {
+            options,
+            stage: stage.clone(),
+            session_id: run_id.clone(),
+            checkpoint_id: checkpoint.snapshot_id.clone(),
+        },
+    })?;
     let (mut executor, mut overlay) =
         VmExecutor::restore(parent.config().vm.clone(), checkpoint.clone(), &stage)?;
     executor = executor.with_features(parent.config().features.clone())?;
@@ -198,16 +208,6 @@ where
     })?;
     child.write()?;
     child.link_stage(&stage)?;
-    // Pin before launching; a crash cannot leave a child with a deletable source.
-    parent.apply(crate::runtime::execution::SessionTransition::ForkAdmitted {
-        id: &request_id,
-        request: &session_execution::ForkRequest {
-            options,
-            stage: stage.clone(),
-            session_id: child.run_id().to_owned(),
-            checkpoint_id: checkpoint.snapshot_id.clone(),
-        },
-    })?;
     parent.write()?;
     drop(_lease);
     let completed_stage = stage.clone();

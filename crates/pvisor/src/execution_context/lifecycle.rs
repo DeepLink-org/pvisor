@@ -714,6 +714,157 @@ fn persist_result_blocking(
     crate::util::startup_mark_run("execution.bundle_ready", result.run_id.as_str());
 }
 
+/// Observe without releasing the PID that reserves the process group's identity.
+pub(crate) async fn observe_child_exit(
+    child: &mut tokio::process::Child,
+) -> std::io::Result<std::process::ExitStatus> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        // Match Child::wait's stdin ownership, without polling its reaping future.
+        drop(child.stdin.take());
+        let pid = child
+            .id()
+            .ok_or_else(|| std::io::Error::other("child already reaped"))?;
+        let mut signal = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::child())?;
+        loop {
+            {
+                let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+                let ret = unsafe {
+                    libc::waitid(
+                        libc::P_PID,
+                        pid,
+                        &mut info,
+                        libc::WEXITED | libc::WNOWAIT | libc::WNOHANG,
+                    )
+                };
+                if ret != 0 {
+                    let error = std::io::Error::last_os_error();
+                    if error.kind() == std::io::ErrorKind::Interrupted {
+                        continue;
+                    }
+                    return Err(error);
+                }
+                if unsafe { info.si_pid() } != 0 {
+                    let status = unsafe { info.si_status() };
+                    let raw = if info.si_code == libc::CLD_EXITED {
+                        status << 8
+                    } else {
+                        status
+                            | if info.si_code == libc::CLD_DUMPED {
+                                0x80
+                            } else {
+                                0
+                            }
+                    };
+                    return Ok(std::process::ExitStatus::from_raw(raw));
+                }
+            }
+            signal.recv().await;
+        }
+    }
+    #[cfg(not(unix))]
+    child.wait().await
+}
+
+#[cfg(target_os = "linux")]
+fn group_has_live_members(proc: &std::path::Path, group: u32) -> std::io::Result<bool> {
+    fn live_and_group(stat: &str) -> std::io::Result<(bool, u32)> {
+        let invalid = || std::io::Error::other("invalid process-group stat");
+        let (_, fields) = stat.rsplit_once(')').ok_or_else(invalid)?;
+        let mut fields = fields.split_whitespace();
+        let state = fields.next().ok_or_else(invalid)?;
+        fields.next().ok_or_else(invalid)?; // parent PID
+        let group = fields
+            .next()
+            .ok_or_else(invalid)?
+            .parse()
+            .map_err(|_| invalid())?;
+        // Fields 6..19 precede num_threads (field 20).
+        let threads = fields
+            .nth(14)
+            .ok_or_else(invalid)?
+            .parse::<u32>()
+            .map_err(|_| invalid())?;
+        if threads == 0 {
+            return Err(invalid());
+        }
+        // A zombie thread-group leader can still have live worker threads.
+        Ok((!matches!(state, "Z" | "X") || threads > 1, group))
+    }
+    // A running leader itself needs the configured grace; avoid a full scan.
+    let leader = std::fs::read_to_string(proc.join(group.to_string()).join("stat"))?;
+    let (live, _) = live_and_group(&leader)?;
+    if live {
+        return Ok(true);
+    }
+    for entry in std::fs::read_dir(proc)? {
+        let entry = entry?;
+        if entry
+            .file_name()
+            .to_str()
+            .and_then(|s| s.parse::<u32>().ok())
+            .is_none()
+        {
+            continue;
+        }
+        let stat = match std::fs::read_to_string(entry.path().join("stat")) {
+            Ok(stat) => stat,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error),
+        };
+        let (live, member_group) = live_and_group(&stat)?;
+        if member_group == group && live {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+#[cfg(target_os = "macos")]
+fn group_has_live_members(group: u32) -> std::io::Result<bool> {
+    #[link(name = "proc")]
+    unsafe extern "C" {}
+    // SAFETY: a null buffer with zero size requests the required PID count.
+    let count = unsafe { libc::proc_listpgrppids(group as i32, std::ptr::null_mut(), 0) };
+    if count <= 0 {
+        return Err(std::io::Error::other("cannot enumerate process group"));
+    }
+    let mut pids = vec![0i32; count as usize + 16];
+    let size = std::mem::size_of_val(pids.as_slice()) as i32;
+    // SAFETY: the initialized PID buffer is writable for exactly size bytes.
+    let count = unsafe { libc::proc_listpgrppids(group as i32, pids.as_mut_ptr().cast(), size) };
+    if count <= 0 || count as usize >= pids.len() {
+        return Err(std::io::Error::other("incomplete process-group census"));
+    }
+    for pid in pids.into_iter().take(count as usize).filter(|pid| *pid > 0) {
+        // SAFETY: proc_bsdinfo contains only integer and byte-array fields.
+        let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+        let size = std::mem::size_of_val(&info) as i32;
+        // SAFETY: info is aligned and writable for size bytes; libproc retains no pointer.
+        let read = unsafe {
+            libc::proc_pidinfo(
+                pid,
+                libc::PROC_PIDTBSDINFO,
+                0,
+                (&mut info as *mut libc::proc_bsdinfo).cast(),
+                size,
+            )
+        };
+        if read != size {
+            let error = std::io::Error::last_os_error();
+            if error.raw_os_error() == Some(libc::ESRCH) {
+                continue;
+            }
+            return Err(error);
+        }
+        if info.pbi_pgid == group && info.pbi_status != libc::SZOMB {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 pub(crate) async fn terminate_process_tree(
     child: &mut tokio::process::Child,
     process_group: Option<u32>,
@@ -722,6 +873,10 @@ pub(crate) async fn terminate_process_tree(
     #[cfg(unix)]
     {
         if let Some(pid) = process_group {
+            if child.id() != Some(pid) {
+                // Never signal a cached numeric group after its owner was reaped.
+                return;
+            }
             // The child is the leader of the process group configured above.
             let process_group = -(pid as i32);
             unsafe {
@@ -729,14 +884,24 @@ pub(crate) async fn terminate_process_tree(
             }
             let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(grace_ms);
             loop {
-                // Reaping the leader does not mean its descendants have exited.
-                let _ = child.try_wait();
+                // Keep the leader waitable through the last group signal.
                 if unsafe { libc::kill(process_group, 0) } != 0
                     && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
                 {
                     break;
                 }
-                if tokio::time::Instant::now() >= deadline {
+                #[cfg(target_os = "linux")]
+                let idle = matches!(
+                    group_has_live_members(std::path::Path::new("/proc"), pid),
+                    Ok(false)
+                );
+                #[cfg(target_os = "macos")]
+                let idle = matches!(group_has_live_members(pid), Ok(false));
+                #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+                let idle = false;
+                if idle || tokio::time::Instant::now() >= deadline {
+                    // Even an idle scan is not authority to skip the final group
+                    // signal: members may fork/exit during enumeration. PID stays pinned.
                     unsafe {
                         libc::kill(process_group, libc::SIGKILL);
                     }
@@ -751,4 +916,216 @@ pub(crate) async fn terminate_process_tree(
 
     let _ = child.kill().await;
     let _ = child.wait().await;
+}
+
+#[cfg(all(test, unix))]
+mod process_group_tests {
+    use super::*;
+    use std::process::Stdio;
+    use tokio::io::AsyncReadExt;
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[tokio::test]
+    async fn zombie_only_group_does_not_consume_termination_grace() {
+        let mut child = tokio::process::Command::new("/bin/sh")
+            .args(["-c", "exit 0"])
+            .process_group(0)
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        let pid = child.id().unwrap();
+        assert!(observe_child_exit(&mut child).await.unwrap().success());
+        tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            terminate_process_tree(&mut child, Some(pid), 30_000),
+        )
+        .await
+        .expect("a pinned zombie alone must not consume the 30-second grace");
+        assert!(child.wait().await.unwrap().success());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn group_scan_preserves_live_members_and_propagates_unknown_state() {
+        let root = tempfile::tempdir().unwrap();
+        let write_stat = |pid: u32, state: &str, group: u32, threads: u32| {
+            let dir = root.path().join(pid.to_string());
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(
+                dir.join("stat"),
+                format!(
+                    "{pid} (name with ) spaces) {state} 1 {group} {}{threads}",
+                    "0 ".repeat(14)
+                ),
+            )
+            .unwrap();
+        };
+        write_stat(12, "Z", 12, 1);
+        write_stat(13, "S", 99, 1);
+        assert!(!group_has_live_members(root.path(), 12).unwrap());
+        for state in ["S", "R", "D", "T"] {
+            write_stat(13, state, 12, 1);
+            assert!(group_has_live_members(root.path(), 12).unwrap());
+        }
+        write_stat(13, "Z", 12, 1);
+        assert!(!group_has_live_members(root.path(), 12).unwrap());
+        write_stat(13, "Z", 12, 2);
+        assert!(group_has_live_members(root.path(), 12).unwrap());
+        write_stat(13, "Z", 12, 1);
+        write_stat(12, "Z", 12, 2);
+        assert!(group_has_live_members(root.path(), 12).unwrap());
+        write_stat(12, "Z", 12, 1);
+        write_stat(13, "Z", 12, 0);
+        assert!(group_has_live_members(root.path(), 12).is_err());
+        std::fs::write(root.path().join("13/stat"), "invalid").unwrap();
+        assert!(group_has_live_members(root.path(), 12).is_err());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn live_worker_survives_its_thread_group_leader_until_grace_expires() {
+        let mut child = tokio::process::Command::new("python3")
+            .args([
+                "-c",
+                r#"
+import ctypes, os, signal, sys, threading, time
+signal.signal(signal.SIGTERM, signal.SIG_IGN)
+def worker():
+    os.write(1, b'ready')
+    while True:
+        time.sleep(3600)
+threading.Thread(target=worker).start()
+libc = ctypes.CDLL(None)
+libc.syscall.argtypes = [ctypes.c_long, ctypes.c_long]
+libc.syscall(int(sys.argv[1]), 0)
+"#,
+            ])
+            .arg(libc::SYS_exit.to_string())
+            .stdout(Stdio::piped())
+            .process_group(0)
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        let pid = child.id().unwrap();
+        let mut stdout = child.stdout.take().unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            stdout.read_exact(&mut [0; 5]).await.unwrap();
+            loop {
+                let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).unwrap();
+                if stat.rsplit_once(')').unwrap().1.split_whitespace().next() == Some("Z") {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+            }
+        })
+        .await
+        .expect("main thread did not exit while its worker remained alive");
+        let live = group_has_live_members(std::path::Path::new("/proc"), pid).unwrap();
+        let started = tokio::time::Instant::now();
+        terminate_process_tree(&mut child, Some(pid), 100).await;
+        assert!(live, "a zombie thread-group leader is not a dead process");
+        assert!(started.elapsed() >= std::time::Duration::from_millis(100));
+        assert_eq!(stdout.read(&mut [0]).await.unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn group_cleanup_pins_leader_until_escalation_finishes() {
+        let mut child = tokio::process::Command::new("/bin/sh")
+            .args([
+                "-c",
+                "(trap '' TERM; printf ready; exec /bin/sleep 30) & exit 7",
+            ])
+            .stdout(Stdio::piped())
+            .process_group(0)
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        let pid = child.id().unwrap();
+        let mut stdout = child.stdout.take().unwrap();
+        stdout.read_exact(&mut [0; 5]).await.unwrap();
+        assert_eq!(
+            observe_child_exit(&mut child).await.unwrap().code(),
+            Some(7)
+        );
+        {
+            let cleanup = terminate_process_tree(&mut child, Some(pid), 100);
+            tokio::pin!(cleanup);
+            tokio::select! {
+                _ = &mut cleanup => panic!("cleanup released the group identity before grace elapsed"),
+                _ = tokio::time::sleep(std::time::Duration::from_millis(30)) => {}
+            }
+            let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+            let observed = unsafe {
+                libc::waitid(
+                    libc::P_PID,
+                    pid,
+                    &mut info,
+                    libc::WEXITED | libc::WNOWAIT | libc::WNOHANG,
+                )
+            };
+            let error = std::io::Error::last_os_error();
+            cleanup.await;
+            assert_eq!(
+                observed, 0,
+                "leader identity released during cleanup: {error}"
+            );
+            assert_eq!(unsafe { info.si_status() }, 7);
+        }
+        assert_eq!(child.wait().await.unwrap().code(), Some(7));
+        assert_eq!(
+            stdout.read(&mut [0]).await.unwrap(),
+            0,
+            "descendant survived KILL"
+        );
+    }
+
+    #[tokio::test]
+    async fn observing_exit_closes_stdin_and_preserves_status_until_cleanup() {
+        for script in ["read line; exit 7", "read line; kill -TERM $$"] {
+            let mut child = tokio::process::Command::new("/bin/sh")
+                .args(["-c", script])
+                .stdin(Stdio::piped())
+                .process_group(0)
+                .kill_on_drop(true)
+                .spawn()
+                .unwrap();
+            let pid = child.id().unwrap();
+            let status = tokio::time::timeout(
+                std::time::Duration::from_secs(2),
+                observe_child_exit(&mut child),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+            assert_eq!(observe_child_exit(&mut child).await.unwrap(), status);
+            assert_eq!(child.id(), Some(pid));
+            terminate_process_tree(&mut child, Some(pid), 0).await;
+            assert_eq!(child.wait().await.unwrap(), status);
+        }
+    }
+
+    #[tokio::test]
+    async fn reaped_or_mismatched_child_cannot_signal_a_cached_group() {
+        let mut unrelated = tokio::process::Command::new("/bin/sleep")
+            .arg("30")
+            .process_group(0)
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        let group = unrelated.id().unwrap();
+        let mut child = tokio::process::Command::new("/bin/sleep")
+            .arg("30")
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        terminate_process_tree(&mut child, Some(group), 0).await;
+        assert!(unrelated.try_wait().unwrap().is_none());
+        child.kill().await.unwrap();
+        child.wait().await.unwrap();
+        terminate_process_tree(&mut child, Some(group), 0).await;
+        let alive = unrelated.try_wait().unwrap().is_none();
+        unrelated.kill().await.unwrap();
+        unrelated.wait().await.unwrap();
+        assert!(alive, "cached group killed an unrelated live child");
+    }
 }

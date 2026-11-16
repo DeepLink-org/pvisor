@@ -15,9 +15,11 @@ Benchmark: B-PROCESS ([注册表](../REGISTRY.md#b-process)), role engineering A
 每次（包括预热和校准）必须成功；host-run 恰好新增一个成功 Bundle，读取条件不得
 改变 Bundle 集合，二进制与工作区 sentinel 前后不变。失败保留记录并中止。
 
-Criterion 0.7.0 使用 Flat 采样，10 个统计样本；每条件另有至少 2 个正确性预热。
+Criterion 0.7.0 使用 Flat 采样，50 个统计样本、每条件5秒目标测量预算；
+每条件另有至少2个正确性预热，Criterion额外预热100ms。
 Criterion 自适应预热、校准和每样本操作数，因此不再声称“恰好 10 次命令”。
 新 cohort 不与历史 Python/hyperfine 样本混合。
+该固定预算也不与此前10样本/1秒的Criterion批次合并；不删除慢值或反复测量择优。
 
 ```sh
 mise run benchmark -- smoke --binary target/release/pvisor \

@@ -180,6 +180,24 @@ API 中的 `PermissionSemantics`、`RamReclaim`、`RamMappingSnapshot` 和内存
 
 ## 调用方与运行时的职责
 
+### Standalone snapshot probe bootstrap
+
+The raw `guest_linux` snapshot probe supplies its own PID 1 instead of the
+production guest supervisor. Its libc constructor mounts devtmpfs when standard
+descriptors are missing, before Rust's runtime tries to reopen `/dev/null`.
+An empty root can otherwise abort before Rust main, after which the firmware's
+PID 1 exit patch reboots and the VMM correctly reports missing workload status
+as 125. This does not change guest-exit authority or permit success without a
+completion receipt. The production guest already has its own pre-std repair.
+
+`mise run test-environment-snapshot` includes a real-HVF regression. A standalone
+no-std trampoline closes all three standard descriptors and execs the probe in
+an initially empty root; the probe must reach main and record the initial mask
+7. The driver `boot` mode isolates this startup contract from snapshot device
+eligibility. The separate full save/exit/restore test retains its content,
+identity, corruption, lease and independent-backing assertions and deadlines.
+No retries or relaxed exit-code checks are used to pass either contract.
+
 ### Guest 退出来源
 
 普通 Rust supervisor 在启动 workload 前，通过根 virtio-fs 设备的
@@ -214,6 +232,51 @@ Linux x86_64 将 guest target 替换为 `x86_64-unknown-linux-musl`，需要 KVM
 它不证明被接管 PID 1 的安全性，也不替代真实整机快照恢复验收。
 
 调用方负责独立 runner 的监管、宿主沙箱安装、继承描述符校验、rootfs 的独立副本、快照存储事务、host/boot/build 兼容性与单次执行所有权。
+
+Fresh KVM/HVF VMs now keep every vCPU parked through `on_ready`; CPU execution
+starts only after the callback and backend worker setup succeed. Restored VMs
+retain their explicit-resume contract. HVF acknowledges the initial parked state
+for both fresh and restored CPUs, including secondary CPUs not yet sent CPU_ON.
+Callback rejection does not automatically resume a fresh machine.
+
+`tests/ready_before_execution.rs` is an explicit real-hardware check: isolated
+1/2-vCPU children assert initial pause, unchanged RAM across a bounded ready
+callback, and the original rejection error. It needs trusted local firmware:
+
+```sh
+PVISOR_CASE_VM_FIRMWARE_PATH=/absolute/path/to/libkrunfw.5.dylib \
+  mise run test -- pvisor-vm -- --test ready_before_execution --run-ignored all
+```
+
+Use the platform's local `.so` firmware path on Linux/KVM. This check does not
+replace full environment restore qualification. The existing guest exit and environment snapshot probes exercise
+successful fresh release and explicit restore resume respectively.
+
+HVF startup errors now retain and join every installed vCPU thread, including
+partial initialization failures. Owner drop disconnects both control directions,
+kicks `hv_vcpu_run`, then waits for thread-local CPU destruction. VMM fields drop
+CPU handles before the native VM and guest RAM; `HvfVm` releases its configuration
+object on every constructor result and destroys only its successfully created
+VM instance. An initial-register failure also destroys its newly created CPU.
+Darwin poller clones share an owned kqueue descriptor, released with the last
+clone instead of leaking the raw descriptor on each failed boot.
+
+`tests/ready_abort_hvf.rs` uses the public production API in dedicated child
+processes with a 30-second watchdog. For both 1 and 2 vCPUs, one process attempts
+device setup with an invalid profile, rejects a paused ready callback, rejects
+after explicit resume, then retries again. After every error, exact open-FD and
+thread-ID sets must match the pre-VM baseline; network peers must see EOF,
+caller-owned RAM backing must remain writable and retained control handles must
+be stale. Callback errors retain their original kind and message. Run explicitly:
+
+```sh
+PVISOR_CASE_VM_FIRMWARE_PATH=/absolute/path/to/libkrunfw.5.dylib \
+  mise run test -- pvisor-vm -- --test ready_abort_hvf --run-ignored all
+```
+
+This qualifies local HVF startup cleanup and same-process retry, not recovery
+from arbitrary runtime failure. Joining cannot bound a stuck host kernel, page
+fault or device I/O; the caller still supervises and can terminate the runner.
 
 Linux/KVM 的 ready callback 返回错误时，已安装的 vCPU 线程在退出状态接收端
 随 owner 释放后直接结束，不因发送失败 panic，也不等待已不存在的 owner
@@ -588,6 +651,13 @@ This fallback does not establish host-media durability.
 Regular-file hardlink aliases share a guest nodeid and follow the current upper
 object after copy-up. Writable opens materialize known aliases, and removing or
 replacing an upper name preserves surviving known aliases before publication.
+The same-inode rename regression covers lower aliases, aliases copied up through
+protocol OPEN, and upper aliases. NOREPLACE returns Linux EEXIST; ordinary rename
+then destination unlink must preserve cached source GETATTR/OPEN/READ, without
+an intervening source LOOKUP that could repair lost adapter state. A no-op must
+not retain a detached replacement. This is an in-process protocol-adapter check,
+paired with the host FUSE wire and real FSKit mount traces; it does not qualify
+all partial materialization histories or a real guest kernel on every backend.
 Already-open read-only lower descriptions keep their original lower binding.
 Snapshots save additional names in optional `node_aliases`, validate their shared
 identity, and rebuild native identity indexes, including not-yet-looked-up lower

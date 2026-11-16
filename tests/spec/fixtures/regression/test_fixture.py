@@ -33,6 +33,18 @@ class ProcessOwnershipTests(unittest.TestCase):
         self.fixture = load("ownership_fixture", FIXTURE)
         self.process = mock.Mock(pid=32123, returncode=None)
 
+    def test_deadline_rechecks_exit_after_observer_is_descheduled(self):
+        fixture = self.fixture
+        for exited in (True, False):
+            with (
+                self.subTest(exited=exited),
+                mock.patch.object(fixture, "child_exited", side_effect=[False, exited]),
+                mock.patch.object(fixture.time, "monotonic", side_effect=[0, 0, 1]),
+                mock.patch.object(fixture.time, "sleep"),
+            ):
+                self.assertEqual(fixture.wait_for_child_exit(self.process, 0.2, 123, 456), exited)
+                self.process.wait.assert_not_called()
+
     def test_darwin_waitid_uses_native_abi_without_reaping(self):
         fixture = self.fixture
         info_type = fixture.DarwinSiginfo

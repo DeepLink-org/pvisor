@@ -49,7 +49,7 @@ fn ready_abort_releases_vcpu_bus_and_owned_descriptors_before_retry() {
         vm.network(network, [2, 0, 0, 0, 0, 44]).unwrap();
         let error = vm
             .run(|handle| {
-                assert!(handle.is_paused().is_ok());
+                assert_eq!(handle.is_paused(), Ok(true));
                 if cycle == 0 {
                     stale = Some(handle);
                 } else {

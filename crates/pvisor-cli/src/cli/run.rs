@@ -1220,6 +1220,13 @@ impl RunExecutor for TerminalReportingExecutor {
     fn descriptor(&self) -> pvisor_core::ExecutorPlan {
         self.0.descriptor()
     }
+    fn capability_plan(
+        &self,
+        spec: &RunSpec,
+        proxy_network_configured: bool,
+    ) -> pvisor_core::CapabilityEnforcementPlan {
+        self.0.capability_plan(spec, proxy_network_configured)
+    }
     fn supports(&self, invocation: &pvisor_core::RunInvocation) -> bool {
         self.0.supports(invocation)
     }
@@ -3473,6 +3480,47 @@ fn resolve_filesystem_grants(
 #[cfg(test)]
 mod tests {
     use pvisor_vm::api::RuntimeSupport;
+
+    #[test]
+    fn terminal_reporting_preserves_request_dependent_capability_plans() {
+        use pvisor_core::{CapabilityDimension, CapabilityEnforcementPlan, NetworkCapability};
+
+        struct RequestPlan;
+        #[async_trait::async_trait]
+        impl RunExecutor for RequestPlan {
+            fn descriptor(&self) -> pvisor_core::ExecutorPlan {
+                pvisor::ProcessExecutor::default().descriptor()
+            }
+            fn capability_plan(&self, spec: &RunSpec, proxy: bool) -> CapabilityEnforcementPlan {
+                assert_eq!(spec.run_id.as_str(), "wrapped-plan");
+                let mut plan = CapabilityEnforcementPlan::default();
+                if matches!(spec.capabilities.network, NetworkCapability::Deny) {
+                    plan = plan.planned(CapabilityDimension::Network, "request-deny");
+                }
+                if proxy {
+                    plan = plan.planned(CapabilityDimension::Models, "request-proxy");
+                }
+                plan
+            }
+            fn supports(&self, _: &pvisor_core::RunInvocation) -> bool {
+                true
+            }
+            async fn execute(&self, _: &pvisor::ExecutionContext) -> pvisor::ExecutorOutput {
+                unreachable!("planning must not execute the workload")
+            }
+        }
+        let wrapped = report_terminal(Arc::new(RequestPlan));
+        let mut spec = RunSpec::process("wrapped-plan", "test", "true");
+        for network in [NetworkCapability::Ambient, NetworkCapability::Deny] {
+            spec.capabilities.network = network;
+            for proxy in [false, true] {
+                assert_eq!(
+                    wrapped.capability_plan(&spec, proxy),
+                    RequestPlan.capability_plan(&spec, proxy)
+                );
+            }
+        }
+    }
 
     #[test]
     fn companions_reusing_run_args_parse_features_and_preserve_guest_boundary() {

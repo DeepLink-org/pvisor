@@ -2804,6 +2804,7 @@ mod tests {
         staging::validate_mounts(&mut config).unwrap();
     }
 
+    #[cfg(target_os = "linux")]
     fn staged_fixture() -> (tempfile::TempDir, Store, Instance, tempfile::TempDir) {
         let (tmp, store, _) = fixture();
         let source = tempfile::tempdir().unwrap();

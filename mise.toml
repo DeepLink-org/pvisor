@@ -10,7 +10,7 @@ ruff = "0.17.2"
 actionlint = "1.7.7"
 jq = "1.8.1"
 zig = "0.13.0"
-"github:nextest-rs/nextest" = { version = "0.9.137", version_prefix = "cargo-nextest-", bin = "cargo-nextest" }
+"github:nextest-rs/nextest" = { version = "0.9.152", version_prefix = "cargo-nextest-", bin = "cargo-nextest" }
 "cargo:cargo-zigbuild" = "0.23.4"
 # Keep pinned Cargo plugins ahead of ambient ~/.cargo/bin executables.
 # Suppress rustup self-update while installing the project toolchain.
@@ -824,6 +824,7 @@ set -euo pipefail
 if [[ $# -gt 0 ]]; then echo "too many arguments for vm-probe-guest" >&2; exit 2; fi
 mkdir -p "$CARGO_TARGET_DIR/debug/probes"
 rustc --edition 2024 --target aarch64-unknown-linux-musl -C linker=rust-lld -C opt-level=2 crates/pvisor-vm/src/probes/guest_linux.rs -o "$CARGO_TARGET_DIR/debug/probes/guest_linux"
+rustc --edition 2024 --target aarch64-unknown-linux-musl -C linker=rust-lld -C panic=abort -C opt-level=2 crates/pvisor-vm/src/probes/guest_closed_stdio.rs -o "$CARGO_TARGET_DIR/debug/probes/guest_closed_stdio"
 '''
 
 [tasks.wheel]
