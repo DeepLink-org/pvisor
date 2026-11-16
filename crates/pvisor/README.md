@@ -50,7 +50,8 @@ leader PID prevents a cached PGID from being reused by an unrelated group while
 cleanup still signals it. An already reaped or mismatched child cannot authorize
 a group signal. Exit observation preserves exit codes, signals, stdin EOF and
 the existing exit/cancel/deadline priority. Linux checks `/proc` for live group
-members once the leader is a zombie; macOS uses libproc's group census and
+members once the leader is a zombie, including the thread count when a main
+thread has exited before its workers; macOS uses libproc's group census and
 process states. A zombie-only group receives its final KILL without consuming
 the grace. Unknown process state retains the configured grace (2 seconds by
 default). The leader stays unreaped through that final signal. Other Unix

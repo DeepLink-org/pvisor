@@ -769,7 +769,7 @@ pub(crate) async fn observe_child_exit(
 
 #[cfg(target_os = "linux")]
 fn group_has_live_members(proc: &std::path::Path, group: u32) -> std::io::Result<bool> {
-    fn state_and_group(stat: &str) -> std::io::Result<(&str, u32)> {
+    fn live_and_group(stat: &str) -> std::io::Result<(bool, u32)> {
         let invalid = || std::io::Error::other("invalid process-group stat");
         let (_, fields) = stat.rsplit_once(')').ok_or_else(invalid)?;
         let mut fields = fields.split_whitespace();
@@ -780,12 +780,22 @@ fn group_has_live_members(proc: &std::path::Path, group: u32) -> std::io::Result
             .ok_or_else(invalid)?
             .parse()
             .map_err(|_| invalid())?;
-        Ok((state, group))
+        // Fields 6..19 precede num_threads (field 20).
+        let threads = fields
+            .nth(14)
+            .ok_or_else(invalid)?
+            .parse::<u32>()
+            .map_err(|_| invalid())?;
+        if threads == 0 {
+            return Err(invalid());
+        }
+        // A zombie thread-group leader can still have live worker threads.
+        Ok((!matches!(state, "Z" | "X") || threads > 1, group))
     }
     // A running leader itself needs the configured grace; avoid a full scan.
     let leader = std::fs::read_to_string(proc.join(group.to_string()).join("stat"))?;
-    let (state, _) = state_and_group(&leader)?;
-    if !matches!(state, "Z" | "X") {
+    let (live, _) = live_and_group(&leader)?;
+    if live {
         return Ok(true);
     }
     for entry in std::fs::read_dir(proc)? {
@@ -803,8 +813,8 @@ fn group_has_live_members(proc: &std::path::Path, group: u32) -> std::io::Result
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
             Err(error) => return Err(error),
         };
-        let (state, member_group) = state_and_group(&stat)?;
-        if member_group == group && !matches!(state, "Z" | "X") {
+        let (live, member_group) = live_and_group(&stat)?;
+        if member_group == group && live {
             return Ok(true);
         }
     }
@@ -938,26 +948,84 @@ mod process_group_tests {
     #[test]
     fn group_scan_preserves_live_members_and_propagates_unknown_state() {
         let root = tempfile::tempdir().unwrap();
-        let write_stat = |pid: u32, state: &str, group: u32| {
+        let write_stat = |pid: u32, state: &str, group: u32, threads: u32| {
             let dir = root.path().join(pid.to_string());
             std::fs::create_dir_all(&dir).unwrap();
             std::fs::write(
                 dir.join("stat"),
-                format!("{pid} (name with ) spaces) {state} 1 {group} 0"),
+                format!(
+                    "{pid} (name with ) spaces) {state} 1 {group} {}{threads}",
+                    "0 ".repeat(14)
+                ),
             )
             .unwrap();
         };
-        write_stat(12, "Z", 12);
-        write_stat(13, "S", 99);
+        write_stat(12, "Z", 12, 1);
+        write_stat(13, "S", 99, 1);
         assert!(!group_has_live_members(root.path(), 12).unwrap());
         for state in ["S", "R", "D", "T"] {
-            write_stat(13, state, 12);
+            write_stat(13, state, 12, 1);
             assert!(group_has_live_members(root.path(), 12).unwrap());
         }
-        write_stat(13, "Z", 12);
+        write_stat(13, "Z", 12, 1);
         assert!(!group_has_live_members(root.path(), 12).unwrap());
+        write_stat(13, "Z", 12, 2);
+        assert!(group_has_live_members(root.path(), 12).unwrap());
+        write_stat(13, "Z", 12, 1);
+        write_stat(12, "Z", 12, 2);
+        assert!(group_has_live_members(root.path(), 12).unwrap());
+        write_stat(12, "Z", 12, 1);
+        write_stat(13, "Z", 12, 0);
+        assert!(group_has_live_members(root.path(), 12).is_err());
         std::fs::write(root.path().join("13/stat"), "invalid").unwrap();
         assert!(group_has_live_members(root.path(), 12).is_err());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn live_worker_survives_its_thread_group_leader_until_grace_expires() {
+        let mut child = tokio::process::Command::new("python3")
+            .args([
+                "-c",
+                r#"
+import ctypes, os, signal, sys, threading, time
+signal.signal(signal.SIGTERM, signal.SIG_IGN)
+def worker():
+    os.write(1, b'ready')
+    while True:
+        time.sleep(3600)
+threading.Thread(target=worker).start()
+libc = ctypes.CDLL(None)
+libc.syscall.argtypes = [ctypes.c_long, ctypes.c_long]
+libc.syscall(int(sys.argv[1]), 0)
+"#,
+            ])
+            .arg(libc::SYS_exit.to_string())
+            .stdout(Stdio::piped())
+            .process_group(0)
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        let pid = child.id().unwrap();
+        let mut stdout = child.stdout.take().unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            stdout.read_exact(&mut [0; 5]).await.unwrap();
+            loop {
+                let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).unwrap();
+                if stat.rsplit_once(')').unwrap().1.split_whitespace().next() == Some("Z") {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+            }
+        })
+        .await
+        .expect("main thread did not exit while its worker remained alive");
+        let live = group_has_live_members(std::path::Path::new("/proc"), pid).unwrap();
+        let started = tokio::time::Instant::now();
+        terminate_process_tree(&mut child, Some(pid), 100).await;
+        assert!(live, "a zombie thread-group leader is not a dead process");
+        assert!(started.elapsed() >= std::time::Duration::from_millis(100));
+        assert_eq!(stdout.read(&mut [0]).await.unwrap(), 0);
     }
 
     #[tokio::test]
