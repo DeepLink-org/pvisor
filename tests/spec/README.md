@@ -125,6 +125,11 @@ and exclusively zombie members. A live member, missing anchor, lost ownership,
 failed query or genuine permission error fails cleanup; these are not skipped
 tests. Mocked ABI/error regressions supplement, not replace, native macOS CI.
 
+After each polling sleep, timeout classification makes a final non-reaping exit
+observation. An already waitable child takes priority if the observer was
+descheduled; a still-running child at that observation times out without an
+extended budget. Polling does not establish the kernel's exact exit timestamp.
+
 An explicit prerequisite refusal (`exit 77`) is always a failed Scrut gate, even
 on an XFAIL platform. Unexpected signals, missing commands and timeouts are not
 accepted XFAIL outcomes. `PVISOR_CASE_REQUIRE_PASS=1` also rejects XFAIL; USE IDs
