@@ -382,9 +382,17 @@ impl Vcpu {
             })
             .map_err(Error::VcpuSpawn)?;
 
-        let hvf_id = init_tls_receiver
+        let hvf_id = match init_tls_receiver
             .recv()
-            .map_err(|_| Error::VcpuChannelClosed)??;
+            .map_err(|_| Error::VcpuChannelClosed)
+            .and_then(|result| result)
+        {
+            Ok(id) => id,
+            Err(error) => {
+                let _ = vcpu_thread.join();
+                return Err(error);
+            }
+        };
 
         Ok(VcpuHandle::new(
             event_sender,
@@ -530,10 +538,10 @@ impl Vcpu {
             if init_tls_sender.send(Ok(hvf_vcpuid)).is_err() {
                 return;
             }
-            self.pause_and_park(&mut hvf_vcpu);
         } else if init_tls_sender.send(Ok(hvf_vcpuid)).is_err() {
             return;
         }
+        self.pause_and_park(&mut hvf_vcpu);
         if self.stopping {
             return;
         }
@@ -667,15 +675,16 @@ impl Vcpu {
 
     fn pause_and_park(&mut self, hvf_vcpu: &mut HvfVcpu) {
         self.observe(crate::api::VcpuObservedState::ManualPaused);
-        self.response_sender
-            .send(VcpuResponse::Paused)
-            .expect("pause response channel closed");
+        if self.response_sender.send(VcpuResponse::Paused).is_err() {
+            self.stopping = true;
+            return;
+        }
         loop {
             match self.event_receiver.recv() {
                 Ok(VcpuEvent::Resume) => {
-                    self.response_sender
-                        .send(VcpuResponse::Resumed)
-                        .expect("resume response channel closed");
+                    if self.response_sender.send(VcpuResponse::Resumed).is_err() {
+                        self.stopping = true;
+                    }
                     return;
                 }
                 Ok(VcpuEvent::Pause) => (),
@@ -774,6 +783,23 @@ pub struct VcpuHandle {
     event_sender: Sender<VcpuEvent>,
     response_receiver: Receiver<VcpuResponse>,
     hvf_id: u64,
+    vcpu_thread: Option<thread::JoinHandle<()>>,
+}
+
+impl Drop for VcpuHandle {
+    fn drop(&mut self) {
+        let (sender, _) = unbounded();
+        drop(std::mem::replace(&mut self.event_sender, sender));
+        let (_, receiver) = unbounded();
+        drop(std::mem::replace(&mut self.response_receiver, receiver));
+        if let Some(thread) = self.vcpu_thread.take() {
+            // Channel closure cannot interrupt hv_vcpu_run on its own.
+            let _ = crate::hvf::vcpu_request_exit(self.hvf_id);
+            if thread.join().is_err() {
+                error!("vCPU panicked during owner teardown");
+            }
+        }
+    }
 }
 
 impl VcpuHandle {
@@ -781,12 +807,13 @@ impl VcpuHandle {
         event_sender: Sender<VcpuEvent>,
         response_receiver: Receiver<VcpuResponse>,
         hvf_id: u64,
-        _vcpu_thread: thread::JoinHandle<()>,
+        vcpu_thread: thread::JoinHandle<()>,
     ) -> Self {
         Self {
             event_sender,
             response_receiver,
             hvf_id,
+            vcpu_thread: Some(vcpu_thread),
         }
     }
 
@@ -861,7 +888,9 @@ mod tests {
             .expect("query Hypervisor availability");
         assert!(support.status.success(), "kern.hv_support query failed");
         if support.stdout.trim_ascii() == b"0" {
-            eprintln!("SKIP: host reports kern.hv_support=0; HVF memory mapping needs virtualization");
+            eprintln!(
+                "SKIP: host reports kern.hv_support=0; HVF memory mapping needs virtualization"
+            );
             return;
         }
         assert_eq!(support.stdout.trim_ascii(), b"1");

@@ -824,6 +824,7 @@ set -euo pipefail
 if [[ $# -gt 0 ]]; then echo "too many arguments for vm-probe-guest" >&2; exit 2; fi
 mkdir -p "$CARGO_TARGET_DIR/debug/probes"
 rustc --edition 2024 --target aarch64-unknown-linux-musl -C linker=rust-lld -C opt-level=2 crates/pvisor-vm/src/probes/guest_linux.rs -o "$CARGO_TARGET_DIR/debug/probes/guest_linux"
+rustc --edition 2024 --target aarch64-unknown-linux-musl -C linker=rust-lld -C panic=abort -C opt-level=2 crates/pvisor-vm/src/probes/guest_closed_stdio.rs -o "$CARGO_TARGET_DIR/debug/probes/guest_closed_stdio"
 '''
 
 [tasks.wheel]

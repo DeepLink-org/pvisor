@@ -18,6 +18,32 @@ class EnvironmentSnapshotTests(unittest.TestCase):
         self.driver = support.binary()
         self.guest, self.firmware = support.guest_and_firmware()
 
+    def test_closed_standard_descriptors_are_repaired_before_rust_startup(self):
+        with workspace() as (base, _):
+            root = base / "rootfs"
+            root.mkdir()
+            # The no-std trampoline makes all three descriptors absent on every
+            # exec. An empty root also guarantees /dev/null is initially absent.
+            shutil.copyfile(
+                support.target_dir() / "debug/probes/guest_closed_stdio", root / "init.krun"
+            )
+            shutil.copyfile(self.guest, root / "init-real")
+            for name in ["init.krun", "init-real"]:
+                (root / name).chmod(0o700)
+            self.assertFalse((root / "dev").exists())
+            source = subprocess.run(
+                [str(self.driver), "boot", str(base)],
+                env=dict(os.environ, PVISOR_CASE_VM_LIBRARY_DIR=str(self.firmware)),
+                text=True,
+                capture_output=True,
+                timeout=60,
+            )
+            support.assert_response(self, source)
+            self.assertEqual((root / "bootstrap-stdio").read_text(), "7")
+            self.assertEqual(len((root / "starts").read_text().splitlines()), 1)
+            self.assertTrue((root / "ready").is_file())
+            self.assertIn("environment-boot-ready", source.stdout)
+
     def test_restore_is_independent_of_original_and_published_backing(self):
         with workspace() as (base, _):
             runner = base / "vm-runner"
