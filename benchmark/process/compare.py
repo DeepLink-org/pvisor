@@ -1,7 +1,9 @@
-#!/usr/bin/env python3
-"""CI threshold gate using validated semspec cells and the Python timer median."""
+"""Read-only comparison of retained process observations.
 
-import argparse
+Current regression gates read Criterion estimates in Rust. This reader only
+accepts the original complete evidence schema; it never starts an experiment.
+"""
+
 import importlib.util
 import sys
 from pathlib import Path
@@ -25,7 +27,7 @@ def read(path):
         "status",
         "review",
     }:
-        raise ValueError("expected a successful complete B-PROCESS semspec batch")
+        raise ValueError("expected a successful complete B-PROCESS archive")
     return {
         name: result["statistics"]["Median ms"] / 1000 for name, result in results.items()
     }, manifest
@@ -45,24 +47,21 @@ def compare(candidate, baseline, threshold):
             "cpu_affinity",
             "conditions",
             "metric_scope",
+            "harness",
         ):
             if manifest[key] != previous[key]:
                 raise ValueError("incompatible measurement configuration: " + key)
-        # Both cohorts must have used the exact same candidate harness/templates.
-        if manifest["harness"] != previous["harness"]:
-            raise ValueError("candidate and baseline use different benchmark harnesses")
     lines = [
-        "# Process benchmark threshold gate",
+        "# Retained process comparison",
         "",
-        "perf_counter_ns median direct-command times in seconds. Separate cohorts; this threshold is not a paired improvement claim.",
+        "Original direct-command medians in seconds. Separate cohorts; not a paired improvement claim.",
         "",
         "| Condition | Candidate (s) | Baseline (s) | Gate |",
         "| --- | ---: | ---: | --- |",
     ]
     regressions = 0
     for name, value in rows.items():
-        status = "candidate-only"
-        previous_value = ""
+        status, previous_value = "candidate-only", ""
         if old is not None:
             previous_value = f"{old[name]:.9f}"
             status = (
@@ -71,23 +70,3 @@ def compare(candidate, baseline, threshold):
             regressions += status == "regression"
         lines.append(f"| {name} | {value:.9f} | {previous_value} | {status} |")
     return "\n".join(lines) + "\n", regressions
-
-
-if __name__ == "__main__":
-    p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--candidate", type=Path, required=True)
-    p.add_argument("--baseline", default="")
-    p.add_argument("--output", type=Path, required=True)
-    p.add_argument("--threshold", type=float, default=15)
-    args = p.parse_args()
-    if args.threshold < 0:
-        p.error("threshold must be nonnegative")
-    try:
-        text, regressions = compare(
-            args.candidate, Path(args.baseline) if args.baseline else None, args.threshold
-        )
-        args.output.mkdir(parents=True, exist_ok=True)
-        (args.output / "report.md").write_text(text)
-    except (ValueError, KeyError, OSError) as error:
-        p.exit(1, f"{error}\n")
-    raise SystemExit(1 if regressions else 0)

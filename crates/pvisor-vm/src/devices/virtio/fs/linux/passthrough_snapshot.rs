@@ -86,10 +86,7 @@ pub(super) fn capture(fs: &PassthroughFs) -> io::Result<FsSnapshot> {
                 path.display()
             )));
         }
-        let pin = std::fs::OpenOptions::new()
-            .read(true)
-            .custom_flags(snapshot::pin_flags())
-            .open(&path)?;
+        let pin = snapshot::pin_inode(&path)?;
         if identity != FileIdentity::read(&pin)? || identity.nlink == 0 {
             return Err(snapshot::unsupported("unlinked or replaced inode"));
         }
@@ -195,10 +192,7 @@ pub(super) fn restore(fs: &PassthroughFs, state: &FsSnapshot) -> io::Result<()> 
             return Err(snapshot::invalid("invalid root inode"));
         }
         let path = snapshot::relative_path(&root, relative)?;
-        let file = std::fs::OpenOptions::new()
-            .read(true)
-            .custom_flags(snapshot::pin_flags())
-            .open(&path)?;
+        let file = snapshot::pin_inode(&path)?;
         let identity = FileIdentity::read(&file)?;
         let regular = identity.mode & libc::S_IFMT == libc::S_IFREG;
         let link = identity.mode & libc::S_IFMT == libc::S_IFLNK;

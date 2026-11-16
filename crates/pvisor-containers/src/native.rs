@@ -100,7 +100,7 @@ fn exchange(port: &Port, request: Request, output: &mut impl Write) -> anyhow::R
 fn rpc(generation: &str, request: &HostRequest) -> anyhow::Result<ipc::Duplex> {
     ensure!(store::valid_id(generation), "invalid container generation");
     let mut stream = ipc::connect_control(&owner_pipe(generation))?;
-    write_frame(&mut stream, request)?;
+    write_frame(&mut stream, request).context("send container owner request")?;
     Ok(stream)
 }
 fn receive(
@@ -608,13 +608,15 @@ fn wait_output(
             return r.info.exit_code.context("terminal record has no exit code");
         }
     }
-    let code = receive(&mut stream, stdout, stderr)?;
-    write_frame(&mut stream, &HostRequest::Acknowledged)?;
+    let code =
+        receive(&mut stream, stdout, stderr).context("receive container output and exit status")?;
+    write_frame(&mut stream, &HostRequest::Acknowledged)
+        .context("acknowledge container completion")?;
     let mut byte = [0; 1];
     match stream.read(&mut byte) {
         Ok(0) => (),
         Err(e) if matches!(e.raw_os_error(), Some(109 | 233)) => (),
-        Err(e) => return Err(e.into()),
+        Err(e) => return Err(e).context("wait for acknowledged container owner shutdown"),
         Ok(_) => bail!("unexpected data after completion acknowledgment"),
     }
     let dir = store.directory(&container.id)?;
@@ -1028,7 +1030,10 @@ fn owner(store: Store, id: &str, generation: &str) -> anyhow::Result<()> {
     let started = Instant::now();
     let mut forced = false;
     let status = loop {
-        if let Some(status) = child.try_wait()? {
+        if let Some(status) = child
+            .try_wait()
+            .context("observe container VM runner exit")?
+        {
             break status;
         }
         if kill.load(Ordering::Acquire)
@@ -1064,7 +1069,9 @@ fn owner(store: Store, id: &str, generation: &str) -> anyhow::Result<()> {
                 record.info.exit_code
             ));
         }
-        store.save(&record)?;
+        store
+            .save(&record)
+            .context("publish terminal container record")?;
     }
     // A fast workload can exit before the attachment thread sees its terminal
     // record. Retain the owner through reply drain for every foreground launch,

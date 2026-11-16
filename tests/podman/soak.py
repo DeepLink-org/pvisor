@@ -292,7 +292,7 @@ class Soak:
         env = dict(
             self.env, PVISOR_BINARY=str(self.args.binary), PVISOR_TEST_IMAGE=self.images["alpine"]
         )
-        files = sorted(Path("tests/podman/e2e").glob("*_test.go"))
+        files = sorted(Path("tests/spec/docker-cli/regression/e2e").glob("*_test.go"))
         while self.alive():
             try:
                 self.call(

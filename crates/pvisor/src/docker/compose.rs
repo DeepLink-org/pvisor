@@ -4,10 +4,11 @@ use std::collections::BTreeSet;
 
 mod building;
 mod readiness;
+pub(super) use readiness::milliseconds;
 mod reconcile;
 #[cfg(test)]
 mod tests_p0;
-mod volumes;
+pub(super) mod volumes;
 
 pub use building::BuildSettings;
 
@@ -44,8 +45,9 @@ pub struct UpOptions {
     pub recreate: RecreatePolicy,
     /// Include dependencies in the selected services; defaults to true.
     pub dependencies: bool,
-    /// Grace before force-stop when replacing a running service; defaults to 10 s.
-    pub timeout: Duration,
+    /// Override replacement stop grace; None uses each old member's recorded
+    /// stop_grace_period (10 s when omitted).
+    pub timeout: Option<Duration>,
     /// Wait for all selected services to be running/healthy after startup.
     pub wait: bool,
     /// Shared bound for dependency/readiness waits; defaults to 60 seconds.
@@ -59,7 +61,7 @@ impl Default for UpOptions {
             build: BuildPolicy::Missing,
             recreate: RecreatePolicy::Changed,
             dependencies: true,
-            timeout: Duration::from_secs(10),
+            timeout: None,
             wait: false,
             wait_timeout: Duration::from_secs(60),
         }
@@ -80,10 +82,6 @@ pub struct Membership {
     /// Pending containers are never started; retry/down may discard them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub replaces: Option<String>,
-    /// Effective owner-supervised check, including image defaults and overrides.
-    /// None means no check (or explicitly disabled), not healthy.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub healthcheck: Option<health::Healthcheck>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -137,6 +135,14 @@ struct Service {
     stdin_open: bool,
     #[serde(default)]
     tty: bool,
+    #[serde(default)]
+    restart: RestartPolicy,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    stop_signal: Option<String>,
+    #[serde(default)]
+    stop_grace_period: Option<String>,
+    #[serde(default, deserialize_with = "metadata::deserialize_labels")]
+    labels: BTreeMap<String, String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -315,6 +321,22 @@ impl Project {
             if let Some(healthcheck) = &service.healthcheck {
                 healthcheck.validate()?;
             }
+            // Compose's empty string leaves Docker's image default in effect;
+            // do not apply the shared image parser's legacy empty => SIGTERM.
+            service.stop_signal = service.stop_signal.take().filter(|value| !value.is_empty());
+            if let Some(stop_signal) = &service.stop_signal {
+                signal(stop_signal).with_context(|| format!("service {key} stop_signal"))?;
+            }
+            if let Some(grace) = &service.stop_grace_period {
+                readiness::milliseconds(grace).context("invalid stop_grace_period")?;
+            }
+            ensure!(
+                service
+                    .labels
+                    .keys()
+                    .all(|key| !key.starts_with("com.docker.compose.")),
+                "com.docker.compose.* labels are reserved"
+            );
             ensure!(
                 service.cpus.unwrap_or(2) > 0,
                 "cpus must be a positive whole vCPU count"
@@ -607,15 +629,21 @@ impl Project {
 
     /// Stop selected recorded members in reverse dependency order, retaining
     /// containers, writable files and binds. Earlier stops survive later error.
+    /// None uses each recorded member's grace; an explicit duration overrides it.
     pub fn stop(
         &self,
         store: &Store,
         services: &[String],
-        timeout: Duration,
+        timeout: impl Into<Option<Duration>>,
     ) -> anyhow::Result<()> {
+        let timeout = timeout.into();
         let _lease = self.lease(store)?;
         for instance in self.instances(store, services)?.into_iter().rev() {
-            store.stop(&instance.id, timeout, None)?;
+            store.stop(
+                &instance.id,
+                timeout.unwrap_or(Duration::from_millis(instance.config.stop_timeout_ms)),
+                None,
+            )?;
         }
         Ok(())
     }
@@ -629,13 +657,15 @@ impl Project {
     /// Volume removal refuses references from any remaining container.
     /// Attached foreign/orphan containers block network deletion. Partial errors
     /// retain remaining resources; repeat down after reconciling the failure.
+    /// None uses recorded stop grace, not the current desired service definition.
     pub fn down(
         &self,
         store: &Store,
-        timeout: Duration,
+        timeout: impl Into<Option<Duration>>,
         remove_orphans: bool,
         remove_volumes: bool,
     ) -> anyhow::Result<()> {
+        let timeout = timeout.into();
         let _lease = self.lease(store)?;
         self.cleanup_pending(store, remove_volumes)?;
         let mut instances = self.instances(store, &[])?;
@@ -653,7 +683,11 @@ impl Project {
             }));
         }
         for instance in instances.into_iter().rev() {
-            store.stop(&instance.id, timeout, None)?;
+            store.stop(
+                &instance.id,
+                timeout.unwrap_or(Duration::from_millis(instance.config.stop_timeout_ms)),
+                None,
+            )?;
             store.remove(&instance.id, remove_volumes)?;
         }
         if remove_volumes {
@@ -738,6 +772,26 @@ impl Project {
             network_name: Some(format!("{}_default", self.name)),
             ipv4_address: None,
             peers: None,
+            labels: service
+                .labels
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .chain([
+                    ("com.docker.compose.project".into(), self.name.clone()),
+                    ("com.docker.compose.service".into(), name.into()),
+                    ("com.docker.compose.container-number".into(), "1".into()),
+                ])
+                .collect(),
+            restart: service.restart,
+            stop_signal: service.stop_signal.as_deref().map(signal).transpose()?,
+            stop_timeout_ms: service
+                .stop_grace_period
+                .as_deref()
+                .map(readiness::milliseconds)
+                .transpose()?
+                .unwrap_or(10_000),
+            healthcheck: None,
+            no_healthcheck: false,
         };
         staging::validate_mounts(&mut config)?;
         Ok(config)
@@ -1156,7 +1210,6 @@ services:
                     service: "app".into(),
                     config_hash: project.config_hash("app").unwrap(),
                     replaces: None,
-                    healthcheck: None,
                 }),
             )
             .unwrap()

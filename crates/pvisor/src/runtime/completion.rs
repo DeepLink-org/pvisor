@@ -182,10 +182,24 @@ pub(crate) fn reconcile(record: &mut RunRecord) -> anyhow::Result<()> {
     if record.completion_protocol.is_none() {
         return Ok(());
     }
+    let mut session = crate::Session::read(record)?;
+    reconcile_session(record, session.as_mut())
+}
+
+/// Reuse a Session freshly read under its metadata lease. The caller also owns
+/// the Execution lease; neither selection-time snapshots nor cached file
+/// authority may be passed here.
+pub(crate) fn reconcile_session(
+    record: &mut RunRecord,
+    session: Option<&mut crate::Session>,
+) -> anyhow::Result<()> {
+    if record.completion_protocol.is_none() {
+        return Ok(());
+    }
     let previous = serde_json::to_value(&*record)?;
     let completion =
         Completion::observe_record(record).context("read committed Execution completion")?;
-    if let Some(mut session) = crate::Session::read(record)? {
+    if let Some(session) = session {
         let changed = session.apply(super::execution::SessionTransition::CompletionObserved {
             record,
             result: completion.as_ref().map(|receipt| &receipt.result),
@@ -535,12 +549,13 @@ mod tests {
             config.run.executor = crate::RunExecutorKind::Vm;
             let session: Session = serde_json::from_value(serde_json::json!({
                 "version":SESSION_SCHEMA_VERSION,"run_id":record.run_id,"root":root.path(),
-                "active_stage":root.path(),"previous_stage":root.path(),"active_execution":record.execution_id,
+                "active_execution":record.execution_id,"owner_epoch":record.execution_id,"kind":"task","state":"running",
+                "profile":{"active_stage":root.path(),"previous_stage":root.path(),
                 "config":config,"spec":pvisor_core::RunSpec::process("run-completion", "test", "true"),
-                "state":"running","head":null,"checkpoints":{},"requests":{},"resumes":{},"forks":{},"stores":[]
+                "head":null,"checkpoints":{},"requests":{},"resumes":{},"forks":{},"stores":[]}
             })).unwrap();
             session.write().unwrap();
-            let session_path = root.path().join("execution-session.json");
+            let session_path = root.path().join("session.json");
             let receipt_path = root.path().join(FILENAME);
             let bundle_path = RunBundle::path(root.path());
             let bundle_bytes = fs::read(&bundle_path).unwrap();
@@ -628,9 +643,9 @@ mod tests {
             if let Some(receipt_bytes) = receipt_bytes {
                 let mut successor = Session::read(&record).unwrap().unwrap();
                 let mut stored = serde_json::to_value(&successor).unwrap();
-                stored["active_stage"] =
+                stored["profile"]["active_stage"] =
                     serde_json::json!(root.path().join("executions/successor"));
-                stored["previous_stage"] = serde_json::json!(root.path());
+                stored["profile"]["previous_stage"] = serde_json::json!(root.path());
                 for state in [SessionState::Restoring, SessionState::Running] {
                     stored["state"] = serde_json::to_value(state).unwrap();
                     if state == SessionState::Running {

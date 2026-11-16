@@ -141,17 +141,8 @@ Claude 与 Codex 的绝对时间不宜互相排名。Codex 还存在约秒级的
 
 ## 复现与证据 {#run}
 
-从仓库根目录运行；输出目录必须是新目录。动态 firmware 入口需要 GNU/Linux 版 CLI；静态 musl 制品使用另一套 firmware 入口，不能混用。Linux、KVM/FUSE/user namespaces、Python 3.14、Rust/GCC、Git/rg、Node 24/npm、Podman/crun 是本机工具环境；Agent 套件另需 Claude/Codex CLI。
+已记录的 Python 协调协议使用 GNU/Linux CLI 的动态 firmware 入口，与静态 musl 入口不同。宿主具备 Linux、KVM/FUSE/user namespaces、Python 3.14、Rust/GCC、Git/rg、Node 24/npm、Podman/crun，Agent 套件另使用 Claude/Codex CLI。Agent 选择请求三次采样、零预热，另先做独立单样本预检。这些是历史测量，不是 Criterion 样本。
 
-```bash
-python3 benchmark/pvisor/product_v1.py \
-  --binary /absolute/path/to/gnu-linux/pvisor \
-  --firmware /absolute/path/to/libkrunfw-directory \
-  --replay-binary /absolute/path/to/pvisor-replay \
-  --output target/product-benchmark-new \
-  --suites agent --samples 3 --warmups 0
-```
-
-先用 `--samples 1 --warmups 0` 检查环境。脚本、输入定义和正确性断言在 `benchmark/pvisor/v1/`；报告会复制二进制、firmware 和当轮脚本并记录摘要。失败不会进入性能分布；准备、策略拒绝和工作负载错误分别保留。每个页面写明有效样本数；小样本 P95/P99 只描述本批次，不估计长期尾延迟。
+每批冻结 harness 保留脚本、输入定义、正确性断言与实际命令；报告记录二进制、firmware 和 harness 源码摘要。失败不会进入性能分布；准备、策略拒绝和工作负载错误分别保留。每个页面写明有效样本数；小样本 P95/P99 只描述本批次，不估计长期尾延迟。当前测量入口见[基准手册](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/README.md)。
 
 [环境、制品与采样方法](../benchmarks/index.md#product-v1) · 本地原始记录 `docs/src/assets/benchmarks/.data/product-v1-20261004/manifest.tsv` · 本地原始记录 `docs/src/assets/benchmarks/.data/product-v1-20261004/samples.csv` · 本地原始记录 `docs/src/assets/benchmarks/.data/product-v1-20261004/evidence.tar.gz`。报告保留源码的未提交状态；当轮可执行制品 SHA256 是身份依据。归档不含数 GB 的 rootfs、二进制和可重建工作区；输入摘要及每轮脚本保留。

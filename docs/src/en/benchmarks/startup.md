@@ -24,7 +24,16 @@ Ready ends at the checked first shell marker. Firecracker is stopped under contr
 
 Eight conditions measured on 2026-10-11, N=60 formal samples after three warmups. Inputs are the prepared rootfs, 2 vCPU / 128 MiB for VMs, warm caches and CPU 0,1 affinity. Python `perf_counter_ns` starts immediately before process creation and stops on receipt of the complete `REFERENCE_READY` line: process creation, pipe reading and observer scheduling are included, interpreter startup and input preparation are not. Output, Run Bundle and unchanged-input checks must pass for every sample.
 
-{{ table("startup-timing.ready.render.json") }}
+|  | N | Ready median ms | Ready mean ms | Ready SD ms | Ready min ms | Ready max ms |
+| --- | --- | --- | --- | --- | --- | --- |
+| Native | 60 | 0.48 | 0.48 | 0.02 | 0.45 | 0.55 |
+| pVisor host | 60 | 33.52 | 50.48 | 29.70 | 30.58 | 128.65 |
+| pVisor staged | 60 | 50.59 | 52.77 | 17.87 | 46.18 | 188.29 |
+| pVisor VM | 60 | 130.71 | 130.10 | 6.16 | 119.00 | 149.99 |
+| Docker | 60 | 105.03 | 105.57 | 7.22 | 90.52 | 126.04 |
+| Firecracker | 60 | 287.13 | 287.07 | 5.89 | 269.08 | 301.73 |
+| QEMU | 60 | 663.25 | 667.53 | 28.73 | 631.38 | 742.13 |
+| QEMU microvm | 60 | 260.10 | 259.53 | 9.57 | 243.28 | 288.39 |
 
 pVisor VM starts at a median 130.71 ms, between rootless Docker at 105.03 ms and the reference VMs at 260–663 ms. Host and staged skip the kernel and device path and stop at 33.52 ms and 50.59 ms.
 

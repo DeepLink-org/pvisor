@@ -10,15 +10,7 @@
 
 **违反示例**：命令成功但文件写到别处，或出现隐式 stage。
 
-<!-- semspec: case id=S-USE-001 -->
-```bash
-journey_setup
-pvisor --name hello --stdio capture -- /bin/sh -c 'printf hello > hello.txt; cat hello.txt'
-assert_content hello.txt hello
-pvisor status last --json > "$CASE_ROOT/status.json"
-json_expect "$CASE_ROOT/status.json" /run/state '"completed"'
-json_expect "$CASE_ROOT/status.json" /run/overlay null
-```
+运行与断言：[Scrut S-USE-001](https://github.com/DeepLink-org/pvisor/blob/main/tests/spec/session/S-USE-001.md)。
 
 ### S-USE-002：失败也是可查询的 Session
 
@@ -28,13 +20,7 @@ json_expect "$CASE_ROOT/status.json" /run/overlay null
 
 **违反示例**：退出码被吞掉或 failed 被记录为 completed。
 
-<!-- semspec: case id=S-USE-002 -->
-```bash
-journey_setup
-expect_exit 7 pvisor spawn --stdio capture -- /bin/sh -c 'printf failed >&2; exit 7'
-pvisor status last --json > "$CASE_ROOT/status.json"
-json_expect "$CASE_ROOT/status.json" /run/state '"failed"'
-```
+运行与断言：[Scrut S-USE-002](https://github.com/DeepLink-org/pvisor/blob/main/tests/spec/session/S-USE-002.md)。
 
 ### S-USE-003：给长任务设置期限
 
@@ -44,13 +30,7 @@ json_expect "$CASE_ROOT/status.json" /run/state '"failed"'
 
 **违反示例**：任务睡到结束或被记成普通成功。
 
-<!-- semspec: case id=S-USE-003 -->
-```bash
-journey_setup
-expect_refused pvisor spawn --timeout 100ms --stdio capture -- /bin/sleep 30
-journey_bundle > "$CASE_ROOT/bundle.json"
-json_expect "$CASE_ROOT/bundle.json" /run/failure/kind '"deadline_exceeded"'
-```
+运行与断言：[Scrut S-USE-003](https://github.com/DeepLink-org/pvisor/blob/main/tests/spec/session/S-USE-003.md)。
 
 ### S-USE-004：把固定参数放进配置
 
@@ -60,18 +40,6 @@ json_expect "$CASE_ROOT/bundle.json" /run/failure/kind '"deadline_exceeded"'
 
 **违反示例**：偷偷读取隐式配置或忽略 CLI 覆盖。
 
-<!-- semspec: case id=S-USE-004 -->
-```bash
-journey_setup
-cat > task.toml <<'TOML'
-[run]
-agent = "configured"
-command = ["/bin/sh", "-c", "printf configured"]
-TOML
-pvisor spawn --config task.toml --name explicit --stdio capture -- /bin/sh -c 'printf override'
-journey_bundle > "$CASE_ROOT/bundle.json"
-json_expect "$CASE_ROOT/bundle.json" /run/agent '"explicit"'
-json_expect "$CASE_ROOT/bundle.json" /run/output/stdout '"override"'
-```
+运行与断言：[Scrut S-USE-004](https://github.com/DeepLink-org/pvisor/blob/main/tests/spec/session/S-USE-004.md)。
 
 [返回学习路线](index.md) · [2. 先审查，再接受文件改动](02-review-and-decide.md)

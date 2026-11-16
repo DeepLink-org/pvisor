@@ -54,8 +54,8 @@ enum ComposeCommand {
         no_recreate: bool,
         #[arg(long)]
         no_deps: bool,
-        #[arg(short = 't', long, default_value_t = 10)]
-        timeout: u64,
+        #[arg(short = 't', long)]
+        timeout: Option<u64>,
         services: Vec<String>,
     },
     /// List project containers, including stopped containers with --all.
@@ -92,14 +92,14 @@ enum ComposeCommand {
     Start(Services),
     /// Stop selected services, retaining their writable files.
     Stop {
-        #[arg(short = 't', long, default_value_t = 10)]
-        timeout: u64,
+        #[arg(short = 't', long)]
+        timeout: Option<u64>,
         services: Vec<String>,
     },
     /// Stop/remove project containers and their owned default network.
     Down {
-        #[arg(short = 't', long, default_value_t = 10)]
-        timeout: u64,
+        #[arg(short = 't', long)]
+        timeout: Option<u64>,
         #[arg(long)]
         remove_orphans: bool,
         /// Explicitly remove owned named volumes and container anonymous volumes.
@@ -184,7 +184,7 @@ pub(super) fn run(args: ComposeArgs) -> anyhow::Result<i32> {
                     RecreatePolicy::Changed
                 },
                 dependencies: !no_deps,
-                timeout: Duration::from_secs(timeout),
+                timeout: timeout.map(Duration::from_secs),
                 wait,
                 wait_timeout: Duration::from_secs(wait_timeout),
             };
@@ -200,7 +200,7 @@ pub(super) fn run(args: ComposeArgs) -> anyhow::Result<i32> {
             }
         }
         ComposeCommand::Stop { timeout, services } => {
-            project.stop(&store, &services, Duration::from_secs(timeout))?;
+            project.stop(&store, &services, timeout.map(Duration::from_secs))?;
         }
         ComposeCommand::Down {
             timeout,
@@ -209,7 +209,7 @@ pub(super) fn run(args: ComposeArgs) -> anyhow::Result<i32> {
         } => {
             project.down(
                 &store,
-                Duration::from_secs(timeout),
+                timeout.map(Duration::from_secs),
                 remove_orphans,
                 volumes,
             )?;

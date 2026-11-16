@@ -34,46 +34,28 @@ UV_PYTHON_DOWNLOADS = "never"
 TMPDIR = "{{ get_env(name='TMPDIR', default=get_env(name='TEMP', default='/tmp')) | canonicalize }}"
 
 [tasks.benchmark]
-description = "不传参数运行 smoke；其他参数指定 benchmark 中的 Markdown 规格或 JSON 表格。"
+description = "Rust Criterion 实验；使用预先准备的制品，--list 查看注册入口"
 run = '''
 #!/usr/bin/env bash
 set -euo pipefail
-if [[ $# -eq 0 ]]; then set -- smoke; fi
-cargo build --quiet --locked --manifest-path "$MISE_PROJECT_ROOT/tools/semspec/Cargo.toml" --target-dir "$CARGO_TARGET_DIR/semspec"
-export SEMSPEC_BIN="$CARGO_TARGET_DIR/semspec/debug/semspec"
-process_build="$(python3 "$MISE_PROJECT_ROOT/benchmark/run.py" --check "$@")"
-if [[ "$process_build" == process ]]; then
-  benchmark_repo="${PVISOR_BENCHMARK_REPO:-$MISE_PROJECT_ROOT}"
-  benchmark_build="${PVISOR_BENCHMARK_BUILD_DIR:-$CARGO_TARGET_DIR/pvisor-benchmark-build}"
-  # Build historical checkouts directly: they need not have mise tasks.
-  (
-    cd "$benchmark_repo"
-    export CARGO_TARGET_DIR="$benchmark_build"
-    python3 scripts/packaging/stage_wheel_binaries.py --profile release --target-dir "$benchmark_build" --all
-    if [[ "$(uname -s)" == Darwin ]]; then
-      for name in pvisor pvisor-replay pvisor-daemon; do
-        codesign --force --sign - --entitlements crates/pvisor/macos-hypervisor.entitlements "$benchmark_build/release/$name"
-        codesign --verify --strict "$benchmark_build/release/$name"
-      done
-    fi
-  )
-  set -- --binary "$benchmark_build/release/pvisor" "$@"
-fi
-python3 "$MISE_PROJECT_ROOT/benchmark/run.py" "$@"
+cargo run --release --locked --manifest-path "$MISE_PROJECT_ROOT/benchmark/criterion/Cargo.toml" --bin pvisor-benchmarks -- "$@"
 '''
 
 [tasks.benchmark-compare]
-description = "benchmark-compare"
+description = "Criterion estimates 的进程回归门禁；不重新采样或计算统计"
 hide = true
 run = '''
 #!/usr/bin/env bash
 set -euo pipefail
-if [[ $# -lt 1 ]]; then echo "usage: mise run benchmark-compare candidate baseline output threshold" >&2; exit 2; fi
-if [[ $# -gt 4 ]]; then echo "too many arguments for benchmark-compare" >&2; exit 2; fi
-if [[ $# -lt 2 ]]; then set -- "$@" ''; fi
-if [[ $# -lt 3 ]]; then set -- "$@" benchmark/process/.data/comparison; fi
-if [[ $# -lt 4 ]]; then set -- "$@" 15; fi
-python3 benchmark/process/compare.py --candidate "$1" --baseline "$2" --output "$3" --threshold "$4"
+cargo run --release --locked --manifest-path "$MISE_PROJECT_ROOT/benchmark/criterion/Cargo.toml" --bin benchmark-compare -- "$@"
+'''
+
+[tasks.benchmark-prepare-memory]
+description = "Rust 内存实验输入/fixture 准备；不采样、不发布数字"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+cargo run --release --locked --manifest-path "$MISE_PROJECT_ROOT/benchmark/criterion/Cargo.toml" --bin pvisor-memory-prepare -- "$@"
 '''
 
 [tasks.build]
@@ -81,8 +63,58 @@ description = "profile: debug / release / performance；component: all / product
 file = "scripts/tasks/build.sh"
 
 [tasks.cases]
-description = "统一场景验证入口；默认 DOC，可先传 --suite doc/stage/use/vm，保留选择与报告参数"
+description = "Scrut 功能规格；--feature 选择功能，--suite doc/stage/use/vm 选择历史 ID 域"
 file = "scripts/tasks/cases.sh"
+
+[tasks.archive-feature-evidence]
+description = "Archive owned CI evidence with original permissions and link identities"
+hide = true
+run = 'bash scripts/tasks/archive-feature-evidence.sh "$@"'
+
+[tasks.cases-feature]
+description = "单个 feature 的原生 Scrut 规格；保留显式 XFAIL，缺前提仍失败"
+file = "scripts/tasks/cases-feature.sh"
+
+[tasks.ci-feature-matrix]
+description = "Discover feature jobs and their Linux prerequisite declarations"
+run = "python3 scripts/tasks/feature-matrix.py"
+
+[tasks.cases-feature-strict]
+description = "单个 feature 的全 PASS 门禁；XFAIL、SKIP、XPASS 均失败，不代表人工批准"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+exec bash scripts/tasks/cases-feature.sh "$@" --strict
+'''
+
+[tasks.test-feature-native]
+description = "Docker/Compose 原生 Cargo 回归；FEATURE [--hardware]，不重复其他 feature"
+file = "scripts/tasks/test-feature-native.sh"
+
+[tasks.test-feature-contracts]
+description = "Docker 基础命令 KVM/HVF 黑盒回归；docker-cli bats|go-0|go-1"
+file = "scripts/tasks/test-feature-contracts.sh"
+
+[tasks.scrut]
+description = "Run the pinned Scrut release; install only into the project target directory"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+# Cargo checks its installation metadata and skips an already installed release.
+# Scrut 0.4.3's --version prints a build timestamp, not its Cargo version.
+cargo install scrut --version '=0.4.3' --locked --root "$CARGO_TARGET_DIR/scrut"
+exec "$CARGO_TARGET_DIR/scrut/bin/scrut" "$@"
+'''
+
+[tasks.test-spec-fixtures]
+description = "Check feature inventory, native Scrut matching and scenario resource contracts"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+mise run scrut -- --help >/dev/null
+export SCRUT_BIN="$CARGO_TARGET_DIR/scrut/bin/scrut"
+python3 -m unittest discover -s tests/spec/fixtures/regression -p 'test_*.py' "$@"
+'''
 
 [tasks.check]
 description = "默认检查 CLI；可传 -p PACKAGE、--target 等 Cargo 参数"
@@ -130,7 +162,6 @@ if [[ $# -gt 0 ]]; then echo "too many arguments for clean" >&2; exit 2; fi
 cargo clean --target-dir "$CARGO_TARGET_DIR" --profile dev
 cargo clean --target-dir "$CARGO_TARGET_DIR" --profile release
 cargo clean --target-dir "$CARGO_TARGET_DIR" --profile performance
-cargo clean --manifest-path tools/semspec/Cargo.toml --target-dir "$CARGO_TARGET_DIR/semspec" --profile dev
 rm -rf build dist docs/site "$CARGO_TARGET_DIR/fw"
 '''
 
@@ -151,10 +182,9 @@ set -euo pipefail
 python3 benchmark/docs.py check
 python3 scripts/check-reference.py
 python3 scripts/check-docs.py --preflight-build
-cargo build --quiet --locked --manifest-path tools/semspec/Cargo.toml --target-dir "$CARGO_TARGET_DIR/semspec"
 rm -rf docs/site
-PVISOR_DOCS_LIVE=0 PYTHONPATH="$MISE_PROJECT_ROOT${PYTHONPATH:+:$PYTHONPATH}" SEMSPEC_BIN="$CARGO_TARGET_DIR/semspec/debug/semspec" uv run --locked --only-group dev zensical build --clean --strict -f docs/zensical.en.toml
-PVISOR_DOCS_LIVE=0 PYTHONPATH="$MISE_PROJECT_ROOT${PYTHONPATH:+:$PYTHONPATH}" SEMSPEC_BIN="$CARGO_TARGET_DIR/semspec/debug/semspec" uv run --locked --only-group dev zensical build --clean --strict -f docs/zensical.zh.toml
+PVISOR_DOCS_LIVE=0 uv run --locked --only-group dev zensical build --clean --strict -f docs/zensical.en.toml
+PVISOR_DOCS_LIVE=0 uv run --locked --only-group dev zensical build --clean --strict -f docs/zensical.zh.toml
 python3 scripts/check-docs.py "$@"
 '''
 
@@ -172,17 +202,12 @@ shift
 if ! python3 scripts/check-docs.py --preflight-build; then
   echo "warning: documentation preflight failed; continuing live preview" >&2
 fi
-if ! cargo build --quiet --locked --manifest-path tools/semspec/Cargo.toml --target-dir "$CARGO_TARGET_DIR/semspec"; then
-  echo "warning: semspec build failed; continuing live preview with the existing renderer when available" >&2
-fi
 export PVISOR_DOCS_LIVE=1
-export PYTHONPATH="$MISE_PROJECT_ROOT${PYTHONPATH:+:$PYTHONPATH}"
-export SEMSPEC_BIN="$CARGO_TARGET_DIR/semspec/debug/semspec"
 exec uv run --locked --only-group dev zensical serve -f "$config" "$@"
 '''
 
 [tasks.doctor]
-description = "诊断工具与系统能力；suite: dev/build/test/fw/docs/isolation"
+description = "诊断工具与系统能力；suite: dev/build/test/fw/docs/isolation/macos-fuse"
 run = '''
 #!/usr/bin/env bash
 set -euo pipefail
@@ -194,7 +219,8 @@ case "$1" in
   test) tools=(mise cargo python3 uv jq); nextest=1 ;;
   fw) tools=(python3 uv make cc); nextest=0 ;;
   docs) tools=(python3 uv); nextest=0 ;;
-  isolation) tools=(cargo unshare fusermount3); nextest=1 ;;
+  isolation) tools=(cargo unshare fusermount3 timeout); nextest=1 ;;
+  macos-fuse) tools=(cargo codesign); nextest=1 ;;
   *) echo "unknown doctor suite: $1" >&2; exit 2 ;;
 esac
 missing=0
@@ -214,8 +240,15 @@ if [[ "$1" == build || "$1" == dev ]]; then
   fi
 fi
 if [[ "$1" == isolation ]]; then
-  test -c /dev/fuse || missing=1
-  unshare --user --map-root-user --mount --net /bin/true || missing=1
+  test "$(uname -s)" == Linux || missing=1
+  test -c /dev/fuse && test -r /dev/fuse && test -w /dev/fuse || missing=1
+  timeout 10s unshare --user --map-root-user --mount --pid --fork --net /bin/true || missing=1
+fi
+if [[ "$1" == macos-fuse ]]; then
+  if [[ "$(uname -s)" != Darwin || ! -d /Library/Filesystems/macfuse.fs ]]; then
+    echo "macos-fuse requires macOS with macFUSE installed; mount failures remain test failures" >&2
+    missing=1
+  fi
 fi
 exit "$missing"
 '''
@@ -387,7 +420,7 @@ run = '''
 #!/usr/bin/env bash
 set -euo pipefail
 if [[ $# -gt 0 ]]; then echo "too many arguments for example-05-zcode-cli" >&2; exit 2; fi
-PVISOR_TEST_ZCODE=1 mise run test-py -- tests/test_zcode_integration.py
+PVISOR_TEST_ZCODE=1 mise run test-py -- tests.regression.test_zcode_integration
 '''
 
 [tasks.examples]
@@ -427,7 +460,7 @@ description = "支持 --check 等 formatter 参数"
 run = '''
 #!/usr/bin/env bash
 set -euo pipefail
-ruff format pvisor tests examples benchmark tools/semspec docs/semspec_tables.py scripts setup.py "$@"
+ruff format pvisor tests examples benchmark scripts setup.py "$@"
 '''
 
 [tasks.fmt-rust]
@@ -436,16 +469,6 @@ run = '''
 #!/usr/bin/env bash
 set -euo pipefail
 cargo fmt --all -- "$@"
-'''
-
-[tasks.fmt-semspec]
-description = "fmt-semspec"
-hide = true
-run = '''
-#!/usr/bin/env bash
-set -euo pipefail
-if [[ $# -gt 0 ]]; then echo "too many arguments for fmt-semspec" >&2; exit 2; fi
-cargo fmt --manifest-path tools/semspec/Cargo.toml --check
 '''
 
 [tasks.fw]
@@ -504,7 +527,7 @@ run = '''
 #!/usr/bin/env bash
 set -euo pipefail
 if [[ $# -gt 0 ]]; then echo "too many arguments for lint-py" >&2; exit 2; fi
-ruff check pvisor tests examples benchmark tools/semspec docs/semspec_tables.py scripts setup.py
+ruff check pvisor tests examples benchmark scripts setup.py
 '''
 
 [tasks.lint-rust]
@@ -514,16 +537,6 @@ run = '''
 set -euo pipefail
 if [[ $# -eq 0 ]]; then set -- --workspace; fi
 cargo clippy --all-targets --locked "$@" -- -D warnings
-'''
-
-[tasks.lint-semspec]
-description = "lint-semspec"
-hide = true
-run = '''
-#!/usr/bin/env bash
-set -euo pipefail
-if [[ $# -gt 0 ]]; then echo "too many arguments for lint-semspec" >&2; exit 2; fi
-cargo clippy --manifest-path tools/semspec/Cargo.toml --target-dir "$CARGO_TARGET_DIR/semspec" --all-targets --locked -- -D warnings
 '''
 
 [tasks.lint-workflows]
@@ -550,15 +563,6 @@ else
 fi
 mkdir -p "$(dirname "$PVISOR_FW_SOURCE_ARCHIVE")"
 mise run fw -- build --source-output "$CARGO_TARGET_DIR/libkrunfw.SOURCE" --source-archive "$PVISOR_FW_SOURCE_ARCHIVE"
-'''
-
-[tasks.semspec]
-description = "semspec"
-hide = true
-run = '''
-#!/usr/bin/env bash
-set -euo pipefail
-cargo run --quiet --manifest-path tools/semspec/Cargo.toml --target-dir "$CARGO_TARGET_DIR/semspec" --locked -- "$@"
 '''
 
 [tasks.set-nightly-version]
@@ -603,53 +607,104 @@ done
 '''
 
 [tasks.test]
-description = "无参数：Rust + Python；传包名：仅指定 Rust 包"
+description = "无参数：Rust、脚本、Python 和 API doctest；传包名：仅指定 Rust 包"
 run = '''
 #!/usr/bin/env bash
 set -euo pipefail
 mise run test-rust -- "$@"
-if [[ $# -eq 0 ]]; then mise run test-scripts --; mise run test-py --; fi
+if [[ $# -eq 0 ]]; then
+  mise run test-scripts --
+  mise run test-py --
+  mise run test-benchmark-tools --
+  mise run test-doc --
+fi
+'''
+
+[tasks.test-doc]
+description = "已迁移 API 的 doctest；可传 Cargo 包名选择范围"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ $# -eq 0 ]]; then set -- pvisor-vm pvisor-overlayfs pvisor-journal pvisor-containers; fi
+args=()
+for package in "$@"; do args+=(-p "$package"); done
+cargo test --locked --doc "${args[@]}"
 '''
 
 [tasks.test-environment-snapshot]
 description = "test-environment-snapshot"
 hide = true
+usage = 'flag "--report <path>" help="保存快照领域证据（测试结果由 unittest 报告）"'
+depends = [{ task = "vm-probe-build", args = ["pvisor", "vm_environment_snapshot", "--offline"] }]
 run = '''
 #!/usr/bin/env bash
 set -euo pipefail
-mise run vm-probe-build -- pvisor vm_environment_snapshot --offline
 mise run vm-probe-guest --
-python3 scripts/check-environment-snapshot.py --binary "$CARGO_TARGET_DIR/debug/examples/vm_environment_snapshot" --guest-bin "$CARGO_TARGET_DIR/debug/probes/guest_linux" --firmware-dir "${PVISOR_CASE_VM_LIBRARY_DIR:-$CARGO_TARGET_DIR/release}" --report "$CARGO_TARGET_DIR/vm-validation/environment-linux.json" "$@"
+export PVISOR_VM_PROBE_BINARY="$CARGO_TARGET_DIR/debug/examples/vm_environment_snapshot"
+export PVISOR_VM_PROBE_REPORT="${usage_report:-$CARGO_TARGET_DIR/vm-validation/environment-linux.json}"
+python3 -m unittest -v tests.hardware.environment_snapshot
 '''
 
 [tasks.test-hvf-cold-restore]
 description = "真实 macOS HVF CPU/RAM 冷恢复验证"
+usage = 'flag "--report <path>" help="保存 CPU/RAM 领域证据（测试结果由 unittest 报告）"'
+depends = [{ task = "vm-probe-build", args = ["pvisor-vm", "hvf_cold_restore_case"] }]
 run = '''
 #!/usr/bin/env bash
 set -euo pipefail
-if [[ $# -gt 0 ]]; then echo "too many arguments for test-hvf-cold-restore" >&2; exit 2; fi
-mise run vm-probe-build -- pvisor-vm hvf_cold_restore_case
-python3 scripts/check-hvf-cold-restore.py --binary "$CARGO_TARGET_DIR/debug/examples/hvf_cold_restore_case"
+export PVISOR_VM_PROBE_BINARY="$CARGO_TARGET_DIR/debug/examples/hvf_cold_restore_case"
+export PVISOR_VM_PROBE_REPORT="${usage_report:-$CARGO_TARGET_DIR/vm-validation/hvf-cold-restore.json}"
+python3 -m unittest -v tests.hardware.hvf_cold_restore
 '''
 
 [tasks.test-isolation]
-description = "严格隔离回归，不因缺少系统能力而静默跳过"
+description = "严格 rootless/FUSE 回归；mise 检查前提，nextest 构建运行并输出 JUnit"
+depends = ["test-isolation-preflight"]
 run = '''
 #!/usr/bin/env bash
 set -euo pipefail
-if [[ $# -gt 0 ]]; then echo "too many arguments for test-isolation" >&2; exit 2; fi
-env -u PVISOR_TEST_ALLOW_NO_USERNS cargo nextest run --locked -p pvisor-cli --test rootless_local --test run_config_cli --no-capture
+if [[ $# -gt 0 ]]; then echo "test-isolation does not accept test filters" >&2; exit 2; fi
+cargo nextest run --locked -p pvisor-cli \
+  --test rootless_local --test run_config_cli --test prepared_rootfs_cli \
+  --profile rootless --no-tests fail --no-capture
+'''
+
+[tasks.test-isolation-preflight]
+description = "清除旧的 rootless 结果，并严格检查运行前提"
+hide = true
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+evidence="$CARGO_TARGET_DIR/nextest/rootless"
+mkdir -p "$evidence"
+rm -f "$evidence/junit.xml" "$evidence/list.json" "$evidence/binaries.json" "$evidence/cargo-metadata.json"
+mise run doctor -- isolation
+'''
+
+[tasks.test-macos-fuse]
+description = "严格 macOS macFUSE 集成回归；显式运行默认 ignored 的真实挂载用例"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ $# -gt 0 ]]; then echo "test-macos-fuse does not accept test filters" >&2; exit 2; fi
+mise run doctor -- macos-fuse
+mise run test -- pvisor-cli -- \
+  --test macos_safe --test run_config_cli --test session_checkpoint_cli \
+  --profile macos-fuse --run-ignored only --no-tests fail --no-capture
 '''
 
 [tasks.test-linux-cold-restore]
 description = "test-linux-cold-restore"
 hide = true
+usage = 'flag "--report <path>" help="保存整机恢复领域证据（测试结果由 unittest 报告）"'
+depends = [{ task = "vm-probe-build", args = ["pvisor", "vm_linux_cold_restore", "--offline"] }]
 run = '''
 #!/usr/bin/env bash
 set -euo pipefail
-mise run vm-probe-build -- pvisor vm_linux_cold_restore --offline
 mise run vm-probe-guest --
-python3 scripts/check-linux-cold-restore.py --binary "$CARGO_TARGET_DIR/debug/examples/vm_linux_cold_restore" --guest-bin "$CARGO_TARGET_DIR/debug/probes/guest_linux" --firmware-dir "${PVISOR_CASE_VM_LIBRARY_DIR:-$CARGO_TARGET_DIR/release}" --report "$CARGO_TARGET_DIR/vm-validation/linux-machine.json" "$@"
+export PVISOR_VM_PROBE_BINARY="$CARGO_TARGET_DIR/debug/examples/vm_linux_cold_restore"
+export PVISOR_VM_PROBE_REPORT="${usage_report:-$CARGO_TARGET_DIR/vm-validation/linux-machine.json}"
+python3 -m unittest -v tests.hardware.linux_cold_restore
 '''
 
 [tasks.test-agent-plugins]
@@ -664,56 +719,63 @@ run = "node plugins/smoke.mjs"
 description = "通过 Pi、DSH 和 Codex stdio 路由执行文档场景；需要真实 CLI 和 Host 暂存环境"
 run = "node --test plugins/test/*.native.mjs"
 
+[tasks.test-home-demo]
+description = "使用 Node 原生 runner 验证主页说明模型；不宣称验证真实 pVisor 执行"
+raw_args = true
+run = 'node --test "$@" tests/home_demo.test.mjs'
+
 [tasks.test-py]
-description = "无参数时覆盖 tests/、活动 benchmark 和命令计时测试"
+description = "Python 单元与进程回归；参数直接交给 unittest，默认发现 tests/"
+raw_args = true
 run = '''
 #!/usr/bin/env bash
 set -euo pipefail
 export PYTHONPATH="$MISE_PROJECT_ROOT/benchmark/support${PYTHONPATH:+:$PYTHONPATH}"
-selected=0
-option_value=0
-for arg in "$@"; do
-  if [[ "$option_value" == 1 ]]; then option_value=0; continue; fi
-  case "$arg" in
-    -k|-s|-p|-t|--start-directory|--pattern|--top-level-directory) option_value=1 ;;
-    -*) ;;
-    *) selected=1 ;;
-  esac
+uv run --locked --only-group dev python -m unittest "$@"
+'''
+
+[tasks.test-py-unit]
+description = "Python 逻辑、格式与 mock 边界单元测试；不启动真实子进程"
+raw_args = true
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+mise run test-py -- discover -s tests/unit -t . "$@"
+mise run test-py -- discover -s tests/spec/docker-cli/regression -p 'test_*.py' "$@"
+'''
+
+[tasks.test-py-regression]
+description = "Python 真实进程、工具链与集成回归；可选环境前提见 tests/README.md"
+raw_args = true
+run = 'mise run test-py -- discover -s tests/regression -t . "$@"'
+
+[tasks.test-benchmark-tools]
+description = "Criterion Rust 契约与 Python 归档/展示工具回归；不执行产品性能测量"
+raw_args = true
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+mise run test -- pvisor-benchmarks -- --manifest-path "$MISE_PROJECT_ROOT/benchmark/criterion/Cargo.toml"
+export PYTHONPATH="$MISE_PROJECT_ROOT/benchmark/support${PYTHONPATH:+:$PYTHONPATH}"
+for suite in support tests filesystem memory network; do
+  uv run --locked --only-group dev python -m unittest discover -s "benchmark/$suite" "$@"
 done
-if [[ "$selected" == 0 ]]; then
-  uv run --locked --only-group dev python -m unittest discover -s tests "$@"
-  uv run --locked --only-group dev python -m unittest discover -s benchmark/support "$@"
-  uv run --locked --only-group dev python -m unittest discover -s tools/semspec "$@"
-  for suite in tests filesystem memory; do
-    uv run --locked --only-group dev python -m unittest discover -s "benchmark/$suite" "$@"
-  done
-else
-  uv run --locked --only-group dev python -m unittest "$@"
-fi
 '''
 
 [tasks.test-rust]
 description = "Debug nextest；支持 Cargo 包名和已有简称，-- 后转发 nextest 参数"
 file = "scripts/tasks/test-rust.sh"
 
-[tasks.test-semspec]
-description = "test-semspec"
-hide = true
-run = '''
-#!/usr/bin/env bash
-set -euo pipefail
-cargo nextest run --manifest-path tools/semspec/Cargo.toml --target-dir "$CARGO_TARGET_DIR/semspec" --locked "$@"
-python3 -m unittest discover -s tools/semspec -p 'test_*.py'
-'''
-
 [tasks.test-vm-snapshot-state]
 description = "VMM 所有者线程与 GIC 状态检查"
+usage = 'flag "--report <path>" help="保存 CPU/RAM/GIC 领域证据（测试结果由 unittest 报告）"'
+depends = [{ task = "vm-probe-build", args = ["pvisor-vm", "threaded_cold_restore_case", "--offline"] }]
 run = '''
 #!/usr/bin/env bash
 set -euo pipefail
-if [[ $# -gt 0 ]]; then echo "too many arguments for test-vm-snapshot-state" >&2; exit 2; fi
-mise run vm-probe-build -- pvisor-vm threaded_cold_restore_case --offline
-python3 scripts/check-vm-snapshot-state.py --binary "$CARGO_TARGET_DIR/debug/examples/threaded_cold_restore_case"
+export PVISOR_VM_PROBE_BINARY="$CARGO_TARGET_DIR/debug/examples/threaded_cold_restore_case"
+export PVISOR_VM_PROBE_REPORT="${usage_report:-$CARGO_TARGET_DIR/vm-validation/vm-snapshot-state.json}"
+python3 -m unittest -v tests.hardware.vm_snapshot_state
 '''
 
 [tasks.vm-case-driver]

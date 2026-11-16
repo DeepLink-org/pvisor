@@ -163,13 +163,9 @@ impl PreparedSession<'_> {
             if let Some(record) = &handle.record {
                 policy.persist(record)?;
             }
-            if handle.execution().status().execution.executor.kind != ExecutorKind::VirtualMachine {
+            let Some(prepared) = handle.record.as_ref() else {
                 return Ok(None);
-            }
-            let prepared = handle
-                .record
-                .as_ref()
-                .context("managed VM execution requires a durable prepared Run record")?;
+            };
             let record = RunRecord::read(&prepared.stage_dir())?;
             super::check_selected_record(prepared, &record)?;
             anyhow::ensure!(
@@ -462,19 +458,19 @@ mod tests {
         assert!(!stage.join("execution.sock").exists());
         assert!(!stage.join("execution.sock").is_symlink());
         let _lease = RunLease::acquire(stage).expect("Execution must release the stage lease");
-        if execution {
-            assert_eq!(
-                Session::read(&record).unwrap().unwrap().state(),
-                SessionState::Terminal
-            );
-        } else {
-            assert!(Session::read(&record).unwrap().is_none());
-            assert!(!stage.join("execution-session.json").exists());
-        }
+        let session = Session::read(&record).unwrap().unwrap();
+        assert_eq!(session.state(), SessionState::Terminal);
+        assert_eq!(session.kind(), crate::SessionKind::Task);
+        assert_eq!(
+            session.config().run.executor == crate::RunExecutorKind::Vm,
+            execution
+        );
+        assert!(stage.join("session.json").is_file());
+        assert!(!stage.join("execution-session.json").exists());
     }
 
     #[tokio::test]
-    async fn public_host_start_persists_result_without_execution_ledger() {
+    async fn public_host_start_persists_the_shared_session_ledger_and_result() {
         let temp = tempfile::tempdir().unwrap();
         let stage = temp.path().join("stage");
         let runtime = PVisor::builder().storage(&stage).build();
@@ -689,7 +685,7 @@ mod tests {
         bounded(signal(gates.entered.subscribe())).await;
         // The Execution can still finish its own record/bundle, but Session publication
         // has lost its durable ledger. A successful proxy wait must not hide it.
-        std::fs::remove_file(stage.join("execution-session.json")).unwrap();
+        std::fs::remove_file(stage.join("session.json")).unwrap();
         gates.release.send_replace(true);
         gates.teardown.send_replace(true);
         let error = bounded(run.wait()).await.unwrap_err();
@@ -907,7 +903,7 @@ mod tests {
             .unwrap()
             .write()
             .unwrap();
-            let retained = std::fs::read(stage.join("execution-session.json")).unwrap();
+            let retained = std::fs::read(stage.join("session.json")).unwrap();
             std::fs::create_dir(stage.join("execution-session-root.json")).unwrap();
             let sink = Arc::new(TerminalGate {
                 entered: watch::channel(false).0,
@@ -943,7 +939,7 @@ mod tests {
             assert!(RunLease::acquire(&stage).is_err());
             assert_eq!(
                 serde_json::from_slice::<Session>(
-                    &std::fs::read(stage.join("execution-session.json")).unwrap()
+                    &std::fs::read(stage.join("session.json")).unwrap()
                 )
                 .unwrap()
                 .state(),
@@ -978,17 +974,14 @@ mod tests {
             // A partially published ledger is not forged into a terminal receipt.
             assert_eq!(
                 serde_json::from_slice::<Session>(
-                    &std::fs::read(stage.join("execution-session.json")).unwrap()
+                    &std::fs::read(stage.join("session.json")).unwrap()
                 )
                 .unwrap()
                 .state(),
                 SessionState::Running
             );
             assert!(stage.join("execution-session-root.json").is_dir());
-            assert_eq!(
-                std::fs::read(stage.join("execution-session.json")).unwrap(),
-                retained
-            );
+            assert_eq!(std::fs::read(stage.join("session.json")).unwrap(), retained);
         }
     }
 

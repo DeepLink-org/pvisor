@@ -208,9 +208,10 @@ fn status_is_bounded_independently_of_history_paths_and_launch_configuration() {
     )).collect();
     let session: crate::Session = serde_json::from_value(serde_json::json!({
         "version":crate::session_execution::SESSION_SCHEMA_VERSION,"run_id":record.run_id,"root":root.path(),
-        "active_stage":root.path(),"previous_stage":root.path(),"active_execution":record.execution_id,
+        "active_execution":record.execution_id,"owner_epoch":record.execution_id,"kind":"task","state":"terminal",
+        "profile":{"active_stage":root.path(),"previous_stage":root.path(),
         "config":crate::RunConfig::default(),"spec":pvisor_core::RunSpec::process("session-service", "test", "true"),
-        "state":"terminal","head":null,"checkpoints":{},"requests":requests,"resumes":{},"forks":{},"stores":[]
+        "head":null,"checkpoints":{},"requests":requests,"resumes":{},"forks":{},"stores":[]}
     })).unwrap();
     session.write().unwrap();
     let status = SessionService::status(
@@ -816,9 +817,10 @@ async fn capture_rechecks_request_context_after_waiting_for_session_lease() {
             config.overlaynet.mode = crate::OverlayNetMode::Off;
             let session: Session = serde_json::from_value(serde_json::json!({
                 "version":SESSION_SCHEMA_VERSION,"run_id":record.run_id,"root":root.path(),
-                "active_stage":root.path(),"previous_stage":root.path(),"active_execution":record.execution_id,
+                "active_execution":record.execution_id,"owner_epoch":record.execution_id,"kind":"task","state":state,
+                "profile":{"active_stage":root.path(),"previous_stage":root.path(),
                 "config":config,"spec":pvisor_core::RunSpec::process("session-service", "sh", "/bin/sh"),
-                "state":state,"head":null,"checkpoints":{},"requests":{},"resumes":{},"forks":{},"stores":[]
+                "head":null,"checkpoints":{},"requests":{},"resumes":{},"forks":{},"stores":[]}
             })).unwrap();
             session.write().unwrap();
             let before = serde_json::to_value(&session).unwrap();
@@ -888,10 +890,11 @@ async fn resume_replay_is_fenced_before_embedded_launcher() {
     config.overlaynet.mode = crate::OverlayNetMode::Off;
     let session: Session = serde_json::from_value(serde_json::json!({
         "version":SESSION_SCHEMA_VERSION,"run_id":record.run_id,"root":root.path(),
-        "active_stage":root.path(),"previous_stage":root.path(),"active_execution":"new-execution",
+        "active_execution":"new-execution","owner_epoch":"new-execution","kind":"task","state":"suspended",
+        "profile":{"active_stage":root.path(),"previous_stage":root.path(),
         "config":config,"spec":pvisor_core::RunSpec::process("session-service", "sh", "/bin/sh"),
-        "state":"suspended","head":null,"checkpoints":{},"requests":{},
-        "resumes":{"replay":{"stage":root.path(),"eager_ram":false}},"forks":{},"stores":[]
+        "head":null,"checkpoints":{},"requests":{},
+        "resumes":{"replay":{"stage":root.path(),"eager_ram":false}},"forks":{},"stores":[]}
     }))
     .unwrap();
     session.write().unwrap();
@@ -948,8 +951,8 @@ async fn resume_replay_is_fenced_before_embedded_launcher() {
     let mut admitted = session.clone();
     let mut stored = serde_json::to_value(&admitted).unwrap();
     stored["state"] = serde_json::to_value(SessionState::Restoring).unwrap();
-    stored["active_stage"] = serde_json::json!(root.path().join("executions/restore"));
-    stored["resumes"]["restore"] = serde_json::to_value(Receipt {
+    stored["profile"]["active_stage"] = serde_json::json!(root.path().join("executions/restore"));
+    stored["profile"]["resumes"]["restore"] = serde_json::to_value(Receipt {
         stage: root.path().join("executions/restore"),
         eager_ram: false,
     })
@@ -959,12 +962,15 @@ async fn resume_replay_is_fenced_before_embedded_launcher() {
     for variant in 0..5 {
         let mut value = serde_json::to_value(&admitted).unwrap();
         match variant {
-            0 => value["active_stage"] = serde_json::json!(root.path().join("executions/other")),
+            0 => {
+                value["profile"]["active_stage"] =
+                    serde_json::json!(root.path().join("executions/other"))
+            }
             1 => value["active_execution"] = serde_json::json!("other-execution"),
-            2 => value["head"] = serde_json::json!("other-head"),
-            3 => value["resumes"]["restore"]["eager_ram"] = serde_json::json!(true),
+            2 => value["profile"]["head"] = serde_json::json!("other-head"),
+            3 => value["profile"]["resumes"]["restore"]["eager_ram"] = serde_json::json!(true),
             _ => {
-                value["resumes"]["another"] = serde_json::to_value(Receipt {
+                value["profile"]["resumes"]["another"] = serde_json::to_value(Receipt {
                     stage: admitted.active_stage().to_owned(),
                     eager_ram: false,
                 })

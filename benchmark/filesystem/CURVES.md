@@ -1,9 +1,11 @@
-# 文件系统缓存与异步写：系统曲线评估与复现手册
+# 文件系统缓存与异步写：系统曲线协议与证据
 
-本手册描述曲线实验的合同与复现方法。三层负载协议见
-[WORKLOADS.md](WORKLOADS.md)；其离线计划已可生成，新执行器与结果尚未提供。
+本手册保留已冻结曲线批次的实验合同、分析方法与覆盖缺口。三层负载协议见
+[WORKLOADS.md](WORKLOADS.md)。活动测量入口以 [README.md](README.md) 为准；
+下述曲线与诊断使用各批次保存的 Python 协调器和 Rust payload，不是 Criterion
+采样结果，也不是当前 checkout 可直接执行的测量入口。
 
-`curves.py` 支持下表中的条件。已保存批次按其冻结的 harness、配置与制品复现；
+批次的 `curves.py` 定义下表中的条件。已保存批次按其冻结的 harness、配置与制品复核；
 分析器读取批次记录的条件，不将不同条件的数据合并。
 
 ## 结论范围
@@ -11,7 +13,7 @@
 这里回答的问题是：**在相同的显式文件与目录 fsync 边界下，host 接管写入、
 后台推进和合批分别能改善哪些请求形态的完成吞吐，代价落在哪个阶段和资源上？**
 
-本手册登记可执行协议和后续实验设计，不登记尚未产生的性能结果。现有入口可以
+本手册登记冻结协议和后续实验设计，不登记尚未产生的性能结果。冻结协议覆盖
 得到粒度、文件并发、同步频率、工作量及有限参数敏感性曲线，并用独立诊断批次
 核对实际 backing 工作。N5 批次用于探索；独立 N30 批次用于确认已选定的主点。
 两者都不等于完整系统论文验收，也不构成 OSDI 或 artifact 认证。
@@ -63,7 +65,7 @@ quota、memory/swap 上限和进程 affinity；原始 cgroup、CPU 和 backing �
 信息写入证据。不得把“配置了预算”改写为“没有宿主竞争”。当前没有安静期、
 外部构建/测试干扰或逐轮全量输入清单门禁。
 
-### 当前三个计划
+### 三个冻结计划
 
 下表是完整默认计划的**预期库存**，不是已测样本数。每个独立环境内执行三轮，
 每轮执行该 suite 的全部 cells。`--conditions` 会缩减条件集合，实际库存以冻结
@@ -235,24 +237,9 @@ pattern 和一个 1 MiB 读缓冲；全字节比较在读时钟内。因此此�
 marker 核对 READ、OPEN、LOOKUP 和其他库存。marker 范围内的异步预读可能跨过
 边界；完整 final records 和逐 pass 差分同时保留。正式计时批次不启用 profile。
 
-```sh
-read_batch="$PWD/benchmark/filesystem/.data/read-cache-UNIQUE"
-python3 benchmark/filesystem/read_cache_curves.py --prepare "$read_batch" \
-  --rootfs "$curves_rootfs" --firmware "$curves_firmware" \
-  --source-receipt /absolute/path/to/product-build-receipt.json \
-  --samples 5 --seed 20261017
-"$SEMSPEC_BIN" bench --cwd "$read_batch" "$read_batch/in.json"
-python3 benchmark/filesystem/read_cache_curves.py --analyze "$read_batch"
-
-read_diag="$PWD/benchmark/filesystem/.data/read-cache-diag-UNIQUE"
-python3 benchmark/filesystem/read_cache_curves.py --prepare "$read_diag" \
-  --rootfs "$curves_rootfs" --firmware "$curves_firmware" \
-  --source-receipt /absolute/path/to/product-build-receipt.json \
-  --reuse-build "$read_batch" --fixture-batch "$read_batch" \
-  --samples 1 --seed 20261017 --diagnostic
-"$SEMSPEC_BIN" bench --cwd "$read_diag" "$read_diag/in.json"
-python3 benchmark/filesystem/read_cache_curves.py --analyze "$read_diag"
-```
+正式读缓存批次为 N5、seed 20261017；独立诊断为 N1，复用同一经过摘要验证的
+制品和 fixture，不复用计时结果。准备、执行与分析的完整参数以批次保存的
+`protocol.json`、`in.json` 与 `harness/` 为准。
 
 `--source-receipt` 必须列出与实际构建匹配的完整 product `source_hashes`；当前
 准备器复用普通 CLI 的构建收据格式，逐项校验当前源码。`--reuse-build` 复用经过
@@ -310,7 +297,7 @@ metadata，最后再次等待新提交 WRITE；双屏障都保留。
 不能称为全部写入持久化完成时间。完整stage字节、正常退出和Bundle校验在时钟外；
 独立N1诊断检查两个设备的实际协商状态和全部13个注册/final实例。
 
-准备与构建发生在时钟外；三个入口生成 `in.json` 后统一通过 `semspec bench` 执行。
+准备与构建发生在时钟外；三个协议的 `in.json` 保留实际执行命令及外层收据。
 四臂时钟由 `guest_writeback_analysis.py` 单独加工，输出 completed/accepted 时间比及
 每个独立环境原值；候选/基线时间比小于 1 表示更快。加工后用
 `publish_guest_writeback.py --check` 核验，`--publish` 发布到独立 guest-writeback
@@ -319,14 +306,14 @@ metadata，最后再次等待新提交 WRITE；双屏障都保留。
 `filesystem-guest-writeback-tuning` 命名空间；普通CLI使用
 `publish_guest_writeback_cli.py` 和 `filesystem-guest-writeback-cli`。
 
-## 复现步骤
+## 冻结批次的复核条件
 
 ### 准备条件与来源
 
 需要可用 `/dev/kvm` 的 Linux x86_64 主机、CPU 0,1、可安装上述 cgroup 限制
 的 user systemd、Python 3.11+、Rust 和 `x86_64-unknown-linux-musl` target、
-离线可用的 Cargo 依赖、预先准备且受调用方控制的兼容 rootfs/固件，以及已构建
-的独立 semspec CLI。绘图另需 matplotlib；`--no-plots` 只生成 CSV/JSON。
+离线可用的 Cargo 依赖、预先准备且受调用方控制的兼容 rootfs/固件，以及批次保存的
+完整 harness 与执行依赖。绘图另需 matplotlib；`--no-plots` 只生成 CSV/JSON。
 
 `--prepare` 会构建机制 subject 和静态 payload，并复制固件、harness、源码和
 输入计划；构建不计入样本。它不供应或下载 rootfs。当前 rootfs 在协议中记录
@@ -339,99 +326,32 @@ runner 已独立证明 rootfs 不变。backing 挂载选项和缓存状态也须
 哈希。生成的 `driver/Cargo.toml` 保留原仓库绝对依赖路径，源码归档不是无需
 本机工具链/依赖就能运行的便携镜像；异机复现应恢复依赖并准备一个新批次。
 
-下面的 `UNIQUE`、rootfs、固件路径需要替换。每个输出目录必须不存在；失败批次
-也不复用。命令从仓库根目录执行。选择较少条件时，工程分析仍须包含相应基线：
-shape/confirm 为 `sync`，parameters 为 `async`。
+每个新输出目录必须不存在；失败批次也不复用。工程分析须包含相应基线：
+shape/confirm 为 `sync`，parameters 为 `async`。shape 与 parameters 的协议为
+N5、seed 20261017；confirm 为独立 N30、seed 20261018，不与探索样本合并。
 
-```sh
-export SEMSPEC_BIN="$PWD/target/semspec/debug/semspec"
-curves_rootfs=/absolute/path/to/prepared-rootfs
-curves_firmware=/absolute/path/to/libkrunfw.so
-shape_batch="$PWD/benchmark/filesystem/.data/curves-shape-UNIQUE"
-
-python3 benchmark/filesystem/curves.py --prepare "$shape_batch" \
-  --rootfs "$curves_rootfs" --firmware "$curves_firmware" \
-  --suite shape --samples 5 --seed 20261017
-"$SEMSPEC_BIN" bench --cwd "$shape_batch" "$shape_batch/in.json"
-python3 "$shape_batch/harness/curves_analysis.py" "$shape_batch"
-```
-
-`in.json` 的一行执行完整预先登记 campaign；semspec 外层 wall time 不是曲线
-样本，也不产生额外独立重复。真正数据来自 payload 的 event clocks。
-
-参数探索与确认分别建新目录，不与 shape 合并：
-
-```sh
-parameter_batch="$PWD/benchmark/filesystem/.data/curves-parameters-UNIQUE"
-python3 benchmark/filesystem/curves.py --prepare "$parameter_batch" \
-  --rootfs "$curves_rootfs" --firmware "$curves_firmware" \
-  --suite parameters --samples 5 --seed 20261017
-"$SEMSPEC_BIN" bench --cwd "$parameter_batch" "$parameter_batch/in.json"
-python3 "$parameter_batch/harness/curves_analysis.py" "$parameter_batch"
-
-confirm_batch="$PWD/benchmark/filesystem/.data/curves-confirm-UNIQUE"
-python3 benchmark/filesystem/curves.py --prepare "$confirm_batch" \
-  --rootfs "$curves_rootfs" --firmware "$curves_firmware" \
-  --suite confirm --samples 30 --seed 20261018
-"$SEMSPEC_BIN" bench --cwd "$confirm_batch" "$confirm_batch/in.json"
-python3 "$confirm_batch/harness/curves_analysis.py" "$confirm_batch"
-```
-
-独立诊断示例复用同样 suite，但另开 N1 批次、开启 profile；不是给正式计时
-批次加日志后继续拼接。native 没有 VM filesystem counters，明确记为不可用。
-
-```sh
-diagnostic_batch="$PWD/benchmark/filesystem/.data/curves-diagnostic-UNIQUE"
-python3 benchmark/filesystem/curves.py --prepare "$diagnostic_batch" \
-  --rootfs "$curves_rootfs" --firmware "$curves_firmware" \
-  --suite shape --samples 1 --seed 20261017 --diagnostic
-"$SEMSPEC_BIN" bench --cwd "$diagnostic_batch" "$diagnostic_batch/in.json"
-python3 "$diagnostic_batch/harness/curves_diagnostics.py" "$diagnostic_batch"
-```
+`in.json` 记录完整预先登记 campaign。外层进程 wall time 不是曲线样本，
+也不产生额外独立重复；真正数据来自 payload 的 event clocks。
+独立诊断复用同样 suite，但另开 N1 批次、开启 profile，不能给正式计时批次
+加日志后继续拼接。native 没有 VM filesystem counters，明确记为不可用。
 
 ### Guest 0048→0049 的独立批次
 
 下面的旧固件必须含0048但不含0049；新固件只新增0049，SOURCE必须与实际字节
 一致。已有两代固件的构建在计时外完成；不能把重新准备当作旧批次的续采。
 
-```sh
-guest_pre="$PWD/benchmark/filesystem/.data/guest-wb-pre-UNIQUE"
-guest_timing="$PWD/benchmark/filesystem/.data/guest-wb-timing-UNIQUE"
-guest_diag="$PWD/benchmark/filesystem/.data/guest-wb-diag-UNIQUE"
-
-python3 benchmark/filesystem/guest_writeback_curves.py --prepare "$guest_pre" \
-  --rootfs "$curves_rootfs" --baseline-patch 48 \
-  --firmware "$new_firmware" --firmware-source "$new_source_receipt" \
-  --old-firmware "$old_firmware" --old-firmware-source "$old_source_receipt" \
-  --samples 1 --preflight
-"$SEMSPEC_BIN" bench --cwd "$guest_pre" "$guest_pre/in.json"
-
-python3 benchmark/filesystem/guest_writeback_curves.py --prepare "$guest_timing" \
-  --rootfs "$curves_rootfs" --baseline-patch 48 \
-  --firmware "$new_firmware" --firmware-source "$new_source_receipt" \
-  --old-firmware "$old_firmware" --old-firmware-source "$old_source_receipt" \
-  --samples 5 --reuse-build "$guest_pre"
-python3 benchmark/filesystem/guest_writeback_curves.py --prepare "$guest_diag" \
-  --rootfs "$curves_rootfs" --baseline-patch 48 \
-  --firmware "$new_firmware" --firmware-source "$new_source_receipt" \
-  --old-firmware "$old_firmware" --old-firmware-source "$old_source_receipt" \
-  --samples 1 --diagnostic --reuse-build "$guest_pre"
-"$SEMSPEC_BIN" bench --cwd "$guest_diag" "$guest_diag/in.json"
-python3 "$guest_diag/harness/guest_writeback_curves.py" --diagnose "$guest_diag"
-"$SEMSPEC_BIN" bench --cwd "$guest_timing" "$guest_timing/in.json"
-python3 "$guest_timing/harness/guest_writeback_curves.py" --analyze "$guest_timing"
-python3 benchmark/filesystem/guest_writeback_analysis.py "$guest_timing" \
-  --diagnostic "$guest_diag"
-```
+预检、正式计时与诊断分别保存：N1 预检先验证新旧固件与来源收据，
+正式 N5 与诊断 N1 只复用该预检的制品。`--baseline-patch 48` 标识固定基线，
+新旧固件参数及分析器摘要由各批次记录，不从其他批次推定。
 
 绘图命令在装有matplotlib的环境中执行，本轮保留的依赖版本为3.11.2；缺依赖时
 可先用 `--no-plots` 生成数值，再在依赖齐全后重新加工同一原始批次。内存定位
 入口的 `--source-batch` 指向有完整 `plan-001.tsv` 的N5准备目录，生成独立诊断
-`in.json`，同样通过semspec执行，不能把插桩计时并入正式数据。
+`in.json`，不能把插桩计时并入正式数据。
 
 普通CLI入口的 `--build`、`--prepare` 和 `--setup` 分别记录GNU制品构建、冻结
 输入及委托cgroup；它需要既有owned输入generation的准备收据。PRE、profiles、
-timing分别由冻结config引用实际semspec入口，具体参数保存在该批次的
+timing分别由冻结config引用实际执行命令，具体参数保存在该批次的
 config、manifest和build-receipt中。SDK路径不替代这条普通CLI执行链。
 
 ### 证据清单与分析
@@ -440,7 +360,7 @@ config、manifest和build-receipt中。SDK路径不替代这条普通CLI执行�
 | --- | --- |
 | `protocol.json`, `plan-*.tsv` | 固定问题、suite、全部 cell/条件、配对随机顺序、预算、来源和摘要 |
 | `source/`, `driver/`, `build.log`, `bin/`, `harness/` | 源码归档、构建参数、实际执行制品和冻结入口 |
-| `in.json` 及 semspec 导出/日志 | 实际外层入口与执行收据，不能替代内部样本 |
+| `in.json` 及外层导出/日志 | 实际外层入口与执行收据，不能替代内部样本 |
 | `campaign-command.json`, `campaign.*.log`, `budget-*.json` | systemd/taskset 命令、campaign 输出和父组预算 |
 | `trials/NNN-CONDITION/{stdout.log,stderr.log,result.json,host-verification.log}` | 每个独立环境的完整行输出、错误、资源和宿主验证收据 |
 | `records.partial.json`, `records.json`, `status.json` | 中间证据、最终 trial 库存和失败总数 |
@@ -495,7 +415,7 @@ python3 benchmark/filesystem/publish_io_curves.py \
 
 ## 形成完整系统结论仍需哪些实验
 
-下表把现有可执行行与后续设计分开。后续参数是待登记的最小实验设计，不是当前
+下表把已有协议覆盖与后续设计分开。后续参数是待登记的最小实验设计，不是冻结
 runner 已有开关，也不是已完成或已有结果。
 
 | 问题 | 轴与对照 | 主要指标 | 当前覆盖 / 后续动作 |

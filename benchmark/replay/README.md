@@ -1,9 +1,61 @@
 # Replay benchmark tools
 
-The existing B-REPLAY `replay.md` / `prepare.py` entry measures native trajectory
-preparation by `pvisor replay`. It remains unchanged. It is **not** the fixed
-command workload below: native replay rebuilds Agent context and can continue
-inference; command replay never calls a model or reconstructs that context.
+The B-REPLAY [`replay.md`](replay.md) entry measures native trajectory preparation
+by the prebuilt `pvisor-replay` CLI. Its Rust/Criterion implementation is separate
+from the fixed command workload below: native replay rebuilds Agent context and
+can continue inference; command replay never calls a model or reconstructs that
+context. The benchmark always passes `--prepare-only`, so neither tools nor
+inference run.
+
+## Native preparation (B-REPLAY)
+
+`benchmark/criterion/src/replay/mod.rs` supplies
+`pub fn register(&mut criterion::Criterion)` for the shared standalone benchmark
+binary. Dependencies are `criterion = "=0.7.0"`, `anyhow`, `serde_json`,
+`sha2 = "0.10"` and `libc`; contract tests additionally use `tempfile`.
+The seven task-0 fixtures, reset hooks and native-prefix/result/workspace checks
+are implemented in Rust. No Python is invoked. `workload.py` is not part of this
+benchmark and is not changed by the migration.
+
+The shared entry sets `PVISOR_BENCH_FAMILY=replay`,
+`PVISOR_BENCH_ENTRY=replay/replay.md`, `PVISOR_BENCH_BINARY` to a prebuilt native
+replay CLI, and `PVISOR_BENCH_OUTPUT` to a **fresh**, nonexisting evidence directory.
+For direct use of the standalone crate after building the product binary:
+
+```sh
+cargo build --locked -p pvisor-cli --bin pvisor-replay
+PVISOR_BENCH_FAMILY=replay \
+PVISOR_BENCH_ENTRY=replay/replay.md \
+PVISOR_BENCH_BINARY="$PWD/target/debug/pvisor-replay" \
+PVISOR_BENCH_OUTPUT="$PWD/benchmark/replay/.data/criterion-new" \
+  cargo run --release --manifest-path benchmark/criterion/Cargo.toml -- --bench
+```
+
+Use release product binaries for actual cost measurements; the debug build
+above is sufficient for fidelity smoke checks. Criterion calibration, warmup
+and measurement can invoke the CLI many times, so this is not a cheap smoke.
+The module uses 60 Flat statistical samples, not the former zero-warmup,
+60-command protocol. It retains every operation, including the independent
+preflight, calibration, failures and slow values, with raw outputs and audits.
+Only direct command invocation is timed; Rust setup, checks and archival are
+excluded. A new Criterion cohort must not be merged with old Python or
+hyperfine results or published through their historical bindings.
+
+Use the shared registry and Criterion launcher for this experiment.
+
+Contract tests run through the standalone crate's `cargo nextest` runner:
+
+```sh
+cargo nextest run --manifest-path benchmark/criterion/Cargo.toml -E 'test(replay::tests::)'
+# Bounded native smoke: exactly one prepare-only invocation per adapter.
+PVISOR_REPLAY_TEST_BINARY="$PWD/target/debug/pvisor-replay" \
+  cargo nextest run --manifest-path benchmark/criterion/Cargo.toml \
+  --run-ignored only -E 'test(replay::tests::native_cli_all_seven)'
+```
+
+Set `PVISOR_REPLAY_TEST_OUTPUT` to a fresh directory to retain smoke evidence;
+otherwise the smoke uses a temporary directory. Contract tests require no
+product binary, sandbox, model, agent SDK or full experiment.
 
 ## Model-free command workloads (B-SWE-RESIDENT-ENG)
 

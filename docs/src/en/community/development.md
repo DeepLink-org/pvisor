@@ -41,7 +41,7 @@ The Cargo workspace has 13 crates organized by product responsibility. Its defau
 | `crates/pvisor-replay/` | Replay planning, native agent adapters and continuation protocol bridges |
 | `pvisor/`, `setup.py`, `scripts/packaging/` | Python version marker and native-script wheel packaging |
 | `crates/*/tests/` | Rust integration tests; unit tests stay with their modules |
-| `tests/` | Python packaging and repository workflow tests |
+| `tests/unit/`, `tests/regression/`, `tests/hardware/` | Python unit, real-process regression and explicit hardware tests; shared drivers/resources stay in `tests/` |
 | `examples/`, `benchmark/` | Executable product scenarios and performance measurements |
 | `scripts/ci/` | CI checks and smoke-test entry points |
 | `docs/src/zh/`, `docs/src/en/` | Documentation source; `docs/site/` is generated |
@@ -113,9 +113,10 @@ CI checks the default runtime and application dependency boundaries before the c
 | `mise run test -- cli` / `mise run test -- pvisor-cli` | Executable/frontend tests; `mise run test -- pvisor` selects runtime tests |
 | `mise run test -- pvisor-vm` | VM-owner tests; macOS signs Hypervisor entitlement before nextest |
 | `mise run test-py -- -k packaging` | Filter Python unittest checks in both test directories |
-| `mise run test-py -- discover -s benchmark/support` | Benchmark tool unittest checks; also included in default Python tests |
-| `PVISOR_TEST_VM_BIN=target/release/pvisor mise run test-py -- tests/test_vm_terminal.py` | Real VM terminal interaction regressions |
-| `PVISOR_TEST_ZCODE=1 mise run test-py -- tests/test_zcode_integration.py` | Explicit integration requiring Linux rootless, FUSE3 and zcode |
+| `mise run test-py-unit` / `mise run test-py-regression` | Select isolated logic/mocked operations or real process/toolchain regressions |
+| `mise run test-benchmark-tools` | Benchmark-tool unittest checks; included in the no-argument `test` aggregate and CI |
+| `PVISOR_TEST_VM_BIN=target/release/pvisor mise run test-py -- tests.regression.test_vm_terminal` | Real VM terminal interaction regressions |
+| `PVISOR_TEST_ZCODE=1 mise run test-py -- tests.regression.test_zcode_integration` | Explicit integration requiring Linux rootless, FUSE3 and zcode |
 | `mise run test-isolation` | Strict Linux rootless/FUSE regressions; missing user namespaces do not skip checks |
 | `mise run smoke` | Build debug CLI and check main commands |
 | `mise run examples` | Build release CLI and run all examples; append names for a subset |
@@ -130,9 +131,9 @@ CI checks the default runtime and application dependency boundaries before the c
 
 Runtime-only Rust tests remain in `crates/pvisor/tests/`. Executable/frontend integration test files, including mixed runtime/command tests, live in `crates/pvisor-cli/tests/`; mixed files retain their runtime-only cases in `pvisor`. Native VM and environment-dependent tests keep their existing prerequisites and skip/ignore gates; compile checks do not validate real guests.
 
-Default unittest discovery includes `tests/` and `benchmark/`. Rust tests in `pvisor-core` verify shared Operation/Overlay contracts. Benchmark tests requiring `/proc` and Linux rootfs tools run only on Linux.
+Default `test-py` discovery includes `tests/unit/` and `tests/regression/`; CI runs those disjoint subsets separately. Benchmark tooling uses `test-benchmark-tools`, not a second discovery path in `test-py`. Rust tests in `pvisor-core` verify shared Operation/Overlay contracts. Benchmark tests requiring `/proc` and Linux rootfs tools run only on Linux.
 
-VM filesystem checks run inside the Linux guest and require root, Python and tar. From the repository run `PVISOR_TEST_GUEST_FS_DIRS=/var/tmp:. mise run test-py -- tests/test_vm_filesystem.py` to check guest root/workspace filesystems separately. Checks skip without directory configuration; explicitly enabled failures are errors.
+VM filesystem checks run inside the Linux guest and require root, Python and tar. From the repository run `PVISOR_TEST_GUEST_FS_DIRS=/var/tmp:. mise run test-py -- tests.regression.test_vm_filesystem` to check guest root/workspace filesystems separately. Checks skip without directory configuration; explicitly enabled failures are errors.
 
 For a specific Rust integration test/filter, pass nextest arguments after `--`, for example `mise run test-rust -- pvisor-gateway -- --test llm_fixtures`. nextest excludes doctests; use `cargo test --doc -p <package>` when needed.
 

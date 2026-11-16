@@ -1,227 +1,117 @@
-# Benchmark specifications and tables
+# pVisor benchmarks
 
-这里回答的问题：怎样用固定、可审查的 Python 计时命令生成表格，并保留每次实验的来源？
-需求、角色和正确性门禁见 [REGISTRY.md](REGISTRY.md#registry)。
-[registry.csv](registry.csv) 把活动实验映射到按主题组织的 Markdown spec 或 JSON 模板。综合页无独立实验，B-CLUSTER 已退役。
+这里回答的问题：如何用可审查的 Rust 实验，通过 Criterion 采样，并保留正确性与来源证据？
+实验准入、角色与发布要求以 [REGISTRY.md](REGISTRY.md) 为准。
 
-活动代码统一位于 `benchmark/`。早期 campaign 运行器及其专属 Cargo examples 已退役；
-当前入口的输入校验、命名空间隔离和资源观察位于 [support/](support/README.md)。
-历史报告从 Git 历史查阅。`.data/` 是不随 checkout 分发的本地实验制品，可按明确授权清理；
-清理后复现需自行准备输入和对应冻结 harness。CSV 中的历史 argv 和来源清单记录当时的
-路径，不表示原始制品仍在本机保留，也不随本地清理改写。
+## 活动范围与入口
 
-## 模板与执行
+[registry.csv](registry.csv) 的 63 个键保留原有身份；`implementation` 指向当前 Rust
+实现。30 个原活动入口迁入 [criterion/](criterion/README.md)，33 个原未准备条目仍为
+`requires-single-condition-command`，在执行任何实验之前拒绝测量。`criterion-rust`
+表示已有实现，不表示当前机器具备 KVM、macOS、固件、镜像、委派 cgroup 等实验前提。
+JSON 仅为非执行的定位信息，Markdown 仅说明设计；不再通过 Markdown/JSON 运行 Python
+行命令。历史退役脚本不因仍存在于 checkout 而成为活动入口。
+逐入口实现、smoke 与未验证环境清单见 [MIGRATION.md](MIGRATION.md)。
 
-[process/smoke.md](process/smoke.md) 与 [process/nightly.md](process/nightly.md) 把各自采样配置、四个直接 argv 条件与
-校验 hooks 放在同一份可读规格中。`mise run benchmark -- smoke` 先通过 semspec 的 JSON
-计划清单读取 Markdown，准备器只展开路径和执行预检；行模板自动生成，不维护配套
-`.json` 和 `.commands.json`。批次仍保留现有逐次计时、完整审计与 CI 阈值比较。
-[replay/replay.md](replay/replay.md) 同样统一七种轨迹格式的计划，复用相同入口；
-fixture、原生前缀及工作区校验由 replay 适配器负责。其余注册实验仍用以下 JSON 格式。
-
-每个条件对应一个 Python 行命令，脚本返回 N、Median ms、Mean ms、SD ms、Min ms、Max ms。
-旧 JSON 入口的固定 argv、准备/校验命令、环境、样本数和预热数登记在同名
-`*.commands.json` 中，准备时展开为批次 `commands.json` 并冻结摘要：
-
-```json
-{"native": "$ python3 @REPO@/benchmark/command_timing.py @BATCH@ native"}
-```
-
-计时器使用标准库 `perf_counter_ns` 与 `statistics`，只计时被测进程的创建至正常退出；
-准备和校验命令不计时，但每次（包括预热）必须成功。解释器启动、semspec 和统计处理不计时。
-公共时钟、预热/采样、统计、逐次记录及命令证据审核现在由
-[semspec runtime](../tools/semspec/runtime.py) 提供。`command_timing.py`、startup 的
-`timing.py`、filesystem 的 `fs_timing.py` 是实验适配器，只保留各自的准备、Ready
-协议、fixture 与正确性检查。批次同时冻结公共 runtime 摘要和源码，沿用现有时钟
-与统计字段；不合并或改写历史样本。复杂专用实验暂时保留自己的执行协议。
-
-小型本地实验可直接在 Markdown 中写 `semspec: bench id=NAME` TOML cell，
-用 `semspec filter experiment.md --execute` 得到表格；无需手写采样循环或 result.json。
-已有自有采样协议的实验使用 `semspec: table id=NAME` JSON cell，返回完整行，避免重复计时。
-同一文档中的 case、期待输出、结果和说明也由 filter 统一渲染。
-格式见 [semspec](../tools/semspec/README.md#shared-experiment-runtime)。
-公开 benchmark 仍必须经过本目录的注册、准备、完整逐次审计和发布门禁。
+| 实验族 | 原活动键数 | Rust 实现与复现手册 |
+| --- | ---: | --- |
+| Process smoke/nightly | 2 | [`process.rs`](criterion/src/process.rs)、[smoke](process/smoke.md) |
+| Ready/Exit 与三种镜像对照 | 12 | [`startup/`](criterion/src/startup/mod.rs)、[startup README](startup/README.md) |
+| 原生文件、九运行时与 DAX | 3 | [`filesystem/`](criterion/src/filesystem/mod.rs)、[filesystem README](filesystem/README.md) |
+| 网络 profile A/B | 1 | [`network/`](criterion/src/network/mod.rs)、[network README](network/README.md) |
+| 七种轨迹格式准备 | 1 | [`replay/`](criterion/src/replay/mod.rs)、[replay README](replay/README.md) |
+| allocator、scanner、pool、library | 4 | [`memory/`](criterion/src/memory/mod.rs)、[memory README](memory/README.md) |
+| 镜像库存、格式、运行、本地/远程按需读取 | 7 | [`storage/`](criterion/src/storage/mod.rs)、[storage README](storage/README.md) |
 
 ```sh
-mise run benchmark -- startup/timing
-mise run benchmark -- startup/timing --row Docker
-mise run benchmark -- startup/timing "pvisor vm"
-mise run benchmark -- docker_timing
-mise run benchmark -- smoke
-mise run benchmark -- filesystem/tools
-mise run benchmark -- replay --binary target/release/pvisor-replay
+mise run benchmark -- --list
+mise run benchmark -- smoke --binary target/release/pvisor \
+  --output benchmark/process/.data/new-smoke
+mise run benchmark -- replay --binary target/release/pvisor-replay \
+  --output benchmark/replay/.data/new-replay
+mise run benchmark -- startup/native_timing \
+  --output benchmark/startup/.data/new-native
 ```
 
-`mise run benchmark` 直接输出渲染后的 Markdown 表格，并在模板旁生成同名 `.render.json`：
-例如 `docker_timing.json` → `docker_timing.render.json`。默认使用自动清理的临时目录，
-只保留最终表格；不追加 CSV、不自动更新用户文档。部分行失败时不覆盖已有结果。
-第二个位置参数或 `--row` 可指定启动或文件系统表的一行；行名忽略大小写和多余空格。
-复测仅执行该行，更新同名结果文件中的该行并输出合并表格，已有其他行保留，顺序跟随模板。
-没有旧结果时只含已测行；整表执行会替换全部结果。入口先构建 semspec 以解析 Markdown；
-拼错行名会在产品构建和实验准备前报错并列出可选行。
-启动默认选当前可用的前两个 CPU，可用 `--cpu-affinity` 指定；pVisor、镜像与内核需要预先准备。
-process smoke/nightly 保留自动构建；其他表使用预构建制品。
+制品、镜像和系统权限必须预先准备。入口不自动下载或重建被测产品，也不为未准备模板
+猜测命令。专用协议的路径、预算、工具与 metric 配置见各实验族 README。
+`--output` 必须是新目录；默认生成新的 `benchmark/.data/criterion-...`。
+同名旧批次不复用。失败现场保留，不删除外部文件或无关服务。
 
-需要审计、CI 对比或发布时，显式保留原始证据：
+## 测量边界与统计
+
+锁定实际发布的 **Criterion.rs 0.7.0**，使用稳定公开 API。Criterion 负责自适应校准、
+预热、采样、估计和基线比较。
+Rust 实验控制测量边界：`Bencher::iter_custom` 返回对应 `iters` 次真实操作的总
+`Duration`，准备、JSON 解析、正确性校验和证据写入不进入自报值。
+Ready 与 Completion 分开，guest 内部阶段不替换成 CLI 全生命周期。
+
+非时间指标使用自定义 `Measurement` / `ValueFormatter`，明确 B、计数及“一次操作”的
+含义。逐操作内存窗口值/差值与 cgroup lifetime highwater 不混称为任务峰值。
+原始请求/操作分布独立保存；Criterion 的多操作统计样本不是原始操作，
+不能从批次均值推算操作 P95/P99，也不能把非加总指标伪装为纳秒或吞吐。
+
+**这是新的统计 cohort。** Criterion 的统计样本数不等于 CLI 调用次数；校准与自适应预热
+也会执行操作。旧固定 N3/N30/N60 等次数不再声称逐次兼容，必要正确性预热和最小统计
+样本数由各实验保留并说明。完整随机 pair/矩阵仍在一次操作内执行，逐臂记录不丢失。
+Criterion 默认基线区间不是随机配对中位数差的置信区间，不自动满足 REGISTRY 的
+百分比、双峰或尾延迟发布要求。没有完成这些准入分析时，不发布因果改善结论。
+
+每次预检、预热、校准和测量都校验输出、正常退出、来源与实验隔离条件。失败停止操作，
+不作为零、不跳过失败 cell 来缩短矩阵。进程观察和资源所有者保留超时、清理及失败记录。
+
+## 基线与 CI
 
 ```sh
-mise run benchmark -- startup/timing --output benchmark/startup/.data/measurement
-mise run benchmark -- smoke --output benchmark/process/.data/measurement
+mise run benchmark -- smoke --binary /prepared/main/pvisor \
+  --output benchmark/process/.data/main \
+  --criterion-output benchmark/process/.data/criterion -- --save-baseline main
+mise run benchmark -- smoke --binary /prepared/candidate/pvisor \
+  --output benchmark/process/.data/candidate \
+  --criterion-output benchmark/process/.data/criterion -- --baseline main
+mise run benchmark-compare -- benchmark/process/.data/criterion \
+  --candidate new --output benchmark/process/.data/comparison
 ```
 
-启动每行保存在 `row-0-<id>/`、`row-1-<id>/` 等子目录中；其他表直接使用指定目录。
-`PVISOR_BENCHMARK_OUTPUT` 仍按表名创建子目录，供 CI 保留 `smoke/in.bench.json`。
-可对保留批次单独执行 `update.py`；文档发布必须使用完整审计证据。
+CI 并行构建两份产品，在同一测量机使用候选 harness 顺序执行基线和候选。
+Criterion 保存原始统计与基线比较；Rust 的 `benchmark-compare` 只读取 Criterion
+`median.point_estimate` 执行现有 15% 门禁，不另写采样器或统计器。这是工程回归门禁，
+不是随机交替 A/B 的用户加速结论。构建 SHA/归档摘要、原始操作和失败后诊断继续保留。
 
-安装 Python 3.10+ 并构建独立的 semspec CLI；无需外部计时工具。
-准备脚本只冻结输入、展开私有路径和做预检；真正执行实验的入口是 **semspec bench**。
-例如 process smoke（2 次预热、10 次样本；nightly 为 10 / 50）：
+## 证据与历史展示
 
-```sh
-cargo build --locked --manifest-path tools/semspec/Cargo.toml --target-dir target/semspec
-export SEMSPEC_BIN="$PWD/target/semspec/debug/semspec"
-batch=$(python3 benchmark/process/prepare.py benchmark/process/smoke.md --binary target/release/pvisor)
-"$SEMSPEC_BIN" bench --cwd "$batch/workspace" "$batch/in.json"
-python3 benchmark/update.py "$batch"
-"$SEMSPEC_BIN" render benchmark/process/.data/results/smoke.semspec.md
-```
+各族在新 `.data/` 中保存配置、来源/制品摘要、冻结源码、实际 argv、stdout/stderr、
+退出状态、校验结果、逐操作时钟/资源观察与清理证据；Criterion 输出独立于操作记录。
+默认 Criterion 目录可用 `--criterion-output` 指定，不向文档目录写实验成绩。
+缺少 source-build receipt 时只声明二进制的字节身份，不声明来自当前源码。
 
-独立 filesystem 原生负载使用 Python 行命令，见 [filesystem/README.md](filesystem/README.md)。
-两行共用一份输入，解释器与负载校验计入完整命令时间，无需外部计时工具。手动保留批次：
-
-```sh
-batch=$(python3 benchmark/filesystem/prepare.py benchmark/filesystem/tools.md)
-"$SEMSPEC_BIN" bench --cwd "$batch" "$batch/in.json"
-python3 benchmark/update.py "$batch"
-```
-
-启动页八个固定条件见 [startup/README.md](startup/README.md)。`@REPO@`、`@BATCH@`、
-`@BINARY@` 等标记由准备脚本展开成实际路径，生成本批次的 `in.json`；原模板保持不变。
-`common.py` 冻结配置、输入、代码及制品摘要，`command_timing.py` 执行 process/replay 的
-逐次采样并保留 command-trials 和各条件 samples.json。`update.py` 检查每次退出、hooks、
-精确 argv、完整样本数、单调时钟差值，并重新计算所有统计列；篡改或失败阻止发布。
-新 Python 计时口径不能与历史 hyperfine 批次合并，历史文件与 provenance 保持原样。
-历史 replay 文档绑定明确保留旧口径，拒绝把新计时结果直接覆盖成旧口径；新公开批次须登记新绑定。
-
-`run.py` 统一解析表名、行名和选项；mise 只负责按解析结果构建 process 二进制与 semspec。
-准备和发布只接受整行命令，旧的逐单元格命令与 `| json ... * ...` 提取分支已删除。
-历史展示 JSON 仍可直接渲染；旧逐单元格批次不再由当前发布器发布，需要按当前模板重新测量。
-
-## 证据与发布
-
-每次准备创建入口目录 `.data/<entry>-<UTC>-<random>/`，拒绝复用已有目录：
-
-- `in.json`：展开路径后的实际命令模板。
-- `in.render.json`：保留完整精度的结果表格。
-- `in.bench.json`：原始测量导出、命令和表格行/单元格映射。
-- `in.bench.logs/`：每个命令的日志；失败也保留。
-- `manifest.json`、`harness/`：版本、CPU 亲和性、制品和冻结代码摘要、状态。
-
-`update.py` 检查全部正式样本零退出、条件和提取值与原始导出一致、输入与代码来源未变，
-再追加 `.data/results/<entry>.semspec.csv`，在模板旁生成
-`<entry>.render.json` 和引用它的结果 Markdown。
-CSV 保留完整精度及批次来源；展示 JSON 将毫秒格式化为两位小数。重复发布同批次不重复追加；
-不同 CSV schema 拒绝混合。可以通过 `--csv` / `--markdown` 指定新目标。
-Markdown 单独一行写 `{{ table("../../tools.render.json") }}`；文档构建只读取已生成 JSON，
-不会运行实验。CSV 和结果 Markdown 均写入入口目录下的 `.data/results/`；模板旁的
-`.render.json` 是被 Git 忽略的本地预览，文档发布仍使用独立的公开资产目录。
-历史 results 报告的表格直接保留在 Markdown 中，CSV/JSON 保留原字节归档，不混入新批次。
-
-历史派生表位于各主题的 `.data/derived-tables-20261018/`，重复预览表位于
-`.data/generated-tables-20261018/`。此次迁移的完整路径、字节数、SHA-256 和修改前的
-报告保存在本目录 `.data/generated-tables-prune-20261018/`；配置、实验入口、
-测试夹具、文档构建用表格和必要公开下载继续跟踪。
-
-配置中的 `prepare` / `conclude` 重置并验证每次输入输出；失败不发布。构建、rootfs、镜像和服务
-预先准备，不能将旧多样本 campaign 当成单次被测命令。计时器按条件顺序独立采样，
-不宣称随机配对、因果改善比例或置信区间。Ready、内部阶段、密度和整体 cgroup 内存等
-不同指标不能用完整命令时间替换。工程和诊断实验保持 registry 中各自的角色。
-
-## 迁移范围与验证
-
-注册入口已核对行命令规则；尚无单次负载的模板保持未准备。
-活动入口由 registry.csv 登记，已迁移的 smoke、nightly 和 replay 使用 Markdown，其他保留 JSON。启动、process、filesystem/tools、replay 有具体命令；其他条目的
-`requires-single-condition-command` 模板显式使用 null，准备时拒绝测量。它们还需实现单次负载及正确性 hooks，不能用历史统计或任意命令填充。
-
-`mise run benchmark -- [smoke|nightly]` 在构建后走 prepare → semspec bench → audit → render；CI 使用同一
-新 harness 测量候选和基线，并从原始导出执行现有 15% 回归门禁。
-CI 将两个版本的构建拆到并行 runner，再把保留权限的二进制归档下载到同一台测量
-runner，依次执行基线与候选。采样数、校验和阈值不变；构建 SHA、归档校验和与
-逐次测量证据一起保留。测量阶段使用 `--binary`，不会再次编译产品。
-Linux CI 失败时，在比较之后按各批次冻结的 argv 额外执行 status/review，
-将 strace 与可用的 CLI 入口 profile 写到各批次 `diagnostics/`。
-同时单独保留无 strace 的 `*.profile.stderr`，用于区分读取与验证阶段；
-启用 profile 的额外命令仍含诊断写入成本，不是原始性能样本。
-这些调用不进入样本或阈值计算，不覆盖原始统计；它们只用于 B-PROCESS 工程诊断。
-验证：`mise run test-semspec` 和 `mise run test-py -- discover -s benchmark/tests`。
-
-## 文档表格
-
-[docs.json](docs.json) 登记中英文 benchmark 用户页及相关分析页的 benchmark ID、角色、
-必要公开 CSV，以及构建所需动态表格的 JSON 引用和发布绑定。固定历史表格直接写在 Markdown 中，
-保留原来的数字、统计口径、链接和对齐；构建时不再依赖逐张历史 JSON。
-公开 CSV 由 [public_assets.py](public_assets.py) 白名单控制，只保留必要用户统计；
-`csv_path(repo, filename, locale)` 定位共享下载，中英文共用一份。
-正文已有的静态表、逐轮逐环境记录、历史和工程中间表不默认另行导出。
-完整 CSV/JSON 留在原批次的本地 publication 目录或 `.data/` 归档，动态 JSON 只保留构建所需投影。
-本地化展示 JSON 留在文章旁。
-复测发布的结果与自动生成的覆盖范围表继续通过 `semspec render` 读取 JSON。
-重复表头可使用 `headers`，链接、代码和对齐通过显式渲染选项保留。
+历史原始数据、`.data/`、公开 CSV/JSON 与来源摘要保持原样。保留的 Python
+`archive.py`、`docs.py`、`update.py`、绘图器和历史审计器只处理展示/归档证据，
+不属于活动测量链路。Python dispatcher、计时 CLI 和重复准备器不保留兼容壳；
+历史复现使用原批次冻结 harness，
+不能用当前代码冒充旧时钟。
 
 ```sh
 python3 benchmark/docs.py check
-python3 benchmark/docs.py publish "$batch"
 ```
 
-`python3 benchmark/measurement_coverage.py` 更新 `docs.json` 登记的中英文 benchmark 用户页的复测范围清单。没有匹配负载的页面保留历史数字并明确标识。
+站点直接构建普通 Markdown 表格，不加载自定义表格 renderer，也不编译测试工具。
+六处原动态表格已内联，`docs.py check` 仍核对 JSON、CSV 与文章中的精确表格。
+更新经过审核的数据时必须同步更新双语 Markdown；修改 JSON 不会自动改写文章。
+原公开 binding 不接受新的 Criterion cohort；新测量发布仍须独立登记匹配的口径、
+完整证据和 REGISTRY 准入。迁移本身不更新任何用户数字、不合并历史样本。
 
-`check` 检查文章覆盖、动态 JSON 引用、表结构、未执行命令与 CSV 来源。
-公开的新表还必须逐格等于各条件最新 CSV 的展示值，样本数和计时范围不匹配会阻止构建。
-`publish` 仅接受 `docs.json` 的 live binding，校验对应时钟的原始样本与正确性 hooks，
-仅向共享位置发布白名单内的完整精度 CSV，更新构建所需展示 JSON 与必要用户实验的 provenance，原 MD 无需改写。
-必要 provenance 摘要统一保存在 `docs/overrides/assets/benchmarks/`，中英文共用一份；
-保留批次、计时口径、运行配置、输入/二进制与证据摘要。完整 manifest、逐文件 harness
-清单、宿主路径和软件包收据留在批次 `.data/`。启动页引用 Ready JSON 表；完整
-Ready / Exit 指标保留在统计 CSV 中，单行复测保留其他条件的来源配置。
-发布器验证 `metric_scope` 与绑定声明的负载配置；中位数与标准差同一行，批次名称放在来源记录，不挤入数值表。
-没有 live binding 的条件会拒绝发布；工程 A/B 不写入用户表。filesystem 的历史 hyperfine 结果
-保留在本地归档，其用户表、下载和发布绑定已删除；新 Python 时钟数据需单独登记文档表，必要公开 CSV 按白名单发布。改变历史表数据时需同步
-登记新来源与摘要，不能让旧 CSV 或旧结论自动冒充新实验。原文章归档留在
-`.data/docs-tables-20261011/`；原 CSV 未覆盖。
-整理前的完整文档 provenance 归档于 `.data/docs-provenance-20261011/`。
-公开图表使用 SVG，不再发布 PDF；工程实验只公开 SVG，完整统计与来源保留在本地 publication。
-历史和工程 CSV/JSON、旧 provenance 等保存在 `.data/docs-assets-prune-20261018/`，
-迁移清单记录原路径、字节摘要与新位置。裁减公开文件不改变正文表图、统计口径或测量值；
-必要公开摘要保留与原始来源的哈希关联。
-
-## Replay
-
-B-REPLAY 使用七个固定适配器，每个一条 task 0 合成轨迹，60 次采样、零预热。
-它是独立的完整 CLI 时间数据，历史二十条轨迹的分布与一致性结果继续保留。
-准备脚本冻结 replay 二进制及轨迹并完成预检；每次 hooks 校验源摘要、精确参数、
-完整批次边界、历史观测、零工具执行和真实工作区未变。失败保留证据并阻止发布。
-未提供 source-build receipt 时，不能声称冻结二进制来自当前源码。
+## 验证
 
 ```sh
-export SEMSPEC_BIN="$PWD/target/semspec/debug/semspec"
-batch=$(taskset -c 0,1 python3 benchmark/replay/prepare.py benchmark/replay/replay.md --binary target/release/pvisor-replay)
-taskset -c 0,1 "$SEMSPEC_BIN" bench --cwd "$batch" "$batch/in.json"
-python3 benchmark/update.py "$batch"
-python3 benchmark/docs.py publish "$batch"
+mise run test -- pvisor-benchmarks -- --manifest-path benchmark/criterion/Cargo.toml
+mise run benchmark -- --smoke --criterion-output benchmark/.data/harness-smoke
+mise run test-benchmark-tools
+mise exec -- cargo check --locked --manifest-path benchmark/criterion/Cargo.toml \
+  --features vm-probes --bin pvisor-memory-vm --bin dax-driver --bin startup-stage-mount
 ```
 
-亲和性在准备与 semspec 外层设置，manifest 记录实际选择；被测命令没有 Python 或
-`taskset` 包裹。所有适配器按独立条件采样，不声称随机配对改善比例。
-
-## 公开图表清理
-
-`docs.py check` 拒绝未被文章、展示表或主题引用的公开 SVG。新增图表先在对应文章中引用；
-`filesystem/publish_io_curves.py` 只发布当前引用的图，完整图表仍在批次 publication 中归档。
-2026-10-18 撤下的无引用 SVG 原字节保存在 `.data/docs-assets-cleanup-20261018/`，
-可提交的路径、大小和 SHA-256 索引见 [清理清单](evidence/docs-assets-cleanup-20261018.json)。
-清单只覆盖这次公开图表清理，不表示其他历史原始批次已在当前 checkout 核验或完整保留。
-
-Model-free, single-task SWE command replay with optional AgentENV transport is
-documented in [replay/README.md](replay/README.md). It is engineering tooling
-under B-SWE-RESIDENT-ENG, separate from the B-REPLAY preparation benchmark;
-no historical measurement or publication binding is changed.
+`--smoke` 是工具自测：故意在测量区间外等待，验证自报时间以及 B/operation 的归一化；
+不是产品性能结果。默认测试不运行昂贵 VM/镜像/内存 campaign。编译、fixture smoke、
+真实后端单次验证与正式实验必须分别报告，尤其不能将 Linux 单元测试算作 macOS 或
+KVM/stock-kernel/Docker 环境验证。

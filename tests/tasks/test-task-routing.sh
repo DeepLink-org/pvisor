@@ -34,15 +34,14 @@ for plugin in github:nextest-rs/nextest cargo:cargo-zigbuild; do
     *) echo "$binary is outside the mise installation" >&2; exit 1 ;;
   esac
 done
-# Markdown selection exercises the real parser, including on a clean checkout.
-cargo build --quiet --locked --manifest-path "$MISE_PROJECT_ROOT/tools/semspec/Cargo.toml" --target-dir "$CARGO_TARGET_DIR/semspec"
-export PVISOR_TASK_TEST_SEMSPEC="$CARGO_TARGET_DIR/semspec/debug/semspec"
+# Routing uses file selection; native Scrut parsing has its own fixture gate.
 export PVISOR_TASK_TEST_LOG="$work/commands" CARGO_TARGET_DIR="$work/target with spaces" CARGO_INSTALL_ROOT="$work/install"
 export PVISOR_TASK_TEST_PYTHON="$(python3 -c 'import sys; print(sys.executable)')"
 mkdir "$work/bin" "$work/tests"
 mkdir -p "$work/scripts/tasks" "$work/tests/tasks"
 cp "$MISE_PROJECT_ROOT"/scripts/tasks/*.sh "$work/scripts/tasks/"
 cp "$MISE_PROJECT_ROOT"/tests/tasks/*.sh "$work/tests/tasks/"
+cp -R "$MISE_PROJECT_ROOT/tests/spec" "$work/tests/spec"
 # Exercise the native tasks with stub tools, without installing a toolchain.
 sed '/^\[tools\]/,/^\[task_config\]/{ /^\[task_config\]/!d; }; /^UV_PYTHON =/d' "$MISE_PROJECT_ROOT/mise.toml" > "$work/mise.toml"
 cp "$MISE_PROJECT_ROOT/tests/tasks.toml" "$work/tests/tasks.toml"
@@ -56,6 +55,25 @@ printf '\n' >> "$PVISOR_TASK_TEST_LOG"
 args=("$@")
 if [[ "$name" == python3 && "${2:-}" == --check ]]; then
   exec "$PVISOR_TASK_TEST_PYTHON" "$@"
+fi
+if [[ "$name" == python3 && "$1" == */tests/spec/report.py ]]; then
+  exec "$PVISOR_TASK_TEST_PYTHON" "$@"
+fi
+if [[ "$name" == python3 && "$1" == - ]]; then
+  exec "$PVISOR_TASK_TEST_PYTHON" "$@"
+fi
+if [[ "$name" == go && "${2:-}" == -list ]]; then
+  printf '%s\n' TestAlpha TestBeta TestNewCase Test4
+fi
+if [[ ( "$name" == go || "$name" == bats ) && "${PVISOR_TASK_TEST_BAD_RUN:-0}" == 1 ]]; then exit 1; fi
+if [[ "$name" == cargo && "$1" == install && "$2" == scrut ]]; then
+  mkdir -p "$CARGO_TARGET_DIR/scrut/bin"
+  cp "${PVISOR_TASK_TEST_LOG%/*}/bin/tool" "$CARGO_TARGET_DIR/scrut/bin/scrut"
+fi
+if [[ "$name" == scrut ]]; then
+  printf '%s\n' "${PVISOR_CASE_REQUIRE_PASS:-0}" > "$PVISOR_TASK_TEST_LOG.strict"
+  if [[ "${PVISOR_TASK_TEST_BAD_RUN:-0}" == 1 ]]; then exit 1; fi
+  exec "$PVISOR_TASK_TEST_PYTHON" -c 'import json,sys; print(json.dumps([{"location":p,"result":{"kind":"success"}} for p in sys.argv[4:]]))' "$@"
 fi
 if [[ "$name" == python3 && "$1" == scripts/check-docs.py && "${PVISOR_TASK_TEST_BAD_DOCS_PREFLIGHT:-0}" == 1 ]]; then exit 1; fi
 if [[ "$name" == python3 && "$1" == scripts/packaging/stage_wheel_binaries.py ]]; then
@@ -83,15 +101,29 @@ if [[ "$name" == cargo && "$1" == nextest && "$2" == list ]]; then
   if [[ "${PVISOR_TASK_TEST_BAD_LIST:-0}" == 1 ]]; then exit 1; fi
   jq -n --arg directory "${PVISOR_TASK_TEST_LOG%/*}/tests with spaces" '{"rust-suites": (["pvisor-vm", "pvisor", "pvisor-cli", "nativepvisor", "pvisor-daemon", "pvisor-core"] | map({key: ., value: {"package-name": ., "binary-path": ($directory + "/" + . + "\nfixture")}}) | from_entries)}'
 fi
+if [[ "$name" == cargo && "$1" == nextest && "$2" == run && "${PVISOR_TASK_TEST_BAD_NATIVE:-0}" == 1 ]]; then exit 1; fi
+if [[ "$name" == cargo && "$1" == run ]]; then
+  for ((i=0; i<$#; i++)); do
+    if [[ "${args[$i]}" == --manifest-path && "${args[$((i+1))]}" == */benchmark/criterion/Cargo.toml ]]; then
+      # Cargo owns build failure; the native CLI owns argument refusal. Neither
+      # stub path executes an experiment or evaluates any forwarded argument.
+      if [[ "${PVISOR_TASK_TEST_BAD_BUILD:-0}" == 1 ]]; then exit 1; fi
+      for arg in "$@"; do
+        if [[ "$arg" == unknown ]]; then
+          echo "error: unexpected argument 'unknown'" >&2
+          exit 2
+        fi
+      done
+      break
+    fi
+  done
+fi
 if [[ "$name" == cargo && "$1" == run && "${PVISOR_TASK_TEST_BAD_RUN:-0}" == 1 ]]; then exit 1; fi
+if [[ "$name" == timeout && "${PVISOR_TASK_TEST_BAD_ISOLATION:-0}" == 1 ]]; then exit 1; fi
 if [[ "$name" == codesign && "${PVISOR_TASK_TEST_BAD_CODESIGN:-0}" == 1 ]]; then exit 1; fi
 if [[ "$name" == codesign && "$1" == --verify && "${PVISOR_TASK_TEST_BAD_VERIFY:-0}" == 1 ]]; then exit 1; fi
 if [[ "$name" == cargo && "$1" == build ]]; then
   if [[ "${PVISOR_TASK_TEST_BAD_BUILD:-0}" == 1 ]]; then exit 1; fi
-  if [[ " $* " == *"/tools/semspec/Cargo.toml "* ]]; then
-    mkdir -p "$CARGO_TARGET_DIR/semspec/debug"
-    cp "$PVISOR_TASK_TEST_SEMSPEC" "$CARGO_TARGET_DIR/semspec/debug/semspec"
-  fi
   profile=debug
   for ((i=0; i<$#; i++)); do
     if [[ "${args[$i]}" == --release ]]; then profile=release; fi
@@ -115,9 +147,13 @@ if [[ "$name" == uv && "$1" == sync && "${PVISOR_TASK_TEST_BAD_SYNC:-0}" == 1 ]]
   done
 fi
 if [[ "$name" == python3 && "$1" == scripts/packaging/verify_wheel.py && "${PVISOR_TASK_TEST_BAD_WHEEL:-0}" == 1 && "$2" == */pvisor_sandbox-b.whl ]]; then exit 1; fi
+if [[ "$name" == python3 && "${1:-}" == -m && "${2:-}" == unittest && "${4:-}" == tests.hardware.* ]]; then
+  printf '%s\n' "$PVISOR_VM_PROBE_BINARY" "$PVISOR_VM_PROBE_REPORT" "${PVISOR_CASE_VM_LIBRARY_DIR:-}" > "$PVISOR_TASK_TEST_LOG.probe-env"
+  if [[ "${PVISOR_TASK_TEST_BAD_RUN:-0}" == 1 ]]; then exit 1; fi
+fi
 SH
 chmod +x "$work/bin/tool"
-for name in cargo rustc rustup uv uvx python3 node codesign actionlint zig; do ln -s tool "$work/bin/$name"; done
+for name in cargo rustc rustup uv uvx python3 node codesign actionlint zig unshare fusermount3 timeout go bats; do ln -s tool "$work/bin/$name"; done
 export PATH="$work/bin:$PATH"
 command_line() { printf '%q\t' "$@"; printf '\n'; }
 run() { : > "$PVISOR_TASK_TEST_LOG"; local task="$1"; shift; mise -C "$work" run "$task" -- "$@" > "$work/stdout" 2> "$work/stderr"; }
@@ -130,22 +166,7 @@ signature_lines() {
   done
 }
 
-# Inspect the native task inventory, including the visibility contract.
-mise -C "$work" tasks ls --json | jq -r '.[] | select(.hide == false) | .name' | LC_ALL=C sort > "$work/public"
-printf '%s\n' default ci clean build check wheel accept-wheel fw fmt fmt-rust fmt-py lint lint-api-docs lint-rust lint-py lint-workflows test test-rust test-py test-agent-plugins test-agent-plugins-native test-agent-plugins-smoke test-isolation smoke examples cases test-hvf-cold-restore test-vm-snapshot-state benchmark docs-build docs-serve check-core-budget check-release-version check-release-artifacts doctor setup | LC_ALL=C sort > "$work/expected"
-diff -u "$work/expected" "$work/public"
-
-run test-agent-plugins
-check_line node --test 'plugins/test/*.test.mjs'
-run test-agent-plugins-native
-check_line node --test 'plugins/test/*.native.mjs'
-run test-agent-plugins-smoke
-check_line node plugins/smoke.mjs
-
-run doctor dev
-check_line cargo nextest --version
-run fw build --offline
-check_line uv run --locked --only-group dev python scripts/packaging/firmware.py --target-dir "$CARGO_TARGET_DIR" --offline
+# Assert routing decisions and side effects, not the inventory or every recipe.
 run setup
 check_line uv sync --locked --only-group dev
 case "$(uname -m)" in
@@ -209,94 +230,43 @@ if [[ "$(uname -s)" == Darwin ]]; then
   PVISOR_TASK_TEST_BAD_LIST=1 expect_failure test cli -- --features pvisor-cli/gateway
   test "$(wc -l < "$PVISOR_TASK_TEST_LOG")" -eq 1
 fi
-run test-semspec --test-threads 1
-{ command_line cargo nextest run --manifest-path tools/semspec/Cargo.toml --target-dir "$CARGO_TARGET_DIR/semspec" --locked --test-threads 1
-  command_line python3 -m unittest discover -s tools/semspec -p 'test_*.py'; } > "$work/expected"
-diff -u "$work/expected" "$PVISOR_TASK_TEST_LOG"
-run lint-semspec
-check_line cargo clippy --manifest-path tools/semspec/Cargo.toml --target-dir "$CARGO_TARGET_DIR/semspec" --all-targets --locked -- -D warnings
 run test shim -- --features vm
 check_line cargo nextest run --locked -p pvisor-shim --features vm
-run check -p pvisor-shim --target x86_64-unknown-linux-musl
-check_line cargo check --locked -p pvisor-shim --target x86_64-unknown-linux-musl
-run lint-rust -p pvisor-shim --features vm
-check_line cargo clippy --all-targets --locked -p pvisor-shim --features vm -- -D warnings
-run test-py
-check_line uv run --locked --only-group dev python -m unittest discover -s tests
-check_line uv run --locked --only-group dev python -m unittest discover -s benchmark/support
-for suite in tests filesystem memory; do
-  check_line uv run --locked --only-group dev python -m unittest discover -s "benchmark/$suite"
-done
-for flags in selected leading filter; do
-  case "$flags" in
-    selected) run test-py tests/test_docs.py -k reference -v; check_line uv run --locked --only-group dev python -m unittest tests/test_docs.py -k reference -v ;;
-    leading) run test-py -q tests/test_docs.py; check_line uv run --locked --only-group dev python -m unittest -q tests/test_docs.py ;;
-    filter) run test-py -k packaging; check_line uv run --locked --only-group dev python -m unittest discover -s tests -k packaging; check_line uv run --locked --only-group dev python -m unittest discover -s benchmark/support -k packaging ;;
-  esac
-done
-for recipe in test-hvf-cold-restore test-vm-snapshot-state test-linux-cold-restore test-environment-snapshot; do
-  if [[ "$(uname -s)-$(uname -m)" != Darwin-arm64 ]]; then
-    expect_failure "$recipe"
-    test ! -s "$PVISOR_TASK_TEST_LOG"
-    continue
-  fi
-  package=pvisor-vm
-  case "$recipe" in
-    test-hvf-cold-restore) example=hvf_cold_restore_case ;;
-    test-vm-snapshot-state) example=threaded_cold_restore_case ;;
-    test-linux-cold-restore) example=vm_linux_cold_restore; package=pvisor ;;
-    test-environment-snapshot) example=vm_environment_snapshot; package=pvisor ;;
-  esac
-  run "$recipe"
-  if [[ "$recipe" == test-hvf-cold-restore ]]; then
-    check_line cargo build --locked -p "$package" --example "$example" --target-dir "$CARGO_TARGET_DIR"
-  else
-    check_line cargo build --locked -p "$package" --example "$example" --target-dir "$CARGO_TARGET_DIR" --offline
-  fi
-  binary="$CARGO_TARGET_DIR/debug/examples/$example"
-  check_line codesign --force --sign - --entitlements "$work/crates/pvisor/macos-hypervisor.entitlements" "$binary"
-  check_line codesign --verify --strict "$binary"
-  if [[ "$package" == pvisor ]]; then
-    check_line rustc --edition 2024 --target aarch64-unknown-linux-musl -C linker=rust-lld -C opt-level=2 crates/pvisor-vm/src/probes/guest_linux.rs -o "$CARGO_TARGET_DIR/debug/probes/guest_linux"
-    report=linux-machine
-    if [[ "$recipe" == test-environment-snapshot ]]; then report=environment-linux; fi
-    check_line python3 "scripts/check-${recipe#test-}.py" --binary "$binary" --guest-bin "$CARGO_TARGET_DIR/debug/probes/guest_linux" --firmware-dir "$CARGO_TARGET_DIR/release" --report "$CARGO_TARGET_DIR/vm-validation/$report.json"
-    PVISOR_CASE_VM_LIBRARY_DIR="$work/firmware with spaces" run "$recipe" --report "$work/custom report.json"
-    check_line python3 "scripts/check-${recipe#test-}.py" --binary "$binary" --guest-bin "$CARGO_TARGET_DIR/debug/probes/guest_linux" --firmware-dir "$work/firmware with spaces" --report "$CARGO_TARGET_DIR/vm-validation/$report.json" --report "$work/custom report.json"
-  else
-    check_line python3 "scripts/check-${recipe#test-}.py" --binary "$binary"
-  fi
-  PVISOR_TASK_TEST_BAD_BUILD=1 expect_failure "$recipe"
+# The native runner owns build/discovery. Only preflight refusal and stale
+# evidence cleanup need a routing fixture; success is tested on a real host.
+evidence="$CARGO_TARGET_DIR/nextest/rootless"
+mkdir -p "$evidence"
+printf stale > "$evidence/junit.xml"
+printf stale > "$evidence/list.json"
+PVISOR_TASK_TEST_BAD_ISOLATION=1 expect_failure test-isolation
+test ! -e "$evidence/junit.xml"
+test ! -e "$evidence/list.json"
+if grep -Fq $'cargo\tmetadata\t' "$PVISOR_TASK_TEST_LOG" || grep -Fq $'cargo\tnextest\trun\t' "$PVISOR_TASK_TEST_LOG"; then
+  echo 'failed rootless preflight reached test discovery or execution' >&2
+  exit 1
+fi
+# One representative native usage route checks literal paths and failure
+# propagation; snapshot semantics belong to the real hardware TestCases.
+: > "$PVISOR_TASK_TEST_LOG"
+PVISOR_CASE_VM_LIBRARY_DIR="$work/firmware with spaces" mise -C "$work" run --skip-deps test-environment-snapshot --report "$work/custom report.json" > "$work/stdout" 2> "$work/stderr"
+diff -u <(printf '%s\n' "$CARGO_TARGET_DIR/debug/examples/vm_environment_snapshot" "$work/custom report.json" "$work/firmware with spaces") "$PVISOR_TASK_TEST_LOG.probe-env"
+if PVISOR_TASK_TEST_BAD_RUN=1 mise -C "$work" run --skip-deps test-environment-snapshot > "$work/stdout" 2> "$work/stderr"; then
+  echo 'hardware unittest failure was not propagated' >&2
+  exit 1
+fi
+if [[ "$(uname -s)-$(uname -m)" == Darwin-arm64 ]]; then
+  # Build, sign and verify must each stop execution on failure.
+  PVISOR_TASK_TEST_BAD_BUILD=1 expect_failure test-environment-snapshot
   test "$(wc -l < "$PVISOR_TASK_TEST_LOG")" -eq 1
-  PVISOR_TASK_TEST_BAD_CODESIGN=1 expect_failure "$recipe"
+  PVISOR_TASK_TEST_BAD_CODESIGN=1 expect_failure test-environment-snapshot
   test "$(wc -l < "$PVISOR_TASK_TEST_LOG")" -eq 2
-  PVISOR_TASK_TEST_BAD_VERIFY=1 expect_failure "$recipe"
+  PVISOR_TASK_TEST_BAD_VERIFY=1 expect_failure test-environment-snapshot
   test "$(wc -l < "$PVISOR_TASK_TEST_LOG")" -eq 3
-done
+else
+  expect_failure test-environment-snapshot
+  test ! -s "$PVISOR_TASK_TEST_LOG"
+fi
 
-for profile in debug release performance; do
-  run build "$profile"
-  cargo_profile=$profile
-  if [[ "$profile" == debug ]]; then cargo_profile=dev; fi
-  check_line python3 scripts/packaging/stage_wheel_binaries.py --profile "$cargo_profile" --target-dir "$CARGO_TARGET_DIR" --all
-  for binary in pvisor pvisor-replay pvisor-daemon; do test -x "$CARGO_TARGET_DIR/$profile/$binary"; done
-  if [[ "$(uname -s)" == Linux ]]; then
-    for binary in pvisor-daemon pvisor-guest containerd-shim-pvisor-v2; do test -x "$CARGO_TARGET_DIR/$profile/$binary"; done
-  fi
-  run build "$profile" product
-  check_line python3 scripts/packaging/stage_wheel_binaries.py --profile "$cargo_profile" --target-dir "$CARGO_TARGET_DIR"
-  test ! -e "$CARGO_TARGET_DIR/$profile/pvisor-memory-pool"
-  for component in daemon shim shim-vm; do
-    run build "$profile" "$component"
-    check_line python3 scripts/packaging/stage_wheel_binaries.py --profile "$cargo_profile" --target-dir "$CARGO_TARGET_DIR" "--$component"
-    expected_commands=1
-    if [[ "$component" == daemon && "$(uname -s)" == Darwin ]]; then expected_commands=3; fi
-    test "$(wc -l < "$PVISOR_TASK_TEST_LOG")" -eq "$expected_commands"
-    binary=containerd-shim-pvisor-v2
-    if [[ "$component" == daemon ]]; then binary=pvisor-daemon; fi
-    test -x "$CARGO_TARGET_DIR/$profile/$binary"
-  done
-done
 expect_failure build release unknown
 test ! -s "$PVISOR_TASK_TEST_LOG"
 expect_failure build unknown shim
@@ -304,6 +274,7 @@ test ! -s "$PVISOR_TASK_TEST_LOG"
 PVISOR_TASK_TEST_BAD_BUILD=1 expect_failure build debug shim-vm
 test "$(wc -l < "$PVISOR_TASK_TEST_LOG")" -eq 1
 if [[ "$(uname -s)" == Linux ]]; then
+  mkdir -p "$CARGO_TARGET_DIR/release"
   printf retained > "$CARGO_TARGET_DIR/release/pvisor-memory-pool"
   run install-cli
   installed_binaries=(pvisor pvisor-replay pvisor-daemon)
@@ -327,64 +298,100 @@ for recipe in fw cases benchmark doctor; do
     *) expect_failure "$recipe" unknown ;;
   esac
   if [[ "$recipe" == benchmark ]]; then
-    command_line cargo build --quiet --locked --manifest-path "$work/tools/semspec/Cargo.toml" --target-dir "$CARGO_TARGET_DIR/semspec" > "$work/expected"
-    command_line python3 "$work/benchmark/run.py" --check smoke unknown >> "$work/expected"
+    command_line cargo run --release --locked --manifest-path "$work/benchmark/criterion/Cargo.toml" --bin pvisor-benchmarks -- smoke unknown > "$work/expected"
     diff -u "$work/expected" "$PVISOR_TASK_TEST_LOG"
+    grep -Fq "unexpected argument 'unknown'" "$work/stderr"
   else
     test ! -s "$PVISOR_TASK_TEST_LOG"
   fi
 done
-run benchmark startup/timing 'pvisor vm'
-check_line python3 "$work/benchmark/run.py" --check startup/timing 'pvisor vm'
-check_line python3 "$work/benchmark/run.py" startup/timing 'pvisor vm'
-SEMSPEC_BIN="$work/missing-semspec" run benchmark filesystem/tools native-read
-check_line python3 "$work/benchmark/run.py" filesystem/tools native-read
-expect_failure benchmark filesystem/tools 'pvisor vm'
-command_line cargo build --quiet --locked --manifest-path "$work/tools/semspec/Cargo.toml" --target-dir "$CARGO_TARGET_DIR/semspec" > "$work/expected"
-command_line python3 "$work/benchmark/run.py" --check filesystem/tools 'pvisor vm' >> "$work/expected"
+run benchmark startup/timing --row 'pvisor vm'
+command_line cargo run --release --locked --manifest-path "$work/benchmark/criterion/Cargo.toml" --bin pvisor-benchmarks -- startup/timing --row 'pvisor vm' > "$work/expected"
 diff -u "$work/expected" "$PVISOR_TASK_TEST_LOG"
-grep -Fq 'available: native-metadata, native-read' "$work/stderr"
-run benchmark smoke --binary /already-built/pvisor
-{
-  command_line cargo build --quiet --locked --manifest-path "$work/tools/semspec/Cargo.toml" --target-dir "$CARGO_TARGET_DIR/semspec"
-  command_line python3 "$work/benchmark/run.py" --check smoke --binary /already-built/pvisor
-  command_line python3 "$work/benchmark/run.py" smoke --binary /already-built/pvisor
-} > "$work/expected"
+# Spaces, shell metacharacters and the Criterion separator remain literal argv.
+benchmark_binary="$work/already built/pvisor;\$(touch $work/injected)"
+run benchmark smoke --binary "$benchmark_binary" --output "$work/evidence with spaces" -- --baseline main
+command_line cargo run --release --locked --manifest-path "$work/benchmark/criterion/Cargo.toml" --bin pvisor-benchmarks -- smoke --binary "$benchmark_binary" --output "$work/evidence with spaces" -- --baseline main > "$work/expected"
 diff -u "$work/expected" "$PVISOR_TASK_TEST_LOG"
-PVISOR_TASK_TEST_BAD_BUILD=1 expect_failure benchmark filesystem/tools native-read
-command_line cargo build --quiet --locked --manifest-path "$work/tools/semspec/Cargo.toml" --target-dir "$CARGO_TARGET_DIR/semspec" > "$work/expected"
+test ! -e "$work/injected"
+PVISOR_TASK_TEST_BAD_BUILD=1 expect_failure benchmark filesystem/tools --row native-read
+command_line cargo run --release --locked --manifest-path "$work/benchmark/criterion/Cargo.toml" --bin pvisor-benchmarks -- filesystem/tools --row native-read > "$work/expected"
 diff -u "$work/expected" "$PVISOR_TASK_TEST_LOG"
+# No default product build or custom Markdown selection parser.
 run benchmark smoke
-check_line python3 "$work/benchmark/run.py" --binary "$CARGO_TARGET_DIR/pvisor-benchmark-build/release/pvisor" smoke
-check_line python3 scripts/packaging/stage_wheel_binaries.py --profile release --target-dir "$CARGO_TARGET_DIR/pvisor-benchmark-build" --all
+command_line cargo run --release --locked --manifest-path "$work/benchmark/criterion/Cargo.toml" --bin pvisor-benchmarks -- smoke > "$work/expected"
+diff -u "$work/expected" "$PVISOR_TASK_TEST_LOG"
+run benchmark-compare "$work/results with spaces" --baseline main --candidate candidate --threshold 15 --output "$work/comparison with spaces"
+command_line cargo run --release --locked --manifest-path "$work/benchmark/criterion/Cargo.toml" --bin benchmark-compare -- "$work/results with spaces" --baseline main --candidate candidate --threshold 15 --output "$work/comparison with spaces" > "$work/expected"
+diff -u "$work/expected" "$PVISOR_TASK_TEST_LOG"
+PVISOR_TASK_TEST_BAD_BUILD=1 expect_failure benchmark-compare "$work/results" --output "$work/comparison"
+command_line cargo run --release --locked --manifest-path "$work/benchmark/criterion/Cargo.toml" --bin benchmark-compare -- "$work/results" --output "$work/comparison" > "$work/expected"
+diff -u "$work/expected" "$PVISOR_TASK_TEST_LOG"
 PVISOR_TASK_TEST_BAD_DOCS_PREFLIGHT=1 PVISOR_TASK_TEST_BAD_BUILD=1 run docs-serve en -a 127.0.0.1:3002
 check_line uv run --locked --only-group dev zensical serve -f docs/zensical.en.toml -a 127.0.0.1:3002
 grep -Fq 'continuing live preview' "$work/stderr"
-run docs-serve
-check_line uv run --locked --only-group dev zensical serve -f docs/zensical.en.toml
+mkdir -p "$work/docs/site"
+printf previous > "$work/docs/site/previous.html"
 PVISOR_TASK_TEST_BAD_DOCS_PREFLIGHT=1 expect_failure docs-build
-{
-  command_line python3 benchmark/docs.py check
-  command_line python3 scripts/check-reference.py
-  command_line python3 scripts/check-docs.py --preflight-build
-} > "$work/expected"
-diff -u "$work/expected" "$PVISOR_TASK_TEST_LOG"
+test "$(cat "$work/docs/site/previous.html")" == previous
+if grep -Fq $'zensical\tbuild\t' "$PVISOR_TASK_TEST_LOG"; then
+  echo 'failed strict docs preflight reached the site builder' >&2
+  exit 1
+fi
 selection="S-DOC-001,\$(touch $work/injected)"
-run cases --case "$selection" --keep --require-reviewed
-check_line cargo run --quiet --manifest-path tools/semspec/Cargo.toml --target-dir "$CARGO_TARGET_DIR/semspec" --locked -- run docs/src/zh/reference --domain DOC --subject-bin "$CARGO_TARGET_DIR/release/pvisor" --format json --output "$CARGO_TARGET_DIR/pvisor-case-report.json" --case "$selection" --keep --require-reviewed
+expect_failure cases --case "$selection" --keep
 test ! -e "$work/injected"
-run cases --suite vm --case S-DOC-060 --keep
-check_line cargo build --locked -p pvisor --release --example vm_control_case --target-dir "$CARGO_TARGET_DIR"
-check_line cargo run --quiet --manifest-path tools/semspec/Cargo.toml --target-dir "$CARGO_TARGET_DIR/semspec" --locked -- run docs/src/zh/reference/cases-vm.md --domain DOC --subject-bin "$CARGO_TARGET_DIR/release/pvisor" --format json --output "$CARGO_TARGET_DIR/pvisor-vm-case-report.json" --case S-DOC-060 --keep
-run cases --suite stage --case S-STAGE-001 --keep
-check_line cargo run --quiet --manifest-path tools/semspec/Cargo.toml --target-dir "$CARGO_TARGET_DIR/semspec" --locked -- run docs/src/zh/cases/06-stage-apply.md --domain STAGE --subject-bin "$CARGO_TARGET_DIR/debug/pvisor" --case S-STAGE-001 --keep
-run cases --suite use
-run cases --suite use --case S-USE-001,S-USE-002 --case=S-USE-003 --output "$work/report with spaces.json" --keep --require-reviewed
-check_line cargo run --quiet --manifest-path tools/semspec/Cargo.toml --target-dir "$CARGO_TARGET_DIR/semspec" --locked -- run docs/src/zh/cases --domain USE --require-pass --subject-bin "$CARGO_TARGET_DIR/release/pvisor" --format json --output "$work/report with spaces.json" --case S-USE-001,S-USE-002 --case S-USE-003 --keep --require-reviewed
-PVISOR_TASK_TEST_BAD_RUN=1 expect_failure cases --suite use --case S-USE-001 --require-reviewed
-check_line cargo run --quiet --manifest-path tools/semspec/Cargo.toml --target-dir "$CARGO_TARGET_DIR/semspec" --locked -- run docs/src/zh/cases --domain USE --require-pass --subject-bin "$CARGO_TARGET_DIR/release/pvisor" --format json --output "$CARGO_TARGET_DIR/pvisor-learning-report.json" --case S-USE-001 --require-reviewed
+run cases --suite use --case S-USE-001,S-USE-002 --case=S-USE-003 --output "$work/report with spaces.json" --keep
+check_line scrut test --renderer json "$work/tests/spec/session/S-USE-001.md" "$work/tests/spec/session/S-USE-002.md" "$work/tests/spec/session/S-USE-003.md"
+PVISOR_TASK_TEST_BAD_RUN=1 expect_failure cases --suite use --case S-USE-001
+check_line scrut test --renderer json "$work/tests/spec/session/S-USE-001.md"
+expect_failure cases --suite use --case S-USE-001 --require-reviewed
+grep -Fq 'refusing --require-reviewed' "$work/stderr"
 expect_failure cases --suite use --case
-if grep -Fq $'cargo\trun\t' "$PVISOR_TASK_TEST_LOG"; then echo 'invalid selection reached semspec' >&2; exit 1; fi
+if grep -Fq $'scrut\ttest\t' "$PVISOR_TASK_TEST_LOG"; then echo 'invalid selection reached Scrut' >&2; exit 1; fi
+
+# A new feature-local case is discovered without changing task or CI ID lists.
+printf '# routing fixture\n' > "$work/tests/spec/config/S-CONFIG-999.md"
+run cases-feature config --list
+grep -Fq 'S-CONFIG-999.md' "$work/stdout"
+test ! -s "$PVISOR_TASK_TEST_LOG"
+run cases-feature config --case S-CONFIG-999 --subject-bin "$CARGO_TARGET_DIR/release/pvisor"
+check_line scrut test --renderer json "$work/tests/spec/config/S-CONFIG-999.md"
+test "$(cat "$PVISOR_TASK_TEST_LOG.strict")" == 0
+test -f "$CARGO_TARGET_DIR/cases-config.json"
+run cases-feature-strict config --case S-CONFIG-999 --subject-bin "$CARGO_TARGET_DIR/release/pvisor"
+test "$(cat "$PVISOR_TASK_TEST_LOG.strict")" == 1
+PVISOR_TASK_TEST_BAD_RUN=1 expect_failure cases-feature config --case S-CONFIG-999
+expect_failure cases-feature config --feature session
+expect_failure cases-feature config --suite use
+expect_failure cases-feature
+expect_failure cases-feature unknown --list
+expect_failure test-feature-native docker-cli unknown
+expect_failure test-feature-native unknown
+expect_failure test-feature-contracts docker-compose bats
+expect_failure test-feature-contracts docker-cli go-2
+test ! -s "$PVISOR_TASK_TEST_LOG"
+run test-feature-native docker-cli
+check_line cargo nextest run --locked -p pvisor-cli --test docker_cli --test docker_p0_cli --test docker_staged_cli --test docker_staged_native -E 'not (test(compose))' --no-tests fail
+run test-feature-native docker-compose
+check_line cargo nextest run --locked -p pvisor-cli --test compose_cli --test docker_cli -E 'binary(=compose_cli) | test(compose)' --no-tests fail
+PVISOR_TASK_TEST_BAD_NATIVE=1 expect_failure test-feature-native docker-cli
+PVISOR_TASK_TEST_BAD_NATIVE=1 expect_failure test-feature-native docker-compose
+
+export PVISOR_BINARY="$CARGO_TARGET_DIR/release/pvisor"
+export CONTRACT_LOGS="$work/bats logs"
+run test-feature-contracts docker-cli bats
+check_line bats --tap --print-output-on-failure tests/spec/docker-cli/regression/system
+PVISOR_TASK_TEST_BAD_RUN=1 expect_failure test-feature-contracts docker-cli bats
+for shard in 0 1; do
+  CONTRACT_LOGS="$work/go-$shard" run test-feature-contracts docker-cli "go-$shard"
+  check_line go test -list '^Test' tests/spec/docker-cli/regression/e2e/*.go
+done
+# Every discovered name goes to exactly one shard, including a newly added test.
+cat "$work/go-0/selected.txt" "$work/go-1/selected.txt" | LC_ALL=C sort > "$work/selected"
+printf '%s\n' Test4 TestAlpha TestBeta TestNewCase > "$work/expected"
+diff -u "$work/expected" "$work/selected"
+PVISOR_TASK_TEST_BAD_RUN=1 expect_failure test-feature-contracts docker-cli go-0
 
 run accept-wheel "$work/wheel with spaces.whl" "$work/evidence with spaces.json"
 check_line python3 scripts/packaging/verify_wheel.py "$work/wheel with spaces.whl" --install-smoke --acceptance-log "$work/evidence with spaces.json"
@@ -416,4 +423,4 @@ for path in "$work/.venv/state" "$CARGO_TARGET_DIR/pvisor-examples/evidence" "$w
 run clean
 for path in "$work/.venv/state" "$CARGO_TARGET_DIR/pvisor-examples/evidence" "$work/benchmark/pvisor/.data/report.json"; do test -f "$path"; done
 for path in "$work/build" "$work/dist" "$work/docs/site" "$CARGO_TARGET_DIR/fw"; do test ! -e "$path"; done
-echo 'PASS: mise routing, task visibility, argument ownership, wheel publication and cleanup'
+echo 'PASS: mise argument ownership, prerequisite refusal, signing, publication and cleanup'

@@ -46,7 +46,7 @@ pool calls live in [automatic pool discovery](https://github.com/DeepLink-org/pv
 | `vm-run` | KVM, readable/writable `/dev/kvm`; Linux x86_64 guest | HVF, Hypervisor signing; Linux aarch64 guest, no macFUSE needed | WHP enabled followed by reboot; nested hosts must expose virtualization; Linux x86_64 guest |
 | Host Sessions (`spawn`), OverlayFS, review/apply/drop | FUSE for staging; user namespaces and Landlock for sandbox | macFUSE 5.4.0+ FSKit for staging; Seatbelt for file/network controls | Not ported |
 | Native OCI Sessions (`container` / `--executor container`) | `crun`/`runc` and a matching static Linux injected binary | Unsupported | Unsupported |
-| Docker-style VM containers and network policy | Implementation and separate contracts | Implementation; each capability needs HVF validation | Experimental WHP profile: image/lifecycle, bridge/none and stdin/PTY; two 77-command native campaigns passed on the reviewed Win11 host |
+| Docker-style VM containers and network policy | Implementation and separate contracts | Implementation; each capability needs HVF validation | Experimental WHP profile: image/lifecycle, bridge/none and stdin/PTY |
 | Linux host-root `stage`, `:stage` binds | Linux-specific paths | No Linux host-root; staged-bind equivalence with Linux is unestablished | Unsupported |
 | VM snapshots, restore, cold RAM | APIs/tests with backing/profile restrictions | APIs/tests with HVF/backing restrictions | Unsupported; pause/resume only |
 | Gateway | Depends on executor and configuration | Host execution path exists | Excluded from this CLI |
@@ -69,10 +69,9 @@ UTF-8 input and terminal Ctrl+C. Live resizing, mounts, published ports, custom
 networks, build and Engine/Compose APIs remain unsupported. The native
 `tests/windows_container_contract.py` driver covers these workflows; compiling
 the implementation or running Win32 tests under Wine does not establish WHP
-network/terminal acceptance. The reviewed Win11/WHP host passed the expanded
-native suite twice, including console mode/code-page restoration and no remaining
-`pvisor.exe` processes. This is local acceptance, not a new remote CI result or
-an hours-long resource-leak test.
+network/terminal acceptance. Native checks include console mode/code-page
+restoration and owned-process cleanup. Bounded acceptance does not establish
+hours-long resource stability.
 
 ### Windows startup checks {#windows-startup}
 
@@ -113,7 +112,7 @@ virtio-fs → Rust PID 1 supervisor → Linux workload → token-authenticated e
 | --- | --- | --- | --- |
 | CLI/processes | Full command tree, Session owners, signals and descendant cleanup | Same Session/companion structure, with macOS terminal/resource limits | `vm-run` plus container owners, generation-bound named pipes and runner Jobs; no Session state |
 | Companions | Adjacent discovery, Unix uid/mode checks, `exec` dispatch | Same checks; resolves Homebrew entry to its real installation | No dispatch; a full port needs `.exe` lookup, ACL trust and process startup/exit propagation |
-| Terminal | PTY, foreground ownership and signals | PTY, terminal restoration; separate TUI | Container stdin/guest PTY, console mode restoration and cancellable input; ConPTY checked on the reviewed Win11 host |
+| Terminal | PTY, foreground ownership and signals | PTY, terminal restoration; separate TUI | Container stdin/guest PTY, console mode restoration and cancellable input; native ConPTY tests |
 | Shared services | Unix sockets, same-user authentication, locks and readiness; sandbox also needs cgroup/KVM | Unix IPC; cache/pool supported, sandbox API unsupported | IPC, endpoint ACLs, locks, cancellation and service cleanup are not ported; reaching a remote Linux API does not supply a local service |
 | VM/filesystem | KVM ioctls, Unix virtio-fs; full runtime also has overlay/network configurations | HVF, Unix virtio-fs; signing, page-size and host-permission differences | WHP partitions, APIC/PIT/TSC, Win32 waitable handles and directory shares; Linux wire errno, flags and ABI widths require conversion |
 
@@ -152,18 +151,16 @@ deadlines and process termination.
 
 ### Execution record
 
-[PR #92's first CI run](https://github.com/DeepLink-org/pvisor/actions/runs/41288456086)
-for commit `5b320104` has not passed all checks.
+CI artifacts record results for each revision and runner. The configured coverage is:
 
-| Platform | Builds and unit tests | Shared VM workload |
+| Platform | Conventional checks | Shared VM workload |
 | --- | --- | --- |
-| Windows | Native MSVC builds/contracts and WHP API smoke passed | WHP passed |
-| Linux | Workload used the product build | KVM passed |
-| macOS | Four product programs built; separate CLI tests passed; core shard also had a replay-test timeout | HVF `VmCreate` failed before guest startup |
+| Windows | Native MSVC builds and contracts | WHP smoke and CLI drivers |
+| Linux | Builds and native tests | KVM CLI driver |
+| macOS | Builds and conventional tests | Manual HVF execution on a capable host |
 
-A separate local Apple Silicon host passed 12 plus 120 HVF boots. Subsequent
-commits require fresh CI checks. See the [platform review record](https://github.com/DeepLink-org/pvisor/blob/main/tests/PLATFORM_REVIEW.md)
-for findings and untested cases.
+See the [test architecture](https://github.com/DeepLink-org/pvisor/blob/main/tests/README.md#capability-gates-and-coverage)
+for capability gates and coverage boundaries.
 
 ### Workload and result checks
 
@@ -231,4 +228,4 @@ The same executable's cache and memory-pool components support Linux and Apple S
 - Container cannot satisfy `--safe` controls and rejects `--safe`. All current executors reject `--strict` due to the subprocess gap.
 - Inspect `resources.effective` and `limitations`. macOS does not enforce RLIMIT_AS; ordinary host rlimits are not total process-tree budgets.
 
-Evidence entry points: `.github/workflows/ci.yml`, `docs/src/zh/cases/06-stage-apply.md`, `crates/pvisor/tests/`, and `tests/test_vm_*`. Untested cells receive no maturity claim. See [boundaries](../security/executor-boundaries.md).
+Evidence entry points: `.github/workflows/ci.yml`, `docs/src/zh/cases/06-stage-apply.md`, `crates/pvisor/tests/`, and `tests/vm_cli_contract.py`. Untested cells receive no maturity claim. See [boundaries](../security/executor-boundaries.md).

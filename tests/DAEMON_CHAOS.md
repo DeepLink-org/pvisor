@@ -34,7 +34,7 @@ The aggregate slice also contains the API and the SDK worker. The SDK worker
 has a separate 256 MiB cap and one-CPU quota. Swap is disabled. Every observed
 live guest must retain its exact CPU/memory/PID limits; no more than four may
 exist. One observer records actual cgroup usage, PID-limit events, process
-thread counts and FD counts. A failure also executions bounded guest `/proc`
+thread counts and FD counts. A failure also captures bounded guest `/proc`
 snapshots before cleanup, without launching more workload processes.
 
 Replacement payloads are at most 65,537 bytes. Each VM retains two independent
@@ -82,7 +82,7 @@ own pinned retry behavior.
 
 The stable service wrapper survives API death. Restarting the **systemd unit**
 instead can reset delegated child resource attributes and is not equivalent to
-crashing only the API. Cleanup executions every observed owned sandbox, accepts
+crashing only the API. Cleanup attempts deletion of every observed owned sandbox, accepts
 an already completed 404 deletion, stops only its own unit and retains private
 state for diagnosis. The caller's parent slice is not configured or stopped by
 the driver.
@@ -115,22 +115,5 @@ by this audit.
 Ordinary harness safety regressions need no SDK or VM:
 
 ```sh
-mise run test-py -- tests/test_daemon_chaos.py tests/test_application_chaos.py
+mise run test-py -- tests.unit.test_daemon_chaos tests.unit.test_application_chaos
 ```
-
-## Local campaign receipt
-
-The 2026-10-25 Linux x86_64/KVM campaign retains its local, gitignored evidence
-under `tests/.data/pvisor-soak-20261025/`. `results.json` separates successful
-cohorts by frozen binary and keeps failed cohorts and their diagnoses;
-`fixes.json` links each product fix to its failing regression or runtime trace.
-The campaign uses both profiles, an aggregate 2 GiB runtime cap, zero swap,
-at most four VMs and a separate 2 GiB allocated-evidence budget. Build artifacts
-are outside that evidence budget. No memory-filling or disk-filling workload
-is used.
-
-Verified archives retain file bytes, modes, ownership, links and xattrs, with
-an entry inventory, archive SHA-256 and restore command in each `.archive.json`
-receipt. Restore an archived cohort before rerunning its auditor. Earlier
-product versions and fixture failures remain evidence of their own scope;
-they are not merged into final-version acceptance or performance claims.

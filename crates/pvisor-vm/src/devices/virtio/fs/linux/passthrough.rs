@@ -104,6 +104,42 @@ struct HandleData {
 /// Pins the actual native descriptor, rather than just its reusable handle ID.
 pub(in crate::devices::virtio::fs) struct HandleLease(Arc<HandleData>);
 
+/// FUSE mmap writeback is positional even if the kernel selects an append-open
+/// handle. Linux pwrite still appends on O_APPEND, so use a separate description
+/// of the pinned inode, never change flags shared with normal writes or exports.
+fn positional_writeback_file(
+    proc_self_fd: &File,
+    file: &File,
+    delayed_write: bool,
+) -> io::Result<Option<File>> {
+    if !delayed_write {
+        return Ok(None);
+    }
+    // SAFETY: the caller retains the opened file and its native I/O lock.
+    let flags = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GETFL) };
+    if flags < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    if flags & libc::O_APPEND == 0 {
+        return Ok(None);
+    }
+    let name = CString::new(file.as_raw_fd().to_string()).unwrap();
+    // Reopen the descriptor's inode, including after unlink/name replacement.
+    // Preserve access/sync/direct flags; do not acquire authority via a guest path.
+    let fd = unsafe {
+        libc::openat(
+            proc_self_fd.as_raw_fd(),
+            name.as_ptr(),
+            (flags | libc::O_CLOEXEC) & !(libc::O_APPEND | libc::O_NOFOLLOW),
+        )
+    };
+    if fd < 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(Some(unsafe { File::from_raw_fd(fd) }))
+    }
+}
+
 #[repr(C, packed)]
 #[derive(Clone, Copy, Debug, Default)]
 struct LinuxDirent64 {
@@ -892,6 +928,8 @@ impl PassthroughFs {
         }
     }
 
+    // Keep the explicit FUSE write inputs across the private native adapter boundary.
+    #[allow(clippy::too_many_arguments)]
     pub(in crate::devices::virtio::fs) fn write_leased<R: io::Read + ZeroCopyReader>(
         &self,
         _ctx: Context,
@@ -899,6 +937,7 @@ impl PassthroughFs {
         mut reader: R,
         size: u32,
         offset: u64,
+        delayed_write: bool,
         kill_priv: bool,
     ) -> io::Result<usize> {
         let _killpriv_guard = if kill_priv {
@@ -914,7 +953,8 @@ impl PassthroughFs {
         if self.cfg.managed && kill_priv {
             managed::kill_priv(&file)?;
         }
-        reader.read_to(&file, size as usize, offset)
+        let positional = positional_writeback_file(&self.proc_self_fd, &file, delayed_write)?;
+        reader.read_to(positional.as_ref().unwrap_or(&file), size as usize, offset)
     }
 
     /// Qualify this pinned native FD without waiting for native I/O.
@@ -1092,6 +1132,8 @@ impl PassthroughFs {
         // it on the host descriptor. External writes can invalidate the cached
         // end-of-file offset and break append atomicity; callers must enable
         // writeback only for directories not shared with other writers.
+        // With writeback disabled, mmap can still send WRITE_CACHE requests;
+        // write_leased handles those positionally without changing this FD.
         if writeback && flags & libc::O_APPEND != 0 {
             flags &= !libc::O_APPEND;
         }
@@ -2042,12 +2084,12 @@ impl FileSystem for PassthroughFs {
         size: u32,
         offset: u64,
         _lock_owner: Option<u64>,
-        _delayed_write: bool,
+        delayed_write: bool,
         kill_priv: bool,
         _flags: u32,
     ) -> io::Result<usize> {
         let lease = self.lease_handle(inode, handle)?;
-        self.write_leased(_ctx, &lease, r, size, offset, kill_priv)
+        self.write_leased(_ctx, &lease, r, size, offset, delayed_write, kill_priv)
     }
 
     fn getattr(
@@ -2638,6 +2680,9 @@ impl FileSystem for PassthroughFs {
         if self.cfg.managed && name == managed::KEY {
             return Err(io::Error::from_raw_os_error(libc::EPERM));
         }
+        if self.cfg.managed && super::fs_utils::is_posix_acl_xattr(name.to_bytes()) {
+            return Err(io::Error::from_raw_os_error(libc::EOPNOTSUPP));
+        }
         if !self.cfg.xattr {
             return Err(io::Error::from_raw_os_error(libc::ENOSYS));
         }
@@ -2688,6 +2733,9 @@ impl FileSystem for PassthroughFs {
     ) -> io::Result<GetxattrReply> {
         if self.cfg.managed && name == managed::KEY {
             return Err(io::Error::from_raw_os_error(libc::ENODATA));
+        }
+        if self.cfg.managed && super::fs_utils::is_posix_acl_xattr(name.to_bytes()) {
+            return Err(io::Error::from_raw_os_error(libc::EOPNOTSUPP));
         }
         if !self.cfg.xattr {
             return Err(io::Error::from_raw_os_error(libc::ENOSYS));
@@ -2777,7 +2825,12 @@ impl FileSystem for PassthroughFs {
             buf.truncate(res as usize);
             let names: Vec<u8> = buf
                 .split_inclusive(|b| *b == 0)
-                .filter(|name| *name != managed::KEY.to_bytes_with_nul())
+                .filter(|name| {
+                    *name != managed::KEY.to_bytes_with_nul()
+                        && !super::fs_utils::is_posix_acl_xattr(
+                            name.strip_suffix(&[0]).unwrap_or(name),
+                        )
+                })
                 .flatten()
                 .copied()
                 .collect();
@@ -2800,6 +2853,9 @@ impl FileSystem for PassthroughFs {
     fn removexattr(&self, _ctx: Context, inode: Inode, name: &CStr) -> io::Result<()> {
         if self.cfg.managed && name == managed::KEY {
             return Err(io::Error::from_raw_os_error(libc::EPERM));
+        }
+        if self.cfg.managed && super::fs_utils::is_posix_acl_xattr(name.to_bytes()) {
+            return Err(io::Error::from_raw_os_error(libc::EOPNOTSUPP));
         }
         if !self.cfg.xattr {
             return Err(io::Error::from_raw_os_error(libc::ENOSYS));
@@ -3087,6 +3143,107 @@ mod tests {
     }
 
     #[test]
+    fn managed_posix_acl_rejection_preserves_guest_mode_and_host_authority() {
+        let root = tempfile::tempdir().unwrap();
+        let fs = PassthroughFs::new(
+            Config {
+                root_dir: root.path().to_string_lossy().into_owned(),
+                managed: true,
+                ..Default::default()
+            },
+            Arc::new(InodeAllocator::new()),
+        )
+        .unwrap();
+        fs.init(FsOptions::empty()).unwrap();
+        let ctx = root_context();
+        let (entry, handle, _) = fs
+            .create(
+                ctx,
+                fuse::ROOT_ID,
+                c"file",
+                libc::S_IFREG,
+                false,
+                libc::O_RDWR as u32,
+                0,
+                Extensions::default(),
+            )
+            .unwrap();
+        let acl = [
+            2, 0, 0, 0, 1, 0, 6, 0, 255, 255, 255, 255, 4, 0, 4, 0, 255, 255, 255, 255, 32, 0, 4,
+            0, 255, 255, 255, 255,
+        ];
+        for name in [c"system.posix_acl_access", c"system.posix_acl_default"] {
+            assert_eq!(
+                fs.setxattr(ctx, entry.inode, name, &acl, 0)
+                    .unwrap_err()
+                    .raw_os_error(),
+                Some(libc::EOPNOTSUPP)
+            );
+            assert_eq!(
+                fs.getxattr(ctx, entry.inode, name, 0)
+                    .err()
+                    .unwrap()
+                    .raw_os_error(),
+                Some(libc::EOPNOTSUPP)
+            );
+            assert_eq!(
+                fs.removexattr(ctx, entry.inode, name)
+                    .unwrap_err()
+                    .raw_os_error(),
+                Some(libc::EOPNOTSUPP)
+            );
+        }
+        assert_eq!(
+            fs.getattr(ctx, entry.inode, handle).unwrap().0.st_mode & 0o7777,
+            0
+        );
+        assert_eq!(
+            std::fs::metadata(root.path().join("file")).unwrap().mode() & 0o7777,
+            0o600
+        );
+        // A real host ACL remains available to the ordinary native view, but
+        // must neither leak through nor be removed by the virtual-owner view.
+        let native = PassthroughFs::new(
+            Config {
+                root_dir: root.path().to_string_lossy().into_owned(),
+                ..Default::default()
+            },
+            Arc::new(InodeAllocator::new()),
+        )
+        .unwrap();
+        native.init(FsOptions::empty()).unwrap();
+        let host = native.lookup(ctx, fuse::ROOT_ID, c"file").unwrap();
+        let extended = [
+            2, 0, 0, 0, 1, 0, 6, 0, 255, 255, 255, 255, 2, 0, 4, 0, 50, 29, 0, 0, 4, 0, 4, 0, 255,
+            255, 255, 255, 16, 0, 4, 0, 255, 255, 255, 255, 32, 0, 4, 0, 255, 255, 255, 255,
+        ];
+        native
+            .setxattr(ctx, host.inode, c"system.posix_acl_access", &extended, 0)
+            .unwrap();
+        assert!(matches!(
+            native.getxattr(ctx, host.inode, c"system.posix_acl_access", 1024).unwrap(),
+            GetxattrReply::Value(value) if value == extended
+        ));
+        let listed = fs.listxattr(ctx, entry.inode, 1024).unwrap();
+        assert!(matches!(listed, ListxattrReply::Names(names)
+            if !names.split(|byte| *byte == 0).any(super::super::fs_utils::is_posix_acl_xattr)));
+        assert_eq!(
+            fs.removexattr(ctx, entry.inode, c"system.posix_acl_access")
+                .unwrap_err()
+                .raw_os_error(),
+            Some(libc::EOPNOTSUPP)
+        );
+        assert!(matches!(
+            native.getxattr(ctx, host.inode, c"system.posix_acl_access", 1024).unwrap(),
+            GetxattrReply::Value(value) if value == extended
+        ));
+        native
+            .removexattr(ctx, host.inode, c"system.posix_acl_access")
+            .unwrap();
+        fs.do_release(entry.inode, handle.unwrap()).unwrap();
+    }
+
+    #[test]
     fn managed_ownership_persists_and_private_xattrs_cannot_be_forged() {
         let root = tempfile::tempdir().unwrap();
         let make = || {
@@ -3256,6 +3413,67 @@ mod tests {
             exported: AtomicBool::new(false),
         }));
         (root, fs, lease)
+    }
+
+    #[test]
+    fn mmap_writeback_is_positional_without_changing_normal_append_or_exported_flags() {
+        use std::os::unix::fs::FileExt;
+        let (root, fs, lease) = buffered_write_fixture(libc::O_RDWR | libc::O_APPEND);
+        let file = lease.0.file.read().unwrap();
+        let exported = file.try_clone().unwrap();
+        let positional = positional_writeback_file(&fs.proc_self_fd, &file, true)
+            .unwrap()
+            .unwrap();
+        assert_eq!(positional.write_at(b"12", 2).unwrap(), 2);
+        assert_eq!(
+            std::fs::read(root.path().join("file")).unwrap(),
+            b"ab12efgh"
+        );
+        assert_ne!(
+            unsafe { libc::fcntl(exported.as_raw_fd(), libc::F_GETFL) } & libc::O_APPEND,
+            0
+        );
+        assert!(
+            positional_writeback_file(&fs.proc_self_fd, &file, false)
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(exported.write_at(b"34", 0).unwrap(), 2);
+        assert_eq!(
+            std::fs::read(root.path().join("file")).unwrap(),
+            b"ab12efgh34"
+        );
+    }
+
+    #[test]
+    fn mmap_writeback_pins_unlinked_inode_instead_of_reopening_a_guest_path() {
+        use std::os::unix::fs::FileExt;
+        let (root, fs, lease) = buffered_write_fixture(libc::O_RDWR | libc::O_APPEND);
+        let file = lease.0.file.read().unwrap();
+        std::fs::remove_file(root.path().join("file")).unwrap();
+        std::fs::write(root.path().join("file"), b"replacement").unwrap();
+        let positional = positional_writeback_file(&fs.proc_self_fd, &file, true)
+            .unwrap()
+            .unwrap();
+        assert_eq!(positional.write_at(b"12", 2).unwrap(), 2);
+        let mut bytes = [0; 8];
+        assert_eq!(file.read_at(&mut bytes, 0).unwrap(), 8);
+        assert_eq!(&bytes, b"ab12efgh");
+        assert_eq!(
+            std::fs::read(root.path().join("file")).unwrap(),
+            b"replacement"
+        );
+    }
+
+    #[test]
+    fn mmap_writeback_keeps_ordinary_nonappend_descriptions() {
+        let (_root, fs, lease) = buffered_write_fixture(libc::O_RDWR);
+        let file = lease.0.file.read().unwrap();
+        assert!(
+            positional_writeback_file(&fs.proc_self_fd, &file, true)
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]

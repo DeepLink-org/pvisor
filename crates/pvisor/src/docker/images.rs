@@ -247,6 +247,12 @@ mod tests {
             network_name: None,
             ipv4_address: None,
             peers: None,
+            labels: BTreeMap::new(),
+            restart: RestartPolicy::No,
+            stop_signal: None,
+            stop_timeout_ms: 10_000,
+            healthcheck: None,
+            no_healthcheck: false,
         }
     }
 

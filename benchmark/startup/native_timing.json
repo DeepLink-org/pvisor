@@ -1,3 +1,6 @@
 {
-  "Native": "$ python3 @REPO@/benchmark/startup/native_timing.py @BATCH@"
+  "engine": "criterion",
+  "entry": "startup/native_timing.json",
+  "implementation": "../criterion/src/startup/mod.rs",
+  "config_env": "PVISOR_BENCH_OUTPUT"
 }

@@ -22,7 +22,7 @@ services:
     environment:
       CELERY_BROKER_URL: "redis://:${CASE_DB_PASSWORD:?required}@redis:6379/0"
       CELERY_RESULT_BACKEND: "redis://:${CASE_DB_PASSWORD:?required}@redis:6379/1"
-    volumes: ["./tasks.py:/data/tasks.py:ro"]
+    volumes: [worker-data:/data, "./tasks.py:/data/tasks.py:ro"]
     depends_on:
       redis: {condition: service_healthy}
   flower:
@@ -37,8 +37,10 @@ services:
       CELERY_RESULT_BACKEND: "redis://:${CASE_DB_PASSWORD:?required}@redis:6379/1"
       FLOWER_BASIC_AUTH: "composeadmin:${CASE_ADMIN_PASSWORD:?required}"
     ports: ["127.0.0.1:${CASE_HTTP_PORT:?required}:5555"]
-    volumes: ["./tasks.py:/data/tasks.py:ro"]
+    volumes: [flower-data:/data, "./tasks.py:/data/tasks.py:ro"]
     depends_on:
       redis: {condition: service_healthy}
 volumes:
   queue: {}
+  worker-data: {}
+  flower-data: {}

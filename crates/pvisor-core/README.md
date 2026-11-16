@@ -60,6 +60,14 @@ host's absolute-path rules. Execution-bound file-policy preparation is portable.
 mise run test -- core
 ```
 
+`tests/network_contracts.rs` checks address matching, request-scoped grants and
+controller recovery without sockets or VMs.
+
+```sh
+mise run test -- pvisor-core -- --test network_contracts
+mise run test -- pvisor-core -- --test network_contracts -E 'test(addresses::)'
+```
+
 [Operation and Event design](../../docs/src/zh/design/operations-events.md) · [System architecture](../../docs/src/zh/design/architecture.md)
 
 `NetworkPolicy::allows_unrestricted_packets` is a conservative admission predicate

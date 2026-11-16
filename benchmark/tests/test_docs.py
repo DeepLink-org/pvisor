@@ -1,4 +1,4 @@
-"""Dynamic table publication and inline historical documentation tables."""
+"""Audited data publication and inline documentation table consistency."""
 
 import csv
 import importlib.util
@@ -55,6 +55,50 @@ class DocumentationTests(unittest.TestCase):
             with patch.object(DOCS, "REPO", root), patch.object(DOCS, "INVENTORY", inventory):
                 self.assertEqual(DOCS.check_inventory(), (2, 0))
 
+    def test_inline_bound_tables_reject_drift_missing_rows_and_old_macros(self):
+        with workspace() as (root, _):
+            pages = []
+            articles = []
+            original = "|  | Median ms |\n| --- | --- |\n| Native | 1.00 |\n"
+            for locale in ("zh", "en"):
+                article = root / "docs/src" / locale / "benchmarks/example.md"
+                article.parent.mkdir(parents=True)
+                article.write_text(original)
+                (article.parent / "measurement-coverage.render.json").write_text(
+                    '{"Native":{"Median ms":"1.00"}}'
+                )
+                articles.append(article)
+                pages.append(
+                    dict(
+                        locale=locale,
+                        page="benchmarks/example.md",
+                        tables=[
+                            dict(
+                                json="benchmarks/measurement-coverage.render.json",
+                                kind="coverage",
+                                rows=1,
+                                columns=["Median ms"],
+                                options={},
+                            )
+                        ],
+                        source_csv=[],
+                    )
+                )
+            inventory = root / "docs.json"
+            inventory.write_text(json.dumps(dict(format=1, pages=pages)))
+            with patch.object(DOCS, "REPO", root), patch.object(DOCS, "INVENTORY", inventory):
+                self.assertEqual(DOCS.check_inventory(), (2, 2))
+                for invalid in (
+                    original.replace("1.00", "0.50"),
+                    original.replace("| Native | 1.00 |\n", ""),
+                    '{{ table("example.json") }}',
+                ):
+                    with self.subTest(source=invalid):
+                        articles[0].write_text(invalid)
+                        with self.assertRaisesRegex(ValueError, "inline table|macros are retired"):
+                            DOCS.check_inventory()
+                        articles[0].write_text(original)
+
     def test_publication_writes_one_shared_source_and_preserves_raw_records(self):
         with workspace() as (root, resources):
             batch = root / ".data/replay-test"
@@ -95,7 +139,7 @@ class DocumentationTests(unittest.TestCase):
                     page="benchmarks/replay-fidelity.md",
                     tables=[
                         dict(
-                            json="../../overrides/assets/benchmarks/replay-semspec.render.json",
+                            json="../../overrides/assets/benchmarks/replay-command.render.json",
                             kind="published",
                             rows=1,
                             columns=list(resolved["codex"]),
@@ -113,8 +157,8 @@ class DocumentationTests(unittest.TestCase):
                             manifest["entry"]: dict(
                                 benchmark_id="B-REPLAY",
                                 page="benchmarks/replay-fidelity.md",
-                                table="../../overrides/assets/benchmarks/replay-semspec.render.json",
-                                csv="replay-semspec.csv",
+                                table="../../overrides/assets/benchmarks/replay-command.render.json",
+                                csv="replay-command.csv",
                                 show_batch=False,
                             )
                         },
@@ -136,7 +180,7 @@ class DocumentationTests(unittest.TestCase):
                 patch("measurement_coverage.coverage"),
             ):
                 targets = DOCS.publish_docs(batch)
-            shared = root / "docs/overrides/assets/benchmarks/replay-semspec.provenance.json"
+            shared = root / "docs/overrides/assets/benchmarks/replay-command.provenance.json"
             provenance = json.loads(shared.read_text())
             self.assertEqual(provenance["manifest_sha256"], DOCS.digest(raw_path))
             self.assertEqual(provenance["exports"], manifest["exports"])
@@ -150,12 +194,12 @@ class DocumentationTests(unittest.TestCase):
             )
             self.assertEqual(raw_path.read_bytes(), original)
             self.assertEqual(
-                targets, [root / "docs/overrides/assets/benchmarks/replay-semspec.render.json"]
+                targets, [root / "docs/overrides/assets/benchmarks/replay-command.render.json"]
             )
-            self.assertTrue(DOCS.public_csv_path(root, "replay-semspec.csv").is_file())
+            self.assertTrue(DOCS.public_csv_path(root, "replay-command.csv").is_file())
             for locale in ("zh", "en"):
                 self.assertFalse(
-                    (root / f"docs/src/{locale}/benchmarks/replay-semspec.csv").exists()
+                    (root / f"docs/src/{locale}/benchmarks/replay-command.csv").exists()
                 )
             for target in targets:
                 self.assertFalse(target.with_suffix(".provenance.json").exists())

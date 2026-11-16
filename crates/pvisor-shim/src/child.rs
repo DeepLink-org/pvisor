@@ -407,15 +407,9 @@ struct InternalSpawnRequest {
 /// Dedicated fork thread for every internal child (VM runner, sandbox
 /// holder, init/exec parents).
 ///
-/// `PR_SET_PDEATHSIG` children must not be forked from pooled worker
-/// threads: the pdeath parent is the *thread* that forks, and pooled
-/// threads (for example tokio `spawn_blocking` workers) idle-exit within
-/// seconds-to-minutes while the shim process lives, which would SIGTERM
-/// healthy long-lived children (observed live: a VM runner and its sandbox
-/// dying with exit status 143 exactly ~11 s after creation once the
-/// forking blocking thread hit its keep-alive). This thread never exits
-/// before the shim process does, so the death signal tracks the shim's
-/// own lifetime.
+/// Linux binds `PR_SET_PDEATHSIG` to the forking thread. This thread lives
+/// until shim exit so a pooled worker's idle exit cannot terminate a healthy
+/// internal child.
 static INTERNAL_SPAWNER: LazyLock<mpsc::Sender<InternalSpawnRequest>> = LazyLock::new(|| {
     let (tx, rx) = mpsc::channel::<InternalSpawnRequest>();
     std::thread::Builder::new()

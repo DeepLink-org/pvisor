@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate semspec/script evidence, then append CSV and publish JSON tables."""
+"""Validate recorded command evidence, then append CSV and publish JSON tables."""
 
 import argparse
 import csv
@@ -12,6 +12,7 @@ import sys
 import tempfile
 from pathlib import Path
 
+from archive import audit_command_row
 from common import FILESYSTEM_SCOPE, METRIC_SCOPE, READY_EXIT_SCOPE, ROOT, digest, save
 
 FIELDS = {
@@ -44,7 +45,7 @@ def validate_batch(directory):
         READY_EXIT_SCOPE,
         FILESYSTEM_SCOPE,
     ):
-        raise ValueError("expected a prepared or successful direct-command semspec batch")
+        raise ValueError("expected a prepared or successful direct-command batch")
     if manifest["benchmark_id"] == "B-STARTUP" and manifest["metric_scope"] != READY_EXIT_SCOPE:
         raise ValueError("startup validation requires paired Ready / Exit data")
     if (
@@ -86,7 +87,7 @@ def validate_batch(directory):
         or evidence["cwd"] != manifest["cwd"]
         or evidence["template"] != str(directory / "in.json")
     ):
-        raise ValueError("semspec evidence does not match the prepared input/cwd")
+        raise ValueError("command evidence does not match the prepared input/cwd")
     if manifest["metric_scope"] == READY_EXIT_SCOPE:
         sys.path.insert(0, str(ROOT / "startup"))
         from audit import audit_timing
@@ -127,8 +128,6 @@ def validate_batch(directory):
         record = matches[0] if len(matches) == 1 else None
         if record is None or record.get("kind") != "script-row":
             raise ValueError("missing raw script row evidence")
-        from command_timing import audit_command_row
-
         condition = manifest["rows"][row]
         expected = ["python3", str(ROOT / "command_timing.py"), str(directory), condition]
         if shlex.split(command) != expected:

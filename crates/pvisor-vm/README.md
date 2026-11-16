@@ -28,6 +28,30 @@ logical-directory-cache 和 logical-data-cache 实验也由同一 profile
 诊断开关 `PVISOR_FS_PROFILE` 不参与此行为配置，不声称所有 FS 相关环境都被冻结。
 此 profile 不进入公开 API 或快照，也不改变 Windows 独立 FS 的设置读取行为。
 
+Linux 的 FUSE mmap 写回始终使用 guest 指定的文件偏移，即使内核选中了
+`O_APPEND` 打开的 handle。此路径通过固定 native FD 取得独立的非 append
+描述符，不临时修改普通写入或 exported FD 共用的 flags，也不重新解析 guest
+文件名；重新打开失败会返回 I/O 错误。普通 append 写仍保留宿主原子追加语义。
+这与是否启用 guest writeback cache 无关；macOS 原有 positional I/O 路径不变。
+
+Linux 私有 OCI rootfs 的符号链接和 Unix socket 无法依赖 native user xattr
+保存 guest 所有者。两者共用现有的隐藏 inode metadata catalog，按固定的
+device/inode/birth-time 身份保存 UID/GID/mode；目录仍使用原有的保留名字，
+不改变已有 socket 记录。`lchown` 只更新链接本身，不能跟随目标或改变宿主
+所有者；rename 和同一 rootfs 的重启保留身份，同名新 inode 不继承旧记录。
+catalog 损坏、不支持 birth time 或持久化失败仍返回错误，不忽略 chown 失败。
+inode 元数据和快照捕获/恢复共用不跟随最终 symlink 的 descriptor pin。
+Linux 直接使用 `open(O_PATH|O_NOFOLLOW|O_CLOEXEC)`，避免 musl 的
+`O_ACCMODE` 包含 `O_PATH`、导致 Rust `OpenOptions::custom_flags` 过滤掉
+该标志而将合法 symlink 误报为 ELOOP；macOS 保留 O_SYMLINK 语义。
+
+私有 virtual-owner rootfs 和管理卷不支持 POSIX access/default ACL xattr，
+get/set/remove 返回 `EOPNOTSUPP`，list 不公布这些 native ACL。直接写宿主
+ACL 既不能执行 guest UID 语义，也不能同步虚拟 mode，可能让 GNU `sed -i`
+报告成功却保留 mode 0000。明确的 unsupported 结果让 GNU 工具正常回退到
+chmod，仍保留 guest 所有者和 mode；其他 user xattr 和普通 native host
+backing 的 ACL 行为不变。不将此修复称为完整 POSIX ACL 支持。
+
 ## Windows x86_64 / WHP
 
 Windows 后端参考 microsandbox 使用的 Super Rad libkrun 分支，保留在本 crate

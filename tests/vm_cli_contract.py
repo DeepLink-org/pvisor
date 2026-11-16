@@ -4,6 +4,7 @@
 import argparse
 import hashlib
 import json
+import math
 import os
 import platform
 import shutil
@@ -57,8 +58,15 @@ def main():
     parser.add_argument("--timeout", type=float, default=90)
     parser.add_argument("--seed", type=int, default=1729)
     args = parser.parse_args()
-    if args.rounds < 1 or args.timeout <= 0 or not 0 <= args.seed < 2**64 - args.rounds:
-        parser.error("positive rounds/timeout and a uint64 seed range are required")
+    if (
+        args.rounds < 1
+        or not math.isfinite(args.timeout)
+        or args.timeout <= 0
+        or not 0 <= args.seed <= 2**64 - args.rounds
+    ):
+        parser.error(
+            "positive rounds, a finite positive timeout and a uint64 seed range are required"
+        )
     binary, guest = args.binary.resolve(strict=True), args.guest.resolve(strict=True)
     firmware = args.firmware.resolve(strict=True) if args.firmware else None
     args.output.mkdir(parents=True, exist_ok=False)

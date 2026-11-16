@@ -34,7 +34,7 @@ fn export_help_is_grouped_and_inert_and_stage_explains_both_network_choices() {
     let text = help(root.path(), &["--help"]);
     let (containers, rest) = text.split_once("Agent Commands:").unwrap();
     assert!(
-        !containers
+        containers
             .lines()
             .any(|l| l.split_whitespace().next() == Some("export"))
     );
@@ -44,7 +44,7 @@ fn export_help_is_grouped_and_inert_and_stage_explains_both_network_choices() {
         .filter_map(|l| l.split_whitespace().next())
         .collect();
     let review = names.iter().position(|n| *n == "review").unwrap();
-    assert_eq!(&names[review..review + 3], &["review", "export", "apply"]);
+    assert_eq!(&names[review..review + 2], &["review", "apply"]);
     let direct = help(root.path(), &["export", "--help"]);
     assert_eq!(direct, help(root.path(), &["help", "export"]));
     for text in [
@@ -62,7 +62,7 @@ fn export_help_is_grouped_and_inert_and_stage_explains_both_network_choices() {
     ] {
         assert!(direct.contains(text), "missing {text}: {direct}");
     }
-    assert!(!direct.contains("-o,"));
+    assert!(direct.contains("-o,"));
     let stage = help(root.path(), &["stage", "--help"]);
     for text in [
         "coding agent stagebox",
@@ -127,8 +127,8 @@ fn run_and_spawn_help_match_their_pinned_baselines() {
     for (command, digest) in [
         (
             "run",
-            // Explicit managed RAM compression adds an opt-in run flag.
-            "f51fb2e98b7003899eeb1e22f355cf54b613f0e8c8b97bcfa8f76bfc4c997b2a",
+            // Managed RAM compression and Docker owner restart/health controls.
+            "8ce78bafc738db45813cbe78cb79c2533334a7380892b446961745e9b54c58cf",
         ),
         (
             "spawn",

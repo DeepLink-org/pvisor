@@ -68,43 +68,19 @@ fn user_namespaces_are_unavailable(stderr: &str) -> bool {
     })
 }
 
-fn skip_if_user_namespaces_are_explicitly_optional(
-    run_home: &Path,
-    output: &std::process::Output,
-) -> bool {
-    if std::env::var_os("PVISOR_TEST_ALLOW_NO_USERNS").is_none() || output.status.success() {
-        return false;
-    }
-    // Namespace setup can fail before a Run Bundle exists. In the optional CI
-    // shard, verify host capability directly before inspecting bundle details.
-    if skip_if_rootless_runtime_is_explicitly_optional() {
-        return true;
-    }
-    let combined = String::from_utf8_lossy(&output.stderr);
-    // Safe-best-effort intentionally falls back to the host process when the
-    // runner cannot create namespaces. Treat that capability result as a
-    // skippable environment condition, just like the launcher setup error.
-    if combined.contains("falling back to host process") {
-        eprintln!("skipping: the test host disables required namespaces");
-        return true;
-    }
-    let Some(stderr) = setup_failure(run_home) else {
-        return false;
-    };
-    if !user_namespaces_are_unavailable(&stderr) {
-        if !stderr.is_empty() {
-            eprintln!("rootless sandbox failure was not skippable: {stderr}");
-        }
-        return false;
-    }
-    eprintln!("skipping: the test host disables unprivileged user namespaces: {stderr}");
-    true
+fn require_rootless_execution(run_home: &Path, output: &std::process::Output) {
+    let stderr = setup_failure(run_home).unwrap_or_default();
+    assert!(
+        !user_namespaces_are_unavailable(&stderr)
+            && !String::from_utf8_lossy(&output.stderr).contains("falling back to host process"),
+        "required rootless execution was unavailable; this is a failure, not a skip:\n{stderr}\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
-fn skip_if_rootless_runtime_is_explicitly_optional() -> bool {
-    if std::env::var_os("PVISOR_TEST_ALLOW_NO_USERNS").is_none() {
-        return false;
-    }
+fn require_rootless_runtime() {
+    // Direct nextest/package runs remain strict too. A legacy optional flag
+    // must never turn missing prerequisites into a successful test result.
     let available = Command::new("unshare")
         .args(["--user", "--mount", "--pid", "--fork", "true"])
         .stdin(Stdio::null())
@@ -112,27 +88,17 @@ fn skip_if_rootless_runtime_is_explicitly_optional() -> bool {
         .stderr(Stdio::null())
         .status()
         .is_ok_and(|status| status.success());
-    if !available {
-        eprintln!("skipping: the test host cannot create rootless user/mount/PID namespaces");
-        return true;
-    }
-    if OpenOptions::new()
+    assert!(available, "required rootless namespaces are unavailable");
+    OpenOptions::new()
         .read(true)
         .write(true)
         .open("/dev/fuse")
-        .is_err()
-    {
-        eprintln!("skipping: the test host cannot open /dev/fuse");
-        return true;
-    }
-    false
+        .expect("required /dev/fuse must be readable and writable");
 }
 
 #[test]
 fn ordinary_shell_writes_lower_and_safe_shell_stages_home_and_workspace() {
-    if skip_if_rootless_runtime_is_explicitly_optional() {
-        return;
-    }
+    require_rootless_runtime();
     let temporary = tempfile::tempdir().unwrap();
     let home = temporary.path().join("home");
     let workspace = temporary.path().join("workspace");
@@ -196,9 +162,7 @@ fn ordinary_shell_writes_lower_and_safe_shell_stages_home_and_workspace() {
 
 #[test]
 fn safe_shell_supports_nested_stages_without_exposing_their_backing() {
-    if skip_if_rootless_runtime_is_explicitly_optional() {
-        return;
-    }
+    require_rootless_runtime();
     for (name, nested_stage, nested_home) in [
         ("external", false, false),
         ("nested", true, false),
@@ -358,9 +322,7 @@ printf private > "$HOME/state"
 
 #[test]
 fn safe_abnormal_exits_retain_reviewable_stages_and_release_owners_before_retry() {
-    if skip_if_rootless_runtime_is_explicitly_optional() {
-        return;
-    }
+    require_rootless_runtime();
     let temporary = tempfile::tempdir().unwrap();
     let workspace = temporary.path().join("workspace");
     let run_home = temporary.path().join("runs");
@@ -487,9 +449,7 @@ fn safe_abnormal_exits_retain_reviewable_stages_and_release_owners_before_retry(
 
 #[test]
 fn safe_local_executable_cannot_escape_the_workspace() {
-    if skip_if_rootless_runtime_is_explicitly_optional() {
-        return;
-    }
+    require_rootless_runtime();
     let temporary = tempfile::tempdir().unwrap();
     let workspace = temporary.path().join("workspace");
     let outside = temporary.path().join("outside");
@@ -547,9 +507,7 @@ printf '%s:%s:%s\n' "$PVISOR_SANDBOX_FILESYSTEM" "$PVISOR_SANDBOX_LANDLOCK_ABI" 
         .output()
         .unwrap();
 
-    if skip_if_user_namespaces_are_explicitly_optional(&run_home, &output) {
-        return;
-    }
+    require_rootless_execution(&run_home, &output);
     assert!(
         output.status.success(),
         "stdout:\n{}\nstderr:\n{}",
@@ -607,9 +565,7 @@ printf '%s:%s:%s\n' "$PVISOR_SANDBOX_FILESYSTEM" "$PVISOR_SANDBOX_LANDLOCK_ABI" 
 
 #[test]
 fn safe_local_executable_cannot_mutate_outside_metadata() {
-    if skip_if_rootless_runtime_is_explicitly_optional() {
-        return;
-    }
+    require_rootless_runtime();
     let temporary = tempfile::tempdir().unwrap();
     let workspace = temporary.path().join("workspace");
     let outside = temporary.path().join("outside");
@@ -653,9 +609,7 @@ printf metadata-denied
         .output()
         .unwrap();
 
-    if skip_if_user_namespaces_are_explicitly_optional(&run_home, &output) {
-        return;
-    }
+    require_rootless_execution(&run_home, &output);
     assert!(
         output.status.success(),
         "stdout:\n{}\nstderr:\n{}",
@@ -687,9 +641,7 @@ printf metadata-denied
 
 #[test]
 fn safe_run_selectively_applies_then_drops_remaining_changes() {
-    if skip_if_rootless_runtime_is_explicitly_optional() {
-        return;
-    }
+    require_rootless_runtime();
     let temporary = tempfile::tempdir().unwrap();
     let workspace = temporary.path().join("workspace");
     let run_home = temporary.path().join("runs");
@@ -710,9 +662,7 @@ fn safe_run_selectively_applies_then_drops_remaining_changes() {
         .output()
         .unwrap();
 
-    if skip_if_user_namespaces_are_explicitly_optional(&run_home, &output) {
-        return;
-    }
+    require_rootless_execution(&run_home, &output);
     assert!(
         output.status.success(),
         "stdout:\n{}\nstderr:\n{}",
@@ -795,9 +745,7 @@ fn safe_run_selectively_applies_then_drops_remaining_changes() {
 
 #[test]
 fn safe_apply_refuses_to_overwrite_a_concurrently_changed_target() {
-    if skip_if_rootless_runtime_is_explicitly_optional() {
-        return;
-    }
+    require_rootless_runtime();
     let temporary = tempfile::tempdir().unwrap();
     let workspace = temporary.path().join("workspace");
     let run_home = temporary.path().join("runs");
@@ -819,9 +767,7 @@ fn safe_apply_refuses_to_overwrite_a_concurrently_changed_target() {
         .args(["--", "/bin/sh", "-c", "printf staged > value.txt"])
         .output()
         .unwrap();
-    if skip_if_user_namespaces_are_explicitly_optional(&run_home, &output) {
-        return;
-    }
+    require_rootless_execution(&run_home, &output);
     assert!(
         output.status.success(),
         "safe run failed ({}):\nstdout:\n{}\nstderr:\n{}\nsetup failure: {:?}",
@@ -860,9 +806,7 @@ fn safe_apply_refuses_to_overwrite_a_concurrently_changed_target() {
 
 #[test]
 fn safe_launcher_closes_inherited_host_file_descriptors() {
-    if skip_if_rootless_runtime_is_explicitly_optional() {
-        return;
-    }
+    require_rootless_runtime();
     let temporary = tempfile::tempdir().unwrap();
     let workspace = temporary.path().join("workspace");
     let run_home = temporary.path().join("runs");
@@ -919,9 +863,7 @@ fn safe_launcher_closes_inherited_host_file_descriptors() {
         .output()
         .unwrap();
 
-    if skip_if_user_namespaces_are_explicitly_optional(&run_home, &output) {
-        return;
-    }
+    require_rootless_execution(&run_home, &output);
     assert!(
         output.status.success(),
         "stdout:\n{}\nstderr:\n{}\nsandbox stderr:\n{}",
@@ -969,9 +911,7 @@ fn inherited_fd_probe_agent() {
 
 #[test]
 fn denied_network_uses_a_private_network_namespace() {
-    if skip_if_rootless_runtime_is_explicitly_optional() {
-        return;
-    }
+    require_rootless_runtime();
     let temporary = tempfile::tempdir().unwrap();
     let workspace = temporary.path().join("workspace");
     let run_home = temporary.path().join("runs");
@@ -1014,9 +954,7 @@ printf 'network:%s\n' "$PVISOR_SANDBOX_NETWORK"
         .output()
         .unwrap();
 
-    if skip_if_user_namespaces_are_explicitly_optional(&run_home, &output) {
-        return;
-    }
+    require_rootless_execution(&run_home, &output);
     assert!(
         output.status.success(),
         "stdout:\n{}\nstderr:\n{}",
@@ -1051,9 +989,7 @@ printf 'network:%s\n' "$PVISOR_SANDBOX_NETWORK"
 
 #[test]
 fn synthetic_root_hides_ungranted_host_unix_sockets() {
-    if skip_if_rootless_runtime_is_explicitly_optional() {
-        return;
-    }
+    require_rootless_runtime();
     let temporary = tempfile::tempdir().unwrap();
     let workspace = temporary.path().join("workspace");
     let run_home = temporary.path().join("runs");
@@ -1081,9 +1017,7 @@ fn synthetic_root_hides_ungranted_host_unix_sockets() {
         .output()
         .unwrap();
 
-    if skip_if_user_namespaces_are_explicitly_optional(&run_home, &output) {
-        return;
-    }
+    require_rootless_execution(&run_home, &output);
     assert!(
         output.status.success(),
         "stdout:\n{}\nstderr:\n{}",
@@ -1091,20 +1025,12 @@ fn synthetic_root_hides_ungranted_host_unix_sockets() {
         String::from_utf8_lossy(&output.stderr)
     );
     let bundle = RunBundle::read(&only_run(&stage_root(&run_home))).unwrap();
-    if !bundle.safety.filesystem_non_bypassable
-        && String::from_utf8_lossy(&output.stderr).contains("falling back to host process")
-    {
-        eprintln!("skipping: synthetic root unavailable on this test host");
-        return;
-    }
     assert!(bundle.safety.filesystem_non_bypassable);
 }
 
 #[test]
 fn safe_run_reaps_setsid_double_fork_descendants_after_success() {
-    if skip_if_rootless_runtime_is_explicitly_optional() {
-        return;
-    }
+    require_rootless_runtime();
     let temporary = tempfile::tempdir().unwrap();
     let workspace = temporary.path().join("workspace");
     let run_home = temporary.path().join("runs");
@@ -1128,9 +1054,7 @@ fn safe_run_reaps_setsid_double_fork_descendants_after_success() {
         .output()
         .unwrap();
 
-    if skip_if_user_namespaces_are_explicitly_optional(&run_home, &output) {
-        return;
-    }
+    require_rootless_execution(&run_home, &output);
     assert!(
         output.status.success(),
         "stdout:\n{}\nstderr:\n{}",
@@ -1193,9 +1117,7 @@ fn daemon_listener_agent() {
 
 #[test]
 fn sandboxed_agent_may_legitimately_exit_with_reserved_launcher_code() {
-    if skip_if_rootless_runtime_is_explicitly_optional() {
-        return;
-    }
+    require_rootless_runtime();
     let temporary = tempfile::tempdir().unwrap();
     let workspace = temporary.path().join("workspace");
     let run_home = temporary.path().join("runs");
@@ -1209,9 +1131,7 @@ fn sandboxed_agent_may_legitimately_exit_with_reserved_launcher_code() {
         .args(["--", "/bin/sh", "-c", "exit 125"])
         .output()
         .unwrap();
-    if skip_if_user_namespaces_are_explicitly_optional(&run_home, &output) {
-        return;
-    }
+    require_rootless_execution(&run_home, &output);
 
     assert!(!output.status.success());
     let bundle = RunBundle::read(&only_run(&stage_root(&run_home))).unwrap();
@@ -1296,15 +1216,6 @@ fn inherited_nested_state_mount_fails_closed_before_agent_execution() {
         .output()
         .expect("run isolated mount fixture using util-linux unshare");
     let stderr = String::from_utf8_lossy(&output.stderr);
-    if std::env::var_os("PVISOR_TEST_ALLOW_NO_USERNS").is_some()
-        && (stderr.trim() == "unshare: unshare failed: Operation not permitted"
-            || stderr.trim() == "unshare: unshare failed: Permission denied")
-    {
-        eprintln!(
-            "skipping: isolated nested-mount fixture cannot create user/mount namespaces: {stderr}"
-        );
-        return;
-    }
     assert!(
         output.status.success(),
         "isolated fixture failed:\n{stderr}\n{}",
@@ -1425,4 +1336,34 @@ fn namespace_setup_failure_classifier_is_narrow() {
     assert!(!user_namespaces_are_unavailable(
         "initialize rootless user and mount namespaces: unshare mount namespace: Operation not permitted (os error 1)"
     ));
+}
+
+#[test]
+fn optional_namespace_flag_cannot_turn_missing_capability_into_success() {
+    let temporary = tempfile::tempdir().unwrap();
+    let unshare = temporary.path().join("unshare");
+    fs::write(&unshare, "#!/bin/sh\nexit 1\n").unwrap();
+    fs::set_permissions(&unshare, fs::Permissions::from_mode(0o700)).unwrap();
+    let output = Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "required_namespace_probe",
+            "--ignored",
+            "--nocapture",
+        ])
+        .env("PATH", temporary.path())
+        .env("PVISOR_TEST_ALLOW_NO_USERNS", "1")
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("required rootless namespaces are unavailable")
+    );
+}
+
+#[test]
+#[ignore = "subprocess fixture verifying that missing prerequisites fail"]
+fn required_namespace_probe() {
+    require_rootless_runtime();
 }

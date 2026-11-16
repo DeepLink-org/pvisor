@@ -38,9 +38,17 @@ Mini-SWE-Agent does not trigger the split rule, so its row reports the full-samp
 
 This independent cohort measures one fixed synthetic trajectory (task 0) per adapter, 60 runs without warmups. Hyperfine directly launches `pvisor-replay` with `--shell=none`; Python reset and fidelity checks run outside timing for every execution. All runs must preserve exact arguments, source digests and historical observations, execute zero tools and leave the workspace unchanged. Results cover full command completion, not the twenty-fixture historical distribution above. The binary digest identifies the artifact; its correspondence to current source is unverified. Host caches are retained, CPU affinity and artifact identities are recorded in the batch provenance summary. No paired speedup or tail claim is made.
 
-{{ table("../../../overrides/assets/benchmarks/replay-semspec.render.json") }}
+|  | N | Median ms | Mean ms | SD ms | Min ms | Max ms |
+| --- | --- | --- | --- | --- | --- | --- |
+| claude-code | 60 | 5.74 | 5.86 | 0.88 | 5.11 | 12.14 |
+| codex | 60 | 5.59 | 5.67 | 0.32 | 5.05 | 6.95 |
+| opencode | 60 | 5.56 | 5.62 | 0.30 | 4.99 | 6.62 |
+| mini-swe-agent | 60 | 5.61 | 5.72 | 0.40 | 5.28 | 7.55 |
+| openhands | 60 | 5.68 | 5.73 | 0.40 | 4.81 | 7.40 |
+| pi-agent | 60 | 5.58 | 5.63 | 0.34 | 4.73 | 6.93 |
+| swe-agent | 60 | 5.73 | 5.76 | 0.39 | 4.71 | 7.24 |
 
-[Hyperfine data CSV](../assets/benchmarks/data/replay/replay-semspec.csv) · [Batch provenance](../assets/benchmarks/replay-semspec.provenance.json) · [JSON benchmark manual](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/README.md#replay)
+[Hyperfine data CSV](../assets/benchmarks/data/replay/replay-command.csv) · [Batch provenance](../assets/benchmarks/replay-command.provenance.json) · [Reproduction manual](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/replay/README.md)
 
 ### Scope {#acceptance}
 

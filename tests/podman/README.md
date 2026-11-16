@@ -1,31 +1,31 @@
-# Podman-derived Docker CLI contracts
+# Docker CLI contracts
 
-This directory retains complete copies of Podman's `test/system/` and
-`test/e2e/` under `upstream/test/`, plus an adapted supported-command profile
-in `system/` (Bats) and `e2e/` (Go). See `UPSTREAM.md` for the exact revision,
-license and adaptation map. The upstream copies are reference material: they
-are not executable pVisor gates and must not be included in normal discovery.
+The active Bats suites in `../spec/docker-cli/regression/system/` and Go tests
+in `../spec/docker-cli/regression/e2e/` exercise the pVisor
+container CLI as a black box. Each test owns a private store and checks public
+commands, exact output, exit status and lifecycle effects.
 
-The adapted suites drive the top-level pVisor container commands as a black box and check expected
-outputs, exit codes and lifecycle effects, following Podman's system/e2e model.
-They require no Docker executable, daemon, socket or comparison run. Cases that
-specifically interoperate with a real Docker daemon are excluded with reasons.
-The suites use neither Podman storage nor pVisor private APIs. Go uses its
-standard-library test runner instead of importing Podman's Ginkgo harness;
-Bats retains its upstream framework.
+`upstream/` contains pinned Podman reference sources. They are excluded from
+execution. [UPSTREAM.md](UPSTREAM.md) records attribution, revision and local
+adaptations; `upstream-sha256.json` protects the imported inventory.
 
 ## Run
 
-Build pVisor first with `mise run build`. Install Bats 1.5+, Python 3.10+ and Go 1.20+ separately if needed.
-From the repository root:
+Prepare Linux/KVM or Apple Silicon/HVF, matching firmware, Python, Bats and Go.
+Build the product with `mise run build`, then run from the repository root:
 
 ```sh
-PVISOR_BINARY="$PWD/target/debug/pvisor" bats tests/podman/system
-PVISOR_BINARY="$PWD/target/debug/pvisor" go test -v tests/podman/e2e/*.go
+PVISOR_BINARY="$PWD/target/debug/pvisor" bats tests/spec/docker-cli/regression/system
+PVISOR_BINARY="$PWD/target/debug/pvisor" go test -v tests/spec/docker-cli/regression/e2e/*.go
 ```
 
-On Apple Silicon, the executable needs the Hypervisor entitlement and its
-adjacent `libkrunfw.5.dylib`. To sign a private copy without changing your build:
+`PVISOR_BINARY` is one executable path. `PVISOR_TEST_IMAGE` selects an Alpine
+fixture (default `docker.io/library/alpine:3.20`); prefer a native manifest
+digest. The fixture needs `sh`, `printenv`, `id`, `cat`, `sleep`, `true`,
+BusyBox netcat, `nobody`/`nogroup` and `/etc/alpine-release`. Include all Go
+test files so shared helpers compile.
+
+On macOS, sign a private binary copy and provide its adjacent firmware:
 
 ```sh
 runtime_dir=$(mktemp -d)
@@ -33,142 +33,67 @@ cp target/debug/pvisor "$runtime_dir/pvisor"
 ln -s "$PWD/target/debug/libkrunfw.5.dylib" "$runtime_dir/libkrunfw.5.dylib"
 codesign --force --sign - --entitlements crates/pvisor/macos-hypervisor.entitlements "$runtime_dir/pvisor"
 export PVISOR_BINARY="$runtime_dir/pvisor"
-# Run either suite using PVISOR_BINARY, then remove runtime_dir.
 ```
 
-These are special external-runtime runners, separate from `mise run test`.
-`PVISOR_BINARY` selects a single executable path (default: `pvisor` in PATH),
-not a shell command string. Arguments are passed directly to the top-level CLI; there is no engine selector. Missing pVisor, image pull failures or unavailable
-virtualization fail active cases rather than skip them.
+Remove that owned directory after the suite finishes. Missing virtualization,
+image failures and active contract failures fail the run. No Docker daemon or
+comparison executable is required.
 
-Each test owns a private `PVISOR_DOCKER_HOME`, a unique container name and bounded
-command timeouts. Cleanup removes that container and the private store, including
-its test images and named volumes. `PVISOR_TEST_IMAGE` defaults to
-`docker.io/library/alpine:3.20`; set a pinned Alpine manifest digest for repeatable
-runs and record `pvisor --version` and host architecture. Bats uses Python 3 for
-bounded process execution; Go uses `context` deadlines.
+## Isolation and evidence
 
-Set `PVISOR_TEST_FAILURES` to an evidence directory to retain failed Go test
-stores at their original temporary paths after the ordinary container cleanup
-callbacks. The runner saves JSON pointers with the test name, binary and image;
-it never moves a store with pinned paths. Passing stores retain normal cleanup.
-Evidence-writing errors remain test failures. Inspect/clean retained stores
-explicitly after diagnosis; they are excluded from successful suite counts.
+Tests use private `PVISOR_DOCKER_HOME` stores, unique names and bounded commands.
+Cleanup targets only owned containers and stores. Never remove a store while it
+still owns a live workload.
 
-## CI
+Set `PVISOR_TEST_FAILURES` to retain failed Go stores at their existing paths.
+The output contains pointers, inputs and errors; inspect cleanup failures before
+manual removal. Passing stores receive normal cleanup.
 
-The required `podman-contracts` sessions in `.github/workflows/ci.yml` run all
-active adapted contracts on every covered push/pull request. The Linux CLI session
-builds and smoke-tests the product once, archives the original static musl CLI
-and adjacent daemon before native Cargo tests, and publishes that tarball.
-Three independent Linux/KVM runners reuse it: Bats, Go shard 0, and Go shard 1.
-Go discovers all active tests from all `e2e/*.go` files and assigns each name to
-exactly one shard using SHA-256 modulo two. New tests are included automatically;
-empty shards fail. Helpers compile with every shard and tests run sequentially
-within each runner, preserving existing resource limits and isolation.
-
-Each runner checks writable KVM and runs the CLI as the ordinary runner user.
-Go is pinned to 1.23.12. The fixture remains
-`mirror.gcr.io/library/alpine:3.20`; pull logs record the resolved digest.
-Unavailable KVM, registry failures and contract failures fail the gate, with no
-fallback to a skipped test. Hosted Apple Silicon runners lack nested
-virtualization, so these runtime gates use Linux/KVM.
-The archived executable comes from `target/x86_64-unknown-linux-musl/debug/`
-and embeds its firmware. Native Cargo tests can overwrite `target/debug/pvisor`
-with a dynamically linked build, so that path is never used for these gates.
-
-All shards are attempted even when another fails (`fail-fast: false`). Each session
-is bounded by 30 minutes; Go retains its 20-minute suite timeout and `-count=1`.
-Per-command timeouts and test-owned cleanup remain in effect. Artifacts named
-`podman-contracts-linux-amd64-<suite>` retain TAP or Go JSON, environment/version
-metadata, and the discovered/selected Go test lists, including on failure.
-On failure, CI also captures host CPU information and the kernel log to diagnose
-KVM entry failures. This does not retry or suppress contract failures.
-The required `CI` aggregate depends on all shards and rejects failure,
-cancellation or skipped dependencies. Local macOS acceptance does not establish
-Linux/KVM acceptance.
+Required Linux/KVM CI shards run Bats and two Go selections against the same
+frozen static product artifact. Go discovers active tests and assigns each name
+to one shard. Empty selections fail; shards run independently with bounded
+timeouts. CI retains TAP/Go JSON, selections and host diagnostics. See
+[the workflow](../../.github/workflows/ci.yml).
 
 ## Coverage and limits
 
-The active profile has 35 Bats cases and 91 Go cases. Each test first pulls its
-image; none is skipped based on engine failure.
+The active suites cover run/exec I/O, environment and identity, lifecycle,
+logs, volumes, TCP publication, image operations and local builds/cache.
+They port selected contracts, not the complete upstream corpus.
 
-| Suite | Active contracts |
+Cases outside this profile are recorded with reasons in
+`../spec/docker-cli/regression/system/900-unsupported.bats.disabled` and
+`../spec/docker-cli/regression/e2e/unsupported_test.go.disabled`.
+Those files produce no pass or skip results. Other unported upstream cases
+remain unvalidated. Public command support is defined by the
+[CLI reference](../../docs/src/en/reference/cli.md).
+
+Important limits:
+
+- Close-to-open shared-file checks do not establish cross-VM mmap or lock
+  coherence for already-open mappings.
+- Named-volume persistence and fresh-container isolation do not prove physical
+  deletion of anonymous backing files.
+- Registry faults, authentication, TLS and mirror fallback need controlled
+  service fixtures.
+- Real terminal signal forwarding and VM resource limits need native runtime
+  execution; parser tests cannot establish them.
+- Host cgroup quotas and guest vCPU/RAM shape are different contracts.
+
+Keep assertions on the supported behavior when adapting a source case. Preserve
+upstream files and license notices; update the adaptation map for new ports.
+
+## Chaos and soak
+
+| Driver | Scope and instructions |
 | --- | --- |
-| Bats `030-run.bats` | Workload exit, missing executable, stdin/EOF, env/workdir, bind read/write, read-only creation rejection |
-| Bats `031-run-options.bats` | Explicit env vs env-file, successive env-files, host env import, literal entrypoint args, numeric/named user, missing workdir creation, workdir within bind mount, read-only deletion rejection |
-| Bats `032-run-boundaries.bats` | Exit 126 for directories/non-executable files, failed-run name cleanup, host environment isolation, empty values, option-like workload arguments, relative-workdir rejection, no non-loopback interfaces with `--network none` |
-| Bats `033-run-validation.bats` | Repeated/literal environment values, missing host variable removal, CRLF env-files, missing bind source rejection, conflicting mount destinations and paths containing spaces |
-| Bats `070-build.bats` | Cached-base build/run/removal, relative external Dockerfile and TMPDIR, ignore-all definition discovery, external definition with ignore-all, symlink context and rejected ignored COPY source |
-| Go `build_test.go` | Basic build/removal, iidfile/full-ID execution, missing definition/file context errors, symlink workdir, copied empty directories/symlinks, ignore filtering, cross-directory COPY hardlinks, default COPY ownership, build arguments and WORKDIR/CMD/ENV/LABEL defaults; RUN cache reuse/invalidation/no-cache refresh, concurrent builders, multi-stage/target/base replacement, failed prefixes, missing parent checkpoints and builder-prune retention/image safety |
-| Go `cli_test.go` | Streams/exit, exec stdin/error, stop/start persistence, auto-removal, duplicate name, exec env/workdir isolation, exec user/streams, 1.7 MB stdin round trip, ps/ID lifecycle, retained logs, images/rmi, named-volume persistence across rm -v, volume image initialization/read-only reuse, running-container rm rejection/force |
-| Go `compatibility_test.go` | Closed stdin, 1 MiB stdout, run/exec TTY and TERM precedence, concurrent exec exit routing after failed spawns, repeated stop, custom stop signal and zero-timeout escalation, multiple-container isolation, partial batch failures, live/stopped `logs -f`, ephemeral IPv4 TCP publication with half-close, in-use image protection, short image IDs and repeated pull identity |
-| Go `lifecycle_test.go` | Anonymous volume restart/isolation, live named-volume sharing including read-only readers and namespace changes, copy-up preservation, volume aliases/order, bind restart and symlinks, read-only mutation families, exact binary/partial logs, log accumulation across starts, running-start idempotence, automatic/forced removal races, concurrent rapid auto-removal with exact exits/streams, TCP port restart/release/conflict and multiple endpoints |
-| Go `process_test.go` | Large exec output, binary stdin, env unsets/literal argv, non-executable/directory/missing-workdir errors, live passwd lookup, inherited run identity, empty TERM, in-flight exec termination, workload exit 125 and signals, umask isolation, full/short image-ID execution, unknown filter, batch/forced rmi, named/numeric primary groups, symlinked workdir, default CMD/empty entrypoint and invalid names |
+| `chaos.py` | Bounded macOS container transitions; [manual](CHAOS.md) |
+| `application_chaos.py` | Linux/KVM HTTP application, VM/owner faults and shared data; [manual](APPLICATION_CHAOS.md) |
+| `cli_chaos.py` | CLI and memory-pool transitions under systemd resource limits |
+| `soak.py` | Linux image/compiler workloads, application chaos and Go contracts |
 
-The continuing source audit, outstanding supported scenarios and proposed
-cost-based deferrals are in [REVIEW.md](REVIEW.md). The audit remains open;
-these counts do not mean the entire imported corpus has been covered.
-
-An independent, opt-in macOS [lightweight chaos runner](CHAOS.md) mixes these
-operations with client disconnects and concurrent starts under fixed resource
-limits. Chaos rounds are not counted as additional Podman contracts. The normal
-Go suite includes its concurrent-start regression, which verifies one entrypoint
-execution for each pair of simultaneous starts.
-
-The independent Linux/KVM [application chaos runner](APPLICATION_CHAOS.md) adds
-an HTTP application, continuous requests, shared read-only volume observations,
-owner/VMM death, concurrent starts, client resets and image replacement under
-per-instance host cgroup limits. It is opt-in and does not add to the Bats/Go
-contract counts or require a Docker daemon.
-
-`cli_chaos.py` focuses on CLI and same-user memory-pool daemon transitions. It
-keeps at most two 1-vCPU/256-MiB VMs, verifies byte-exact streams and guest exit
-codes, environment/argv isolation, read-only shared volumes, concurrent starts,
-manager crash/restart with unchanged pool ownership, abandoned exec clients,
-logs, batch failures, immediate `--rm` name reuse, validation, builds and named
-network attachment/removal. Calls alternate between two host working directories
-to exercise discovery independently of the current project. It uses an immutable Alpine digest, fresh private
-store and daemon state, frozen adjacent CLI/daemon binaries and retained receipts.
-No Docker daemon is required; this does not claim complete Docker compatibility.
-Health checks wait at most five seconds for the entrypoint's exact generation
-marker before checking `/boot-count` byte-for-byte. `start`/exec readiness is not
-application initialization: the marker follows the fixture's counter write.
-Missing/prefix-only markers, incorrect final bytes, command errors and timeouts
-remain failures; startup commands are not retried.
-Use repeatable `--scenario manager --scenario restart --scenario volume` to focus
-a campaign. Its selected names are recorded and independently audited; this is
-not a complete-profile pass. Omission preserves all twelve default scenarios,
-each executed once before seeded repeats. Invalid/duplicate names fail before
-creating evidence, and focused runs keep every selected scenario's original
-oracle, lifecycle cleanup, resource limits and optional final pool-loss fault.
-
-Optional `--inject-pool-loss` ends the window by killing only the verified owned
-physical pool through its pidfd. It requires dependent VMs and the manager to
-exit, checks failed restarts and `-M` implicit startup, and retains the stale pool
-socket rather than replacing RAM ownership. This is an explicit expected fault;
-other operation failures remain failures. Use only with disposable test VMs.
-Restart diagnostics must report the refused pool connection for that generation,
-without replaying earlier workload stderr or a previous pool-loss failure.
-Pool authentication and negotiation precede VMM construction; the same prepared
-session is consumed at VM entry rather than replaced by a second connection.
-
-The runner requires its entire process tree in a systemd user service with
-1536 MiB MemoryMax, zero swap, 150% CPU quota and TasksMax=384. It samples host
-memory/load/PSI and pauses new scenarios when available RAM or disk falls below
-5 GiB, load exceeds 12, or full memory PSI avg10 exceeds 1%. The requested load
-window includes pressure pauses; report them separately from completed rounds.
-It never disables these limits to turn an environment problem into a pass.
-Only exact owned container names and identity-pinned daemon processes are cleaned.
-Raw streams, command receipts and resource records are flushed/synced, then their
-owned file descriptors receive `POSIX_FADV_DONTNEED` where supported. This keeps
-retained evidence from filling the controller's cgroup page cache during long
-runs; bytes remain on disk for the independent audit. It does not evict guest RAM,
-image caches or unrelated host files, move evidence outside accounting, increase
-limits or relax the zero memory-limit/OOM-event assertions. Resource records
-include `memory.stat` to distinguish file cache from anonymous memory.
-Evidence remains after success and failure. For example, after freezing the
-product binaries and any GNU firmware beside them:
+For CLI chaos, freeze the CLI, daemon and matching firmware. Run the whole
+process tree in a test-owned systemd user service:
 
 ```sh
 systemd-run --user --unit=pvisor-cli-chaos-UNIQUE \
@@ -179,42 +104,14 @@ systemd-run --user --unit=pvisor-cli-chaos-UNIQUE \
 python3 tests/podman/audit_cli_chaos.py /absolute/new/short/evidence
 ```
 
-Keep the evidence path short enough for its private daemon's Unix sockets. The
-audit starts no processes; it checks completion, recorded exit/timeout results,
-available input/output hashes, resource limits/events and cleanup. Known `cat`
-round trips are also checked against the recorded stdin checksum, including older
-receipts without explicit output expectations. Other missing expectations are
-not counted as independently rechecked hashes. Ordinary `tests/test_cli_chaos.py` tests guard the
-runner's failure receipts, timeout handling, byte oracle and audit corruption
-detection without launching VMs.
+Keep the private socket/evidence path short. The driver owns at most two
+1-vCPU/256-MiB VMs, verifies exact generation markers and bytes, and pauses
+admission under host memory/disk/load pressure. `--scenario` selects a focused
+campaign; `--inject-pool-loss` enables an explicit final owned-pool fault.
+Neither an incomplete selection nor a stopped campaign is a full-profile pass.
 
-On 2026-10-26, Linux x86_64/KVM campaign `cli-20261025-1526` completed
-7202.29 seconds on frozen baseline `a7e5d756d076`: 1267 rounds and 7783
-recorded commands, with no unexpected failures or cleanup errors. It included
-198 pressure pauses (approximately 49.5 minutes); these count toward the wall
-window. Campaign memory peaked at 217.8 MiB under the limits above. The audit
-independently rechecked 547 stdin round trips and 448 validation-error causes.
-Supplementary checks exposed rejected Docker `stop -t -1` and Session cleanup
-terminating an implicitly started shared daemon. Both were repaired, with
-graceful-stop, frontend process-ownership and blocked-startup cancellation
-regressions. Two real Sessions (exit 0 and 7) then preserved the same daemon identity.
-Final candidate `c02e470e9aa0` passed a separate 182.02-second, 140-round,
-933-command follow-up, including physical pool loss and refused replacement;
-this is not a two-hour run of the repaired candidate. Both windows passed the
-read-only audit and retained their original evidence under `.data/`.
-
-`soak.py` extends the Linux campaign with a six-hour load window after image
-preparation. It pulls nine native public images (Alpine, BusyBox, Ubuntu, Debian,
-Python, Node, GCC, Go and Rust), resolves immutable digests and runs four concurrent
-lanes: byte-checked image workloads, C/C++/Go/Rust compilation with executable
-result assertions, repeated 120-round application chaos with its independent audit,
-and the existing Go CLI contracts. It installs no guest packages and compiler
-tasks use no external source dependencies. Each parallel compiler's exit status
-is checked, and old executables are removed before compilation so stale output
-cannot substitute for a failed build. This is a correctness experiment.
-
-Build the CLI and static HTTP fixture as described in APPLICATION_CHAOS.md, then
-create a dedicated systemd user slice with aggregate limits before starting:
+For soak, build the static HTTP fixture from the application manual, prepare a
+test-owned parent slice, and keep the controller/evidence monitor bounded:
 
 ```sh
 systemctl --user start pvisor-soak-owned.slice
@@ -227,169 +124,7 @@ systemd-run --user --scope --slice=pvisor-soak-owned.slice \
   --seconds 21600 --product-slice pvisor-soak-owned.slice
 ```
 
-Use a Linux Python exposing `os.pidfd_open` and `signal.pidfd_send_signal`;
-some bundled interpreters omit these APIs. The runners reject that environment
-before creating VMs, and child runners retain the selected interpreter.
-The application runner also requires CPUs 4–9 as documented above. Each lane
-stops on its first unexpected failure for investigation; other lanes continue.
-Failures are retained in `status.json` and `outcome.json` and make the runner exit
-unsuccessfully. A failed lane is never counted as sustained successful coverage.
-The evidence directory contains exact command arguments, raw streams, exit codes,
-timeouts, digest pins and isolated stores. It is retained on success too. Commands
-already admitted at the end of the load window finish under their own deadlines,
-so teardown can extend past six hours. Stop only the exact test-owned systemd
-units when aborting; never remove stores while they still own live containers.
-Workload names use UUIDs rather than wall-clock uniqueness. A reported existing
-name remains a failed round, but cleanup never removes an instance whose name
-was rejected before creation.
-
-Together these exercise all eleven registered container/build subcommands: `pull`, `images`, `rmi`,
-`run`, `build`, `exec`, `ps`, `start`, `stop`, `rm`, `logs`. They do not cover every option.
-The volume-image-content fixture requires an Alpine image containing
-`/etc/alpine-release`, `nobody`, `sh`, `printenv`, `id`, `cat`, `sleep` and `true`.
-Use `PVISOR_TEST_IMAGE` for a pinned Alpine digest, not an arbitrary image.
-The default-command cases expect Alpine's `/bin/sh` CMD and empty entrypoint;
-identity/workdir cases also use its `bin`, `nobody`, `nogroup` entries and
-`/var/run -> /run` symlink. `nogroup` is GID 65533, while `nobody` is 65534.
-
-Explicitly unsupported commands/options are preserved as commented examples in
-`system/900-unsupported.bats.disabled` and `e2e/unsupported_test.go.disabled`,
-with source files and reasons. Their `.disabled` suffix excludes them from test
-discovery; they produce no PASS or SKIP results. Complete upstream sources stay
-unchanged. Buildx and unsupported build options, Compose/API, create/inspect/wait/restart/attach/cp, registry login,
-Podman pods/Kube/Quadlet, management CLIs, extra logs/list flags and host-specific
-namespace/security controls are disabled. Anonymous-volume deletion, controlling-terminal
-input, publication on non-loopback host addresses and other supported-but-unported scenarios
-remain coverage gaps, not unsupported features.
-
-Build ports use the documented Docker subset. Podman-specific `--format=docker`,
-`--pull-never`, COMMIT log rendering and Containerfile auto-discovery are not
-claimed. Public `images`/`run` and OCI tar output replace unsupported inspect for
-image identity, filesystem and label observations. Build validation errors use
-Docker-profile exit 1 rather than Podman 125. Remote ADD cases retain only their
-local COPY filtering/link contracts, not remote protocol or ADD coverage.
-The original RUN-exit-code relay case (Podman exit 5) remains unported: pVisor
-currently reports a failed build as exit 1. Adaptations and remaining build gaps
-are recorded in [UPSTREAM.md](UPSTREAM.md) and [REVIEW.md](REVIEW.md).
-
-The TTY cases require default `TERM=xterm`, explicit TERM precedence and no
-mutation of container defaults by `exec -t`. These defaults are applied on the
-host; the generic guest launcher is unchanged. TCP uses the pinned Alpine's
-BusyBox netcat, explicitly bound to guest IPv4 loopback, and verifies the full
-echo after the client closes its write half. No additional image package is
-installed. Go invocations must include all active `*_test.go` files as above.
-
-Shared-volume regressions require reopened files to see completed writes from
-another VM or mount, including changes in file length and directory entries.
-Ordinary passthrough mounts now use zero metadata validity with existing
-close-to-open data caching. This does not establish coherence for already-open
-mappings or unsynchronized concurrent writes. Missing bind sources are rejected
-under pVisor's documented stricter profile; Docker's automatic host-directory
-creation is not claimed. Anonymous-volume storage deletion remains unobserved
-without a public volume listing API; the active cases prove restart persistence
-and isolation, not garbage collection.
-
-A pass means the selected behavior contract held for pVisor. Dynamic IDs and
-human-readable list formatting are not compared with another engine. Unsupported
-features and Docker-daemon interoperability cases are explicitly excluded, never
-counted as passes. Do not weaken assertions or skip a supported operation because
-pVisor fails it. Other upstream cases without a port remain unvalidated.
-
-For example, upstream `test/e2e/push_test.go` includes "podman push to docker
-daemon", which invokes both Podman and the real Docker CLI. That case is recorded
-as disabled in `e2e/unsupported_test.go.disabled`; no installed Docker is needed
-to discover or execute the active profile.
-
-## Non-root identity regression
-
-The numeric/named `run -u` cases and `TestExecUserAndStreams` guard a regression
-where the synthetic DNS lower exposed private host directory permissions as guest
-`/` and `/etc`. Those directories became `0700`, so non-root commands exited 126.
-
-Resolver setup now retains the image directories' guest ownership and modes in
-virtual metadata while leaving the host resolver directories `0700`. If the image
-has no `/etc`, the injected guest directory is root-owned `0755`; the resolver
-file is root-owned `0644`. Explicit restrictive image permissions are preserved.
-The original success assertions remain active. To run just these regressions,
-select the newly built, Hypervisor-signed binary using `PVISOR_BINARY`:
-
-```sh
-bats --filter 'numeric user|named user' tests/podman/system
-go test -v -run TestExecUserAndStreams tests/podman/e2e/cli_test.go
-```
-
-On 2026-10-21, all 29 cases passed on macOS ARM64 with the repaired executable,
-alongside seven selected Rust Docker-module regressions and four Python harness
-checks. Three unrelated cases initially hit Docker Hub HTTP 429 during setup;
-they passed on retry via `mirror.gcr.io/library/alpine` using the verified same
-ARM64 manifest digest
-`sha256:45e09956dc667c5eff3583c9d94830261fb1ca0be10a0a7db36266edf5de9e1d`.
-
-Linux/KVM execution remains unverified by the local macOS ARM64 VM run. Docker
-comparison is not part of this suite or an acceptance prerequisite.
-
-The expanded profile was validated on 2026-10-21 with Go 1.23.12 and Bats 1.11.0:
-all 53 runtime cases passed (23 Bats, 30 Go), using the pinned ARM64 mirror
-manifest above and a private copy of the rebuilt, Hypervisor-signed executable.
-All 20 selected Rust Docker regressions and four Python adapter/source-integrity
-checks passed; Clippy, rustdoc and formatting checks passed too. The new TTY
-cases exposed missing default TERM in run/exec; the host-side fix preserves
-explicit values and leaves guest supervision unchanged. No active cases were
-skipped, no assertions were weakened, and upstream file hashes remain unchanged.
-
-A second expansion on 2026-10-21 brought the profile to 76 cases (29 Bats,
-47 Go), adding 23 cases to the 53-case profile. All 76 passed on macOS ARM64
-with the same immutable Alpine mirror manifest, Go/Bats versions and a rebuilt,
-Hypervisor-signed private binary. The new volume cases exposed stale metadata
-across shared mounts/VMs; zero passthrough metadata validity fixes reopened-file
-contents/lengths without changing data-cache policy. A complete run also exposed
-force-stop publication racing automatic removal; catalog locking now protects
-lookup/publication while termination waits remain outside the lock. The new
-eight-iteration removal regression passed without retries or relaxed assertions.
-
-All 31 selected Rust Docker/VM contract and boundary tests, both native HVF
-container/Session acceptance cases and all four Python adapter/source-integrity
-checks passed. Clippy, rustdoc with warnings denied, formatting and CI budgets
-passed. Guest code and upstream sources were unchanged. Linux/KVM execution,
-cross-VM open-mapping coherence and performance effects remain unvalidated.
-
-The next batch was validated on 2026-10-22: all 101 runtime contracts passed
-(29 Bats, 72 Go), including 25 added process/identity/image contracts. The same
-signed executable and immutable ARM64 Alpine mirror manifest were used; this
-batch changes tests and audit documentation only. Go vet, gofmt, diff checks
-and all four Python adapter/source-integrity tests passed. Initial fixture
-assumptions were corrected against the image: use BusyBox printf rather than
-an absent `/bin/printf`, and assert Alpine's actual nogroup GID 65533. No
-runtime failure was converted to a skip. The source audit in `REVIEW.md`
-remains open, with further supported cases still to port and deferred areas
-listed separately for human review.
-
-
-The build batch was validated on 2026-10-23 on macOS ARM64/HVF with Go 1.23.12,
-Bats 1.11.0 and the immutable Alpine mirror manifest recorded above. All 16 new
-build contracts passed (6 Bats, 10 Go); this is not a rerun of all 118 active
-contracts. The upstream cross-directory COPY hardlink case found that context
-capture and COPY split hardlinks before export. Both paths now retain private
-inode identity; all original selected inode-equality assertions pass. Nine Rust
-builder regressions, four Python adapter/source-integrity checks, Go vet and
-Clippy passed. Upstream copies and their hash inventory remain unchanged.
-Linux/KVM and the remaining build cases are still unvalidated.
-
-On 2026-10-24 the complete active profile passed on Linux x86_64/KVM with the
-default compressed local image pool: 35 Bats and 83 Go contracts, no skips.
-The immutable Alpine manifest was
-`mirror.gcr.io/library/alpine@sha256:c64c687cbea9300178b30c95835354e34c4e4febc4badfe27102879de0483b5e`;
-the runners were Bats 1.11.0 and Go 1.26.10. A frozen static musl product was
-used throughout each run. Read-only observation of 115 private test stores
-confirmed pooled catalog entries and no persistent legacy blob/rootfs/build-image
-directories. This validates the active profile, not the entire upstream corpus.
-
-The same candidate passed all four opt-in native Docker/Session acceptance cases
-and a real-guest mmap probe spanning multiple 1 MiB pool blocks, including
-read-after-close, private COW, shared-write/msync copy-up and original-image
-preservation in a fresh container. The regression found and fixed local cache
-diagnostics leaking into workload stderr and Linux rootless virtual CHOWN.
-These are correctness results; they establish no mmap performance advantage.
-Separate workspace benchmark-registration, CPUID doctest and opt-in Session
-execution-fork failures, plus an intermittent filesystem/S3 cache-guest exit
-125, remain outside this passing container profile.
+The Linux drivers require pidfd support and delegated cgroup v2. Stop only the
+owned units. Retain command bytes, input hashes, resource samples and failed
+stores; cleanup errors remain failures. Audits recheck saved evidence without
+starting VMs. See [test architecture](../README.md) for ordinary regressions.

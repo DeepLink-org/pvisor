@@ -14,6 +14,8 @@ mod builder;
 mod compose;
 mod network;
 mod progress;
+mod query;
+mod volume_cli;
 
 impl DockerCommand {
     pub(super) fn failure_exit_code(&self) -> i32 {
@@ -54,6 +56,8 @@ pub(super) enum DockerCommand {
     },
     /// Manage container networks.
     Network(network::NetworkArgs),
+    /// Manage persistent local volumes.
+    Volume(volume_cli::VolumeArgs),
     /// Download an image from an OCI registry.
     Pull {
         /// Select an image platform; downloading does not enable CPU emulation.
@@ -77,6 +81,16 @@ pub(super) enum DockerCommand {
     Rm(Remove),
     /// Fetch container stdout and stderr.
     Logs(Logs),
+    /// Stop and restart containers, retaining their files and volumes.
+    Restart(Restart),
+    /// Print the selected container generation's exit code.
+    Wait(Select),
+    /// Copy files between a host and a container.
+    Cp(Copy),
+    /// Inspect Session/container or image metadata; --files opens a task view.
+    Inspect(Inspect),
+    /// Signal the selected Session's main execution.
+    Kill(Kill),
 }
 
 #[derive(Debug, Subcommand)]
@@ -91,6 +105,11 @@ pub(super) enum ContainerCommand {
     #[command(alias = "remove")]
     Rm(Remove),
     Logs(Logs),
+    Inspect(Inspect),
+    Restart(Restart),
+    Wait(Select),
+    Cp(Copy),
+    Kill(Kill),
 }
 
 #[derive(Debug, Subcommand)]
@@ -105,6 +124,7 @@ pub(super) enum ImageCommand {
     Ls(ListImages),
     #[command(alias = "remove")]
     Rm(RemoveImages),
+    Inspect(Inspect),
 }
 
 impl DockerCommand {
@@ -118,12 +138,22 @@ impl DockerCommand {
                 ContainerCommand::Stop(args) => Self::Stop(args),
                 ContainerCommand::Rm(args) => Self::Rm(args),
                 ContainerCommand::Logs(args) => Self::Logs(args),
+                ContainerCommand::Restart(args) => Self::Restart(args),
+                ContainerCommand::Wait(args) => Self::Wait(args),
+                ContainerCommand::Cp(args) => Self::Cp(args),
+                ContainerCommand::Kill(args) => Self::Kill(args),
+                ContainerCommand::Inspect(args) => Self::Container {
+                    command: ContainerCommand::Inspect(args),
+                },
             },
             Self::Image { command } => match command {
                 ImageCommand::Build(args) => Self::Build(*args),
                 ImageCommand::Pull { platform, image } => Self::Pull { platform, image },
                 ImageCommand::Ls(args) => Self::Images(args),
                 ImageCommand::Rm(args) => Self::Rmi(args),
+                ImageCommand::Inspect(args) => Self::Image {
+                    command: ImageCommand::Inspect(args),
+                },
             },
             command => command,
         }
@@ -189,6 +219,21 @@ pub(super) struct Run {
     /// Static IPv4 in a user-defined network's configured subnet.
     #[arg(long)]
     ip: Option<std::net::Ipv4Addr>,
+    /// Metadata label KEY[=VALUE]; repeated keys use the last value.
+    #[arg(short = 'l', long = "label")]
+    labels: Vec<String>,
+    /// no, always, unless-stopped, or on-failure[:MAX_RETRIES].
+    #[arg(long, default_value = "no")]
+    restart: docker::RestartPolicy,
+    /// Override the image's Linux stop signal.
+    #[arg(long)]
+    stop_signal: Option<String>,
+    /// Default stop grace in nonnegative seconds.
+    #[arg(long)]
+    stop_timeout: Option<u64>,
+    /// Disable the image's default health check.
+    #[arg(long)]
+    no_healthcheck: bool,
     /// Image followed by the optional command and its literal arguments.
     #[arg(required = true, num_args = 1.., trailing_var_arg = true, value_names = ["IMAGE", "COMMAND"])]
     invocation: Vec<String>,
@@ -202,8 +247,8 @@ pub(super) struct Select {
 #[derive(Debug, Args)]
 pub(super) struct Stop {
     /// Seconds before force-stop; -1 waits indefinitely for graceful exit.
-    #[arg(short = 't', long, default_value_t = 10, allow_hyphen_values = true, value_parser = clap::value_parser!(i64).range(-1..))]
-    timeout: i64,
+    #[arg(short = 't', long, allow_hyphen_values = true, value_parser = clap::value_parser!(i64).range(-1..))]
+    timeout: Option<i64>,
     #[arg(short = 's', long)]
     signal: Option<String>,
     #[arg(required = true, num_args = 1..)]
@@ -233,6 +278,10 @@ pub(super) struct List {
     quiet: bool,
     #[arg(long)]
     no_trunc: bool,
+    #[arg(short = 'f', long = "filter")]
+    filters: Vec<String>,
+    #[arg(long)]
+    format: Option<String>,
 }
 #[derive(Debug, Args)]
 pub(super) struct ListImages {
@@ -240,6 +289,10 @@ pub(super) struct ListImages {
     quiet: bool,
     #[arg(long)]
     no_trunc: bool,
+    #[arg(short = 'f', long = "filter")]
+    filters: Vec<String>,
+    #[arg(long)]
+    format: Option<String>,
     repository: Option<String>,
 }
 #[derive(Debug, Args)]
@@ -248,6 +301,58 @@ pub(super) struct Logs {
     follow: bool,
     container: String,
 }
+#[derive(Debug, Args)]
+pub(super) struct Inspect {
+    #[arg(short = 'f', long)]
+    format: Option<String>,
+    #[arg(required_unless_present_any = ["files", "checkpoint", "command"], num_args = 1..)]
+    selectors: Vec<String>,
+    /// Restrict metadata lookup to a resource kind.
+    #[arg(long = "type", value_parser = ["container", "image"])]
+    kind: Option<String>,
+    /// Open a native task's read-only filesystem rather than metadata.
+    #[arg(long, conflicts_with_all = ["format", "kind"])]
+    files: bool,
+    #[arg(long, conflicts_with_all = ["format", "kind"])]
+    checkpoint: Option<String>,
+    #[arg(
+        long = "store",
+        alias = "output-dir",
+        short = 'o',
+        default_value = ".pvisor/capture"
+    )]
+    output_dir: PathBuf,
+    #[arg(last = true, allow_hyphen_values = true, conflicts_with_all = ["format", "kind"])]
+    command: Vec<String>,
+}
+
+#[derive(Debug, Args)]
+pub(super) struct Kill {
+    #[arg(short = 's', long, default_value = "KILL")]
+    signal: String,
+    #[arg(required = true, num_args = 1..)]
+    selectors: Vec<String>,
+    /// Native task cancellation response.
+    #[arg(long)]
+    json: bool,
+    #[arg(short = 'o', long, default_value = ".pvisor/capture")]
+    output_dir: PathBuf,
+}
+
+#[derive(Debug, Args)]
+pub(super) struct Restart {
+    #[arg(short = 't', long, allow_hyphen_values = true, value_parser = clap::value_parser!(i64).range(-1..))]
+    timeout: Option<i64>,
+    #[arg(required = true, num_args = 1..)]
+    containers: Vec<String>,
+}
+
+#[derive(Debug, Args)]
+pub(super) struct Copy {
+    source: String,
+    destination: String,
+}
+
 #[derive(Debug, Args)]
 pub(super) struct Exec {
     /// Interpret TARGET as a live Session selector (Linux Host sandbox only).
@@ -363,16 +468,31 @@ pub(super) fn run(command: DockerCommand) -> anyhow::Result<i32> {
     if let DockerCommand::Compose(args) = command {
         return compose::run(args);
     }
+    if let DockerCommand::Volume(args) = command {
+        return volume_cli::run(args);
+    }
+    if matches!(
+        command,
+        DockerCommand::Container { .. } | DockerCommand::Image { .. } | DockerCommand::Inspect(_)
+    ) {
+        return query::inspect(command);
+    }
+    if let DockerCommand::Kill(args) = command {
+        return query::kill(args);
+    }
+    query::validate(&command)?;
     let store = Store::discover()?;
     match command {
         DockerCommand::Build(_)
         | DockerCommand::Builder(_)
         | DockerCommand::Compose(_)
+        | DockerCommand::Volume(_)
         | DockerCommand::Network(_)
         | DockerCommand::Container { .. }
         | DockerCommand::Image { .. } => {
             unreachable!()
         }
+        DockerCommand::Inspect(_) | DockerCommand::Kill(_) => unreachable!(),
         DockerCommand::Pull { image, platform } => {
             let image = {
                 let mut display = progress::PullDisplay::new(&image);
@@ -387,32 +507,7 @@ pub(super) fn run(command: DockerCommand) -> anyhow::Result<i32> {
             println!("Digest: {}\n{}", image.digest, image.reference);
         }
         DockerCommand::Images(args) => {
-            if !args.quiet {
-                println!("REPOSITORY\tTAG\tIMAGE ID");
-            }
-            let mut ids = std::collections::BTreeSet::new();
-            for image in store.images()? {
-                let (repository, tag) = split_tag(&image.reference);
-                if args
-                    .repository
-                    .as_ref()
-                    .is_some_and(|filter| filter != &image.reference && filter != repository)
-                {
-                    continue;
-                }
-                let id = if args.no_trunc {
-                    image.id.as_str()
-                } else {
-                    &image.id[7..19]
-                };
-                if args.quiet {
-                    if ids.insert(id.to_owned()) {
-                        println!("{id}");
-                    }
-                } else {
-                    println!("{repository}\t{tag}\t{id}");
-                }
-            }
+            return query::images(&store, args);
         }
         DockerCommand::Rmi(args) => {
             return batch(&args.images, |selector| {
@@ -423,31 +518,7 @@ pub(super) fn run(command: DockerCommand) -> anyhow::Result<i32> {
             });
         }
         DockerCommand::Ps(args) => {
-            let mut output = io::stdout().lock();
-            ps_header(&mut output, args.quiet)?;
-            for instance in store.instances(args.all)? {
-                let ports = instance
-                    .config
-                    .ports
-                    .iter()
-                    .map(|p| format!("{}:{}->{}/tcp", p.address, p.host, p.guest))
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                ps_row(
-                    &mut output,
-                    PsRow {
-                        id: &instance.id,
-                        image: &instance.image.reference,
-                        command: &instance.argv,
-                        state: &instance.state,
-                        exit_code: instance.exit_code,
-                        ports: &ports,
-                        name: &instance.name,
-                    },
-                    args.quiet,
-                    args.no_trunc,
-                )?;
-            }
+            return query::containers(&store, args);
         }
         DockerCommand::Run(args) => {
             ensure!(
@@ -502,6 +573,20 @@ pub(super) fn run(command: DockerCommand) -> anyhow::Result<i32> {
                 network_name: Some(selected_network.name),
                 ipv4_address: args.ip,
                 peers: None,
+                labels: query::labels(&args.labels)?,
+                restart: args.restart,
+                stop_signal: args
+                    .stop_signal
+                    .as_deref()
+                    .map(pvisor_guest::control::parse_signal)
+                    .transpose()?,
+                stop_timeout_ms: args
+                    .stop_timeout
+                    .unwrap_or(10)
+                    .checked_mul(1000)
+                    .context("stop timeout overflow")?,
+                healthcheck: None,
+                no_healthcheck: args.no_healthcheck,
             };
             let instance = {
                 let mut display = progress::PullDisplay::new(&config.image);
@@ -547,18 +632,43 @@ pub(super) fn run(command: DockerCommand) -> anyhow::Result<i32> {
         }
         DockerCommand::Stop(args) => {
             return batch(&args.containers, |selector| {
+                let instance = store.resolve(selector)?;
                 store.stop(
-                    selector,
-                    if args.timeout == -1 {
-                        Duration::MAX
-                    } else {
-                        Duration::from_secs(args.timeout as u64)
-                    },
+                    &instance.id,
+                    args.timeout
+                        .map(stop_duration)
+                        .unwrap_or(Duration::from_millis(instance.config.stop_timeout_ms)),
                     args.signal.as_deref(),
                 )?;
                 println!("{selector}");
                 Ok(())
             });
+        }
+        DockerCommand::Restart(args) => {
+            return batch(&args.containers, |selector| {
+                store.restart(selector, args.timeout.map(stop_duration))?;
+                println!("{selector}");
+                Ok(())
+            });
+        }
+        DockerCommand::Wait(args) => {
+            return batch(&args.containers, |selector| {
+                println!("{}", store.wait(selector)?);
+                Ok(())
+            });
+        }
+        DockerCommand::Cp(args) => {
+            let source = query::copy_endpoint(&args.source)?;
+            let destination = query::copy_endpoint(&args.destination)?;
+            match (source, destination) {
+                (Some((container, path)), None) => {
+                    store.copy_from(&container, &path, PathBuf::from(args.destination).as_path())?
+                }
+                (None, Some((container, path))) => {
+                    store.copy_to(PathBuf::from(args.source).as_path(), &container, &path)?
+                }
+                _ => bail!("cp requires exactly one CONTAINER:PATH endpoint"),
+            }
         }
         DockerCommand::Rm(args) => {
             return batch(&args.containers, |selector| {
@@ -763,6 +873,14 @@ fn split_tag(reference: &str) -> (&str, &str) {
     }
 }
 
+fn stop_duration(seconds: i64) -> Duration {
+    if seconds == -1 {
+        Duration::MAX
+    } else {
+        Duration::from_secs(seconds as u64)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -927,7 +1045,7 @@ mod tests {
             let DockerCommand::Stop(args) = parsed.command else {
                 panic!()
             };
-            assert_eq!(args.timeout, expected);
+            assert_eq!(args.timeout, Some(expected));
             assert_eq!(args.containers, ["container"]);
         }
         assert!(Cli::try_parse_from(["pvisor", "stop", "-t=-2", "container"]).is_err());

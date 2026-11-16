@@ -83,15 +83,7 @@ codesign --force --sign - --entitlements crates/pvisor/macos-hypervisor.entitlem
   target/release/pvisor
 ```
 
-依照本目录 README 的 `--prepare` 命令传入这些制品及匹配的 FW/SOURCE，
-选择新批次目录、`--samples 30` 与对应 `--experiment`，然后执行：
-
-```sh
-target/semspec/debug/semspec bench --cwd "$BATCH" "$BATCH/in.json"
-python3 benchmark/filesystem/directory_names_analysis.py "$BATCH"
-```
-
-`BATCH` 使用绝对路径；先按 `benchmark/README.md` 构建 semspec。
+复核使用对应批次冻结的制品、FW/SOURCE 和完整原始记录，不复用已有输出进行采样。
 macOS manifest 显式记录 `host_platform=darwin`、`host_budget=unrestricted`
 及空 cpus，不宣称 Linux cgroup 限制。长临时目录容易触发 macOS
 Unix socket 路径上限；常规 Rust 测试用 `TMPDIR=/tmp`，实验夹具仍由

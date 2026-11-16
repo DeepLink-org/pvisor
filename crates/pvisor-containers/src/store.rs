@@ -7,7 +7,7 @@ use pvisor_guest::GuestConfig;
 use serde::{Deserialize, Serialize};
 use std::{
     fs::{self, File, OpenOptions},
-    io::{Read, Write},
+    io::{self, Read, Write},
     path::{Path, PathBuf},
     time::{Duration, Instant},
 };
@@ -100,8 +100,49 @@ pub(crate) fn publish<T: Serialize>(path: &Path, value: &T) -> anyhow::Result<()
     serde_json::to_writer(&mut file, value)?;
     file.flush()?;
     file.as_file().sync_all()?;
-    file.persist(path).map_err(|e| e.error)?;
+    let deadline = Instant::now() + Duration::from_secs(2);
+    persist_with_retry(
+        file,
+        |file| file.persist(path),
+        |error| cfg!(windows) && wait_for_replacement(error, deadline),
+    )?;
     Ok(())
+}
+
+fn windows_replace_conflict(error: &io::Error) -> bool {
+    // Windows can reject replacement while a reader/filter holds the target:
+    // ERROR_ACCESS_DENIED, ERROR_SHARING_VIOLATION, ERROR_LOCK_VIOLATION.
+    matches!(error.raw_os_error(), Some(5 | 32 | 33))
+}
+
+fn wait_for_replacement(error: &io::Error, deadline: Instant) -> bool {
+    if !windows_replace_conflict(error) {
+        return false;
+    }
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    if remaining.is_zero() {
+        return false;
+    }
+    std::thread::sleep(Duration::from_millis(10).min(remaining));
+    Instant::now() < deadline
+}
+
+fn persist_with_retry(
+    mut file: tempfile::NamedTempFile,
+    mut persist: impl FnMut(tempfile::NamedTempFile) -> Result<File, tempfile::PersistError>,
+    mut retry: impl FnMut(&io::Error) -> bool,
+) -> io::Result<()> {
+    loop {
+        match persist(file) {
+            Ok(_) => return Ok(()),
+            Err(error) if retry(&error.error) => {
+                // Retry only the atomic replacement of the same synced bytes.
+                // Never remove/truncate the old record or repeat its side effects.
+                file = error.file;
+            }
+            Err(error) => return Err(error.error),
+        }
+    }
 }
 
 pub(crate) fn lock(path: &Path) -> anyhow::Result<File> {
@@ -538,6 +579,153 @@ impl Containers for Store {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn pending_record(directory: &Path) -> tempfile::NamedTempFile {
+        let mut file = tempfile::NamedTempFile::new_in(directory).unwrap();
+        file.write_all(br#"{"state":"exited","exit_code":7}"#)
+            .unwrap();
+        file.as_file().sync_all().unwrap();
+        file
+    }
+
+    #[test]
+    fn replacement_conflicts_reuse_synced_bytes_and_preserve_the_old_record() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("record.json");
+        fs::write(&path, br#"{"state":"running"}"#).unwrap();
+        let file = pending_record(temp.path());
+        let pending = file.path().to_owned();
+        let mut attempts = 0;
+        let mut retried = Vec::new();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        persist_with_retry(
+            file,
+            |file| {
+                assert_eq!(file.path(), pending);
+                assert_eq!(fs::read(&path).unwrap(), br#"{"state":"running"}"#);
+                assert_eq!(
+                    fs::read(file.path()).unwrap(),
+                    br#"{"state":"exited","exit_code":7}"#
+                );
+                attempts += 1;
+                if attempts <= 3 {
+                    return Err(tempfile::PersistError {
+                        error: io::Error::from_raw_os_error([5, 32, 33][attempts - 1]),
+                        file,
+                    });
+                }
+                file.persist(&path)
+            },
+            |error| {
+                retried.push(error.raw_os_error().unwrap());
+                wait_for_replacement(error, deadline)
+            },
+        )
+        .unwrap();
+        assert_eq!(attempts, retried.len() + 1);
+        assert!(retried.starts_with(&[5, 32, 33]));
+        assert_eq!(
+            fs::read(&path).unwrap(),
+            br#"{"state":"exited","exit_code":7}"#
+        );
+        assert!(!pending.exists());
+    }
+
+    #[test]
+    fn permanent_or_exhausted_replacement_errors_leave_the_old_record_intact() {
+        for (code, retries) in [(5, 2), (112, 0)] {
+            let temp = tempfile::tempdir().unwrap();
+            let path = temp.path().join("record.json");
+            fs::write(&path, br#"{"state":"running"}"#).unwrap();
+            let file = pending_record(temp.path());
+            let pending = file.path().to_owned();
+            let mut attempts = 0;
+            let mut remaining = retries;
+            let error = persist_with_retry(
+                file,
+                |file| {
+                    attempts += 1;
+                    assert_eq!(file.path(), pending);
+                    assert_eq!(fs::read(&path).unwrap(), br#"{"state":"running"}"#);
+                    Err(tempfile::PersistError {
+                        error: io::Error::from_raw_os_error(code),
+                        file,
+                    })
+                },
+                |error| {
+                    if windows_replace_conflict(error) && remaining > 0 {
+                        remaining -= 1;
+                        true
+                    } else {
+                        false
+                    }
+                },
+            )
+            .unwrap_err();
+            assert_eq!(error.raw_os_error(), Some(code));
+            assert_eq!(attempts, retries + 1);
+            assert_eq!(fs::read(&path).unwrap(), br#"{"state":"running"}"#);
+            assert!(!pending.exists());
+        }
+        assert!(!wait_for_replacement(
+            &io::Error::from_raw_os_error(5),
+            Instant::now()
+        ));
+        assert!(!wait_for_replacement(
+            &io::Error::from_raw_os_error(112),
+            Instant::now() + Duration::from_secs(2)
+        ));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn an_open_windows_destination_can_be_replaced_after_its_reader_closes() {
+        use std::{os::windows::fs::OpenOptionsExt, sync::mpsc};
+        use windows_sys::Win32::Storage::FileSystem::{FILE_SHARE_READ, FILE_SHARE_WRITE};
+
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("record.json");
+        fs::write(&path, br#"{"state":"running"}"#).unwrap();
+        let held = OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+            .open(&path)
+            .unwrap();
+        let file = pending_record(temp.path());
+        let target = path.clone();
+        let (blocked, first_failure) = mpsc::channel();
+        let (release, released) = mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let mut blocked = Some(blocked);
+            let deadline = Instant::now() + Duration::from_secs(5);
+            persist_with_retry(
+                file,
+                |file| {
+                    let result = file.persist(&target);
+                    if let Err(error) = &result
+                        && let Some(blocked) = blocked.take()
+                    {
+                        blocked.send(error.error.raw_os_error()).unwrap();
+                        released.recv_timeout(Duration::from_secs(5)).unwrap();
+                    }
+                    result
+                },
+                |error| wait_for_replacement(error, deadline),
+            )
+        });
+        let code = first_failure.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert!(windows_replace_conflict(&io::Error::from_raw_os_error(
+            code.unwrap()
+        )));
+        assert_eq!(fs::read(&path).unwrap(), br#"{"state":"running"}"#);
+        drop(held);
+        release.send(()).unwrap();
+        worker.join().unwrap().unwrap();
+        assert_eq!(
+            fs::read(&path).unwrap(),
+            br#"{"state":"exited","exit_code":7}"#
+        );
+    }
 
     #[test]
     fn retained_bridge_addresses_are_reserved_until_removal_and_exhaustion_is_explicit() {

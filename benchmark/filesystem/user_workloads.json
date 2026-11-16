@@ -1,3 +1,6 @@
 {
-  "filesystem-user-layered": "$ python3 @BATCH@/harness/user_workloads.py --measure @BATCH@"
+  "engine": "criterion",
+  "entry": "filesystem/user_workloads.json",
+  "implementation": "../criterion/src/filesystem/mod.rs",
+  "config_env": "PVISOR_BENCH_LAYERED_CONFIG"
 }

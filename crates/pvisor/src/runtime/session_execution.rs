@@ -39,7 +39,7 @@ pub(crate) fn snapshot_store(
     Ok(path)
 }
 
-const STATE: &str = "execution-session.json";
+pub(crate) const STATE: &str = "session.json";
 const ROOT: &str = "execution-session-root.json";
 const SESSION_LOCK_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -57,7 +57,7 @@ pub struct Request {
     pub error: Option<String>,
 }
 
-pub const SESSION_SCHEMA_VERSION: u16 = 3;
+pub const SESSION_SCHEMA_VERSION: u16 = 4;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -95,16 +95,16 @@ impl Session {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => stage.to_owned(),
             Err(error) => return Err(error.into()),
         };
-        let bytes = match std::fs::read(root.join(STATE)) {
-            Ok(bytes) => bytes,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(error) => return Err(error.into()),
-        };
-        let session: Self = serde_json::from_slice(&bytes)?;
         ensure!(
-            session.version == SESSION_SCHEMA_VERSION
-                && session.root == root
-                && session.root.is_absolute()
+            !root.join("execution-session.json").try_exists()?,
+            "legacy execution Session requires its owning binary; no implicit migration"
+        );
+        let session = match Self::read_task_profile(&root)? {
+            Some(session) => session,
+            None => return Ok(None),
+        };
+        ensure!(
+            session.kind() == crate::SessionKind::Task
                 && session.active_stage.is_absolute()
                 && session.previous_stage.is_absolute()
                 && (session.active_stage == session.root
@@ -114,14 +114,6 @@ impl Session {
             "invalid execution Session binding"
         );
         Ok(Some(session))
-    }
-    pub(crate) fn write(&self) -> anyhow::Result<()> {
-        crate::util::write_run_json(
-            &self.root.join(STATE),
-            self,
-            &self.run_id,
-            "execution_session",
-        )
     }
     pub fn lock(&self) -> anyhow::Result<RunLease> {
         RunLease::acquire(&self.root.join("execution-operation"))
@@ -225,11 +217,21 @@ pub(crate) fn require_mutable(record: &RunRecord) -> anyhow::Result<()> {
 pub fn session(record: &RunRecord) -> anyhow::Result<Session> {
     let session = Session::read(record)?
         .context("CAPABILITY_UNSUPPORTED: this Session has no native execution handoff")?;
-    ensure!(
-        session.run_id == record.run_id && session.config.run.executor == RunExecutorKind::Vm,
-        "execution Session owner/executor mismatch"
-    );
+    require_native_handoff(record, &session)?;
     Ok(session)
+}
+
+/// Validate an already-observed profile without loading a second Session.
+pub(crate) fn require_native_handoff(record: &RunRecord, session: &Session) -> anyhow::Result<()> {
+    ensure!(
+        session.run_id == record.run_id,
+        "execution Session owner mismatch"
+    );
+    ensure!(
+        session.config.run.executor == RunExecutorKind::Vm,
+        "CAPABILITY_UNSUPPORTED: native execution capture/restore requires a VM profile"
+    );
+    Ok(())
 }
 
 pub(crate) fn capture_error(error: anyhow::Error) -> AgentCtlHostError {
@@ -266,16 +268,22 @@ impl Session {
         spec: pvisor_core::RunSpec,
     ) -> anyhow::Result<Self> {
         let stage = record.stage_dir();
-        if let Some(value) = &mut config.vm.library_dir {
+        let native_vm = config.run.executor == RunExecutorKind::Vm;
+        if native_vm && let Some(value) = &mut config.vm.library_dir {
             *value = value.canonicalize()?;
         }
-        if Session::read(record)?.is_none()
+        if native_vm
+            && Session::read(record)?.is_none()
             && let Some(root) = &mut config.vm.rootfs
         {
             *root = root.canonicalize()?;
         }
-        let store = snapshot_store(&stage, &spec.metadata)?;
-        if let Some(pool) = &mut config.vm.snapshot_filesystem_pool {
+        let store = native_vm
+            .then(|| snapshot_store(&stage, &spec.metadata))
+            .transpose()?;
+        if let Some(store) = &store
+            && let Some(pool) = &mut config.vm.snapshot_filesystem_pool
+        {
             // A configured pool can be new. Initialize it through the store's
             // private-directory validation before persisting a canonical path.
             if let Some(parent) = store.parent() {
@@ -284,7 +292,7 @@ impl Session {
             if let Some(parent) = pool.parent() {
                 Persistence::create_dir_all_durable(parent)?;
             }
-            crate::environment_snapshot::SnapshotStore::with_filesystem_pool(&store, pool)?;
+            crate::environment_snapshot::SnapshotStore::with_filesystem_pool(store, pool)?;
             *pool = pool.canonicalize()?;
         }
         let mut session = match Session::read(record)? {
@@ -305,7 +313,9 @@ impl Session {
                 spec,
             )?,
         };
-        session.apply(SessionTransition::StoreBound { store: &store })?;
+        if let Some(store) = &store {
+            session.apply(SessionTransition::StoreBound { store })?;
+        }
         session.write()?;
         session.link_stage(&stage)?;
         Ok(session)
@@ -660,10 +670,11 @@ mod tests {
         let mut config = RunConfig::default();
         config.run.executor = RunExecutorKind::Vm;
         let session: Session = serde_json::from_value(serde_json::json!({
-            "version":SESSION_SCHEMA_VERSION,"run_id":"session","root":root,"active_stage":root,
-            "previous_stage":root,"active_execution":"execution-original","config":config,
-            "spec":pvisor_core::RunSpec::process("session", "probe", "probe"),"state":"suspended",
-            "head":null,"checkpoints":{},"requests":{},"resumes":{},"forks":{},"stores":[root.join("execution-snapshots")]
+            "version":SESSION_SCHEMA_VERSION,"run_id":"session","root":root,
+            "active_execution":"execution-original","owner_epoch":"execution-original","kind":"task","state":"suspended",
+            "profile":{"active_stage":root,"previous_stage":root,"config":config,
+            "spec":pvisor_core::RunSpec::process("session", "probe", "probe"),
+            "head":null,"checkpoints":{},"requests":{},"resumes":{},"forks":{},"stores":[root.join("execution-snapshots")]}
         })).unwrap();
         session.write().unwrap();
         (record, session)
@@ -717,7 +728,7 @@ mod tests {
         let mut variants = Vec::new();
         for field in ["forks", "stores", "resumes"] {
             let mut value = original.clone();
-            value.as_object_mut().unwrap().remove(field);
+            value["profile"].as_object_mut().unwrap().remove(field);
             variants.push(value);
         }
         let mut value = original.clone();
@@ -727,7 +738,7 @@ mod tests {
         value["version"] = serde_json::json!(1);
         variants.push(value);
         let mut value = original;
-        value["resumes"] = serde_json::json!({"key": {"stage": "/private/execution"}});
+        value["profile"]["resumes"] = serde_json::json!({"key": {"stage": "/private/execution"}});
         variants.push(value);
         for value in variants {
             std::fs::write(

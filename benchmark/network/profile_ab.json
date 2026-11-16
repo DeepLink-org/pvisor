@@ -1,0 +1,6 @@
+{
+  "engine": "criterion",
+  "entry": "network/profile_ab.json",
+  "implementation": "../criterion/src/network/mod.rs",
+  "config_env": "PVISOR_BENCH_BASELINE"
+}

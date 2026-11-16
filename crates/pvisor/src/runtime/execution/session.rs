@@ -12,10 +12,56 @@ use std::{
     path::{Path, PathBuf},
 };
 
+const MAX_SESSION_BYTES: u64 = 64 * 1024 * 1024;
+const MAX_CACHED_SESSION_BYTES: usize = 256 * 1024;
+
+// Cache only pure deserialization of exact, already-read bytes. Every lookup
+// still opens and validates the current descriptor, enforces its byte bound and
+// checks the decoded root. No path, metadata, lease or admission result is cached.
+static PARSED_TASK_SESSION: std::sync::Mutex<Option<ParsedTaskSession>> =
+    std::sync::Mutex::new(None);
+
+struct ParsedTaskSession {
+    hash: blake3::Hash,
+    session: std::sync::Arc<Session>,
+}
+
+fn decode_task_session(bytes: &[u8]) -> anyhow::Result<Session> {
+    if bytes.len() > MAX_CACHED_SESSION_BYTES {
+        return Ok(serde_json::from_slice(bytes)?);
+    }
+    let hash = blake3::hash(bytes);
+    let cached = PARSED_TASK_SESSION.lock().ok().and_then(|entry| {
+        entry
+            .as_ref()
+            .filter(|entry| entry.hash == hash)
+            .map(|entry| entry.session.clone())
+    });
+    if let Some(session) = cached {
+        // Snapshots remain independent; cloning happens outside the cache lock.
+        return Ok((*session).clone());
+    }
+    let session: Session = serde_json::from_slice(bytes)?;
+    let parsed = ParsedTaskSession {
+        hash,
+        session: std::sync::Arc::new(session.clone()),
+    };
+    if let Ok(mut entry) = PARSED_TASK_SESSION.lock() {
+        *entry = Some(parsed);
+    }
+    Ok(session)
+}
+
 /// Durable continuation phase of a Session, independent of an Execution's live pause state.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum SessionState {
+    /// A persistent instance exists without an admitted Execution.
+    Created,
+    /// A cold Execution was admitted but has not acknowledged readiness.
+    Starting,
+    /// The Session owner is retaining resources while waiting to restart.
+    Restarting,
     /// The selected Execution owns live execution.
     Running,
     /// Suspension was admitted; native termination is not yet confirmed.
@@ -32,6 +78,9 @@ pub enum SessionState {
 impl std::fmt::Display for SessionState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
+            Self::Created => "created",
+            Self::Starting => "starting",
+            Self::Restarting => "restarting",
             Self::Running => "running",
             Self::Suspending => "suspending",
             Self::Suspended => "suspended",
@@ -64,24 +113,48 @@ impl std::fmt::Display for SessionState {
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct Session {
+pub struct Session<Profile = TaskProfile> {
     /// Durable record schema version.
     version: u16,
     /// Logical Session identity shared by its Executions.
     run_id: String,
     /// Canonical Session storage root.
     root: PathBuf,
+    /// Execution identity selected by confirmed startup.
+    active_execution: String,
+    /// Fences one continuous supervisor admission across automatic Executions.
+    owner_epoch: String,
+    state: SessionState,
+    kind: SessionKind,
+    /// Backend-specific admitted environment and capabilities, not another
+    /// lifecycle or an independently persisted container identity.
+    profile: Profile,
+}
+
+/// Behavior contract admitted for a Session; labels cannot change it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionKind {
+    /// Native task execution and optional staged effects/checkpoint continuation.
+    Task,
+    /// Persistent container environment with cold Execution restarts.
+    Container,
+}
+
+/// Native task environment, staged effects and checkpoint continuation rights.
+/// Lifecycle identity/state belong to Session; this payload cannot start or stop
+/// an owner independently. Fields remain opaque to frontends.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TaskProfile {
     /// Stage selected for the current or admitted successor Execution.
     active_stage: PathBuf,
     /// Previous stage retained during successor admission.
     previous_stage: PathBuf,
-    /// Execution identity selected by confirmed startup.
-    active_execution: String,
     /// Captured execution configuration, not frontend override authority.
     config: crate::RunConfig,
     /// Captured invocation and policy inputs for continuation.
     spec: RunSpec,
-    state: SessionState,
     /// Confirmed suspended checkpoint; usable only in Suspended phase.
     head: Option<String>,
     /// Published checkpoints and their retained file branches.
@@ -94,6 +167,176 @@ pub struct Session {
     forks: BTreeMap<String, ForkRequest>,
     /// Snapshot stores pinned by this Session's records.
     stores: BTreeSet<PathBuf>,
+}
+
+impl std::ops::Deref for Session {
+    type Target = TaskProfile;
+    fn deref(&self) -> &TaskProfile {
+        &self.profile
+    }
+}
+impl std::ops::DerefMut for Session {
+    fn deref_mut(&mut self) -> &mut TaskProfile {
+        &mut self.profile
+    }
+}
+
+impl<Profile> Session<Profile> {
+    /// Read this Session's durable lifecycle phase, not process liveness.
+    pub fn state(&self) -> SessionState {
+        self.state
+    }
+    /// Read the persisted Session schema version.
+    pub fn version(&self) -> u16 {
+        self.version
+    }
+    /// Stable identity shared by all admitted Executions.
+    pub fn run_id(&self) -> &str {
+        &self.run_id
+    }
+    /// Canonical private storage root that owns this Session.
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+    /// Current admitted Execution identity; empty before the first admission.
+    pub fn active_execution(&self) -> &str {
+        &self.active_execution
+    }
+    /// Admission identity of the current supervisor. Automatic retries retain
+    /// it; an independently admitted owner must get a new epoch.
+    pub fn owner_epoch(&self) -> &str {
+        &self.owner_epoch
+    }
+    /// Backend capabilities/configuration captured with this same Session record.
+    pub fn profile(&self) -> &Profile {
+        &self.profile
+    }
+    /// Fixed behavior contract, independent of labels and frontend spelling.
+    pub fn kind(&self) -> SessionKind {
+        self.kind
+    }
+
+    pub(crate) fn from_profile(
+        run_id: String,
+        root: PathBuf,
+        active_execution: String,
+        state: SessionState,
+        kind: SessionKind,
+        owner_epoch: String,
+        profile: Profile,
+    ) -> anyhow::Result<Self> {
+        ensure!(
+            !run_id.is_empty() && root.is_absolute(),
+            "invalid Session identity/root"
+        );
+        ensure!(
+            state == SessionState::Created || !active_execution.is_empty(),
+            "admitted Session requires an Execution identity"
+        );
+        Ok(Self {
+            version: super::super::session_execution::SESSION_SCHEMA_VERSION,
+            run_id,
+            root,
+            active_execution,
+            state,
+            kind,
+            owner_epoch,
+            profile,
+        })
+    }
+
+    pub(crate) fn validate_root(&self, root: &Path) -> anyhow::Result<()> {
+        ensure!(
+            self.version == super::super::session_execution::SESSION_SCHEMA_VERSION
+                && self.root == root
+                && root.is_absolute()
+                && !self.run_id.is_empty()
+                && (matches!(self.state, SessionState::Created | SessionState::Restoring)
+                    || !self.active_execution.is_empty() && !self.owner_epoch.is_empty()),
+            "unsupported or foreign Session record"
+        );
+        Ok(())
+    }
+    pub(crate) fn into_profile(self) -> Profile {
+        self.profile
+    }
+}
+
+impl<Profile: Serialize> Session<Profile> {
+    pub(crate) fn write(&self) -> anyhow::Result<()> {
+        let legacy = match self.kind {
+            SessionKind::Task => "execution-session.json",
+            SessionKind::Container => "instance.json",
+        };
+        ensure!(
+            !self.root.join(legacy).try_exists()?,
+            "legacy Session authority must be handled by its owning binary"
+        );
+        // Session records are machine authority, reread at every admission
+        // fence. Do not amplify their I/O and parsing cost with indentation.
+        let body = crate::util::persistence_step(&self.run_id, "session", "serialize", || {
+            serde_json::to_vec(self)
+        })?;
+        crate::util::write_run_bytes(
+            &self.root.join(super::super::session_execution::STATE),
+            &body,
+            &self.run_id,
+            "session",
+        )
+    }
+}
+
+impl<Profile: serde::de::DeserializeOwned> Session<Profile> {
+    pub(crate) fn read_profile(root: &Path) -> anyhow::Result<Option<Self>> {
+        Self::read_profile_using(root, |bytes| Ok(serde_json::from_slice(bytes)?))
+    }
+
+    fn read_profile_using(
+        root: &Path,
+        decode: impl FnOnce(&[u8]) -> anyhow::Result<Self>,
+    ) -> anyhow::Result<Option<Self>> {
+        use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+        let file = match std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+            .open(root.join(super::super::session_execution::STATE))
+        {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error.into()),
+        };
+        use std::io::Read;
+        let metadata = file.metadata()?;
+        ensure!(
+            metadata.is_file()
+                && metadata.uid() == unsafe { libc::geteuid() }
+                // A verified open description may outlive an atomic record
+                // replacement or concurrent removal. Zero links is safe for a
+                // read-only snapshot; multiple links would alias authority.
+                && metadata.nlink() <= 1
+                && metadata.mode() & 0o077 == 0
+                && metadata.len() <= MAX_SESSION_BYTES,
+            "Session record must be owned/private, regular, without hardlink aliases and at most 64 MiB"
+        );
+        // serde_json's reader is unbuffered; passing a File would issue a read
+        // syscall per byte on every lifecycle observation. Read the verified
+        // descriptor in bulk and enforce the bound even if it grows after stat.
+        let mut bytes = Vec::with_capacity(metadata.len() as usize);
+        file.take(MAX_SESSION_BYTES + 1).read_to_end(&mut bytes)?;
+        ensure!(
+            bytes.len() as u64 <= MAX_SESSION_BYTES,
+            "Session record exceeds 64 MiB"
+        );
+        let session = decode(&bytes)?;
+        session.validate_root(root)?;
+        Ok(Some(session))
+    }
+}
+
+impl Session {
+    pub(crate) fn read_task_profile(root: &Path) -> anyhow::Result<Option<Self>> {
+        Self::read_profile_using(root, decode_task_session)
+    }
 }
 
 pub(crate) enum SessionTransition<'a> {
@@ -150,26 +393,6 @@ pub(crate) enum SessionTransition<'a> {
 pub mod session_execution;
 
 impl Session {
-    /// Read the durable continuation phase. A live pause is reported by Execution.
-    pub fn state(&self) -> SessionState {
-        self.state
-    }
-
-    /// Read the Session's version; mutation belongs to typed transitions.
-    pub fn version(&self) -> u16 {
-        self.version
-    }
-
-    /// Read the Session's run id; mutation belongs to typed transitions.
-    pub fn run_id(&self) -> &str {
-        &self.run_id
-    }
-
-    /// Read the Session's root; mutation belongs to typed transitions.
-    pub fn root(&self) -> &Path {
-        &self.root
-    }
-
     /// Read the Session's active stage; mutation belongs to typed transitions.
     pub fn active_stage(&self) -> &Path {
         &self.active_stage
@@ -178,11 +401,6 @@ impl Session {
     /// Read the Session's previous stage; mutation belongs to typed transitions.
     pub fn previous_stage(&self) -> &Path {
         &self.previous_stage
-    }
-
-    /// Read the Session's active execution; mutation belongs to typed transitions.
-    pub fn active_execution(&self) -> &str {
-        &self.active_execution
     }
 
     /// Read the Session's config; mutation belongs to typed transitions.
@@ -245,22 +463,27 @@ impl Session {
         } else {
             SessionState::Restoring
         };
+        // Restoring may be admitted before the first Execution is materialized.
         Ok(Self {
             version: super::super::session_execution::SESSION_SCHEMA_VERSION,
             run_id,
             root: stage.clone(),
-            active_stage: stage.clone(),
-            previous_stage: stage,
+            owner_epoch: execution.clone().unwrap_or_default(),
             active_execution: execution.unwrap_or_default(),
-            config,
-            spec,
             state,
-            head: None,
-            checkpoints: BTreeMap::new(),
-            requests: BTreeMap::new(),
-            resumes: BTreeMap::new(),
-            forks: BTreeMap::new(),
-            stores: BTreeSet::new(),
+            kind: SessionKind::Task,
+            profile: TaskProfile {
+                active_stage: stage.clone(),
+                previous_stage: stage,
+                config,
+                spec,
+                head: None,
+                checkpoints: BTreeMap::new(),
+                requests: BTreeMap::new(),
+                resumes: BTreeMap::new(),
+                forks: BTreeMap::new(),
+                stores: BTreeSet::new(),
+            },
         })
     }
 
@@ -287,6 +510,7 @@ impl Session {
                     .execution_id
                     .clone()
                     .context("missing Execution identity")?;
+                self.owner_epoch = self.active_execution.clone();
                 self.state = SessionState::Running;
                 self.head = None;
             }
@@ -534,6 +758,108 @@ impl Session {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parsed_session_reuse_never_reuses_file_authority_or_rebinds_a_snapshot() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let (root, mut session, _, _, _) = fixture();
+        session.write().unwrap();
+        let path = root
+            .path()
+            .join(super::super::super::session_execution::STATE);
+        let original = Session::read_stage(root.path()).unwrap().unwrap();
+        assert_eq!(
+            Session::read_stage(root.path())
+                .unwrap()
+                .unwrap()
+                .active_execution(),
+            original.active_execution()
+        );
+
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(Session::read_stage(root.path()).is_err());
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let alias = root.path().join("alias.json");
+        std::fs::hard_link(&path, &alias).unwrap();
+        assert!(Session::read_stage(root.path()).is_err());
+        std::fs::remove_file(alias).unwrap();
+
+        let foreign = tempfile::tempdir().unwrap();
+        std::fs::copy(
+            &path,
+            foreign
+                .path()
+                .join(super::super::super::session_execution::STATE),
+        )
+        .unwrap();
+        assert!(
+            Session::read_stage(foreign.path()).is_err(),
+            "identical cached bytes cannot authorize a foreign root"
+        );
+
+        session.active_execution = "successor".into();
+        session.owner_epoch = "successor".into();
+        session.write().unwrap();
+        let successor = Session::read_stage(root.path()).unwrap().unwrap();
+        assert_eq!(successor.active_execution(), "successor");
+        assert_eq!(original.active_execution(), "execution");
+        std::fs::write(&path, b"{invalid").unwrap();
+        assert!(Session::read_stage(root.path()).is_err());
+    }
+
+    #[test]
+    fn session_record_bulk_read_preserves_complete_json_validation() {
+        use std::io::Write;
+
+        let root = tempfile::tempdir().unwrap();
+        let profile = serde_json::json!({"payload": "雪\t".repeat(16 * 1024)});
+        let session = Session::from_profile(
+            "session".into(),
+            root.path().into(),
+            String::new(),
+            SessionState::Created,
+            SessionKind::Container,
+            String::new(),
+            profile.clone(),
+        )
+        .unwrap();
+        session.write().unwrap();
+        let path = root
+            .path()
+            .join(super::super::super::session_execution::STATE);
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            serde_json::to_vec(&session).unwrap(),
+            "machine Session records must not amplify repeated reads with indentation"
+        );
+        let read = || Session::<serde_json::Value>::read_profile(root.path());
+        assert_eq!(read().unwrap().unwrap().profile(), &profile);
+
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap();
+        file.write_all(&vec![b' '; 16 * 1024]).unwrap();
+        assert_eq!(read().unwrap().unwrap().profile(), &profile);
+        file.write_all(b"{}").unwrap();
+        assert!(read().is_err(), "trailing JSON must not be ignored");
+
+        session.write().unwrap();
+        let alias = root.path().join("aliased.json");
+        std::fs::hard_link(&path, alias).unwrap();
+        assert!(read().is_err(), "bulk reads must retain authority checks");
+
+        session.write().unwrap();
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_len(MAX_SESSION_BYTES + 1)
+            .unwrap();
+        assert!(read().is_err(), "oversized records must not be read");
+    }
+
     fn fixture() -> (
         tempfile::TempDir,
         Session,

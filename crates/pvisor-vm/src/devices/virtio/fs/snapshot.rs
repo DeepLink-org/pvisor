@@ -436,12 +436,7 @@ impl FsSnapshot {
                             .as_deref()
                             .ok_or_else(|| invalid("missing inode path"))?,
                     )?;
-                    let pin = std::fs::OpenOptions::new()
-                        .read(true)
-                        // O_SYMLINK pins the link itself on macOS. Combining
-                        // it with O_NOFOLLOW rejects symlinks with ELOOP.
-                        .custom_flags(pin_flags())
-                        .open(&path)?;
+                    let pin = pin_inode(&path)?;
                     let identity = FileIdentity::read(&pin)?;
                     if retained && identity != saved.identity {
                         return Err(invalid("retained immutable inode identity changed"));
@@ -588,14 +583,37 @@ impl FsSnapshot {
     }
 }
 
-pub(crate) fn pin_flags() -> i32 {
-    #[cfg(target_os = "macos")]
-    {
-        libc::O_EVTONLY | libc::O_SYMLINK
-    }
+/// Pin an inode without following a final symlink or granting data I/O.
+pub(super) fn pin_inode(path: &Path) -> io::Result<File> {
     #[cfg(target_os = "linux")]
     {
-        libc::O_PATH | libc::O_NOFOLLOW
+        use std::{ffi::CString, os::fd::FromRawFd};
+        let name = CString::new(path.as_os_str().as_bytes())
+            .map_err(|_| io::Error::from_raw_os_error(libc::EINVAL))?;
+        // musl includes O_PATH in O_ACCMODE. Rust OpenOptions masks access-mode
+        // bits out of custom_flags, turning that into an ordinary O_NOFOLLOW
+        // open and rejecting symlinks with ELOOP. Retain O_PATH via raw open.
+        // SAFETY: the C name is live; a successful descriptor is newly owned.
+        let fd = unsafe {
+            libc::open(
+                name.as_ptr(),
+                libc::O_PATH | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+            )
+        };
+        if fd < 0 {
+            Err(io::Error::last_os_error())
+        } else {
+            Ok(unsafe { File::from_raw_fd(fd) })
+        }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        // O_SYMLINK pins the link itself; O_NOFOLLOW would reject it.
+        std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_EVTONLY | libc::O_SYMLINK)
+            .open(path)
     }
 }
 
@@ -603,6 +621,30 @@ pub(crate) fn pin_flags() -> i32 {
 mod owned_copy_tests {
     use super::*;
     use std::fs::FileTimes;
+
+    #[test]
+    fn pin_inode_preserves_symlinks_without_following_targets() {
+        use std::os::fd::AsRawFd;
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("target"), b"untouched").unwrap();
+        for (name, target) in [
+            ("link", "target"),
+            ("dangling", "missing"),
+            ("loop", "loop"),
+        ] {
+            let path = root.path().join(name);
+            std::os::unix::fs::symlink(target, &path).unwrap();
+            let original = std::fs::symlink_metadata(&path).unwrap();
+            let file = pin_inode(&path).unwrap();
+            let pinned = file.metadata().unwrap();
+            assert!(pinned.file_type().is_symlink());
+            assert_eq!((pinned.dev(), pinned.ino()), (original.dev(), original.ino()));
+            assert_eq!(std::fs::read_link(&path).unwrap(), Path::new(target));
+            let flags = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GETFD) };
+            assert!(flags >= 0 && flags & libc::FD_CLOEXEC != 0);
+        }
+        assert_eq!(std::fs::read(root.path().join("target")).unwrap(), b"untouched");
+    }
 
     fn fixture(path: &Path) -> (FsSnapshot, PathBuf, PathBuf) {
         let source = path.join("source");

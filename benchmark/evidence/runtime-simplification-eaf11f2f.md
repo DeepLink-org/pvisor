@@ -15,6 +15,9 @@ Job 读取与轨迹准备成本？工程结果不覆盖原用户 benchmark，不
 
 ## 版本、环境和方法
 
+本批使用归档冻结的 Python 测量 harness；输入、harness 与逐次观测随批次保留。
+当前 Rust/Criterion 采样协议不同，不能续接本批样本；下文展示命令只做离线证据校验。
+
 - 基线：`3b1f7821f8b79e9a9988ca8b7e9ae9f1dbb36d86`。
 - 候选：`eaf11f2f9baa6194cd6b218e9e7478b990cca8ad`。
 - Ryzen 7 9700X，Fedora，Linux `7.2.11-300.fc45.x86_64`，Btrfs，CPU affinity `0,1`。
@@ -34,8 +37,8 @@ Job 读取与轨迹准备成本？工程结果不覆盖原用户 benchmark，不
   3 对预热、60 对正式样本，seed `20261104` 随机交替版本；2 vCPU/128 MiB。
   每次同时记录首条精确 Ready 输出和正常零退出，校验 Bundle、隔离模式、
   stage 无文件写入和宿主 canary 未变。
-- process/replay 先完整执行现有套件，再用其冻结的精确 argv、准备/校验 hooks 和
-  `semspec/runtime.py` 做随机版本配对，seed `20261105`。
+- process/replay 先完整执行现有套件，再用其冻结的精确 argv 和准备/校验 hooks
+  做随机版本配对，seed `20261105`。
   process 使用 nightly 的 10 次预热/50 对；replay 每适配器零预热/60 对。
   后面的判断以配对批次为准，顺序批次仅保留作诊断。
 - bootstrap 以完整配对为单位重采样 10,000 次，seed `20261106`，
@@ -162,20 +165,15 @@ N3 普通 VM 编译的分支三次均高于主干三次，因此另开一个固�
 制品大小只减少 59,136 B；代码行数下降不能直接换算为内存或运行成本下降。
 
 批次保留源码归档、构建日志、构建收据、固件、rootfs/payload、随机顺序、harness、
-semspec 导出、每次时钟和输出、Bundle、内容 oracle 及环境失败现场。
+执行收据、每次时钟和输出、Bundle、内容 oracle 及环境失败现场。
 早期 namespace 预检因继承的终端 TMPDIR 在私有 `/tmp` 不存在而失败；
 正式 worker 显式设置 TMPDIR/TMP/TEMP。动态构建失败、降级执行和被终端超时中断的
 文件系统批次均独立保留，不进入上述统计，也不用于证明产品回归。
 
-执行与校验入口：
+保留批次的离线校验：
 
 ```sh
 batch="$PWD/benchmark/startup/.data/simplification-eaf11f2f"
-# 以下采样入口要求全新的私有输出；已有批次只作审计，不覆盖重跑。
-target/semspec/debug/semspec bench --cwd "$batch" "$batch/in.json"
-target/semspec/debug/semspec bench --cwd "$batch" "$batch/paired-commands.json"
-target/semspec/debug/semspec bench --cwd "$batch/filesystem-full" "$batch/filesystem-full/in.json"
-target/semspec/debug/semspec bench --cwd "$batch/filesystem-s02-n30" "$batch/filesystem-s02-n30/in.json"
 python3 benchmark/filesystem/docs_retest_analysis.py --rootfs "$batch/filesystem-full"
 python3 benchmark/filesystem/docs_retest_analysis.py --rootfs "$batch/filesystem-s02-n30"
 python3 "$batch/analyze.py"

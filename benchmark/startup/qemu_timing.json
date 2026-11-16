@@ -1,3 +1,6 @@
 {
-  "QEMU": "$ python3 @REPO@/benchmark/startup/qemu_timing.py @BATCH@"
+  "engine": "criterion",
+  "entry": "startup/qemu_timing.json",
+  "implementation": "../criterion/src/startup/mod.rs",
+  "config_env": "PVISOR_BENCH_OUTPUT"
 }

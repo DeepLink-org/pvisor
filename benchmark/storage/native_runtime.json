@@ -1,3 +1,6 @@
 {
-  "native-runtime": "$ python3 @REPO@/benchmark/storage/native_docker.py --phase runtime --binary @BINARY@ --inputs @INPUTS@ --output @OUTPUT@"
+  "engine": "criterion",
+  "entry": "storage/native_runtime.json",
+  "implementation": "../criterion/src/storage/mod.rs",
+  "config_env": "PVISOR_STORAGE_CONFIG"
 }

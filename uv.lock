@@ -747,6 +747,7 @@ source = { editable = "." }
 dev = [
     { name = "cibuildwheel", marker = "python_full_version >= '3.12'" },
     { name = "pyelftools", marker = "python_full_version >= '3.12'" },
+    { name = "pyyaml", marker = "python_full_version >= '3.12'" },
     { name = "setuptools", marker = "python_full_version >= '3.12'" },
     { name = "twine", marker = "python_full_version >= '3.12'" },
     { name = "zensical", marker = "python_full_version >= '3.12'" },
@@ -758,6 +759,7 @@ dev = [
 dev = [
     { name = "cibuildwheel", marker = "python_full_version >= '3.12'", specifier = "==4.1.0" },
     { name = "pyelftools", marker = "python_full_version >= '3.12'", specifier = "==0.33" },
+    { name = "pyyaml", marker = "python_full_version >= '3.12'", specifier = "==6.0.3" },
     { name = "setuptools", marker = "python_full_version >= '3.12'", specifier = ">=77" },
     { name = "twine", marker = "python_full_version >= '3.12'", specifier = ">=6,<7" },
     { name = "zensical", marker = "python_full_version >= '3.12'", specifier = "==0.0.67" },

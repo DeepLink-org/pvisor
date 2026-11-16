@@ -48,4 +48,4 @@ OverlayCore 提供受管理的文件视图，文件策略定义只读输入、�
 
 HOME、VM 根目录等其他位置的写入见[暂存与存储](../reference/cli.md#暂存与存储)；macOS 符号链接等平台行为见[已知限制](../security/known-limitations.md)。
 
-完整的 Stage／Apply／Drop 行为，包括全部 Apply 与直接运行的结果对照，见[语义规格（未审核草稿）](../cases/06-stage-apply.md)；用例验证与人工审核的区别见[测试与 semspec](../community/testing.md)。
+完整的 Stage／Apply／Drop 行为，包括全部 Apply 与直接运行的结果对照，见[语义规格（未审核草稿）](../cases/06-stage-apply.md)；用例验证与人工审核的区别见[测试与 Scrut](../community/testing.md)。

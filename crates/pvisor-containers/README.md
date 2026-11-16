@@ -77,6 +77,9 @@ garbage collection. A multi-tag I/O failure may be partial; inspect before retry
 user's local application data. Do not place it in a directory writable by other
 users. Records/locks fence launch identities and updates. Missing owner leases
 without a terminal receipt mean unknown, never successful completion.
+Windows atomic record replacement retains the same synced temporary file and
+retries access/sharing/lock conflicts within a two-second budget. It never
+removes the old record first; exhausted or other errors remain failures.
 
 Build `tools/build_template.py OUTPUT` on Linux to produce the sparse,
 gzip-compressed empty ext4 template. Windows installations place the resulting

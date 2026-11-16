@@ -1,3 +1,6 @@
 {
-  "pool-curves": "$ python3 @REPO@/benchmark/memory/pool_compare.py --inputs @INPUTS@ --docker-inputs @DOCKER_INPUTS@ --output @OUTPUT@ --samples 5"
+  "engine": "criterion",
+  "entry": "memory/pool_compare.json",
+  "implementation": "../criterion/src/memory/mod.rs",
+  "config_env": "PVISOR_MEMORY_CONFIG"
 }

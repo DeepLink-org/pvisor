@@ -41,7 +41,7 @@ Linux payload，不需要安装宿主 `pvisor-guest.exe`。`whp_smoke.exe` 是 C
 | `vm-run` | KVM、可读写 `/dev/kvm`；Linux x86_64 guest | HVF、Hypervisor 签名；Linux aarch64 guest，不需要 macFUSE | WHP；启用功能并重启，嵌套 VM 需虚拟化透传；Linux x86_64 guest |
 | Host Session（`spawn`）、OverlayFS、review/apply/drop | 暂存需要 FUSE；sandbox 需要 user namespace 和 Landlock | 暂存需要 macFUSE 5.4.0+ FSKit；文件/网络控制使用 Seatbelt | 未移植 |
 | 原生 OCI Session（`container` / `--executor container`） | `crun`/`runc` 和匹配的静态 Linux 注入程序 | 不支持 | 不支持 |
-| Docker 风格 VM 容器及网络策略 | 有实现和独立契约 | 有实现，各能力需 HVF 验证 | 实验性 WHP profile：镜像/生命周期、bridge/none 和 stdin/PTY；审查使用的 Win11 宿主两轮各 77 次原生命令验收通过 |
+| Docker 风格 VM 容器及网络策略 | 有实现和独立契约 | 有实现，各能力需 HVF 验证 | 实验性 WHP profile：镜像/生命周期、bridge/none 和 stdin/PTY |
 | Linux host-root `stage`、`:stage` bind | Linux 专用路径 | 不支持 Linux host-root；staged bind 不推定与 Linux 等价 | 不支持 |
 | VM 快照、恢复、冷 RAM | 有 API 和测试，受 backing/profile 限制 | 有 API 和测试，受 HVF/backing 限制 | Unsupported；仅有暂停/继续 |
 | Gateway | 按所选执行器和配置启用 | 有宿主执行路径 | 此次 CLI 不包含 |
@@ -61,9 +61,8 @@ Windows 容器要求将匹配的 `libkrunfw.dll` 和 `pvisor-rootfs.bin.gz` 放�
 guest PTY、初始尺寸、UTF-8 输入和终端 Ctrl+C。实时缩放、挂载、端口发布、
 自定义网络、build 和 Engine/Compose API 仍不支持。
 原生 `tests/windows_container_contract.py` 驱动覆盖这些流程；实现编译通过或
-在 Wine 下运行 Win32 单测，不能证明 WHP 网络/终端验收通过。审查使用的
-Win11/WHP 宿主已两次通过扩展的原生套件，包括控制台模式/代码页恢复及无遗留
-`pvisor.exe` 进程。这是本机验收，不是新一轮远端 CI 或小时级资源泄漏测试。
+在 Wine 下运行 Win32 单测，不能证明 WHP 网络/终端验收通过。原生检查包括
+控制台模式/代码页恢复和自有进程清理。有界验收不代表小时级资源稳定性。
 
 ### Windows 启动检查 {#windows-startup}
 
@@ -101,7 +100,7 @@ virtio-fs → Rust PID 1 supervisor → Linux workload → token 认证退出`�
 | --- | --- | --- | --- |
 | CLI 与进程 | 完整命令树、Session owner、信号和后代清理 | 相同 Session/companion 结构，终端与资源控制受 macOS 限制 | `vm-run` 及容器 owner、绑定 generation 的 named pipe 和 runner Job；无 Session 状态 |
 | companion | 同目录发现、Unix uid/mode 检查、`exec` 派发 | 相同检查；解析 Homebrew 入口的真实安装目录 | 无 companion 派发；完整移植需定义 `.exe` 查找、ACL 信任及进程启动/退出传播 |
-| 终端 | PTY、终端前台归属和信号 | PTY、终端恢复；TUI 为独立程序 | 容器 stdin/guest PTY、控制台模式恢复及可取消输入；已在审查使用的 Win11 宿主通过 ConPTY 检查 |
+| 终端 | PTY、终端前台归属和信号 | PTY、终端恢复；TUI 为独立程序 | 容器 stdin/guest PTY、控制台模式恢复及可取消输入；原生 ConPTY 测试 |
 | 共享服务 | Unix socket、同用户认证、锁和 readiness；sandbox 另需 cgroup/KVM | 使用 Unix IPC；支持缓存/池，sandbox API 不支持 | IPC、端点 ACL、锁、取消和服务回收尚未移植；连接远端 Linux API 不等于本地服务可用 |
 | VM 与文件系统 | KVM ioctl、Unix virtio-fs；完整运行时还有 overlay/network 配置 | HVF、Unix virtio-fs；受签名、页大小和宿主权限影响 | WHP 分区、APIC/PIT/TSC、Win32 waitable handle 和目录共享；Linux wire errno、标志位及 ABI 宽度需转换 |
 
@@ -134,17 +133,15 @@ CLI→replay→CLI、CLI→Daemon 的实际调用。测试须覆盖终端恢复�
 
 ### 运行记录
 
-[PR #92 的首轮 CI](https://github.com/DeepLink-org/pvisor/actions/runs/41288456086)对应
-提交 `5b320104`，主 CI 尚未全部通过。
+CI 制品按提交和 runner 记录运行结果。当前配置的覆盖范围为：
 
-| 平台 | 构建及单元测试 | 共同 VM 负载 |
+| 平台 | 常规检查 | 共同 VM 负载 |
 | --- | --- | --- |
-| Windows | MSVC 原生构建/契约、WHP API smoke 通过 | WHP 通过 |
-| Linux | 该组负载使用产品构建 | KVM 通过 |
-| macOS | 四程序产品构建和独立 CLI 测试通过；core shard 另有 replay 测试超时 | HVF `VmCreate` 失败，guest 未启动 |
+| Windows | MSVC 原生构建与契约 | WHP smoke 与 CLI 驱动 |
+| Linux | 构建与原生测试 | KVM CLI 驱动 |
+| macOS | 构建与常规测试 | 在具备能力的宿主上手动运行 HVF |
 
-本机 Apple Silicon 另有 12 次加 120 次 HVF 启动通过，记录属于另一台宿主。
-后续提交需重新检查 CI。审查发现及未测项目见[平台审查记录](https://github.com/DeepLink-org/pvisor/blob/main/tests/PLATFORM_REVIEW.md)。
+能力门禁和覆盖边界见[测试架构](https://github.com/DeepLink-org/pvisor/blob/main/tests/README.md#capability-gates-and-coverage)。
 
 ### 用例和结果检查
 
@@ -202,4 +199,4 @@ Sandbox API 要求 Linux x86_64/KVM 和委派 cgroup v2；macOS HVF 与 Linux ar
 - container 目前不提供 safe 所需的完整控制，`--safe` 会拒绝；所有当前执行器在 `--strict` 下因 Subprocess 缺口拒绝。
 - 资源查看 `resources.effective` 与 `limitations`；macOS 不强制 RLIMIT_AS，普通 host rlimit 不是整棵进程树的总额度。
 
-验证入口：`.github/workflows/ci.yml`、`docs/src/zh/cases/06-stage-apply.md`、`crates/pvisor/tests/` 与 `tests/test_vm_*`。尚未验证的矩阵格不作成熟度结论；安全范围见[执行器边界](../security/executor-boundaries.md)。
+验证入口：`.github/workflows/ci.yml`、`docs/src/zh/cases/06-stage-apply.md`、`crates/pvisor/tests/` 与 `tests/vm_cli_contract.py`。尚未验证的矩阵格不作成熟度结论；安全范围见[执行器边界](../security/executor-boundaries.md)。

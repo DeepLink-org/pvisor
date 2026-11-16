@@ -1,7 +1,7 @@
 {
   "format": 1,
   "scope": "all bilingual benchmark articles and benchmark design/evidence articles",
-  "preservation": "Fixed historical tables live directly in Markdown with their original statistics, scope and source links. This inventory tracks dynamic JSON tables and publication bindings. Raw evidence remains under ignored .data.",
+  "preservation": "All tables live directly in Markdown with their original statistics, scope and source links. This inventory binds six inline tables to retained JSON/CSV for consistency checks, not build-time rendering. Raw evidence remains under ignored .data.",
   "pages": [
     {
       "locale": "zh",
@@ -114,7 +114,7 @@
       "role": "user-facing",
       "tables": [
         {
-          "json": "../../overrides/assets/benchmarks/replay-semspec.render.json",
+          "json": "../../overrides/assets/benchmarks/replay-command.render.json",
           "kind": "published",
           "columns": [
             "N",
@@ -380,7 +380,7 @@
       "role": "user-facing",
       "tables": [
         {
-          "json": "../../overrides/assets/benchmarks/replay-semspec.render.json",
+          "json": "../../overrides/assets/benchmarks/replay-command.render.json",
           "kind": "published",
           "columns": [
             "N",
@@ -562,8 +562,8 @@
     "replay/replay.md": {
       "benchmark_id": "B-REPLAY",
       "page": "benchmarks/replay-fidelity.md",
-      "table": "../../overrides/assets/benchmarks/replay-semspec.render.json",
-      "csv": "replay-semspec.csv",
+      "table": "../../overrides/assets/benchmarks/replay-command.render.json",
+      "csv": "replay-command.csv",
       "show_batch": false,
       "metric_scope": "direct subject command; hyperfine hooks and semspec excluded",
       "conditions": {

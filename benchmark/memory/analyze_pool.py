@@ -9,7 +9,7 @@ import statistics
 from pathlib import Path
 
 from plot_pool import audit, layout_figure, plot_post_write, plot_startup
-from pool_compare import ARMS, BOUNDARIES, PATTERNS, digest
+from pool_evidence import ARMS, BOUNDARIES, PATTERNS, digest
 
 
 def interval(samples):
