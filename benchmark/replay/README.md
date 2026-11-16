@@ -179,11 +179,13 @@ In an async cohort controller, use a dedicated pool for blocking metric reads:
 ```python
 from startup_support import ResourceSampler
 
+
 async def observe(vm, stop, sampler):
     while not stop.is_set():
         sample = await sampler.read(collect_resources, vm)
         persist_sample(sample)
         await asyncio.sleep(0.5)
+
 
 async with ResourceSampler(workers=4) as sampler:
     # Create observers and run the workload here. In finally: signal stop,

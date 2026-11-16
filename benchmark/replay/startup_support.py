@@ -6,11 +6,11 @@ owns isolation policy and physical cleanup; these helpers do not replace them.
 
 import argparse
 import asyncio
-from concurrent.futures import ThreadPoolExecutor
 import os
-from pathlib import Path
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 
 def checked_exec(check_script, check_args, command):
@@ -62,7 +62,9 @@ class ResourceSampler:
 
     async def __aexit__(self, *exc):
         pool, self._pool = self._pool, None
-        shutdown = asyncio.create_task(asyncio.to_thread(pool.shutdown, wait=True, cancel_futures=True))
+        shutdown = asyncio.create_task(
+            asyncio.to_thread(pool.shutdown, wait=True, cancel_futures=True)
+        )
         cancelled = False
         while True:
             try:
@@ -75,7 +77,9 @@ class ResourceSampler:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Check isolation inside ExecStart, then exec the payload")
+    parser = argparse.ArgumentParser(
+        description="Check isolation inside ExecStart, then exec the payload"
+    )
     parser.add_argument("--check-script", required=True)
     parser.add_argument("--check-arg", action="append", default=[])
     parser.add_argument("command", nargs=argparse.REMAINDER)
