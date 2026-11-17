@@ -736,9 +736,8 @@ pub(super) fn restore<B>(
         })?;
     }
     let mut state: MachineSnapshot = startup_stage(store, instance, "machine-decode", || {
-        Ok(serde_json::from_reader(File::open(
-            base.join("machine.json"),
-        )?)?)
+        let file = File::open(base.join("machine.json"))?;
+        Ok(serde_json::from_reader(std::io::BufReader::new(file))?)
     })?;
     let copies = vec![
         (base.join("upper"), directory.join("upper")),
