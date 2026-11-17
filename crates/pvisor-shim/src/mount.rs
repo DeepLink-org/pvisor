@@ -5,15 +5,15 @@
 /// filesystem-specific data (e.g. `size=64m` for tmpfs, `upperdir=` for
 /// overlay).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct ParsedMountOptions {
-    pub flags: libc::c_ulong,
+pub(crate) struct ParsedMountOptions {
+    pub(crate) flags: libc::c_ulong,
     /// `rbind` requests a recursive bind mount.
-    pub recursive: bool,
-    pub data: Vec<String>,
+    pub(crate) recursive: bool,
+    pub(crate) data: Vec<String>,
 }
 
 /// Split an OCI/containerd mount option list into flags and data options.
-pub fn parse_mount_options(options: &[String]) -> ParsedMountOptions {
+pub(crate) fn parse_mount_options(options: &[String]) -> ParsedMountOptions {
     let mut parsed = ParsedMountOptions::default();
     for option in options {
         match option.as_str() {
@@ -64,7 +64,7 @@ mod linux {
             .expect("path contains no interior NUL")
     }
 
-    pub fn mount(
+    pub(crate) fn mount(
         source: Option<&Path>,
         target: &Path,
         fs_type: Option<&str>,
@@ -108,7 +108,7 @@ mod linux {
 
     /// Make the whole mount tree private so container mounts do not propagate
     /// back to the host.
-    pub fn make_mounts_private() -> Result<()> {
+    pub(crate) fn make_mounts_private() -> Result<()> {
         mount(
             None,
             Path::new("/"),
@@ -208,7 +208,7 @@ mod linux {
     /// Apply request mounts (snapshotter output), then spec mounts, into the
     /// container mount namespace. `proc` spec mounts are skipped here: they
     /// must be mounted by a process inside the new pid namespace.
-    pub fn apply_mounts(mounts: &[MountPlan], rootfs: &Path) -> Result<()> {
+    pub(crate) fn apply_mounts(mounts: &[MountPlan], rootfs: &Path) -> Result<()> {
         for mount_plan in mounts {
             if !mount_plan.from_request && mount_plan.fs_type == "proc" {
                 continue;
@@ -220,7 +220,7 @@ mod linux {
 
     /// Mount a fresh procfs at `<rootfs>/proc`; called from inside the new
     /// pid namespace.
-    pub fn mount_proc(rootfs: &Path) -> Result<()> {
+    pub(crate) fn mount_proc(rootfs: &Path) -> Result<()> {
         let target = rootfs.join("proc");
         std::fs::create_dir_all(&target).with_context(|| format!("create {}", target.display()))?;
         mount(
@@ -235,7 +235,7 @@ mod linux {
 
     /// `pivot_root(".", ".")` dance: move the new root over `/`, detach the
     /// old root, and land in the new root.
-    pub fn pivot_root(new_root: &Path) -> Result<()> {
+    pub(crate) fn pivot_root(new_root: &Path) -> Result<()> {
         std::env::set_current_dir(new_root).context("chdir new root")?;
         // Bind the new root onto itself so pivot_root has a parent to move.
         mount(
@@ -274,7 +274,7 @@ mod linux {
             .find_map(|io_error| io_error.raw_os_error())
     }
 
-    pub fn apply_masked_paths(paths: &[String]) -> Result<()> {
+    pub(crate) fn apply_masked_paths(paths: &[String]) -> Result<()> {
         if paths.is_empty() {
             return Ok(());
         }
@@ -309,7 +309,7 @@ mod linux {
     }
 
     /// Self-bind each readonly path and remount it read-only.
-    pub fn apply_readonly_paths(paths: &[String]) -> Result<()> {
+    pub(crate) fn apply_readonly_paths(paths: &[String]) -> Result<()> {
         for path in paths {
             let target = Path::new(path);
             if !target.exists() {
@@ -349,7 +349,7 @@ mod linux {
     /// Create the minimal device set inside a fresh tmpfs /dev (only when the
     /// root did not bring its own nodes): null, zero, full, random, urandom,
     /// tty and the fd/std{in,out,err} indirections runc provides.
-    pub fn ensure_minimal_dev_nodes() -> Result<()> {
+    pub(crate) fn ensure_minimal_dev_nodes() -> Result<()> {
         let dev = Path::new("/dev");
         if dev.join("null").exists() {
             return Ok(());
@@ -397,7 +397,7 @@ mod linux {
     /// Apply `linux.sysctl` entries by writing them under /proc/sys; a write
     /// error fails the container (fail-closed, like runc rejecting
     /// non-namespaced sysctls).
-    pub fn apply_sysctls(entries: &[(String, String)]) -> Result<()> {
+    pub(crate) fn apply_sysctls(entries: &[(String, String)]) -> Result<()> {
         for (key, value) in entries {
             let proc_path = format!("/proc/sys/{}", key.replace('.', "/"));
             std::fs::write(&proc_path, value).with_context(|| format!("sysctl {key}={value}"))?;
@@ -406,7 +406,7 @@ mod linux {
     }
 
     /// Remount the (new) root read-only when the spec asks for it.
-    pub fn remount_root_readonly() -> Result<()> {
+    pub(crate) fn remount_root_readonly() -> Result<()> {
         mount(
             None,
             Path::new("/"),
@@ -464,10 +464,9 @@ mod linux {
 }
 
 #[cfg(target_os = "linux")]
-pub use linux::{
+pub(crate) use linux::{
     apply_masked_paths, apply_mounts, apply_readonly_paths, apply_sysctls,
-    ensure_minimal_dev_nodes, make_mounts_private, mount, mount_proc, pivot_root,
-    remount_root_readonly,
+    ensure_minimal_dev_nodes, make_mounts_private, mount_proc, pivot_root, remount_root_readonly,
 };
 
 #[cfg(test)]

@@ -46,65 +46,67 @@ use crate::cgroup;
 use crate::mount;
 use crate::plan::{CgroupPlan, ContainerPlan, ExecPlan, IdMappingPlan, NamespaceKind, ProcessPlan};
 
+const EXEC_FAILURE_EXIT_CODE: i32 = 127;
+
 /// CLI argument that turns the shim binary into the internal init parent.
-pub const INTERNAL_INIT_ARG: &str = "--pvisor-shim-internal-init";
+pub(crate) const INTERNAL_INIT_ARG: &str = "--pvisor-shim-internal-init";
 /// CLI argument that turns the shim binary into the internal exec parent.
-pub const INTERNAL_EXEC_ARG: &str = "--pvisor-shim-internal-exec";
+pub(crate) const INTERNAL_EXEC_ARG: &str = "--pvisor-shim-internal-exec";
 /// CLI argument that turns the shim binary into the internal VM runner.
 #[cfg(feature = "vm")]
-pub const INTERNAL_VM_ARG: &str = "--pvisor-shim-internal-vm";
+pub(crate) const INTERNAL_VM_ARG: &str = "--pvisor-shim-internal-vm";
 /// Path of the serialized [`ContainerPlan`].
-pub const ENV_PLAN: &str = "PVISOR_SHIM_INIT_PLAN";
+pub(crate) const ENV_PLAN: &str = "PVISOR_SHIM_INIT_PLAN";
 /// Path of the serialized [`ExecPlan`].
-pub const ENV_EXEC_PLAN: &str = "PVISOR_SHIM_EXEC_PLAN";
+pub(crate) const ENV_EXEC_PLAN: &str = "PVISOR_SHIM_EXEC_PLAN";
 /// Write end of the ready pipe (A/E reports to the shim).
-pub const ENV_READY_FD: &str = "PVISOR_SHIM_INIT_READY_FD";
+pub(crate) const ENV_READY_FD: &str = "PVISOR_SHIM_INIT_READY_FD";
 /// Read end of the start pipe (G/F waits for one byte).
-pub const ENV_START_FD: &str = "PVISOR_SHIM_INIT_START_FD";
+pub(crate) const ENV_START_FD: &str = "PVISOR_SHIM_INIT_START_FD";
 /// Write end of the fork report pipe (G/F reports setup to A/E).
-pub const ENV_FORK_REPORT_FD: &str = "PVISOR_SHIM_INIT_FORK_REPORT_FD";
+pub(crate) const ENV_FORK_REPORT_FD: &str = "PVISOR_SHIM_INIT_FORK_REPORT_FD";
 /// Read end of the fork report pipe (A/E relays it to the shim).
-pub const ENV_FORK_REPORT_READ_FD: &str = "PVISOR_SHIM_FORK_REPORT_READ_FD";
+pub(crate) const ENV_FORK_REPORT_READ_FD: &str = "PVISOR_SHIM_FORK_REPORT_READ_FD";
 /// CLI argument that turns the shim binary into the pod sandbox holder.
-pub const INTERNAL_SANDBOX_ARG: &str = "--pvisor-shim-internal-sandbox";
+pub(crate) const INTERNAL_SANDBOX_ARG: &str = "--pvisor-shim-internal-sandbox";
 /// CLI argument that turns the shim binary into a VM port-bridge proxy:
 /// join the pod network namespace, listen on the bridged port, and forward
 /// every connection to the VM's vsock-backed unix socket (VM tier only).
 #[cfg(feature = "vm")]
-pub const INTERNAL_BRIDGE_ARG: &str = "--pvisor-shim-internal-bridge";
+pub(crate) const INTERNAL_BRIDGE_ARG: &str = "--pvisor-shim-internal-bridge";
 /// Bridge proxy: namespace path to join (pod netns).
 #[cfg(feature = "vm")]
-pub const ENV_BRIDGE_NETNS: &str = "PVISOR_SHIM_BRIDGE_NETNS";
+pub(crate) const ENV_BRIDGE_NETNS: &str = "PVISOR_SHIM_BRIDGE_NETNS";
 /// Bridge proxy: unix socket tunneled into the guest by libkrun.
 #[cfg(feature = "vm")]
-pub const ENV_BRIDGE_SOCKET: &str = "PVISOR_SHIM_BRIDGE_SOCKET";
+pub(crate) const ENV_BRIDGE_SOCKET: &str = "PVISOR_SHIM_BRIDGE_SOCKET";
 /// Bridge proxy: TCP port to listen on inside the pod netns.
 #[cfg(feature = "vm")]
-pub const ENV_BRIDGE_PORT: &str = "PVISOR_SHIM_BRIDGE_PORT";
+pub(crate) const ENV_BRIDGE_PORT: &str = "PVISOR_SHIM_BRIDGE_PORT";
 /// Path of the serialized [`crate::plan::SandboxPlan`].
-pub const ENV_SANDBOX_PLAN: &str = "PVISOR_SHIM_SANDBOX_PLAN";
+pub(crate) const ENV_SANDBOX_PLAN: &str = "PVISOR_SHIM_SANDBOX_PLAN";
 /// Pid of the pod sandbox holder; container runners join its namespaces.
-pub const ENV_SANDBOX_PID: &str = "PVISOR_SHIM_SANDBOX_PID";
+pub(crate) const ENV_SANDBOX_PID: &str = "PVISOR_SHIM_SANDBOX_PID";
 /// Workload stdio descriptors handed over by the shim.
-pub const ENV_STDIO_IN: &str = "PVISOR_SHIM_STDIO_IN";
-pub const ENV_STDIO_OUT: &str = "PVISOR_SHIM_STDIO_OUT";
-pub const ENV_STDIO_ERR: &str = "PVISOR_SHIM_STDIO_ERR";
-pub const ENV_STDIO_TERMINAL: &str = "PVISOR_SHIM_STDIO_TERMINAL";
+pub(crate) const ENV_STDIO_IN: &str = "PVISOR_SHIM_STDIO_IN";
+pub(crate) const ENV_STDIO_OUT: &str = "PVISOR_SHIM_STDIO_OUT";
+pub(crate) const ENV_STDIO_ERR: &str = "PVISOR_SHIM_STDIO_ERR";
+pub(crate) const ENV_STDIO_TERMINAL: &str = "PVISOR_SHIM_STDIO_TERMINAL";
 /// VM runner only: descriptor of the guest-side egress stream owned by the
 /// shim's `VmNetworkAttachment`. Absent when the task runs without egress.
-pub const ENV_VM_NET_FD: &str = "PVISOR_SHIM_VM_NET_FD";
+pub(crate) const ENV_VM_NET_FD: &str = "PVISOR_SHIM_VM_NET_FD";
 /// Pid of the shim process that spawned this internal child. The VM runner
 /// compares it against `getppid()` when arming `PR_SET_PDEATHSIG` to close
 /// the fork/prctl race (a parent that died in between never delivers the
 /// signal).
-pub const ENV_PARENT_PID: &str = "PVISOR_SHIM_PARENT_PID";
+pub(crate) const ENV_PARENT_PID: &str = "PVISOR_SHIM_PARENT_PID";
 /// Injected-sibling descriptors handed to the internal init parent (see
 /// [`SpawnExtras`]).
-pub const ENV_INJECT_FDS: &str = "PVISOR_SHIM_INJECT_FDS";
+pub(crate) const ENV_INJECT_FDS: &str = "PVISOR_SHIM_INJECT_FDS";
 
 /// Message exchanged over the ready/fork-report pipes, one JSON line.
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub enum InitReport {
+pub(crate) enum InitReport {
     Ok { pid: u32 },
     Error { context: String, errno: i32 },
 }
@@ -122,9 +124,9 @@ impl InitReport {
 }
 
 /// Host-side state kept by the task service between Create/Exec and Start.
-pub struct InternalChild {
+pub(crate) struct InternalChild {
     /// PID of the workload process, set once the parent reports readiness.
-    pub pid: Option<u32>,
+    pub(crate) pid: Option<u32>,
     /// Stable process identity retained after Start.
     pidfd: Option<std::os::fd::OwnedFd>,
     /// Write end of the start pipe; held until Start (or cleanup).
@@ -137,7 +139,7 @@ pub struct InternalChild {
 impl InternalChild {
     /// An internal child with nothing left to release; useful as a
     /// placeholder when moving the real one out of a slot.
-    pub fn exited() -> Self {
+    pub(crate) fn exited() -> Self {
         InternalChild {
             pid: None,
             pidfd: None,
@@ -148,7 +150,7 @@ impl InternalChild {
 
     /// Signal only the process identity received before readiness. Group signals
     /// require Linux 6.9 pidfd group support; never fall back to a numeric PID.
-    pub fn signal(&self, signal: i32, all: bool) -> std::io::Result<()> {
+    pub(crate) fn signal(&self, signal: i32, all: bool) -> std::io::Result<()> {
         use std::os::fd::AsRawFd;
         let Some(fd) = &self.pidfd else {
             return if self.pid.is_none() {
@@ -182,7 +184,7 @@ impl InternalChild {
     }
 
     /// Signal the children to exec; consumes the start pipe write end.
-    pub fn start(&mut self) -> Result<()> {
+    pub(crate) fn start(&mut self) -> Result<()> {
         let bytes = vec![b's'; self.start_waiters.max(1)];
         let written = unsafe { libc::write(self.start_fd, bytes.as_ptr().cast(), bytes.len()) };
         self.close_start();
@@ -200,7 +202,7 @@ impl InternalChild {
     }
 
     /// Release the start pipe write end; the child sees EOF and exits.
-    pub fn close_start(&mut self) {
+    pub(crate) fn close_start(&mut self) {
         if self.start_fd >= 0 {
             unsafe { libc::close(self.start_fd) };
             self.start_fd = -1;
@@ -332,11 +334,11 @@ fn set_cloexec(fd: RawFd) {
 
 /// The stdio descriptors the shim handed over, parsed back in the child.
 #[derive(Clone, Copy, Debug)]
-pub struct StdioFds {
-    pub stdin: RawFd,
-    pub stdout: RawFd,
-    pub stderr: RawFd,
-    pub terminal: bool,
+pub(crate) struct StdioFds {
+    pub(crate) stdin: RawFd,
+    pub(crate) stdout: RawFd,
+    pub(crate) stderr: RawFd,
+    pub(crate) terminal: bool,
 }
 
 impl StdioFds {
@@ -359,16 +361,16 @@ impl StdioFds {
 /// descriptors themselves: injection descriptors also set the number of
 /// processes waiting on the start pipe.
 #[derive(Default)]
-pub struct SpawnExtras {
+pub(crate) struct SpawnExtras {
     /// VM runner only: descriptor of the guest-side egress stream owned by
     /// the shim's `VmNetworkAttachment`. Absent when the task runs without
     /// egress.
-    pub vm_net_fd: Option<i32>,
+    pub(crate) vm_net_fd: Option<i32>,
     /// Injected-sibling descriptors (`[null, log_0, log_1, ...]`), one per
     /// payload plus the leading null descriptor. The list length is also
     /// the number of start-gate waiters (init child plus siblings), so
     /// `Start` writes one byte per entry and every waiter wakes.
-    pub inject_fds: Option<Vec<RawFd>>,
+    pub(crate) inject_fds: Option<Vec<RawFd>>,
 }
 
 /// Re-exec the shim binary as an internal parent and wait for its relay.
@@ -376,7 +378,7 @@ pub struct SpawnExtras {
 /// `stdio` are the shim-opened workload descriptors (passed through env);
 /// `plan_bytes` is the serialized plan written to `plan_path`. Blocks until
 /// the workload process signals readiness, so call from a blocking context.
-pub fn spawn_internal(
+pub(crate) fn spawn_internal(
     arg: &str,
     plan_path: &Path,
     plan_bytes: &[u8],
@@ -429,7 +431,7 @@ static INTERNAL_SPAWNER: LazyLock<mpsc::Sender<InternalSpawnRequest>> = LazyLock
 /// The command must already carry its final configuration; only the spawn
 /// itself is delegated. Panics only if the fork thread died, which means
 /// the shim is shutting down.
-pub fn fork_internal(command: Command) -> std::io::Result<Child> {
+pub(crate) fn fork_internal(command: Command) -> std::io::Result<Child> {
     let (reply, inbox) = mpsc::channel();
     INTERNAL_SPAWNER
         .send(InternalSpawnRequest { command, reply })
@@ -442,7 +444,7 @@ pub fn fork_internal(command: Command) -> std::io::Result<Child> {
 /// [`spawn_internal`] with control over waiting for the internal parent to
 /// exit: the sandbox holder IS the parent and stays alive, so it must be
 /// spawned detached.
-pub fn spawn_internal_opts(
+pub(crate) fn spawn_internal_opts(
     arg: &str,
     plan_path: &Path,
     plan_bytes: &[u8],
@@ -545,7 +547,7 @@ pub fn spawn_internal_opts(
 
 /// Entry point of the internal parents. Returns Ok(false) when the binary
 /// was not invoked in internal mode; otherwise never returns.
-pub fn run_internal_if_requested() -> Result<bool> {
+pub(crate) fn run_internal_if_requested() -> Result<bool> {
     let args: Vec<String> = std::env::args().collect();
     #[cfg(feature = "vm")]
     if args.iter().any(|arg| arg == INTERNAL_VM_ARG) {
@@ -1973,11 +1975,11 @@ fn finish_process(
 
     if let Err(error) = apply_process_identity(process) {
         eprintln!("pvisor shim: {error:#}");
-        std::process::exit(crate::EXEC_FAILURE_EXIT_CODE);
+        std::process::exit(EXEC_FAILURE_EXIT_CODE);
     }
     if let Err(error) = exec_process(process) {
         eprintln!("pvisor shim: exec failed: {error:#}");
-        std::process::exit(crate::EXEC_FAILURE_EXIT_CODE);
+        std::process::exit(EXEC_FAILURE_EXIT_CODE);
     }
     unreachable!("exec never returns on success")
 }

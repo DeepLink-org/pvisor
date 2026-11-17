@@ -5,6 +5,7 @@
 //! consume it after re-exec (house "self-exec" pattern) and so the derivation
 //! logic stays unit-testable on any host.
 
+#[cfg(any(feature = "vm", test))]
 use pvisor_guest::api::GuestValidation;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -16,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
-pub enum PlanError {
+pub(crate) enum PlanError {
     #[error("bundle config.json has no process section")]
     MissingProcess,
     #[error("bundle process section has no args")]
@@ -25,8 +26,6 @@ pub enum PlanError {
     UnsupportedConstraint(String),
     #[error("cannot inspect OCI constraints: {0}")]
     InspectConstraint(#[from] serde_json::Error),
-    #[error("VM process constraint is not supported: {0}")]
-    UnsupportedVmProcess(&'static str),
     #[error("unknown io.pvisor.executor tier: {0}")]
     InvalidExecutor(String),
     #[error("namespace type {0} is not supported (M1 limitation)")]
@@ -104,7 +103,7 @@ impl ExecutionDisposition {
 
 /// Namespace kinds the init child knows how to create or join.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum NamespaceKind {
+pub(crate) enum NamespaceKind {
     Mount,
     Pid,
     Network,
@@ -126,7 +125,7 @@ const CLONE_NEWNET: libc::c_int = 0x4000_0000;
 
 impl NamespaceKind {
     /// `clone(2)` flag used when the namespace is created with `unshare`.
-    pub fn clone_flag(self) -> libc::c_int {
+    pub(crate) fn clone_flag(self) -> libc::c_int {
         match self {
             NamespaceKind::Mount => CLONE_NEWNS,
             NamespaceKind::Pid => CLONE_NEWPID,
@@ -139,7 +138,7 @@ impl NamespaceKind {
     }
 
     /// Name of the namespace symlink under `/proc/<pid>/ns/`.
-    pub fn proc_ns_name(self) -> &'static str {
+    pub(crate) fn proc_ns_name(self) -> &'static str {
         match self {
             NamespaceKind::Mount => "mnt",
             NamespaceKind::Pid => "pid",
@@ -153,75 +152,75 @@ impl NamespaceKind {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct NamespacePlan {
-    pub kind: NamespaceKind,
+pub(crate) struct NamespacePlan {
+    pub(crate) kind: NamespaceKind,
     /// When set the child joins an existing namespace instead of unsharing.
-    pub path: Option<PathBuf>,
+    pub(crate) path: Option<PathBuf>,
 }
 
 /// One line of a uid_map/gid_map for user namespaces.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct IdMappingPlan {
-    pub container_id: u32,
-    pub host_id: u32,
-    pub size: u32,
+pub(crate) struct IdMappingPlan {
+    pub(crate) container_id: u32,
+    pub(crate) host_id: u32,
+    pub(crate) size: u32,
 }
 
 impl IdMappingPlan {
-    pub fn render(&self) -> String {
+    pub(crate) fn render(&self) -> String {
         format!("{} {} {}", self.container_id, self.host_id, self.size)
     }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct UserPlan {
-    pub uid: u32,
-    pub gid: u32,
-    pub additional_gids: Vec<u32>,
-    pub umask: Option<u32>,
+pub(crate) struct UserPlan {
+    pub(crate) uid: u32,
+    pub(crate) gid: u32,
+    pub(crate) additional_gids: Vec<u32>,
+    pub(crate) umask: Option<u32>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CapabilityPlan {
-    pub bounding: Vec<String>,
-    pub effective: Vec<String>,
-    pub permitted: Vec<String>,
-    pub inheritable: Vec<String>,
-    pub ambient: Vec<String>,
+pub(crate) struct CapabilityPlan {
+    pub(crate) bounding: Vec<String>,
+    pub(crate) effective: Vec<String>,
+    pub(crate) permitted: Vec<String>,
+    pub(crate) inheritable: Vec<String>,
+    pub(crate) ambient: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RlimitPlan {
-    pub typ: String,
-    pub soft: u64,
-    pub hard: u64,
+pub(crate) struct RlimitPlan {
+    pub(crate) typ: String,
+    pub(crate) soft: u64,
+    pub(crate) hard: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ProcessPlan {
-    pub argv: Vec<String>,
-    pub env: Vec<String>,
-    pub cwd: PathBuf,
-    pub user: UserPlan,
-    pub capabilities: CapabilityPlan,
-    pub rlimits: Vec<RlimitPlan>,
-    pub no_new_privileges: bool,
+pub(crate) struct ProcessPlan {
+    pub(crate) argv: Vec<String>,
+    pub(crate) env: Vec<String>,
+    pub(crate) cwd: PathBuf,
+    pub(crate) user: UserPlan,
+    pub(crate) capabilities: CapabilityPlan,
+    pub(crate) rlimits: Vec<RlimitPlan>,
+    pub(crate) no_new_privileges: bool,
     /// `process.oomScoreAdj`, applied by the init/exec child before exec
     /// (kubelet sets it per QoS class on every container).
-    pub oom_score_adj: Option<i32>,
+    pub(crate) oom_score_adj: Option<i32>,
 }
 
 /// One mount to apply inside the container's mount namespace.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct MountPlan {
+pub(crate) struct MountPlan {
     /// Absolute path inside the container namespace.
-    pub destination: PathBuf,
-    pub fs_type: String,
-    pub source: Option<String>,
-    pub options: Vec<String>,
+    pub(crate) destination: PathBuf,
+    pub(crate) fs_type: String,
+    pub(crate) source: Option<String>,
+    pub(crate) options: Vec<String>,
     /// Mounts coming from the CreateTaskRequest must be applied before the
     /// spec mounts so layered filesystems exist before binds target them.
-    pub from_request: bool,
+    pub(crate) from_request: bool,
 }
 
 /// Container IO as passed by containerd.
@@ -229,29 +228,29 @@ pub struct MountPlan {
 /// With `terminal` set, `stdout` carries the console socket path (the
 /// containerd task v2 convention) and `stderr` is unused.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct IoPlan {
-    pub terminal: bool,
-    pub stdin: Option<String>,
-    pub stdout: Option<String>,
-    pub stderr: Option<String>,
+pub(crate) struct IoPlan {
+    pub(crate) terminal: bool,
+    pub(crate) stdin: Option<String>,
+    pub(crate) stdout: Option<String>,
+    pub(crate) stderr: Option<String>,
 }
 
 /// One `linux.resources.devices` rule.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DeviceRulePlan {
-    pub allow: bool,
+pub(crate) struct DeviceRulePlan {
+    pub(crate) allow: bool,
     /// 'c', 'b', or None for "any type".
-    pub typ: Option<String>,
-    pub major: Option<i64>,
-    pub minor: Option<i64>,
+    pub(crate) typ: Option<String>,
+    pub(crate) major: Option<i64>,
+    pub(crate) minor: Option<i64>,
     /// Access characters subset of "rwm".
-    pub access: String,
+    pub(crate) access: String,
 }
 
 /// Standard device grants appended after the OCI rules, as in runc. These
 /// runtime grants survive an OCI deny-all baseline; OCI device rules cannot
 /// revoke them. Custom devices retain the caller's ordered permission updates.
-pub const RUNC_DEFAULT_DEVICES: &[(&str, i64, i64)] = &[
+pub(crate) const RUNC_DEFAULT_DEVICES: &[(&str, i64, i64)] = &[
     ("c", 1, 3), // /dev/null
     ("c", 1, 5), // /dev/zero
     ("c", 1, 7), // /dev/full
@@ -265,7 +264,7 @@ pub const RUNC_DEFAULT_DEVICES: &[(&str, i64, i64)] = &[
 /// Copy the ordered OCI rules, then append the runtime's standard device
 /// grants. This compatibility policy deliberately prevents OCI rules from
 /// disabling the standard devices; it adds no grant for other devices.
-pub fn with_default_devices(rules: &[DeviceRulePlan]) -> Vec<DeviceRulePlan> {
+pub(crate) fn with_default_devices(rules: &[DeviceRulePlan]) -> Vec<DeviceRulePlan> {
     let mut out = rules.to_vec();
     out.extend(
         RUNC_DEFAULT_DEVICES
@@ -283,21 +282,21 @@ pub fn with_default_devices(rules: &[DeviceRulePlan]) -> Vec<DeviceRulePlan> {
 
 /// Pre-rendered cgroup v2 file contents for the limits the shim enforces.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CgroupPlan {
+pub(crate) struct CgroupPlan {
     /// Path relative to the unified cgroup mount, `:` separators already
     /// normalized to `/` (systemd-style `slice:prefix:id` becomes a path).
-    pub path: Option<String>,
-    pub pids_max: Option<String>,
-    pub memory_max: Option<String>,
-    pub cpu_max: Option<String>,
+    pub(crate) path: Option<String>,
+    pub(crate) pids_max: Option<String>,
+    pub(crate) memory_max: Option<String>,
+    pub(crate) cpu_max: Option<String>,
     /// cpu.weight rendered from `resources.cpu.shares` (v2 semantics).
-    pub cpu_weight: Option<String>,
+    pub(crate) cpu_weight: Option<String>,
     /// memory.swap.max: derived from `resources.memory.swap` (runc v2
     /// mapping: excess over the memory limit), overridable by kubelet's
     /// cgroup-v2 `unified` entry.
-    pub memory_swap_max: Option<String>,
+    pub(crate) memory_swap_max: Option<String>,
     /// memory.oom.group: group-OOM semantics kubelet requests on cgroup v2.
-    pub memory_oom_group: Option<String>,
+    pub(crate) memory_oom_group: Option<String>,
 }
 
 /// `linux.resources.unified` keys the container tier understands and maps
@@ -307,54 +306,54 @@ pub struct CgroupPlan {
 const SUPPORTED_UNIFIED_KEYS: &[&str] = &["memory.swap.max", "memory.oom.group"];
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct ContainerPlan {
-    pub id: String,
-    pub bundle: PathBuf,
-    pub rootfs: PathBuf,
-    pub process: ProcessPlan,
-    pub namespaces: Vec<NamespacePlan>,
+pub(crate) struct ContainerPlan {
+    pub(crate) id: String,
+    pub(crate) bundle: PathBuf,
+    pub(crate) rootfs: PathBuf,
+    pub(crate) process: ProcessPlan,
+    pub(crate) namespaces: Vec<NamespacePlan>,
     /// uid/gid mappings applied when a user namespace is unshared.
-    pub uid_mappings: Vec<IdMappingPlan>,
-    pub gid_mappings: Vec<IdMappingPlan>,
-    pub hostname: Option<String>,
+    pub(crate) uid_mappings: Vec<IdMappingPlan>,
+    pub(crate) gid_mappings: Vec<IdMappingPlan>,
+    pub(crate) hostname: Option<String>,
     /// Mounts from the OCI spec, ordered as they appear in config.json.
-    pub mounts: Vec<MountPlan>,
+    pub(crate) mounts: Vec<MountPlan>,
     /// Rootfs mounts from the CreateTaskRequest (snapshotter output).
-    pub rootfs_mounts: Vec<MountPlan>,
-    pub root_readonly: bool,
-    pub cgroup: Option<CgroupPlan>,
+    pub(crate) rootfs_mounts: Vec<MountPlan>,
+    pub(crate) root_readonly: bool,
+    pub(crate) cgroup: Option<CgroupPlan>,
     /// `linux.resources.devices` rules (enforced via cgroup-v2 BPF when the
     /// spec configures a cgroup; without one runc semantics apply: skipped).
-    pub devices: Vec<DeviceRulePlan>,
+    pub(crate) devices: Vec<DeviceRulePlan>,
     /// `linux.maskedPaths`: bind /dev/null over each path after pivot.
-    pub masked_paths: Vec<String>,
+    pub(crate) masked_paths: Vec<String>,
     /// `linux.readonlyPaths`: self-bind + read-only remount after pivot.
-    pub readonly_paths: Vec<String>,
+    pub(crate) readonly_paths: Vec<String>,
     /// `linux.sysctl` applied inside the new namespaces (net.* etc.).
-    pub sysctls: Vec<(String, String)>,
-    pub io: IoPlan,
-    pub annotations: HashMap<String, String>,
+    pub(crate) sysctls: Vec<(String, String)>,
+    pub(crate) io: IoPlan,
+    pub(crate) annotations: HashMap<String, String>,
     /// Payload injections resolved at Create (see [`crate::inject`]); the
     /// container tier extends `mounts` with their bind entries, the VM tier
     /// stages them into the rootfs. Empty for uninjected tasks, exec plans
     /// and sandbox holders.
     #[serde(default)]
-    pub injections: Vec<InjectionPlan>,
+    pub(crate) injections: Vec<InjectionPlan>,
     /// VM tier: wait for the OpenSandbox egress policy at this gate file
     /// (the sidecar container's Create writes it) and enforce it through
     /// the overlaynet attachment instead of booting with the annotation
     /// policy. Absent for ungated tasks.
     #[serde(default)]
-    pub egress_gate: Option<PathBuf>,
+    pub(crate) egress_gate: Option<PathBuf>,
     /// Synthetic success: the task reports readiness, waits for Start and
     /// exits 0 without executing anything. Set for the execd-installer init
     /// container of VM pods — its emptyDir output is invisible to guests
     /// (injection already staged execd/bootstrap into the rootfs), so the
     /// throwaway microVM it would boot buys nothing.
     #[serde(default)]
-    pub synthetic: bool,
+    pub(crate) synthetic: bool,
     /// Non-fatal gaps recorded while planning (surfaced in shim logs).
-    pub warnings: Vec<String>,
+    pub(crate) warnings: Vec<String>,
 }
 
 /// Filesystem types the init child can mount without a warning.
@@ -364,7 +363,7 @@ const SUPPORTED_MOUNT_TYPES: &[&str] = &[
 
 /// Turn the OCI cwd (relative to the container root) into an absolute path
 /// inside the container namespace.
-pub fn normalize_cwd(cwd: &Path) -> PathBuf {
+pub(crate) fn normalize_cwd(cwd: &Path) -> PathBuf {
     if cwd.is_absolute() {
         normalize_absolute(cwd)
     } else {
@@ -375,14 +374,14 @@ pub fn normalize_cwd(cwd: &Path) -> PathBuf {
 impl ContainerPlan {
     /// True when the init child must `unshare(CLONE_NEWUSER)` and write id
     /// mappings (as opposed to joining a user namespace by path).
-    pub fn has_new_user_namespace(&self) -> bool {
+    pub(crate) fn has_new_user_namespace(&self) -> bool {
         self.namespaces
             .iter()
             .any(|ns| ns.kind == NamespaceKind::User && ns.path.is_none())
     }
 
     /// True when a private UTS namespace (and thus hostname) is created.
-    pub fn has_new_uts_namespace(&self) -> bool {
+    pub(crate) fn has_new_uts_namespace(&self) -> bool {
         self.namespaces
             .iter()
             .any(|ns| ns.kind == NamespaceKind::Uts && ns.path.is_none())
@@ -426,7 +425,7 @@ fn slice_chain(slice: &str) -> Vec<String> {
 /// single `<prefix>-<id>.scope` entry (nesting `prefix/id` directories
 /// instead leaves the leaf without enabled controllers, and controller
 /// writes fail). Plain slash-separated paths pass through unchanged.
-pub fn normalize_cgroup_path(path: &str) -> String {
+pub(crate) fn normalize_cgroup_path(path: &str) -> String {
     let trimmed = path.trim_start_matches('/');
     let parts: Vec<&str> = trimmed.splitn(3, ':').collect();
     if parts.len() == 3
@@ -603,7 +602,7 @@ fn plan_namespaces(spec: &Spec) -> Result<Vec<NamespacePlan>, PlanError> {
 ///
 /// Shared by the init container (`config.json`) and exec processes (the
 /// `ExecProcessRequest` spec).
-pub fn process_plan_from(
+pub(crate) fn process_plan_from(
     process: &oci_spec::runtime::Process,
     vm: bool,
 ) -> Result<ProcessPlan, PlanError> {
@@ -659,15 +658,15 @@ pub fn process_plan_from(
 
 /// Plan for the pod sandbox holder (the pause-container replacement).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SandboxPlan {
-    pub sandbox_id: String,
-    pub hostname: Option<String>,
+pub(crate) struct SandboxPlan {
+    pub(crate) sandbox_id: String,
+    pub(crate) hostname: Option<String>,
     /// Network namespace to join (the CRI pod netns); when unset the holder
     /// creates a fresh one.
-    pub netns_path: Option<String>,
+    pub(crate) netns_path: Option<String>,
     /// True for shareProcessNamespace pods: the holder owns a pid namespace
     /// that member containers join.
-    pub share_pid_namespace: bool,
+    pub(crate) share_pid_namespace: bool,
 }
 
 /// Derive the sandbox holder plan from the CreateSandboxRequest fields.
@@ -675,7 +674,7 @@ pub struct SandboxPlan {
 /// The sandboxer contract carries no OCI spec — the sandbox shape is the
 /// shim's own decision. The hostname falls back to the sandbox id prefix
 /// (k8s pods surface the pod name via annotations).
-pub fn build_sandbox_plan(
+pub(crate) fn build_sandbox_plan(
     sandbox_id: &str,
     netns_path: Option<&str>,
     annotations: &HashMap<String, String>,
@@ -695,11 +694,13 @@ pub fn build_sandbox_plan(
 /// Resource shape for the libkrun microVM executor, derived from
 /// `io.pvisor.vm.*` annotations.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct VmConfig {
-    pub cpus: u8,
-    pub ram_mib: u32,
+#[cfg(any(feature = "vm", test))]
+pub(crate) struct VmConfig {
+    pub(crate) cpus: u8,
+    pub(crate) ram_mib: u32,
 }
 
+#[cfg(any(feature = "vm", test))]
 impl Default for VmConfig {
     fn default() -> Self {
         VmConfig {
@@ -712,18 +713,14 @@ impl Default for VmConfig {
 impl ContainerPlan {
     /// True when the spec configures this namespace kind at all (created
     /// or joined); sandbox sharing only fills in the kinds it leaves out.
-    pub fn has_namespace(&self, kind: NamespaceKind) -> bool {
+    pub(crate) fn has_namespace(&self, kind: NamespaceKind) -> bool {
         self.namespaces
             .iter()
             .any(|namespace| namespace.kind == kind)
     }
 
-    /// True when the bundle asks for the libkrun VM tier via the
-    /// `io.pvisor.executor` annotation. Plans are only built from specs whose
-    /// executor annotation already passed `ExecutorTier` validation, so an
-    /// unparseable value here (impossible in practice) reads as the default
-    /// container tier.
-    pub fn wants_vm(&self) -> bool {
+    /// True for a validated VM executor annotation. Planning rejects invalid tiers.
+    pub(crate) fn wants_vm(&self) -> bool {
         self.annotations
             .get(format!("{ANNOTATION_PREFIX}executor").as_str())
             .and_then(|value| crate::spec::ExecutorTier::from_annotation(Some(value)).ok())
@@ -731,7 +728,8 @@ impl ContainerPlan {
     }
 
     /// VM shape from `io.pvisor.vm.cpus` / `io.pvisor.vm.memory-mib`.
-    pub fn vm_config(&self) -> VmConfig {
+    #[cfg(any(feature = "vm", test))]
+    pub(crate) fn vm_config(&self) -> VmConfig {
         let mut config = VmConfig::default();
         if let Some(cpus) = self
             .annotations
@@ -758,7 +756,8 @@ impl ContainerPlan {
     /// prefix opts that entry into private-space resolutions (intranet
     /// mirrors). Errors on unknown values or malformed entries so a typo
     /// cannot silently disable policy.
-    pub fn vm_network_plan(&self) -> Result<VmNetworkPlan, PlanError> {
+    #[cfg(any(feature = "vm", test))]
+    pub(crate) fn vm_network_plan(&self) -> Result<VmNetworkPlan, PlanError> {
         let Some(mode) = self
             .annotations
             .get(format!("{ANNOTATION_PREFIX}vm.network").as_str())
@@ -801,6 +800,7 @@ impl ContainerPlan {
 /// The `private:` prefix opts a HOSTNAME entry into private-space DNS
 /// resolutions (anti-DNS-rebinding default-off); explicit IP-literal and
 /// CIDR entries never need it — the address itself is the authorization.
+#[cfg(any(feature = "vm", test))]
 fn parse_allow_entry(entry: &str) -> Result<AllowEntry, PlanError> {
     let entry = entry.trim();
     let (private, entry) = match entry.strip_prefix("private:") {
@@ -848,11 +848,12 @@ fn parse_allow_entry(entry: &str) -> Result<AllowEntry, PlanError> {
 /// policy authorizes it (non-bypassable: the device is the guest's only
 /// network path).
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct VmNetworkPlan {
+#[cfg(any(feature = "vm", test))]
+pub(crate) struct VmNetworkPlan {
     #[serde(default)]
-    pub mode: VmNetworkMode,
+    pub(crate) mode: VmNetworkMode,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub allow: Vec<AllowEntry>,
+    pub(crate) allow: Vec<AllowEntry>,
 }
 
 /// One `io.pvisor.vm.network` allowlist entry. `port` 0 allows any port.
@@ -860,14 +861,16 @@ pub struct VmNetworkPlan {
 /// the anti-DNS-rebinding default rejects them otherwise. Explicit
 /// IP-literal and CIDR entries ignore it: the address is the authorization.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct AllowEntry {
-    pub host: String,
-    pub port: u16,
-    pub private: bool,
+#[cfg(any(feature = "vm", test))]
+pub(crate) struct AllowEntry {
+    pub(crate) host: String,
+    pub(crate) port: u16,
+    pub(crate) private: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub enum VmNetworkMode {
+#[cfg(any(feature = "vm", test))]
+pub(crate) enum VmNetworkMode {
     #[default]
     Off,
     Public,
@@ -880,7 +883,8 @@ pub enum VmNetworkMode {
 /// tasks use per-entry `private:` prefixes inside
 /// `io.pvisor.vm.network=allowlist=...` instead. Any other value keeps the
 /// anti-DNS-rebinding default of rejecting private resolutions.
-pub fn vm_network_allow_private_enabled(annotations: &HashMap<String, String>) -> bool {
+#[cfg(feature = "vm")]
+pub(crate) fn vm_network_allow_private_enabled(annotations: &HashMap<String, String>) -> bool {
     annotations
         .get(format!("{ANNOTATION_PREFIX}vm.network.allow-private").as_str())
         .is_some_and(|value| value == "true")
@@ -889,7 +893,8 @@ pub fn vm_network_allow_private_enabled(annotations: &HashMap<String, String>) -
 /// True unless `io.pvisor.vm.exec=off`: VMs enable the guest supervisor's
 /// control listener and its host-side vsock proxy so exec (docker exec /
 /// kubectl exec) works. `off` exposes neither end, disabling exec.
-pub fn vm_exec_enabled(annotations: &HashMap<String, String>) -> bool {
+#[cfg(any(feature = "vm", test))]
+pub(crate) fn vm_exec_enabled(annotations: &HashMap<String, String>) -> bool {
     annotations
         .get(format!("{ANNOTATION_PREFIX}vm.exec").as_str())
         .map(|value| value != "off")
@@ -904,14 +909,15 @@ pub fn vm_exec_enabled(annotations: &HashMap<String, String>) -> bool {
 /// the host KSM scanner, which the shim never touches (registration alone
 /// changes nothing). Any other value keeps the default, matching the other
 /// boolean annotations (`vm.exec`, `vm.network.allow-private`).
-pub fn vm_ram_dedup_enabled(annotations: &HashMap<String, String>) -> bool {
+#[cfg(any(feature = "vm", test))]
+pub(crate) fn vm_ram_dedup_enabled(annotations: &HashMap<String, String>) -> bool {
     annotations
         .get(format!("{ANNOTATION_PREFIX}vm.ram-dedup").as_str())
         .is_some_and(|value| value == "true")
 }
 
 /// Build the same launch contract used by pVisor's VM executor.
-pub fn validate_vm_process(
+pub(crate) fn validate_vm_process(
     process: &oci_spec::runtime::Process,
     _exec: bool,
 ) -> Result<(), PlanError> {
@@ -924,7 +930,8 @@ pub fn validate_vm_process(
     Ok(())
 }
 
-pub fn guest_config(
+#[cfg(any(feature = "vm", test))]
+pub(crate) fn guest_config(
     process: &ProcessPlan,
     control: bool,
 ) -> anyhow::Result<pvisor_guest::api::GuestConfig> {
@@ -967,18 +974,18 @@ pub fn guest_config(
 
 /// Plan for one exec process inside a running container.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct ExecPlan {
-    pub container_id: String,
-    pub exec_id: String,
+pub(crate) struct ExecPlan {
+    pub(crate) container_id: String,
+    pub(crate) exec_id: String,
     /// Init process pid; the exec child joins its namespaces.
-    pub init_pid: u32,
-    pub process: ProcessPlan,
-    pub io: IoPlan,
+    pub(crate) init_pid: u32,
+    pub(crate) process: ProcessPlan,
+    pub(crate) io: IoPlan,
 }
 
 /// Build an exec plan from the OCI process spec of the exec request. `vm`
 /// selects the VM process allowlist (host LSM fields are no-ops in a VM).
-pub fn build_exec_plan(
+pub(crate) fn build_exec_plan(
     process: &oci_spec::runtime::Process,
     container_id: &str,
     exec_id: &str,
@@ -1132,20 +1139,20 @@ fn synthesize_pod_file_mounts(mounts: &[MountPlan], sandbox_id: Option<&str>) ->
 /// `runtime.v1.PodSandboxConfig` the CRI server packs into the sandbox
 /// controller's `options`.
 #[derive(Debug, Default, PartialEq, Eq)]
-pub struct PodSandboxConfig {
-    pub hostname: Option<String>,
+pub(crate) struct PodSandboxConfig {
+    pub(crate) hostname: Option<String>,
     /// DNSConfig.servers - the cluster resolver addresses for ClusterFirst
     /// pods.
-    pub dns_servers: Vec<String>,
-    pub dns_searches: Vec<String>,
-    pub dns_options: Vec<String>,
+    pub(crate) dns_servers: Vec<String>,
+    pub(crate) dns_searches: Vec<String>,
+    pub(crate) dns_options: Vec<String>,
 }
 
 impl PodSandboxConfig {
     /// glibc `/etc/resolv.conf` contents in the same order CRI generates for
     /// podsandbox-controller runtimes (search, nameservers, options); `None`
     /// when the config carries no resolver the container could use.
-    pub fn resolv_conf_contents(&self) -> Option<String> {
+    pub(crate) fn resolv_conf_contents(&self) -> Option<String> {
         if self.dns_servers.is_empty() {
             return None;
         }
@@ -1171,7 +1178,7 @@ impl PodSandboxConfig {
 /// field - including unknown wire types future CRI versions may add - is
 /// skipped without interpretation, and any malformed varint or length ends
 /// the parse with the fields collected so far.
-pub fn parse_pod_sandbox_config(bytes: &[u8]) -> PodSandboxConfig {
+pub(crate) fn parse_pod_sandbox_config(bytes: &[u8]) -> PodSandboxConfig {
     let mut config = PodSandboxConfig::default();
     let mut cursor = 0;
     while let Some((field, wire, consumed)) = read_tag(bytes, cursor) {
@@ -1372,7 +1379,7 @@ fn validate_spec_constraints(
     Ok(())
 }
 
-pub fn build_plan(
+pub(crate) fn build_plan(
     spec: &Spec,
     id: &str,
     bundle: &Path,

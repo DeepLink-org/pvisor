@@ -21,16 +21,16 @@ use std::path::Path;
 
 /// Guest mount point of the read-only payloads share (the virtio-fs tag
 /// matches); shared payload targets symlink into it.
-pub const PAYLOADS_TAG: &str = "pvisor-payloads";
+pub(crate) const PAYLOADS_TAG: &str = "pvisor-payloads";
 /// Guest path the payloads share is mounted at.
-pub const PAYLOADS_GUEST_DIR: &str = "/.pvisor-payloads";
+pub(crate) const PAYLOADS_GUEST_DIR: &str = "/.pvisor-payloads";
 /// DAX window for the payloads share: guest address space only, sized to
 /// cover a payload directory with headroom.
 const PAYLOADS_DAX_WINDOW: usize = 64 * 1024 * 1024;
 
 /// Configure the Rust guest supervisor and boot the VM.
 /// Returns the guest exit code.
-pub fn boot_vm(
+pub(crate) fn boot_vm(
     plan: &ContainerPlan,
     network: Option<std::os::unix::net::UnixStream>,
     stdio: Option<(i32, i32, i32)>,

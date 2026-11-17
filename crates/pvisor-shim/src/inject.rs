@@ -35,17 +35,17 @@ use thiserror::Error;
 
 /// Annotation selecting payload names (comma separated), given without the
 /// `io.pvisor.` prefix.
-pub const INJECT_ANNOTATION: &str = "inject";
+pub(crate) const INJECT_ANNOTATION: &str = "inject";
 
 /// Default catalogue location; `PVISOR_SHIM_INJECTION_CONFIG` overrides it.
-pub const DEFAULT_CATALOGUE_PATH: &str = "/etc/pvisor-shim/injection.json";
+pub(crate) const DEFAULT_CATALOGUE_PATH: &str = "/etc/pvisor-shim/injection.json";
 
 /// Root for per-task injection logs on the host;
 /// `PVISOR_SHIM_INJECTION_LOG_DIR` overrides it.
-pub const DEFAULT_LOG_ROOT: &str = "/var/log/pvisor-shim";
+pub(crate) const DEFAULT_LOG_ROOT: &str = "/var/log/pvisor-shim";
 
 #[derive(Debug, Error)]
-pub enum InjectionError {
+pub(crate) enum InjectionError {
     #[error("io.pvisor.inject is invalid: {0}")]
     Annotation(String),
     #[error("injection catalogue {path} cannot be read: {reason}")]
@@ -79,31 +79,31 @@ pub enum InjectionError {
 /// the shim only reads it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct PayloadSpec {
+pub(crate) struct PayloadSpec {
     /// Absolute host path of the payload binary.
-    pub source: PathBuf,
+    pub(crate) source: PathBuf,
     /// Absolute path the binary occupies inside the container. Must be free
     /// in the image; admission rejects occupied targets.
-    pub target: PathBuf,
+    pub(crate) target: PathBuf,
     /// Payload argv; defaults to `[target]`. argv[0] need not equal the
     /// target (display-name conventions are the payload's business).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub argv: Vec<String>,
+    pub(crate) argv: Vec<String>,
     /// Environment overlaid on the workload environment.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub env: BTreeMap<String, String>,
+    pub(crate) env: BTreeMap<String, String>,
     /// Stage the file only, without spawning a sibling (default `true`
     /// runs it). Entry-point wrappers and files the workload itself
     /// starts use `false`.
     #[serde(default = "default_true", skip_serializing_if = "is_true")]
-    pub run: bool,
+    pub(crate) run: bool,
     /// VM tier only: bridge this guest TCP port to the pod network —
     /// the guest supervisor relays AF_VSOCK (same port number) to guest
     /// `127.0.0.1:port`, and the shim exposes a listener inside the pod
     /// network namespace. The container tier ignores it (the sibling
     /// already shares the pod network).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub bridge: Option<u16>,
+    pub(crate) bridge: Option<u16>,
     /// VM tier only: stage through the catalogue's shared read-only
     /// directory instead of copying into the container's writable layer —
     /// the guest sees one host-wide copy through a read-only virtio-fs
@@ -111,7 +111,7 @@ pub struct PayloadSpec {
     /// source directly inside it. The container tier ignores the flag
     /// (bind mounts already share the host page cache).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub share: bool,
+    pub(crate) share: bool,
 }
 
 fn default_true() -> bool {
@@ -127,43 +127,43 @@ fn is_true(value: &bool) -> bool {
 /// guests for `share` payloads; one host copy serves every sandbox.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct InjectionCatalogue {
+pub(crate) struct InjectionCatalogue {
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub share_dir: Option<PathBuf>,
-    pub payloads: BTreeMap<String, PayloadSpec>,
+    pub(crate) share_dir: Option<PathBuf>,
+    pub(crate) payloads: BTreeMap<String, PayloadSpec>,
 }
 
 /// A resolved payload as carried in [`crate::plan::ContainerPlan`].
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct InjectionPlan {
-    pub name: String,
-    pub source: PathBuf,
-    pub target: PathBuf,
-    pub argv: Vec<String>,
-    pub env: BTreeMap<String, String>,
+pub(crate) struct InjectionPlan {
+    pub(crate) name: String,
+    pub(crate) source: PathBuf,
+    pub(crate) target: PathBuf,
+    pub(crate) argv: Vec<String>,
+    pub(crate) env: BTreeMap<String, String>,
     /// False stages the file without spawning a sibling.
-    pub run: bool,
+    pub(crate) run: bool,
     /// VM-tier port bridge into the pod network (see [`PayloadSpec`]).
-    pub bridge: Option<u16>,
+    pub(crate) bridge: Option<u16>,
     /// The catalogue's shared directory when this payload stages through
     /// the read-only virtio-fs share (see [`PayloadSpec::share`]).
-    pub share: Option<PathBuf>,
+    pub(crate) share: Option<PathBuf>,
     /// Set when the payload was already delivered through a pod volume's
     /// host source (upstream's emptyDir mounts shadow rootfs staging in
     /// VM guests); the VM runner then skips staging it again.
     #[serde(default)]
-    pub staged: bool,
+    pub(crate) staged: bool,
 }
 
 /// Where the catalogue is read from on this node.
-pub fn catalogue_path() -> PathBuf {
+pub(crate) fn catalogue_path() -> PathBuf {
     std::env::var("PVISOR_SHIM_INJECTION_CONFIG")
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from(DEFAULT_CATALOGUE_PATH))
 }
 
 /// Where per-task injection logs are written on this node.
-pub fn log_root() -> PathBuf {
+pub(crate) fn log_root() -> PathBuf {
     std::env::var("PVISOR_SHIM_INJECTION_LOG_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from(DEFAULT_LOG_ROOT))
@@ -274,7 +274,7 @@ fn validate_payload(
 
 /// Parse the catalogue from bytes (tests feed fragments directly). Only
 /// the reason is reported; the caller attaches the file path context.
-pub fn parse_catalogue(bytes: &[u8]) -> Result<InjectionCatalogue, String> {
+pub(crate) fn parse_catalogue(bytes: &[u8]) -> Result<InjectionCatalogue, String> {
     let catalogue: InjectionCatalogue =
         serde_json::from_slice(bytes).map_err(|error| error.to_string())?;
     if let Some(share_dir) = &catalogue.share_dir
@@ -313,7 +313,7 @@ fn parse_annotation(value: &str) -> Result<Vec<String>, InjectionError> {
 /// checks (source regular file, target free in the rootfs, target unclaimed
 /// by mounts); kept separate from [`Self::resolve`] so tests can supply the
 /// catalogue inline.
-pub fn resolve_against(
+pub(crate) fn resolve_against(
     annotation: Option<&str>,
     catalogue: &InjectionCatalogue,
     rootfs: &Path,
@@ -392,7 +392,7 @@ pub fn resolve_against(
 /// Resolve injections for a task from its annotations, the node catalogue
 /// and its rootfs. An absent annotation resolves to no injections; anything
 /// requested but not satisfiable rejects the task.
-pub fn resolve(
+pub(crate) fn resolve(
     annotations: &HashMap<String, String>,
     rootfs: &Path,
     mounts: &[MountPlan],
@@ -422,7 +422,7 @@ pub fn resolve(
 /// non-dev bind per payload, appended to the spec mounts so the init parent
 /// materializes them before the children fork. `noexec` is deliberately
 /// absent — the payload must be executable.
-pub fn bind_mount_plans(injections: &[InjectionPlan]) -> Vec<MountPlan> {
+pub(crate) fn bind_mount_plans(injections: &[InjectionPlan]) -> Vec<MountPlan> {
     injections
         .iter()
         .map(|injection| MountPlan {
@@ -439,7 +439,7 @@ pub fn bind_mount_plans(injections: &[InjectionPlan]) -> Vec<MountPlan> {
 /// payload environment overlaid (payload wins on conflicts). Workload
 /// entries without `=` cannot be keyed and are dropped from the sibling
 /// environment; the workload's own execve still receives them verbatim.
-pub fn merged_env(base: &[String], overlay: &BTreeMap<String, String>) -> Vec<String> {
+pub(crate) fn merged_env(base: &[String], overlay: &BTreeMap<String, String>) -> Vec<String> {
     let mut merged: BTreeMap<String, String> = base
         .iter()
         .filter_map(|entry| {
@@ -468,7 +468,10 @@ pub fn merged_env(base: &[String], overlay: &BTreeMap<String, String>) -> Vec<St
 /// descriptor with a warning: logging is best-effort diagnostics and must
 /// not gate task creation.
 #[cfg(target_os = "linux")]
-pub fn open_task_fds(task_id: &str, injections: &[InjectionPlan]) -> anyhow::Result<Vec<i32>> {
+pub(crate) fn open_task_fds(
+    task_id: &str,
+    injections: &[InjectionPlan],
+) -> anyhow::Result<Vec<i32>> {
     use std::os::fd::AsRawFd;
 
     let running = injections.iter().filter(|injection| injection.run).count();

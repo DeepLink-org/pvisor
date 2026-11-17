@@ -78,7 +78,7 @@ unsafe fn open_fifo(path: &str, flags: libc::c_int) -> Result<File> {
 
 /// Open the workload stdin FIFO read-only. Must be called after a keepalive
 /// writer exists (see [`ContainerIo`]) so the open cannot block.
-pub fn open_child_stdin(path: Option<&str>) -> Result<File> {
+pub(crate) fn open_child_stdin(path: Option<&str>) -> Result<File> {
     match path {
         None => File::open("/dev/null").context("open /dev/null for stdin"),
         Some(path) => unsafe { open_fifo(path, libc::O_RDONLY) },
@@ -87,7 +87,7 @@ pub fn open_child_stdin(path: Option<&str>) -> Result<File> {
 
 /// Open a container output FIFO for writing, retrying while the reader on
 /// the other side is not up yet; falls back to /dev/null for detached IO.
-pub fn open_output(kind: &str, path: Option<&str>) -> Result<File> {
+pub(crate) fn open_output(kind: &str, path: Option<&str>) -> Result<File> {
     let Some(path) = path else {
         return File::open("/dev/null").with_context(|| format!("open /dev/null for {kind}"));
     };
@@ -117,7 +117,7 @@ pub fn open_output(kind: &str, path: Option<&str>) -> Result<File> {
 }
 
 /// Allocate a PTY; returns (master, slave).
-pub fn open_pty(rows: u16, cols: u16) -> Result<(File, File)> {
+pub(crate) fn open_pty(rows: u16, cols: u16) -> Result<(File, File)> {
     let mut master: libc::c_int = -1;
     let mut slave: libc::c_int = -1;
     let size = libc::winsize {
@@ -144,7 +144,7 @@ pub fn open_pty(rows: u16, cols: u16) -> Result<(File, File)> {
 /// Hand a PTY master to containerd through the console socket via
 /// `SCM_RIGHTS` (the runc/console protocol), retrying while the client's
 /// listener is coming up.
-pub fn send_console_master(socket_path: &str, master: &File) -> Result<()> {
+pub(crate) fn send_console_master(socket_path: &str, master: &File) -> Result<()> {
     let mut last_error: Option<anyhow::Error> = None;
     for _ in 0..5 {
         match send_fd_once(socket_path, master) {
@@ -191,7 +191,7 @@ fn send_fd_once(socket_path: &str, master: &File) -> Result<()> {
 }
 
 /// Shim-owned IO for one process (init or exec).
-pub struct ContainerIo {
+pub(crate) struct ContainerIo {
     /// Workload stdin read end handed to the child.
     stdin: Option<File>,
     /// Shim-held `O_RDWR` copy of the stdin FIFO; dropping it (CloseIO) is
@@ -212,7 +212,7 @@ impl ContainerIo {
     /// ordinary FIFO paths and expects the runtime to provide PTY semantics
     /// through them. The second flavor gets a shim-side PTY whose master is
     /// relayed against the FIFOs.
-    pub fn open(io: &IoPlan) -> Result<ContainerIo> {
+    pub(crate) fn open(io: &IoPlan) -> Result<ContainerIo> {
         let console_socket = io
             .stdout
             .as_deref()
@@ -333,7 +333,7 @@ impl ContainerIo {
 
     /// The three descriptors the child should wire onto 0/1/2. For
     /// terminals all three are the PTY slave.
-    pub fn child_fds(&self) -> (libc::c_int, libc::c_int, libc::c_int) {
+    pub(crate) fn child_fds(&self) -> (libc::c_int, libc::c_int, libc::c_int) {
         let stdin = self
             .stdin
             .as_ref()
@@ -351,7 +351,7 @@ impl ContainerIo {
 
     /// Drop the workload-facing descriptors after the child has been
     /// spawned; it holds its own copies through fd inheritance.
-    pub fn release_child_fds(&mut self) {
+    pub(crate) fn release_child_fds(&mut self) {
         self.stdin = None;
         self.stdout = None;
         self.stderr = None;
@@ -359,20 +359,21 @@ impl ContainerIo {
 
     /// Take the workload-facing descriptors out (VM exec relays: no child
     /// process inherits them, the shim pumps the streams itself).
-    pub fn take_child_fds(&mut self) -> Option<(File, File, File)> {
+    #[cfg(feature = "vm")]
+    pub(crate) fn take_child_fds(&mut self) -> Option<(File, File, File)> {
         Some((self.stdin.take()?, self.stdout.take()?, self.stderr.take()?))
     }
 
     /// CloseIO: release the shim-held stdin keepalive so the workload can
     /// see EOF. Idempotent.
-    pub fn close_stdin(&mut self) {
+    pub(crate) fn close_stdin(&mut self) {
         if self.stdin_keepalive.take().is_some() {
             log::debug!("stdin keepalive released (CloseIO)");
         }
     }
 
     /// ResizePty: resize the retained PTY master.
-    pub fn resize(&self, width: u32, height: u32) -> Result<()> {
+    pub(crate) fn resize(&self, width: u32, height: u32) -> Result<()> {
         let Some(master) = self.master.as_ref() else {
             anyhow::bail!("task is not a terminal task");
         };
@@ -388,7 +389,7 @@ impl ContainerIo {
         Ok(())
     }
 
-    pub fn is_terminal(&self) -> bool {
+    pub(crate) fn is_terminal(&self) -> bool {
         self.terminal
     }
 }

@@ -6,40 +6,40 @@ use std::path::PathBuf;
 use std::time::SystemTime;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum TaskStatus {
+pub(crate) enum TaskStatus {
     Created,
     Running,
     Stopped,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct ExitInfo {
-    pub status: u32,
-    pub exited_at: SystemTime,
+pub(crate) struct ExitInfo {
+    pub(crate) status: u32,
+    pub(crate) exited_at: SystemTime,
 }
 
 /// Which process inside a task an exit belongs to.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum ExitTarget {
+pub(crate) enum ExitTarget {
     Init,
     Exec(String),
 }
 
 /// One `exec`-added process of a task.
 #[derive(Clone, Debug)]
-pub struct ExecEntry {
-    pub exec_id: String,
-    pub stdin: Option<String>,
-    pub stdout: Option<String>,
-    pub stderr: Option<String>,
-    pub terminal: bool,
-    pub pid: Option<u32>,
-    pub status: TaskStatus,
-    pub exit: Option<ExitInfo>,
+pub(crate) struct ExecEntry {
+    pub(crate) exec_id: String,
+    pub(crate) stdin: Option<String>,
+    pub(crate) stdout: Option<String>,
+    pub(crate) stderr: Option<String>,
+    pub(crate) terminal: bool,
+    pub(crate) pid: Option<u32>,
+    pub(crate) status: TaskStatus,
+    pub(crate) exit: Option<ExitInfo>,
 }
 
 impl ExecEntry {
-    pub fn new(
+    pub(crate) fn new(
         exec_id: &str,
         stdin: Option<String>,
         stdout: Option<String>,
@@ -60,7 +60,7 @@ impl ExecEntry {
     }
 
     /// Transition Created -> Running.
-    pub fn mark_started(&mut self, pid: u32) -> bool {
+    pub(crate) fn mark_started(&mut self, pid: u32) -> bool {
         if self.status != TaskStatus::Created {
             return false;
         }
@@ -70,7 +70,7 @@ impl ExecEntry {
     }
 
     /// Record the process exit; repeated notifications are no-ops.
-    pub fn mark_exited(&mut self, status: u32, exited_at: SystemTime) -> bool {
+    pub(crate) fn mark_exited(&mut self, status: u32, exited_at: SystemTime) -> bool {
         if self.status == TaskStatus::Stopped {
             return false;
         }
@@ -82,24 +82,24 @@ impl ExecEntry {
 
 /// One tracked task (container init process plus its exec processes).
 #[derive(Clone, Debug)]
-pub struct TaskEntry {
-    pub id: String,
-    pub bundle: PathBuf,
-    pub stdin: Option<String>,
-    pub stdout: Option<String>,
-    pub stderr: Option<String>,
-    pub terminal: bool,
-    pub pid: Option<u32>,
-    pub status: TaskStatus,
-    pub exit: Option<ExitInfo>,
-    pub execs: HashMap<String, ExecEntry>,
+pub(crate) struct TaskEntry {
+    pub(crate) id: String,
+    pub(crate) bundle: PathBuf,
+    pub(crate) stdin: Option<String>,
+    pub(crate) stdout: Option<String>,
+    pub(crate) stderr: Option<String>,
+    pub(crate) terminal: bool,
+    pub(crate) pid: Option<u32>,
+    pub(crate) status: TaskStatus,
+    pub(crate) exit: Option<ExitInfo>,
+    pub(crate) execs: HashMap<String, ExecEntry>,
     /// VM tasks: bridged injection ports whose `/run/pvisor-bridge-*`
     /// sockets must be unlinked when the task goes away.
-    pub bridge_ports: Vec<u16>,
+    pub(crate) bridge_ports: Vec<u16>,
 }
 
 impl TaskEntry {
-    pub fn new(
+    pub(crate) fn new(
         id: &str,
         bundle: PathBuf,
         stdin: Option<String>,
@@ -124,7 +124,7 @@ impl TaskEntry {
     }
 
     /// Transition Created -> Running. Returns whether the transition applied.
-    pub fn mark_started(&mut self, pid: u32) -> bool {
+    pub(crate) fn mark_started(&mut self, pid: u32) -> bool {
         if self.status != TaskStatus::Created {
             return false;
         }
@@ -135,7 +135,7 @@ impl TaskEntry {
 
     /// Record the init process exit. Transitions from Created (killed
     /// before start) and Running are both legal; repeats are no-ops.
-    pub fn mark_exited(&mut self, status: u32, exited_at: SystemTime) -> bool {
+    pub(crate) fn mark_exited(&mut self, status: u32, exited_at: SystemTime) -> bool {
         if self.status == TaskStatus::Stopped {
             return false;
         }
@@ -145,12 +145,12 @@ impl TaskEntry {
     }
 
     /// True once the task may be deleted per the task v2 protocol.
-    pub fn can_delete(&self) -> bool {
+    pub(crate) fn can_delete(&self) -> bool {
         self.status == TaskStatus::Stopped
     }
 
     /// Register an exec process; false when the exec id already exists.
-    pub fn add_exec(&mut self, exec: ExecEntry) -> bool {
+    pub(crate) fn add_exec(&mut self, exec: ExecEntry) -> bool {
         if self.execs.contains_key(&exec.exec_id) {
             return false;
         }
@@ -160,7 +160,13 @@ impl TaskEntry {
 
     /// Record an exec exit by id (VM execs report guest pids that must not
     /// be matched against host pids).
-    pub fn record_exec_exit(&mut self, exec_id: &str, status: u32, exited_at: SystemTime) -> bool {
+    #[cfg(feature = "vm")]
+    pub(crate) fn record_exec_exit(
+        &mut self,
+        exec_id: &str,
+        status: u32,
+        exited_at: SystemTime,
+    ) -> bool {
         self.execs
             .get_mut(exec_id)
             .is_some_and(|exec| exec.mark_exited(status, exited_at))
@@ -168,7 +174,7 @@ impl TaskEntry {
 
     /// Record an exit for whichever process (init or exec) owns `pid`.
     /// Returns what got transitioned, if anything.
-    pub fn record_exit_by_pid(
+    pub(crate) fn record_exit_by_pid(
         &mut self,
         pid: u32,
         status: u32,

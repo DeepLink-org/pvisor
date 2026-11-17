@@ -22,6 +22,29 @@ subset (pids/memory/cpu). The host pod-level Sandbox API is described below.
 Stats, pause/resume and checkpointing are not implemented — the generated
 ttrpc trait defaults report them as unsupported, which containerd tolerates.
 
+## Public Rust entry
+
+The library exposes only `pvisor_shim::api`: `Shim`, `ShimRuntime::run` and
+`RUNTIME_TYPE`. Call `Shim::run()` once at executable entry, before creating
+threads or a Tokio runtime. It dispatches private child reentry first, then
+starts the containerd services; a completed child mode returns without starting
+another service. Internal modes can replace or terminate the process.
+
+The Rust declarations are identical across hosts and the `vm` feature.
+Unsupported hosts return `io::ErrorKind::Unsupported` before creating runtime
+state. Linux `-info` returns the containerd protobuf RuntimeInfo without a daemon
+connection. Other startup errors can follow partial setup; retain the shim's
+state and reconcile through its owning instance. Bootstrap errors return to the
+binary, which reports them and exits with status 1.
+
+containerd's Task/Sandbox protocols own task contracts. OCI plans, capability and
+cgroup lowering, mount operations, FIFOs, pidfds and task registries are private
+implementation details. Root compatibility exports and direct spawn helpers are
+removed. Private policy/lifecycle regressions remain inside the crate; external
+contract tests exercise `api` and the actual executable. AST guards cover all
+platform/feature source, reject extra exports, public inherent methods, API
+bodies/defaults and conditional API declarations, and check caller paths.
+
 ## Registering the runtime
 
 ### containerd (Kubernetes path)
@@ -220,7 +243,7 @@ the namespace holder instead of leaking the pod's namespaces for days.
 process. Every internal child (VM runner, sandbox holder, init/exec
 parents) is therefore forked on the dedicated never-exiting
 `pvisor-internal-spawner` thread. Pool-thread idle exit must not terminate
-healthy internal children. `tests/internal_spawn_lifetime.rs` checks both
+healthy internal children. `src/internal_spawn_lifetime_tests.rs` checks both
 pooled-thread termination and dedicated-thread survival.
 
 Non-terminal task IO rides the named virtio-console ports
@@ -547,7 +570,7 @@ mise run test -- shim          # or: cargo nextest run -p pvisor-shim
 The Linux parent-thread regression needs no containerd, cgroup, FUSE or VM:
 
 ```bash
-mise run test -- pvisor-shim -- --test internal_spawn_lifetime --no-tests fail
+mise run test -- pvisor-shim -- --lib -E 'test(internal_spawn_lifetime_tests)' --no-tests fail
 ```
 
 Do not run the ignored subprocess probe by itself or use `--run-ignored all`

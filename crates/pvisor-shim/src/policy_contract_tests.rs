@@ -1,9 +1,9 @@
-//! Planner regressions checked through the existing public crate boundary.
-use oci_spec::runtime::Spec;
-use pvisor_shim::{
+//! Private OCI admission and cgroup lowering regressions.
+use crate::{
     cgroup::control_files,
     plan::{ContainerPlan, IoPlan, build_plan},
 };
+use oci_spec::runtime::Spec;
 use serde_json::{Value, json};
 use std::path::Path;
 
@@ -12,7 +12,7 @@ fn base() -> Value {
         "process":{"args":["/bin/true"], "cwd":"/", "user":{"uid":0,"gid":0}}})
 }
 
-fn plan(value: Value) -> Result<ContainerPlan, pvisor_shim::plan::PlanError> {
+fn plan(value: Value) -> Result<ContainerPlan, crate::plan::PlanError> {
     let spec: Spec = serde_json::from_value(value).unwrap();
     build_plan(
         &spec,
@@ -75,7 +75,7 @@ fn invalid_swap_constraints_are_rejected_before_task_creation() {
             assert!(
                 matches!(
                     plan(input.clone()),
-                    Err(pvisor_shim::plan::PlanError::InvalidMemoryConstraint(_))
+                    Err(crate::plan::PlanError::InvalidMemoryConstraint(_))
                 ),
                 "accepted invalid memory contract {memory}, unified={unified}"
             );

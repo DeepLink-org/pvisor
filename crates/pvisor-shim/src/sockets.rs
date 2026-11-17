@@ -15,13 +15,13 @@
 
 /// Host-side unix socket that pvisor-vm binds as the vsock proxy for the
 /// guest control protocol ([`pvisor_guest::api::CONTROL_PORT`]).
-pub fn control_socket_path(task_id: &str) -> std::path::PathBuf {
+pub(crate) fn control_socket_path(task_id: &str) -> std::path::PathBuf {
     hashed_socket_path(task_id, "control", None)
 }
 
 /// Host end of a VM port bridge: the unix socket libkrun listens on and
 /// tunnels into the guest's AF_VSOCK listener for `port`.
-pub fn bridge_socket_path(task_id: &str, port: u16) -> std::path::PathBuf {
+pub(crate) fn bridge_socket_path(task_id: &str, port: u16) -> std::path::PathBuf {
     hashed_socket_path(task_id, "bridge", Some(port))
 }
 

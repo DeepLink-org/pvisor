@@ -16,7 +16,7 @@ use crate::plan::{ContainerPlan, VmNetworkMode};
 /// Host-side egress backend plus the guest-side descriptor handed to the VM
 /// runner. Dropping the attachment stops policy enforcement; task deletion
 /// owns this lifecycle.
-pub struct VmNetworkAttachment {
+pub(crate) struct VmNetworkAttachment {
     backend: pvisor_overlaynet::api::VmNetwork,
     guest_stream: std::os::unix::net::UnixStream,
     egress: pvisor_overlaynet::api::EgressRuntime,
@@ -25,7 +25,7 @@ pub struct VmNetworkAttachment {
 /// Where the egress sidecar container's Create publishes the OpenSandbox
 /// network policy for this pod, keyed by the sandbox id. The VM runner
 /// waits for it and compiles the overlaynet attachment from its contents.
-pub fn egress_gate_path(sandbox_id: &str) -> PathBuf {
+pub(crate) fn egress_gate_path(sandbox_id: &str) -> PathBuf {
     use std::hash::{Hash, Hasher};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     sandbox_id.hash(&mut hasher);
@@ -41,17 +41,17 @@ pub fn egress_gate_path(sandbox_id: &str) -> PathBuf {
 /// The OpenSandbox egress policy as the server hands it to the sidecar:
 /// `{"defaultAction": "allow"|"deny", "egress": [{"action", "target"}]}`.
 #[derive(serde::Deserialize)]
-pub struct EgressRules {
+pub(crate) struct EgressRules {
     #[serde(rename = "defaultAction", default)]
-    pub default_action: String,
+    pub(crate) default_action: String,
     #[serde(default)]
-    pub egress: Vec<EgressRule>,
+    pub(crate) egress: Vec<EgressRule>,
 }
 
 #[derive(serde::Deserialize)]
-pub struct EgressRule {
-    pub action: String,
-    pub target: String,
+pub(crate) struct EgressRule {
+    pub(crate) action: String,
+    pub(crate) target: String,
 }
 
 /// Split a sidecar rule target `host[:port]` the same way the
@@ -128,7 +128,7 @@ fn egress_rules_config(
 impl VmNetworkAttachment {
     /// Compile the task's network plan and start the backend. Returns `None`
     /// when the task did not opt into egress.
-    pub fn start(plan: &ContainerPlan) -> anyhow::Result<Option<Self>> {
+    pub(crate) fn start(plan: &ContainerPlan) -> anyhow::Result<Option<Self>> {
         let network = plan.vm_network_plan().map_err(anyhow::Error::msg)?;
         if network.mode == VmNetworkMode::Off {
             return Ok(None);
@@ -162,7 +162,7 @@ impl VmNetworkAttachment {
     /// [`egress_rules_config`] for the rule-to-config semantics;
     /// `allow_private` is the task's `io.pvisor.vm.network.allow-private`
     /// opt-in, mirroring the annotation path's semantics.
-    pub fn from_egress_rules(
+    pub(crate) fn from_egress_rules(
         rules: &EgressRules,
         run_id: &str,
         allow_private: bool,
@@ -199,20 +199,20 @@ impl VmNetworkAttachment {
 
     /// The shared egress runtime; a policy replaced here takes effect for
     /// every TCP flow the VM backend authorizes afterwards.
-    pub fn egress_runtime(&self) -> &pvisor_overlaynet::api::EgressRuntime {
+    pub(crate) fn egress_runtime(&self) -> &pvisor_overlaynet::api::EgressRuntime {
         &self.egress
     }
 
     /// Guest-side stream for the VM runner. The attachment keeps its own
     /// end alive; dropping the returned clone only drops this handle.
-    pub fn guest_stream(&self) -> std::io::Result<std::os::unix::net::UnixStream> {
+    pub(crate) fn guest_stream(&self) -> std::io::Result<std::os::unix::net::UnixStream> {
         self.guest_stream.try_clone()
     }
 
     /// Duplicate the guest-side descriptor without `FD_CLOEXEC` so the VM
     /// runner inherits exactly one end. The caller closes the duplicate
     /// after spawning; the attachment keeps the original.
-    pub fn guest_fd_for_child(&self) -> std::io::Result<RawFd> {
+    pub(crate) fn guest_fd_for_child(&self) -> std::io::Result<RawFd> {
         // SAFETY: dup on a live descriptor; it either returns a new valid
         // descriptor or -1 with errno set.
         let fd = unsafe { libc::dup(self.guest_stream.as_raw_fd()) };
@@ -225,7 +225,7 @@ impl VmNetworkAttachment {
     /// Stop the backend and return its interception counters. Closing the
     /// guest stream first lets a backend blocked on socket I/O observe EOF
     /// before its thread joins.
-    pub fn shutdown(self) -> anyhow::Result<pvisor_overlaynet::api::InterceptionSnapshot> {
+    pub(crate) fn shutdown(self) -> anyhow::Result<pvisor_overlaynet::api::InterceptionSnapshot> {
         let Self {
             backend,
             guest_stream,
@@ -242,7 +242,7 @@ impl VmNetworkAttachment {
 /// # Safety
 /// The descriptor must come from [`VmNetworkAttachment::guest_fd_for_child`]
 /// and may be wrapped exactly once.
-pub unsafe fn stream_from_fd(fd: RawFd) -> std::os::unix::net::UnixStream {
+pub(crate) unsafe fn stream_from_fd(fd: RawFd) -> std::os::unix::net::UnixStream {
     unsafe { std::os::unix::net::UnixStream::from_raw_fd(fd) }
 }
 
@@ -259,7 +259,11 @@ const GATE_WATCH_INTERVAL: std::time::Duration = std::time::Duration::from_milli
 /// that fails to compile keeps the previous policy (the VM never runs on a
 /// half-built policy), logs the rejection, and is not retried until the file
 /// changes again.
-pub fn watch_gate(egress: pvisor_overlaynet::api::EgressRuntime, gate: &Path, allow_private: bool) {
+pub(crate) fn watch_gate(
+    egress: pvisor_overlaynet::api::EgressRuntime,
+    gate: &Path,
+    allow_private: bool,
+) {
     let egress = egress;
     let gate = gate.to_owned();
     std::thread::Builder::new()
