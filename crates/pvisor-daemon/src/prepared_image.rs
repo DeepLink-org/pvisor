@@ -2,7 +2,7 @@
 //! or unpack a registry image on the sandbox creation path.
 use anyhow::{Context, ensure};
 use clap::Args;
-use pvisor_daemon::runtime::PreparedImage;
+use pvisor_daemon::api::{PreparedImage, RuntimeValidation};
 use std::{
     collections::BTreeMap, fs, io::Write, os::unix::fs::PermissionsExt, path::PathBuf,
     time::Duration,
@@ -50,7 +50,7 @@ impl PrepareImage {
             "invalid base image reference"
         );
         let native_guest = self.execd.is_none() && self.envd.is_none();
-        let e2b = (self.envd.is_some() || self.e2b).then(|| pvisor_daemon::runtime::E2bTemplate {
+        let e2b = (self.envd.is_some() || self.e2b).then(|| pvisor_daemon::api::E2bTemplate {
             cpu_millis: self.cpu_millis,
             memory_bytes: self.memory_mib.checked_mul(1024 * 1024).unwrap_or(0),
             envd_version: self.envd_version.clone().unwrap_or_else(|| "0.10.2".into()),

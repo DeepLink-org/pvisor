@@ -2,6 +2,7 @@
 //! Physical sharing and macOS compression require a live owner. Linux compressed
 //! clients retain sealed backing for local restore after service loss. No mode
 //! silently replaces state or reconnects a running VM.
+use crate::api::{MemoryPoolService, PoolConfig, PoolMode};
 use anyhow::{Context, Result, ensure};
 use fs2::FileExt;
 use pvisor::ram_backing::ipc::PoolClient;
@@ -13,7 +14,6 @@ use pvisor::ram_backing::{
     ipc::{SealedClient, serve_sealed},
     sealed::SealedPool,
 };
-use serde::{Deserialize, Serialize};
 use std::{
     fs::{self, File, OpenOptions},
     os::unix::{
@@ -30,33 +30,6 @@ use std::{
     time::{Duration, Instant},
 };
 
-/// Storage selection, fixed for the lifetime of this pool state directory.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, clap::ValueEnum)]
-#[serde(rename_all = "kebab-case")]
-pub enum PoolMode {
-    /// Linux raw 4 KiB pages shared by private mappings and kernel COW;
-    /// no userfaultfd. Old macOS records use this label for legacy compression.
-    #[default]
-    Physical,
-    /// Deduplicated compressed blocks. Linux retains sealed client backing;
-    /// macOS HVF restores through the live pool and requires it to stay alive.
-    Compressed,
-    /// Raw host pages with private COW mappings: 16 KiB on Apple Silicon,
-    /// 4 KiB on Linux. Separate from the legacy macOS `physical` record label.
-    PhysicalPages,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct PoolConfig {
-    /// Missing in older persisted configurations means physical sharing.
-    #[serde(default)]
-    pub mode: PoolMode,
-    pub max_bytes: usize,
-    pub max_objects: usize,
-    pub max_connections: usize,
-    pub max_references: usize,
-}
 impl Default for PoolConfig {
     fn default() -> Self {
         Self {
@@ -106,186 +79,183 @@ fn probe(socket: &Path, mode: PoolMode) -> Result<()> {
     }
     Ok(())
 }
-/// Start or reuse a private, configuration-bound service. A pool startup lock
-/// serializes callers, including standalone managers. The state directory must
-/// already exist and be owned/private. Never replaces a socket or kills by PID.
-pub fn ensure_service(state: &Path, executable: &Path, config: PoolConfig) -> Result<PathBuf> {
-    private_directory(state)?;
-    let state = state.canonicalize()?;
-    let directory = state.join("memory-pool");
-    use std::os::unix::fs::DirBuilderExt;
-    if let Err(error) = fs::DirBuilder::new().mode(0o700).create(&directory)
-        && error.kind() != std::io::ErrorKind::AlreadyExists
-    {
-        return Err(error.into());
-    }
-    private_directory(&directory)?;
-    let bases = directory.join("shared-kernel");
-    if let Err(error) = fs::DirBuilder::new().mode(0o700).create(&bases)
-        && error.kind() != std::io::ErrorKind::AlreadyExists
-    {
-        return Err(error.into());
-    }
-    private_directory(&bases)?;
-    let startup = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .mode(0o600)
-        .custom_flags(libc::O_NOFOLLOW)
-        .open(directory.join("startup.lock"))?;
-    startup.lock_exclusive()?;
-    let record = directory.join("config.json");
-    if record.try_exists()? {
-        ensure!(
-            serde_json::from_slice::<PoolConfig>(&fs::read(&record)?)? == config,
-            "existing memory-pool configuration differs; do not replace live pool"
-        );
-    } else {
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(&record)?;
-        serde_json::to_writer(&mut file, &config)?;
-        file.sync_all()?;
-        File::open(&directory)?.sync_all()?;
-    }
-    let socket = directory.join("pool.sock");
-    if socket.try_exists()? {
-        probe(&socket, config.mode)
-            .context("existing pool unavailable; refusing to replace live RAM ownership")?;
-        return Ok(socket);
-    }
-    let log = OpenOptions::new()
-        .append(true)
-        .create(true)
-        .mode(0o600)
-        .open(directory.join("service.log"))?;
-    let mut command = Command::new(executable);
-    command
-        .arg("memory-pool")
-        .arg("--directory")
-        .arg(&directory)
-        .env_clear()
-        .stdin(Stdio::null())
-        .stdout(log.try_clone()?)
-        .stderr(log);
-    unsafe {
-        command.pre_exec(|| {
-            if libc::setsid() < 0 {
-                return Err(std::io::Error::last_os_error());
-            }
-            Ok(())
-        });
-    }
-    let mut child = command.spawn()?;
-    let deadline = Instant::now() + Duration::from_secs(5);
-    loop {
-        if let Some(status) = child.try_wait()? {
-            anyhow::bail!("memory-pool service exited: {status}");
+
+impl MemoryPoolService for PoolConfig {
+    fn ensure_service(self, state: &Path, executable: &Path) -> Result<PathBuf> {
+        let config = self;
+        private_directory(state)?;
+        let state = state.canonicalize()?;
+        let directory = state.join("memory-pool");
+        use std::os::unix::fs::DirBuilderExt;
+        if let Err(error) = fs::DirBuilder::new().mode(0o700).create(&directory)
+            && error.kind() != std::io::ErrorKind::AlreadyExists
+        {
+            return Err(error.into());
         }
-        if socket.try_exists()? && probe(&socket, config.mode).is_ok() {
+        private_directory(&directory)?;
+        let bases = directory.join("shared-kernel");
+        if let Err(error) = fs::DirBuilder::new().mode(0o700).create(&bases)
+            && error.kind() != std::io::ErrorKind::AlreadyExists
+        {
+            return Err(error.into());
+        }
+        private_directory(&bases)?;
+        let startup = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(directory.join("startup.lock"))?;
+        startup.lock_exclusive()?;
+        let record = directory.join("config.json");
+        if record.try_exists()? {
+            ensure!(
+                serde_json::from_slice::<PoolConfig>(&fs::read(&record)?)? == config,
+                "existing memory-pool configuration differs; do not replace live pool"
+            );
+        } else {
+            let mut file = OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(&record)?;
+            serde_json::to_writer(&mut file, &config)?;
+            file.sync_all()?;
+            File::open(&directory)?.sync_all()?;
+        }
+        let socket = directory.join("pool.sock");
+        if socket.try_exists()? {
+            probe(&socket, config.mode)
+                .context("existing pool unavailable; refusing to replace live RAM ownership")?;
             return Ok(socket);
         }
-        ensure!(
-            Instant::now() < deadline,
-            "memory-pool startup timed out; retained child may still own RAM"
-        );
-        std::thread::sleep(Duration::from_millis(20));
-    }
-}
-
-/// Foreground daemon component, also used by bounded real-VM benchmarks.
-/// The private config fixes memory/connection bounds before any VM connects.
-// Keep fetch_update available to Rust toolchains before its 1.99 rename.
-#[allow(deprecated)]
-pub fn run(directory: &Path) -> Result<()> {
-    private_directory(directory)?;
-    let config: PoolConfig = serde_json::from_slice(&fs::read(directory.join("config.json"))?)?;
-    ensure!(
-        config.max_bytes > 0
-            && config.max_objects > 0
-            && config.max_connections > 0
-            && config.max_references > 0,
-        "pool budgets must be positive"
-    );
-    let lock = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .mode(0o600)
-        .custom_flags(libc::O_NOFOLLOW)
-        .open(directory.join("service.lock"))?;
-    lock.try_lock_exclusive()
-        .context("memory-pool already has an owner")?;
-    let socket = directory.join("pool.sock");
-    // An existing endpoint is never unlinked or silently adopted.
-    let listener = UnixListener::bind(&socket)?;
-    fs::set_permissions(&socket, fs::Permissions::from_mode(0o600))?;
-    #[cfg(not(target_os = "linux"))]
-    let compressed = (config.mode != PoolMode::PhysicalPages).then(|| {
-        Arc::new(Mutex::new(CompressedPool::new(
-            config.max_bytes,
-            config.max_objects,
-        )))
-    });
-    let physical = config.mode == PoolMode::PhysicalPages
-        || (cfg!(target_os = "linux") && config.mode == PoolMode::Physical);
-    let pool = physical
-        .then(|| SharedPool::new(config.max_bytes, config.max_objects))
-        .transpose()?
-        .map(|pool| Arc::new(Mutex::new(pool)));
-    #[cfg(target_os = "linux")]
-    let sealed = (config.mode == PoolMode::Compressed).then(|| {
-        Arc::new(Mutex::new(SealedPool::new(
-            config.max_bytes,
-            config.max_objects,
-        )))
-    });
-    let connections = Arc::new(AtomicUsize::new(0));
-    println!(
-        "{}",
-        serde_json::json!({"ready": true, "socket": socket, "daemon_owned": true, "mode": config.mode})
-    );
-    for stream in listener.incoming() {
-        let stream = stream?;
-        if pvisor::host_transport::authorize_host_peer_sync(&stream).is_err() {
-            continue;
+        let log = OpenOptions::new()
+            .append(true)
+            .create(true)
+            .mode(0o600)
+            .open(directory.join("service.log"))?;
+        let mut command = Command::new(executable);
+        command
+            .arg("memory-pool")
+            .arg("--directory")
+            .arg(&directory)
+            .env_clear()
+            .stdin(Stdio::null())
+            .stdout(log.try_clone()?)
+            .stderr(log);
+        unsafe {
+            command.pre_exec(|| {
+                if libc::setsid() < 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
         }
-        if connections
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
-                (n < config.max_connections).then_some(n + 1)
-            })
-            .is_err()
-        {
-            continue;
-        }
-        let owner = pool.clone();
-        #[cfg(not(target_os = "linux"))]
-        let compressed = compressed.clone();
-        #[cfg(target_os = "linux")]
-        let sealed = sealed.clone();
-        let count = connections.clone();
-        let refs = config.max_references;
-        std::thread::spawn(move || {
-            #[cfg(target_os = "linux")]
-            let result = match owner {
-                Some(owner) => serve_shared(stream, owner, refs),
-                None => serve_sealed(stream, sealed.unwrap(), refs),
-            };
-            #[cfg(not(target_os = "linux"))]
-            let result = match owner {
-                Some(owner) => serve_shared(stream, owner, refs),
-                None => serve(stream, compressed.unwrap(), refs),
-            };
-            if let Err(error) = result {
-                eprintln!("memory-pool session: {error}");
+        let mut child = command.spawn()?;
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if let Some(status) = child.try_wait()? {
+                anyhow::bail!("memory-pool service exited: {status}");
             }
-            count.fetch_sub(1, Ordering::AcqRel);
-        });
+            if socket.try_exists()? && probe(&socket, config.mode).is_ok() {
+                return Ok(socket);
+            }
+            ensure!(
+                Instant::now() < deadline,
+                "memory-pool startup timed out; retained child may still own RAM"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
     }
-    Ok(())
+    #[allow(deprecated)]
+    fn run(directory: &Path) -> Result<()> {
+        private_directory(directory)?;
+        let config: PoolConfig = serde_json::from_slice(&fs::read(directory.join("config.json"))?)?;
+        ensure!(
+            config.max_bytes > 0
+                && config.max_objects > 0
+                && config.max_connections > 0
+                && config.max_references > 0,
+            "pool budgets must be positive"
+        );
+        let lock = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(directory.join("service.lock"))?;
+        lock.try_lock_exclusive()
+            .context("memory-pool already has an owner")?;
+        let socket = directory.join("pool.sock");
+        // An existing endpoint is never unlinked or silently adopted.
+        let listener = UnixListener::bind(&socket)?;
+        fs::set_permissions(&socket, fs::Permissions::from_mode(0o600))?;
+        #[cfg(not(target_os = "linux"))]
+        let compressed = (config.mode != PoolMode::PhysicalPages).then(|| {
+            Arc::new(Mutex::new(CompressedPool::new(
+                config.max_bytes,
+                config.max_objects,
+            )))
+        });
+        let physical = config.mode == PoolMode::PhysicalPages
+            || (cfg!(target_os = "linux") && config.mode == PoolMode::Physical);
+        let pool = physical
+            .then(|| SharedPool::new(config.max_bytes, config.max_objects))
+            .transpose()?
+            .map(|pool| Arc::new(Mutex::new(pool)));
+        #[cfg(target_os = "linux")]
+        let sealed = (config.mode == PoolMode::Compressed).then(|| {
+            Arc::new(Mutex::new(SealedPool::new(
+                config.max_bytes,
+                config.max_objects,
+            )))
+        });
+        let connections = Arc::new(AtomicUsize::new(0));
+        println!(
+            "{}",
+            serde_json::json!({"ready": true, "socket": socket, "daemon_owned": true, "mode": config.mode})
+        );
+        for stream in listener.incoming() {
+            let stream = stream?;
+            if pvisor::host_transport::authorize_host_peer_sync(&stream).is_err() {
+                continue;
+            }
+            if connections
+                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
+                    (n < config.max_connections).then_some(n + 1)
+                })
+                .is_err()
+            {
+                continue;
+            }
+            let owner = pool.clone();
+            #[cfg(not(target_os = "linux"))]
+            let compressed = compressed.clone();
+            #[cfg(target_os = "linux")]
+            let sealed = sealed.clone();
+            let count = connections.clone();
+            let refs = config.max_references;
+            std::thread::spawn(move || {
+                #[cfg(target_os = "linux")]
+                let result = match owner {
+                    Some(owner) => serve_shared(stream, owner, refs),
+                    None => serve_sealed(stream, sealed.unwrap(), refs),
+                };
+                #[cfg(not(target_os = "linux"))]
+                let result = match owner {
+                    Some(owner) => serve_shared(stream, owner, refs),
+                    None => serve(stream, compressed.unwrap(), refs),
+                };
+                if let Err(error) = result {
+                    eprintln!("memory-pool session: {error}");
+                }
+                count.fetch_sub(1, Ordering::AcqRel);
+            });
+        }
+        Ok(())
+    }
 }

@@ -7,7 +7,7 @@ use axum::{
     response::{IntoResponse, Response},
     routing::any,
 };
-use pvisor_daemon::runtime::PreparedImage;
+use pvisor_daemon::api::PreparedImage;
 use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeMap,

@@ -3,7 +3,7 @@
 //! Integration: add `pvisor` and `pvisor-core` dependencies. Before starting Tokio,
 //! the executable MUST call `pvisor::run_krun_internal_if_requested()`. Dispatch
 //! the hidden `native-supervisor --sandbox-dir ABSOLUTE_PATH` command to
-//! `run_native_supervisor`. Normal daemon shutdown leaves supervisors running.
+//! `NativeRuntimeService::run_supervisor`. Normal daemon shutdown leaves supervisors running.
 //!
 //! Prepared images are trusted local `<images_dir>/<key>.json` manifests (see
 //! PreparedImage). Bootstrap supervises real execd, egress and workload, and
@@ -30,6 +30,11 @@
 //! service probes or full cgroup-limit reconciliation. Create, Inspect and resume
 //! retain those checks; connection failures belong to the API adapter. Native
 //! observation.json caches are neither written nor used as liveness proof.
+
+use crate::api::{
+    CreateError, E2bTemplate, NativeRuntimeConfig, NativeRuntimeService, PreparedImage, Runtime,
+    RuntimeSpec, RuntimeState, RuntimeValidation,
+};
 
 use std::{
     collections::BTreeMap,
@@ -77,49 +82,8 @@ const READY_TIMEOUT: Duration = Duration::from_secs(90);
 const DELETE_TIMEOUT: Duration = Duration::from_secs(30);
 const MIB: u64 = 1024 * 1024;
 
-// async_trait adds #[must_use] to already must-use boxed futures.
-#[allow(clippy::double_must_use)]
-#[async_trait::async_trait]
-pub trait Runtime: Send + Sync {
-    async fn preflight(&self) -> Result<()> {
-        Ok(())
-    }
-    async fn create(&self, spec: &RuntimeSpec) -> Result<()>;
-    async fn inspect(&self, id: &str) -> Result<RuntimeState>;
-    /// Return the confirmed live state, not merely command acceptance.
-    /// An error may follow an applied control; retain ownership and reconcile.
-    async fn pause(&self, id: &str) -> Result<RuntimeState>;
-    /// Confirm Running only after runtime readiness and enforcement checks.
-    /// An error does not prove that the VM remained paused.
-    async fn resume(&self, id: &str) -> Result<RuntimeState>;
-    async fn delete(&self, id: &str) -> Result<()>;
-    async fn endpoint(&self, id: &str, port: u16) -> Result<String>;
-    /// Resolve a trusted local E2B template before admission. This read-only
-    /// operation must not launch a workload or accept registry/path references.
-    /// Backends without prepared envd images return an explicit error.
-    async fn e2b_template(&self, _image: &str) -> Result<E2bTemplate> {
-        bail!("E2B prepared templates are not supported by this runtime")
-    }
-}
-
-/// Operator-provisioned E2B template settings, retained with each native identity.
-/// These are not client-selected resources or a template build service.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct E2bTemplate {
-    /// Aggregate supervisor/VM CPU quota in millicores, from 10 through 8000.
-    pub cpu_millis: u64,
-    /// Hard supervisor/VM memory limit in bytes, including host overhead.
-    pub memory_bytes: u64,
-    /// Exact version of the real envd binary initialized by the trusted bootstrap.
-    /// A three-component numeric version of at least 0.1.0 is required.
-    pub envd_version: String,
-}
-
-impl E2bTemplate {
-    /// Validate operator resources and the three-component envd version.
-    /// Returns an error without side effects when limits or version are unsupported.
-    pub fn validate(&self) -> Result<()> {
+impl RuntimeValidation for E2bTemplate {
+    fn validate(&self) -> Result<()> {
         let version: Vec<_> = self.envd_version.split('.').collect();
         ensure!(
             version.len() == 3
@@ -135,54 +99,12 @@ impl E2bTemplate {
             version[0].parse::<u32>()? > 0 || version[1].parse::<u32>()? > 0,
             "envd version must be at least 0.1.0"
         );
-        validate_spec(&RuntimeSpec {
-            id: "sb-12345678-1234-4234-8234-123456789abc".into(),
-            image: "template".into(),
-            entrypoint: Vec::new(),
-            env: BTreeMap::new(),
-            cpu_millis: self.cpu_millis,
-            memory_bytes: self.memory_bytes,
-            e2b: None,
-        })
+        validate_resources(self.cpu_millis, self.memory_bytes)
     }
 }
 
-#[derive(Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct RuntimeSpec {
-    pub id: String,
-    pub image: String,
-    pub entrypoint: Vec<String>,
-    pub env: BTreeMap<String, String>,
-    /// Hard aggregate CPU quota in thousandths of one CPU, not shares/vCPUs.
-    pub cpu_millis: u64,
-    /// Hard cgroup memory limit, including supervisor/VMM overhead; no swap.
-    pub memory_bytes: u64,
-    /// Selects real envd on port 49983 instead of OpenSandbox execd/egress.
-    /// Omission preserves existing OpenSandbox identities across restart.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub e2b: Option<E2bTemplate>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum RuntimeState {
-    Running,
-    Paused,
-    Stopped,
-    Missing,
-}
-
-/// Downcastable create failure. Unknown cleanup must retain admission/intent.
-#[derive(Debug)]
-pub struct CreateError {
-    requires_reconciliation: bool,
-    message: String,
-}
 impl CreateError {
-    pub fn requires_reconciliation(&self) -> bool {
-        self.requires_reconciliation
-    }
-    pub fn new(message: impl Into<String>, requires_reconciliation: bool) -> Self {
+    pub(crate) fn new(message: impl Into<String>, requires_reconciliation: bool) -> Self {
         Self {
             requires_reconciliation,
             message: message.into(),
@@ -195,57 +117,6 @@ impl fmt::Display for CreateError {
     }
 }
 impl std::error::Error for CreateError {}
-
-/// All paths must be absolute and persist unchanged across daemon restarts.
-#[derive(Clone)]
-pub struct NativeRuntimeConfig {
-    /// The daemon's private registry/runtime state directory. Construct inside
-    /// Daemon::open's factory while Store holds its exclusive daemon.lock.
-    pub state_dir: PathBuf,
-    pub owner: String,
-    /// Existing delegated cgroup v2 directory with cpu/memory/pids enabled.
-    pub cgroup_root: PathBuf,
-    pub images_dir: PathBuf,
-    /// Trusted daemon executable implementing the hidden command and VM reentry.
-    pub executable: PathBuf,
-}
-
-/// Local manifest schema. `image` is a key, NOT a registry reference or path.
-/// Entrypoint is a long-lived guest bootstrap, followed by requested workload
-/// argv (or cmd when the request is empty). No executable runs on the host.
-#[derive(Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct PreparedImage {
-    /// Private Docker image-store directory owning the pinned V2 pool.
-    pub rootfs: PathBuf,
-    pub entrypoint: Vec<String>,
-    #[serde(default)]
-    pub cmd: Vec<String>,
-    #[serde(default)]
-    pub env: BTreeMap<String, String>,
-    #[serde(default)]
-    pub library_dir: Option<PathBuf>,
-    /// E2B-only image profile. Its bootstrap must initialize real envd with
-    /// `PVISOR_ENVD_ACCESS_TOKEN` and publish it over guest vsock port 49983.
-    /// Omission retains the OpenSandbox execd/egress bootstrap contract.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub e2b: Option<E2bTemplate>,
-    /// Pinned shared-pool image. Its projection owner lives until VM teardown;
-    /// mutable registry tags are never resolved during sandbox creation.
-    pub pooled_image: pvisor::docker::Image,
-    /// Managed execd/vsock bootstrap with pVisor's explicit unsupported-policy
-    /// adapter, rather than a guest upstream egress process. Requires pooled_image.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub native_opensandbox: bool,
-    /// Managed real E2B envd, initialized privately by the supervisor.
-    /// Requires a pooled image and an E2B resource/version profile.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub native_e2b: bool,
-    /// Use the shared pvisor-guest process/file engine and host protocol adapters.
-    /// No execd/envd is launched. Requires a pooled image; old manifests omit it.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub native_guest: bool,
-}
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -362,6 +233,7 @@ fn validate_reply(identity: &Identity, request: &Request, response: Response) ->
     })
 }
 
+/// Opaque owner of native sandbox identity, controls and resource enforcement.
 pub struct NativeRuntime {
     memory_pool: Option<PathBuf>,
     config: NativeRuntimeConfig,
@@ -369,55 +241,6 @@ pub struct NativeRuntime {
 }
 
 impl NativeRuntime {
-    /// Called under the Store's already-held exclusive lock. An occupied registry
-    /// without the native marker may belong to Podman; never adopt it as Missing.
-    /// A v2 header activates per-sandbox records and always requires the marker.
-    pub fn new(config: NativeRuntimeConfig) -> Result<Self> {
-        ensure!(
-            cfg!(all(target_os = "linux", target_arch = "x86_64")),
-            "native daemon requires Linux x86-64 and delegated cgroup v2"
-        );
-        validate_owner(&config.owner)?;
-        for path in [
-            &config.state_dir,
-            &config.cgroup_root,
-            &config.images_dir,
-            &config.executable,
-        ] {
-            ensure!(path.is_absolute(), "native runtime paths must be absolute");
-        }
-        private_directory(&config.state_dir)?;
-        let marker = config.state_dir.join("owner.json");
-        if !marker.try_exists()? {
-            reject_occupied_unclaimed_registry(&config.state_dir, &config.owner)?;
-        }
-        trusted_directory(&config.images_dir)?;
-        trusted_file(&config.executable, false)?;
-        ensure!(
-            config.executable.metadata()?.mode() & 0o111 != 0,
-            "daemon is not executable"
-        );
-        if marker.try_exists()? {
-            let owner: String = read_json(&marker)?;
-            ensure!(
-                owner == config.owner,
-                "runtime state belongs to another owner"
-            );
-        } else {
-            publish_new(&marker, &config.owner)?;
-        }
-        Ok(Self {
-            memory_pool: None,
-            config,
-            operations: SandboxLocks::default(),
-        })
-    }
-
-    pub fn with_memory_pool(mut self, socket: Option<PathBuf>) -> Self {
-        self.memory_pool = socket;
-        self
-    }
-
     fn directory(&self, id: &str) -> Result<PathBuf> {
         validate_id(id)?;
         Ok(self.config.state_dir.join(id))
@@ -926,336 +749,377 @@ impl Runtime for NativeRuntime {
     }
 }
 
-/// Hidden daemon subcommand entrypoint. Do not run native VM reentry here:
-/// `run_krun_internal_if_requested` belongs before Tokio/main argument parsing.
-/// This owner survives daemon shutdown; only authenticated delete cancels it.
-/// The runtime's spawn callback has already placed the child in its bound cgroup
-/// before exec. Direct invocation outside that cgroup fails closed; this async
-/// entrypoint never migrates pre-existing Tokio memory charges.
-pub async fn run_native_supervisor(sandbox_dir: &Path) -> Result<()> {
-    let startup_clock = std::time::Instant::now();
-    let mut startup = BTreeMap::new();
-    ensure!(
-        cfg!(all(target_os = "linux", target_arch = "x86_64")),
-        "unsupported native VM platform"
-    );
-    ensure!(
-        sandbox_dir.is_absolute(),
-        "supervisor directory must be absolute"
-    );
-    trusted_private_directory(sandbox_dir)?;
-    let identity: Identity = read_json(&sandbox_dir.join("identity.json"))?;
-    validate_identity(&identity, sandbox_dir)?;
-    validate_launch_resources(&identity, sandbox_dir)?;
-    ensure!(
-        identity.cgroup_inode != 0,
-        "supervisor requires committed cgroup binding"
-    );
-    let lock = lock_file(sandbox_dir)?;
-    lock.try_lock_exclusive()
-        .context("sandbox already has a supervisor")?;
-    // Never resurrect a stopped/crashed/restarted sandbox with the same ID.
-    ensure!(
-        !sandbox_dir.join("started").try_exists()?,
-        "sandbox was already started"
-    );
-    ensure_not_deleting(sandbox_dir)?;
-    let group = Group::open(&identity)?.context("owned cgroup disappeared")?;
-    ensure!(
-        group.contains_current_process()?,
-        "supervisor was not placed in its cgroup before exec"
-    );
-    group.verify_limits(&identity.spec)?;
-    startup.insert("validated_us", startup_clock.elapsed().as_micros());
-    mark(sandbox_dir, "started")?;
-    // Membership was installed before exec, so supervisor/Tokio allocations
-    // and every subsequently spawned native runner are charged to this budget.
-    let control_path = sandbox_dir.join("control.sock");
-    ensure!(
-        control_path.as_os_str().len() < 104,
-        "control socket path too long"
-    );
-    let listener = UnixListener::bind(&control_path)?;
-    fs::set_permissions(&control_path, fs::Permissions::from_mode(0o600))?;
-
-    let mut publications = JoinSet::new();
-    let mut endpoints = BTreeMap::new();
-    let mut vsock_ports = BTreeMap::new();
-    let ports_dir = sandbox_dir.join("ports");
-    private_directory(&ports_dir)?;
-    let ports = if identity.spec.e2b.is_some() {
-        vec![ENVD_PORT]
-    } else {
-        vec![EXECD_PORT, EGRESS_PORT]
-    };
-    let native_control = ports_dir.join("guest.sock");
-    if identity.image.native_guest {
-        vsock_ports.insert(pvisor_guest::api::CONTROL_PORT, native_control.clone());
-    }
-    for port in ports {
-        let path = ports_dir.join(format!("{port}.sock"));
-        let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).await?;
-        endpoints.insert(port, format!("http://{}", listener.local_addr()?));
-        if port == EGRESS_PORT && (identity.image.native_opensandbox || identity.image.native_guest)
-        {
-            let token = identity
-                .spec
-                .env
-                .get("PVISOR_EXECD_ACCESS_TOKEN")
-                .context("managed credential missing")?;
-            publications.spawn(native_egress(
-                listener,
-                endpoints[&EXECD_PORT].clone(),
-                service_health_client("x-execd-access-token", Some(token))?,
-            ));
-        } else if identity.image.native_guest {
-            let mut env = identity.image.env.clone();
-            env.extend(identity.spec.env.clone());
-            env.retain(|key, _| {
-                !key.starts_with("PVISOR_")
-                    && !key.starts_with("KRUN_")
-                    && !key.starts_with("LIBKRUN_")
-                    && key != "EXECD_ACCESS_TOKEN"
-            });
-            if identity.spec.e2b.is_some() {
-                env.insert("E2B_SANDBOX_ID".into(), identity.spec.id.clone());
-            }
-            let token_key = if identity.spec.e2b.is_some() {
-                ENVD_TOKEN_ENV
-            } else {
-                "PVISOR_EXECD_ACCESS_TOKEN"
-            };
-            publications.spawn(crate::native::serve(
-                listener,
-                crate::native::Service::new(
-                    native_control.clone(),
-                    identity
-                        .spec
-                        .env
-                        .get(token_key)
-                        .context("native credential missing")?
-                        .clone(),
-                    identity.spec.id.clone(),
-                    identity.generation.clone(),
-                    execd_generation(&identity)?,
-                    env,
-                    identity.spec.e2b.is_some(),
-                ),
-            ));
+impl NativeRuntimeService for NativeRuntime {
+    fn new(config: NativeRuntimeConfig) -> Result<Self> {
+        ensure!(
+            cfg!(all(target_os = "linux", target_arch = "x86_64")),
+            "native daemon requires Linux x86-64 and delegated cgroup v2"
+        );
+        validate_owner(&config.owner)?;
+        for path in [
+            &config.state_dir,
+            &config.cgroup_root,
+            &config.images_dir,
+            &config.executable,
+        ] {
+            ensure!(path.is_absolute(), "native runtime paths must be absolute");
+        }
+        private_directory(&config.state_dir)?;
+        let marker = config.state_dir.join("owner.json");
+        if !marker.try_exists()? {
+            reject_occupied_unclaimed_registry(&config.state_dir, &config.owner)?;
+        }
+        trusted_directory(&config.images_dir)?;
+        trusted_file(&config.executable, false)?;
+        ensure!(
+            config.executable.metadata()?.mode() & 0o111 != 0,
+            "daemon is not executable"
+        );
+        if marker.try_exists()? {
+            let owner: String = read_json(&marker)?;
+            ensure!(
+                owner == config.owner,
+                "runtime state belongs to another owner"
+            );
         } else {
-            vsock_ports.insert(u32::from(port), path.clone());
-            if port == EXECD_PORT && identity.image.native_opensandbox {
+            publish_new(&marker, &config.owner)?;
+        }
+        Ok(Self {
+            memory_pool: None,
+            config,
+            operations: SandboxLocks::default(),
+        })
+    }
+    fn with_memory_pool(mut self, socket: Option<PathBuf>) -> Self {
+        self.memory_pool = socket;
+        self
+    }
+    async fn run_supervisor(sandbox_dir: &Path) -> Result<()> {
+        let startup_clock = std::time::Instant::now();
+        let mut startup = BTreeMap::new();
+        ensure!(
+            cfg!(all(target_os = "linux", target_arch = "x86_64")),
+            "unsupported native VM platform"
+        );
+        ensure!(
+            sandbox_dir.is_absolute(),
+            "supervisor directory must be absolute"
+        );
+        trusted_private_directory(sandbox_dir)?;
+        let identity: Identity = read_json(&sandbox_dir.join("identity.json"))?;
+        validate_identity(&identity, sandbox_dir)?;
+        validate_launch_resources(&identity, sandbox_dir)?;
+        ensure!(
+            identity.cgroup_inode != 0,
+            "supervisor requires committed cgroup binding"
+        );
+        let lock = lock_file(sandbox_dir)?;
+        lock.try_lock_exclusive()
+            .context("sandbox already has a supervisor")?;
+        // Never resurrect a stopped/crashed/restarted sandbox with the same ID.
+        ensure!(
+            !sandbox_dir.join("started").try_exists()?,
+            "sandbox was already started"
+        );
+        ensure_not_deleting(sandbox_dir)?;
+        let group = Group::open(&identity)?.context("owned cgroup disappeared")?;
+        ensure!(
+            group.contains_current_process()?,
+            "supervisor was not placed in its cgroup before exec"
+        );
+        group.verify_limits(&identity.spec)?;
+        startup.insert("validated_us", startup_clock.elapsed().as_micros());
+        mark(sandbox_dir, "started")?;
+        // Membership was installed before exec, so supervisor/Tokio allocations
+        // and every subsequently spawned native runner are charged to this budget.
+        let control_path = sandbox_dir.join("control.sock");
+        ensure!(
+            control_path.as_os_str().len() < 104,
+            "control socket path too long"
+        );
+        let listener = UnixListener::bind(&control_path)?;
+        fs::set_permissions(&control_path, fs::Permissions::from_mode(0o600))?;
+
+        let mut publications = JoinSet::new();
+        let mut endpoints = BTreeMap::new();
+        let mut vsock_ports = BTreeMap::new();
+        let ports_dir = sandbox_dir.join("ports");
+        private_directory(&ports_dir)?;
+        let ports = if identity.spec.e2b.is_some() {
+            vec![ENVD_PORT]
+        } else {
+            vec![EXECD_PORT, EGRESS_PORT]
+        };
+        let native_control = ports_dir.join("guest.sock");
+        if identity.image.native_guest {
+            vsock_ports.insert(pvisor_guest::api::CONTROL_PORT, native_control.clone());
+        }
+        for port in ports {
+            let path = ports_dir.join(format!("{port}.sock"));
+            let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).await?;
+            endpoints.insert(port, format!("http://{}", listener.local_addr()?));
+            if port == EGRESS_PORT
+                && (identity.image.native_opensandbox || identity.image.native_guest)
+            {
                 let token = identity
                     .spec
                     .env
                     .get("PVISOR_EXECD_ACCESS_TOKEN")
                     .context("managed credential missing")?;
-                publications.spawn(managed_execd_bridge(listener, path, token.clone()));
-            } else if port == ENVD_PORT && identity.image.native_e2b {
-                let token = identity
-                    .spec
-                    .env
-                    .get(ENVD_TOKEN_ENV)
-                    .context("managed envd credential missing")?;
-                publications.spawn(managed_service_bridge(listener, path, token.clone(), true));
-            } else {
-                publications.spawn(bridge(listener, path));
-            }
-        }
-    }
-    // A projection contains metadata placeholders, not an unpacked image. Keep
-    // its backend registration alive while VmExecutor exports it to the runner.
-    let run_dir = sandbox_dir.join("run");
-    private_directory(&run_dir)?;
-    // Scratch belongs to this VM; the binding reads the shared V2 pool.
-    let pooled_root = pvisor::docker::Store::open(run_dir.join("image"))?
-        .open_image(&identity.image.pooled_image)?;
-    startup.insert("image_opened_us", startup_clock.elapsed().as_micros());
-    let settings = pvisor::VmSettings {
-        ram_backing: identity
-            .memory_pool
-            .is_none()
-            .then(|| run_dir.join("live-ram")),
-        memory_pool: identity.memory_pool.clone(),
-        rootfs: Some(pooled_root.rootfs().to_path_buf()),
-        rootfs_immutable: false,
-        library_dir: identity.image.library_dir.clone(),
-        memory_mib: u32::try_from(identity.spec.memory_bytes / MIB)?,
-        cpus: u16::try_from(identity.spec.cpu_millis.div_ceil(1000).min(8))?,
-        ..Default::default()
-    };
-    let executor = pvisor::VmExecutor::new(settings)?.with_vsock_ports(vsock_ports)?;
-    startup.insert("executor_ready_us", startup_clock.elapsed().as_micros());
-    let visor = supervisor_builder()
-        .storage(run_dir)
-        .network(pvisor::NetworkDriverConfig::default())
-        .executors(vec![Arc::new(executor)])
-        .build();
-    let mut run = make_run_spec(&identity)?;
-    run.runtime.max_output_bytes = 64 * 1024;
-    let handle = pvisor::session_service::SessionService::start(&visor, run)
-        .await
-        .context("native VM run admission failed")?;
-    startup.insert("execution_started_us", startup_clock.elapsed().as_micros());
-    publish_new(
-        &sandbox_dir.join("run.json"),
-        &RunRecord {
-            generation: identity.generation.clone(),
-            run_id: handle.run_id().to_string(),
-            execution_id: handle.execution_id().to_string(),
-        },
-    )?;
-    let service = handle.execution().clone();
-    // Prove acknowledged live controls before advertising any readiness. This
-    // pauses/resumes the SAME execution briefly; no snapshot/rebuild is involved.
-    let controls_ready = timeout(READY_TIMEOUT, async {
-        service.wait_ready().await?;
-        service
-            .dispatch(HostExecutionCommand::Operation {
-                kind: pvisor_core::OperationKind::RunPause,
-            })
-            .await?;
-        ensure!(
-            native_state(&service)? == RuntimeState::Paused,
-            "startup pause was not confirmed"
-        );
-        service
-            .dispatch(HostExecutionCommand::Operation {
-                kind: pvisor_core::OperationKind::RunResume,
-            })
-            .await?;
-        ensure!(
-            native_state(&service)? == RuntimeState::Running,
-            "startup resume was not confirmed"
-        );
-        Ok::<(), anyhow::Error>(())
-    })
-    .await;
-    if !matches!(controls_ready, Ok(Ok(()))) {
-        service.dispatch(HostExecutionCommand::Terminate).await?;
-        let _ = timeout(DELETE_TIMEOUT, handle.wait()).await;
-        bail!("native live VM control verification failed");
-    }
-    startup.insert("controls_verified_us", startup_clock.elapsed().as_micros());
-    let client = if identity.image.native_opensandbox
-        || (identity.image.native_guest && identity.spec.e2b.is_none())
-    {
-        service_health_client(
-            "x-execd-access-token",
-            identity
-                .spec
-                .env
-                .get("PVISOR_EXECD_ACCESS_TOKEN")
-                .map(String::as_str),
-        )?
-    } else {
-        health_client(if identity.spec.e2b.is_some() {
-            identity.spec.env.get(ENVD_TOKEN_ENV).map(String::as_str)
-        } else {
-            None
-        })?
-    };
-    if identity.image.native_opensandbox {
-        let initialized = timeout(
-            READY_TIMEOUT,
-            initialize_execd(
-                &client,
-                &endpoints[&EXECD_PORT],
-                &identity,
-                &startup_clock,
-                &mut startup,
-            ),
-        )
-        .await;
-        if !matches!(initialized, Ok(Ok(()))) {
-            service.dispatch(HostExecutionCommand::Terminate).await?;
-            let _ = timeout(DELETE_TIMEOUT, handle.wait()).await;
-            bail!("native execd binding initialization failed");
-        }
-    }
-    if identity.image.native_guest {
-        let initialized = timeout(READY_TIMEOUT, async {
-            loop {
-                if probe_services(&client, &endpoints).await.is_ok() {
-                    break;
+                publications.spawn(native_egress(
+                    listener,
+                    endpoints[&EXECD_PORT].clone(),
+                    service_health_client("x-execd-access-token", Some(token))?,
+                ));
+            } else if identity.image.native_guest {
+                let mut env = identity.image.env.clone();
+                env.extend(identity.spec.env.clone());
+                env.retain(|key, _| {
+                    !key.starts_with("PVISOR_")
+                        && !key.starts_with("KRUN_")
+                        && !key.starts_with("LIBKRUN_")
+                        && key != "EXECD_ACCESS_TOKEN"
+                });
+                if identity.spec.e2b.is_some() {
+                    env.insert("E2B_SANDBOX_ID".into(), identity.spec.id.clone());
                 }
-                sleep(Duration::from_millis(5)).await;
+                let token_key = if identity.spec.e2b.is_some() {
+                    ENVD_TOKEN_ENV
+                } else {
+                    "PVISOR_EXECD_ACCESS_TOKEN"
+                };
+                publications.spawn(crate::native::serve(
+                    listener,
+                    crate::native::Service::new(
+                        native_control.clone(),
+                        identity
+                            .spec
+                            .env
+                            .get(token_key)
+                            .context("native credential missing")?
+                            .clone(),
+                        identity.spec.id.clone(),
+                        identity.generation.clone(),
+                        execd_generation(&identity)?,
+                        env,
+                        identity.spec.e2b.is_some(),
+                    ),
+                ));
+            } else {
+                vsock_ports.insert(u32::from(port), path.clone());
+                if port == EXECD_PORT && identity.image.native_opensandbox {
+                    let token = identity
+                        .spec
+                        .env
+                        .get("PVISOR_EXECD_ACCESS_TOKEN")
+                        .context("managed credential missing")?;
+                    publications.spawn(managed_execd_bridge(listener, path, token.clone()));
+                } else if port == ENVD_PORT && identity.image.native_e2b {
+                    let token = identity
+                        .spec
+                        .env
+                        .get(ENVD_TOKEN_ENV)
+                        .context("managed envd credential missing")?;
+                    publications.spawn(managed_service_bridge(listener, path, token.clone(), true));
+                } else {
+                    publications.spawn(bridge(listener, path));
+                }
             }
+        }
+        // A projection contains metadata placeholders, not an unpacked image. Keep
+        // its backend registration alive while VmExecutor exports it to the runner.
+        let run_dir = sandbox_dir.join("run");
+        private_directory(&run_dir)?;
+        // Scratch belongs to this VM; the binding reads the shared V2 pool.
+        let pooled_root = pvisor::docker::Store::open(run_dir.join("image"))?
+            .open_image(&identity.image.pooled_image)?;
+        startup.insert("image_opened_us", startup_clock.elapsed().as_micros());
+        let settings = pvisor::VmSettings {
+            ram_backing: identity
+                .memory_pool
+                .is_none()
+                .then(|| run_dir.join("live-ram")),
+            memory_pool: identity.memory_pool.clone(),
+            rootfs: Some(pooled_root.rootfs().to_path_buf()),
+            rootfs_immutable: false,
+            library_dir: identity.image.library_dir.clone(),
+            memory_mib: u32::try_from(identity.spec.memory_bytes / MIB)?,
+            cpus: u16::try_from(identity.spec.cpu_millis.div_ceil(1000).min(8))?,
+            ..Default::default()
+        };
+        let executor = pvisor::VmExecutor::new(settings)?.with_vsock_ports(vsock_ports)?;
+        startup.insert("executor_ready_us", startup_clock.elapsed().as_micros());
+        let visor = supervisor_builder()
+            .storage(run_dir)
+            .network(pvisor::NetworkDriverConfig::default())
+            .executors(vec![Arc::new(executor)])
+            .build();
+        let mut run = make_run_spec(&identity)?;
+        run.runtime.max_output_bytes = 64 * 1024;
+        let handle = pvisor::session_service::SessionService::start(&visor, run)
+            .await
+            .context("native VM run admission failed")?;
+        startup.insert("execution_started_us", startup_clock.elapsed().as_micros());
+        publish_new(
+            &sandbox_dir.join("run.json"),
+            &RunRecord {
+                generation: identity.generation.clone(),
+                run_id: handle.run_id().to_string(),
+                execution_id: handle.execution_id().to_string(),
+            },
+        )?;
+        let service = handle.execution().clone();
+        // Prove acknowledged live controls before advertising any readiness. This
+        // pauses/resumes the SAME execution briefly; no snapshot/rebuild is involved.
+        let controls_ready = timeout(READY_TIMEOUT, async {
+            service.wait_ready().await?;
+            service
+                .dispatch(HostExecutionCommand::Operation {
+                    kind: pvisor_core::OperationKind::RunPause,
+                })
+                .await?;
+            ensure!(
+                native_state(&service)? == RuntimeState::Paused,
+                "startup pause was not confirmed"
+            );
+            service
+                .dispatch(HostExecutionCommand::Operation {
+                    kind: pvisor_core::OperationKind::RunResume,
+                })
+                .await?;
+            ensure!(
+                native_state(&service)? == RuntimeState::Running,
+                "startup resume was not confirmed"
+            );
+            Ok::<(), anyhow::Error>(())
         })
         .await;
-        if initialized.is_err() {
+        if !matches!(controls_ready, Ok(Ok(()))) {
             service.dispatch(HostExecutionCommand::Terminate).await?;
             let _ = timeout(DELETE_TIMEOUT, handle.wait()).await;
-            bail!("native guest engine readiness failed");
+            bail!("native live VM control verification failed");
         }
-    }
-    if identity.image.native_e2b {
-        let initialized = timeout(
-            READY_TIMEOUT,
-            initialize_envd(&client, &endpoints[&ENVD_PORT], &identity),
-        )
-        .await;
-        if !matches!(initialized, Ok(Ok(()))) {
-            service.dispatch(HostExecutionCommand::Terminate).await?;
-            let _ = timeout(DELETE_TIMEOUT, handle.wait()).await;
-            bail!("native envd initialization failed: {initialized:?}");
-        }
-    }
-    startup.insert(
-        "services_initialized_us",
-        startup_clock.elapsed().as_micros(),
-    );
-    // Bounded private diagnostics, no environment, output or host paths. This
-    // is not readiness evidence and has no effect on lifecycle authorization.
-    let _ = publish_new(&sandbox_dir.join("startup.json"), &startup);
-    // Handle remains in this durable owner. Native transitions are serialized
-    // independently of daemon lifetimes, even across IPC client disconnects.
-    loop {
-        tokio::select! {
-            accepted = listener.accept() => {
-                let (mut stream, _) = accepted?;
-                if authorize_host_peer(&stream).is_err() { continue; }
-                let request = timeout(Duration::from_secs(5), receive_frame::<Request>(&mut stream)).await;
-                let Ok(Ok(request)) = request else { continue; };
-                let admission = admit_supervisor_request(&identity, &handle.execution_id().to_string(), &request);
-                if let Err(error) = admission {
-                    let reply = Response { version: AGENTCTL_HOST_VERSION,
-                        request_id: request.request_id, result: Err(error) };
-                    let _ = timeout(Duration::from_secs(5), send_frame(&mut stream, &reply)).await;
-                    continue;
-                }
-                let deleted = matches!(request.command.operation, Operation::Terminate);
-                let result = execute_control(&service, &identity, sandbox_dir,
-                    &client, &endpoints, request.command.operation).await;
-                let mut reply = Response {
-                    version: AGENTCTL_HOST_VERSION, request_id: request.request_id,
-                    result: result.map(|(state, endpoint)| HostSupervisorResult {
-                        owner: identity.owner.clone(), target: request.target.expect("validated target"),
-                        state: state.into(), endpoint,
-                    }).map_err(|_| AgentCtlHostError::new(AgentCtlHostErrorCode::Unavailable,
-                        "native control or real service readiness failed; reconcile")),
-                };
-                // Never return image env, argv, guest output or native paths.
-                if deleted && reply.result.is_ok() {
-                    // Wait for native runner teardown, NOT merely terminal status.
-                    // On uncertainty the parent uses the inode-bound cgroup kill.
-                    let waited = timeout(DELETE_TIMEOUT, handle.wait()).await;
-                    if !matches!(waited, Ok(Ok(_))) {
-                        reply.result = Err(AgentCtlHostError::new(AgentCtlHostErrorCode::Unavailable,
-                            "native termination uncertain; reconcile"));
-                    }
-                    publications.abort_all();
-                    while publications.join_next().await.is_some() {}
-                    let _ = timeout(Duration::from_secs(5), send_frame(&mut stream, &reply)).await;
-                    return Ok(());
-                }
-                let _ = timeout(Duration::from_secs(5), send_frame(&mut stream, &reply)).await;
-            }
-            // Publication task death cannot leave a pretend healthy sandbox.
-            _ = publications.join_next() => {
+        startup.insert("controls_verified_us", startup_clock.elapsed().as_micros());
+        let client = if identity.image.native_opensandbox
+            || (identity.image.native_guest && identity.spec.e2b.is_none())
+        {
+            service_health_client(
+                "x-execd-access-token",
+                identity
+                    .spec
+                    .env
+                    .get("PVISOR_EXECD_ACCESS_TOKEN")
+                    .map(String::as_str),
+            )?
+        } else {
+            health_client(if identity.spec.e2b.is_some() {
+                identity.spec.env.get(ENVD_TOKEN_ENV).map(String::as_str)
+            } else {
+                None
+            })?
+        };
+        if identity.image.native_opensandbox {
+            let initialized = timeout(
+                READY_TIMEOUT,
+                initialize_execd(
+                    &client,
+                    &endpoints[&EXECD_PORT],
+                    &identity,
+                    &startup_clock,
+                    &mut startup,
+                ),
+            )
+            .await;
+            if !matches!(initialized, Ok(Ok(()))) {
                 service.dispatch(HostExecutionCommand::Terminate).await?;
                 let _ = timeout(DELETE_TIMEOUT, handle.wait()).await;
-                bail!("native publication failed");
+                bail!("native execd binding initialization failed");
+            }
+        }
+        if identity.image.native_guest {
+            let initialized = timeout(READY_TIMEOUT, async {
+                loop {
+                    if probe_services(&client, &endpoints).await.is_ok() {
+                        break;
+                    }
+                    sleep(Duration::from_millis(5)).await;
+                }
+            })
+            .await;
+            if initialized.is_err() {
+                service.dispatch(HostExecutionCommand::Terminate).await?;
+                let _ = timeout(DELETE_TIMEOUT, handle.wait()).await;
+                bail!("native guest engine readiness failed");
+            }
+        }
+        if identity.image.native_e2b {
+            let initialized = timeout(
+                READY_TIMEOUT,
+                initialize_envd(&client, &endpoints[&ENVD_PORT], &identity),
+            )
+            .await;
+            if !matches!(initialized, Ok(Ok(()))) {
+                service.dispatch(HostExecutionCommand::Terminate).await?;
+                let _ = timeout(DELETE_TIMEOUT, handle.wait()).await;
+                bail!("native envd initialization failed: {initialized:?}");
+            }
+        }
+        startup.insert(
+            "services_initialized_us",
+            startup_clock.elapsed().as_micros(),
+        );
+        // Bounded private diagnostics, no environment, output or host paths. This
+        // is not readiness evidence and has no effect on lifecycle authorization.
+        let _ = publish_new(&sandbox_dir.join("startup.json"), &startup);
+        // Handle remains in this durable owner. Native transitions are serialized
+        // independently of daemon lifetimes, even across IPC client disconnects.
+        loop {
+            tokio::select! {
+                accepted = listener.accept() => {
+                    let (mut stream, _) = accepted?;
+                    if authorize_host_peer(&stream).is_err() { continue; }
+                    let request = timeout(Duration::from_secs(5), receive_frame::<Request>(&mut stream)).await;
+                    let Ok(Ok(request)) = request else { continue; };
+                    let admission = admit_supervisor_request(&identity, &handle.execution_id().to_string(), &request);
+                    if let Err(error) = admission {
+                        let reply = Response { version: AGENTCTL_HOST_VERSION,
+                            request_id: request.request_id, result: Err(error) };
+                        let _ = timeout(Duration::from_secs(5), send_frame(&mut stream, &reply)).await;
+                        continue;
+                    }
+                    let deleted = matches!(request.command.operation, Operation::Terminate);
+                    let result = execute_control(&service, &identity, sandbox_dir,
+                        &client, &endpoints, request.command.operation).await;
+                    let mut reply = Response {
+                        version: AGENTCTL_HOST_VERSION, request_id: request.request_id,
+                        result: result.map(|(state, endpoint)| HostSupervisorResult {
+                            owner: identity.owner.clone(), target: request.target.expect("validated target"),
+                            state: state.into(), endpoint,
+                        }).map_err(|_| AgentCtlHostError::new(AgentCtlHostErrorCode::Unavailable,
+                            "native control or real service readiness failed; reconcile")),
+                    };
+                    // Never return image env, argv, guest output or native paths.
+                    if deleted && reply.result.is_ok() {
+                        // Wait for native runner teardown, NOT merely terminal status.
+                        // On uncertainty the parent uses the inode-bound cgroup kill.
+                        let waited = timeout(DELETE_TIMEOUT, handle.wait()).await;
+                        if !matches!(waited, Ok(Ok(_))) {
+                            reply.result = Err(AgentCtlHostError::new(AgentCtlHostErrorCode::Unavailable,
+                                "native termination uncertain; reconcile"));
+                        }
+                        publications.abort_all();
+                        while publications.join_next().await.is_some() {}
+                        let _ = timeout(Duration::from_secs(5), send_frame(&mut stream, &reply)).await;
+                        return Ok(());
+                    }
+                    let _ = timeout(Duration::from_secs(5), send_frame(&mut stream, &reply)).await;
+                }
+                // Publication task death cannot leave a pretend healthy sandbox.
+                _ = publications.join_next() => {
+                    service.dispatch(HostExecutionCommand::Terminate).await?;
+                    let _ = timeout(DELETE_TIMEOUT, handle.wait()).await;
+                    bail!("native publication failed");
+                }
             }
         }
     }
@@ -1557,7 +1421,7 @@ async fn managed_service_bridge(
             if url.path() != parts.uri.path() || url.query() != parts.uri.query() {
                 return Err(StatusCode::BAD_REQUEST);
             }
-            crate::daemon::api::strip_service_headers(&mut parts.headers, true, envd);
+            crate::daemon::http::strip_service_headers(&mut parts.headers, true, envd);
             let response = client
                 .request(parts.method, url)
                 .headers(parts.headers)
@@ -1566,7 +1430,7 @@ async fn managed_service_bridge(
                 .await
                 .map_err(|_| StatusCode::BAD_GATEWAY)?;
             let mut headers = response.headers().clone();
-            crate::daemon::api::strip_service_headers(&mut headers, false, envd);
+            crate::daemon::http::strip_service_headers(&mut headers, false, envd);
             let mut result = Response::builder()
                 .status(response.status())
                 .body(Body::from_stream(response.bytes_stream()))
@@ -2056,7 +1920,7 @@ fn parse_populated(source: &str) -> Result<bool> {
     }
 }
 
-pub fn validate_spec(spec: &RuntimeSpec) -> Result<()> {
+pub(crate) fn validate_spec(spec: &RuntimeSpec) -> Result<()> {
     validate_id(&spec.id)?;
     ensure!(
         !spec.image.is_empty()
@@ -2068,21 +1932,7 @@ pub fn validate_spec(spec: &RuntimeSpec) -> Result<()> {
             && !spec.image.starts_with('.'),
         "image must be a local prepared-image key"
     );
-    cpu_quota(spec.cpu_millis)?;
-    ensure!(
-        spec.cpu_millis >= 10,
-        "native CPU quota must be at least 10 millicores (kernel minimum)"
-    );
-    ensure!(
-        spec.cpu_millis <= 8000,
-        "native profile supports at most eight CPU quotas"
-    );
-    ensure!(
-        spec.memory_bytes >= 6 * MIB
-            && spec.memory_bytes / MIB <= u64::from(u32::MAX)
-            && spec.memory_bytes <= i64::MAX as u64,
-        "native memory limit is not representable"
-    );
+    validate_resources(spec.cpu_millis, spec.memory_bytes)?;
     validate_argv_env(&spec.entrypoint, &spec.env)?;
     if let Some(template) = &spec.e2b {
         template.validate()?;
@@ -2586,6 +2436,31 @@ impl Drop for SandboxLease {
     fn drop(&mut self) {
         drop(self.guard.take());
     }
+}
+
+impl RuntimeValidation for RuntimeSpec {
+    fn validate(&self) -> Result<()> {
+        validate_spec(self)
+    }
+}
+
+fn validate_resources(cpu_millis: u64, memory_bytes: u64) -> Result<()> {
+    cpu_quota(cpu_millis)?;
+    ensure!(
+        cpu_millis >= 10,
+        "native CPU quota must be at least 10 millicores (kernel minimum)"
+    );
+    ensure!(
+        cpu_millis <= 8000,
+        "native profile supports at most eight CPU quotas"
+    );
+    ensure!(
+        memory_bytes >= 6 * MIB
+            && memory_bytes / MIB <= u64::from(u32::MAX)
+            && memory_bytes <= i64::MAX as u64,
+        "native memory limit is not representable"
+    );
+    Ok(())
 }
 
 #[cfg(test)]
@@ -3447,7 +3322,7 @@ mod tests {
         assert!(directory.join("owner.lock").is_file());
         assert!(directory.join("started").is_file());
         assert!(runtime.create(&spec()).await.is_err());
-        assert!(run_native_supervisor(&directory).await.is_err());
+        assert!(NativeRuntime::run_supervisor(&directory).await.is_err());
         runtime_fixture(&identity, &directory)
             .delete(ID)
             .await
@@ -4130,7 +4005,7 @@ mod tests {
                 error
                     .downcast_ref::<CreateError>()
                     .unwrap()
-                    .requires_reconciliation(),
+                    .requires_reconciliation,
                 requires
             );
         }

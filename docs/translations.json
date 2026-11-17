@@ -35,7 +35,7 @@
   "concepts/staging.md": "c9e626f67c9a88157c663c9eba86d4137f82181b52dea4a007c2fac24fcf1891",
   "design/architecture.md": "8ebcf31008bc70c427384ffd663024da9efd676e4543c8866834fdb223c1bd91",
   "design/cli.md": "4a06ba0c75b32d3ba6a0fa2552e82c045f0afe6dae3481548ef4e59de929b6d6",
-  "design/daemon/index.md": "a355220cf0e5fee58706332711173b5508b4b44cc5e0e31f910fe725239552fd",
+  "design/daemon/index.md": "90437ff47148bc82333768bf7e3eeef9531a9e00e68fda99d2005356c59ce0b9",
   "design/daemon/operations.md": "a3767ad899c88cb0d5ab55d201cda21412d1a5ad5f17e18f78c4e16234d9e5d1",
   "design/daemon/shared-working-set.md": "fc93f950e03cd5f222e69e88c4a5cfdf2e24012c9ac9915e1363fe894e6ce0c4",
   "design/daemon/storage.md": "f54f0123d46069262bb497f685bdc363618282bb66058099ea449bc826df320c",

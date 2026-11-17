@@ -20,7 +20,7 @@ mod linux {
         ram_backing::ipc::{PoolClient, SealedClient},
     };
     use pvisor_core::{RunInvocation, RunSpec, RunState, StdioMode};
-    use pvisor_daemon::memory_pool::{PoolConfig, PoolMode};
+    use pvisor_daemon::api::{MemoryPoolService, PoolConfig, PoolMode};
     use serde_json::json;
     use std::{
         fs,
@@ -101,7 +101,7 @@ print('daemon-pool-guest-ok', index, flush=True)
                 args.get(2).is_some_and(|a| a == "--directory"),
                 "expected --directory"
             );
-            return pvisor_daemon::memory_pool::run(&PathBuf::from(
+            return pvisor_daemon::api::PoolConfig::run(&PathBuf::from(
                 args.get(3).context("missing pool directory")?,
             ));
         }

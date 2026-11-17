@@ -111,4 +111,6 @@ OpenSandbox 发布 44772/18080 两个逻辑端点，E2B 发布 49983。它们均
 
 运行时已接入原生 VM 执行。Stage/apply、checkpoint/fork 和 offload API、Gateway 推理等待协调与自动 node 资源获取未实现。旧 Cluster 结果不验证 daemon SDK 兼容、性能或密度，也没有全节点物理内存收益证据。
 
-实现归属：`daemon/models.rs` 定义 schema 与资源校验，`daemon/store.rs` 持久化逐沙箱记录，`daemon/mod.rs` 编排准入和生命周期，`daemon/api.rs` 与 `daemon/e2b.rs` 提供两套 HTTP profile。`runtime.rs` 拥有原生 supervisor、IPC/cgroup 与 VM 归属；`native.rs`/`native/` 适配 guest 进程和文件协议；`prepared_image.rs` 发布模板；`cache_component.rs` 与 `memory_pool.rs` 监督独立组件。
+实现归属：`daemon/models.rs` 定义 schema 与资源校验，`daemon/store.rs` 持久化逐沙箱记录，`daemon/mod.rs` 编排准入和生命周期，`daemon/http.rs` 与 `daemon/e2b.rs` 提供两套 HTTP profile。`runtime.rs` 拥有原生 supervisor、IPC/cgroup 与 VM 归属；`native.rs`/`native/` 适配 guest 进程和文件协议；`prepared_image.rs` 发布模板；`cache_component.rs` 与 `memory_pool.rs` 监督独立组件。
+
+Rust 调用方统一使用 `pvisor_daemon::api`。该入口声明绑定归属的运行时、输入记录与服务 trait，daemon/native 所有者的状态保持私有。沙箱修改统一经过认证 HTTP 路由，`DaemonService` 负责打开、路由和维护任务。[crate 契约](https://github.com/DeepLink-org/pvisor/blob/main/crates/pvisor-daemon/README.md#package-and-evidence-scope)说明关闭、失败与平台行为。

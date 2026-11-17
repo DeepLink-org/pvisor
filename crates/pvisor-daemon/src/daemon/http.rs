@@ -18,6 +18,8 @@
 //! - Parent request types validate unsupported creation features (snapshot/fsb,
 //!   etc.) rather than silently ignoring them, and use the spec's serde names.
 
+#[cfg(test)]
+use crate::api::DaemonService;
 use futures_util::StreamExt;
 use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
@@ -70,7 +72,7 @@ const PROXY_ROUTE: &str = "/v1/sandboxes/{id}/proxy/{port}";
 const PROXY_TRAILING_ROUTE: &str = "/v1/sandboxes/{id}/proxy/{port}/";
 const PROXY_PATH_ROUTE: &str = "/v1/sandboxes/{id}/proxy/{port}/{*path}";
 
-pub fn router(daemon: Arc<Daemon>) -> Router {
+pub(crate) fn router(daemon: Arc<Daemon>) -> Router {
     router_with_control_bodies(
         daemon,
         ControlBodies {
@@ -740,7 +742,7 @@ async fn forward_with_timeout(
 mod tests {
     use super::super::Config;
     use super::*;
-    use crate::runtime::{Runtime, RuntimeSpec, RuntimeState};
+    use crate::api::{Runtime, RuntimeSpec, RuntimeState};
     use std::sync::{
         Mutex as StdMutex,
         atomic::{AtomicUsize, Ordering},
@@ -760,6 +762,12 @@ mod tests {
 
     #[async_trait::async_trait]
     impl Runtime for RouteRuntime {
+        async fn preflight(&self) -> anyhow::Result<()> {
+            Ok(())
+        }
+        async fn e2b_template(&self, _: &str) -> anyhow::Result<crate::api::E2bTemplate> {
+            anyhow::bail!("E2B prepared templates are not supported by this runtime")
+        }
         async fn create(&self, spec: &RuntimeSpec) -> anyhow::Result<()> {
             let mut sandboxes = self.sandboxes.lock().unwrap();
             anyhow::ensure!(!sandboxes.contains_key(&spec.id), "duplicate sandbox");

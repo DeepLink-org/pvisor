@@ -1,6 +1,6 @@
 //! Real manager/IPC contracts without KVM, guest firmware or a sandbox API key.
 use pvisor::ram_backing::ipc::PoolClient;
-use pvisor_daemon::memory_pool::PoolConfig;
+use pvisor_daemon::api::PoolConfig;
 use serde_json::Value;
 use std::{
     fs,

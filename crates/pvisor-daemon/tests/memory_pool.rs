@@ -1,5 +1,5 @@
 use pvisor::ram_backing::ipc::PoolClient;
-use pvisor_daemon::memory_pool::{PoolConfig, ensure_service};
+use pvisor_daemon::api::{MemoryPoolService, PoolConfig};
 use std::{
     fs,
     os::unix::{fs::PermissionsExt, net::UnixStream},
@@ -29,12 +29,12 @@ fn macos_container_vms_publish_and_restore_through_daemon_pool() {
         std::env::var_os("PVISOR_DOCKER_TEST_ROOTFS").expect("set native Linux rootfs"),
     );
     let (state, mut service, socket, _) = pool_service(PoolConfig::default());
-    ensure_service(
-        state.path(),
-        std::path::Path::new(env!("CARGO_BIN_EXE_pvisor-daemon")),
-        PoolConfig::default(),
-    )
-    .unwrap();
+    (PoolConfig::default())
+        .ensure_service(
+            state.path(),
+            std::path::Path::new(env!("CARGO_BIN_EXE_pvisor-daemon")),
+        )
+        .unwrap();
     let bases = socket.parent().unwrap().join("shared-kernel");
     let home = state.path().join("containers");
     pvisor::docker::Store::open(home.clone()).unwrap();
@@ -466,7 +466,7 @@ fn macos_four_512m_vms_dynamically_share_and_cow_application_pages() {
     let m = fs::symlink_metadata(&output).unwrap();
     assert!(m.is_dir() && m.uid() == unsafe { libc::geteuid() } && m.mode() & 0o077 == 0);
     let (_state, _service, socket, _) = pool_service(PoolConfig {
-        mode: pvisor_daemon::memory_pool::PoolMode::PhysicalPages,
+        mode: pvisor_daemon::api::PoolMode::PhysicalPages,
         ..Default::default()
     });
     let home = output.join("containers");
@@ -830,7 +830,9 @@ fn daemon_pool_shares_objects_and_survives_owner_reopen_without_replacement() {
     assert_eq!(a.stats().unwrap().objects, 1);
     assert_eq!(a.stats().unwrap().cross_session_objects, 1);
     assert_eq!(
-        ensure_service(state.path(), executable, config.clone()).unwrap(),
+        (config.clone())
+            .ensure_service(state.path(), executable)
+            .unwrap(),
         socket
     );
     let mut output = vec![0; bytes.len()];
@@ -838,7 +840,7 @@ fn daemon_pool_shares_objects_and_survives_owner_reopen_without_replacement() {
     assert_eq!(output, bytes);
     let mut changed = config;
     changed.max_bytes += 1;
-    assert!(ensure_service(state.path(), executable, changed).is_err());
+    assert!((changed).ensure_service(state.path(), executable).is_err());
     a.release(first).unwrap();
     b.restore(&second, &mut output).unwrap();
     assert_eq!(output, bytes);
@@ -879,13 +881,31 @@ fn pool_service(
     );
     let socket = directory.canonicalize().unwrap().join("pool.sock");
     let deadline = Instant::now() + Duration::from_secs(5);
-    while !socket.exists() {
+    loop {
         assert!(
             child.0.try_wait().unwrap().is_none(),
             "pool exited before readiness"
         );
-        assert!(Instant::now() < deadline, "pool readiness deadline");
-        std::thread::sleep(Duration::from_millis(10));
+        match UnixStream::connect(&socket) {
+            Ok(stream) => {
+                let mut client = PoolClient::new(stream, Duration::from_secs(2)).unwrap();
+                client.stats().unwrap();
+                break;
+            }
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused
+                ) =>
+            {
+                assert!(
+                    Instant::now() < deadline,
+                    "pool readiness deadline: {error}"
+                );
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Err(error) => panic!("pool readiness: {error}"),
+        }
     }
     (state, child, socket, config)
 }
@@ -898,7 +918,7 @@ fn compressed_pool() -> (
     PoolConfig,
 ) {
     pool_service(PoolConfig {
-        mode: pvisor_daemon::memory_pool::PoolMode::Compressed,
+        mode: pvisor_daemon::api::PoolMode::Compressed,
         max_bytes: 8192,
         max_objects: 2,
         max_connections: 8,
@@ -914,7 +934,7 @@ fn standalone_manager_reuses_pool_preserves_it_on_shutdown_and_reports_pool_loss
 #[test]
 fn physical_pages_manager_reuses_owner_and_preserves_exit_contract() {
     standalone_manager_lifecycle(PoolConfig {
-        mode: pvisor_daemon::memory_pool::PoolMode::PhysicalPages,
+        mode: pvisor_daemon::api::PoolMode::PhysicalPages,
         ..Default::default()
     });
 }
@@ -991,12 +1011,12 @@ fn standalone_manager_lifecycle(config: PoolConfig) {
     pool.0.wait().unwrap();
     wait_exit(&mut manager, false);
     assert!(
-        ensure_service(
-            state.path(),
-            std::path::Path::new(env!("CARGO_BIN_EXE_pvisor-daemon")),
-            config
-        )
-        .is_err()
+        (config)
+            .ensure_service(
+                state.path(),
+                std::path::Path::new(env!("CARGO_BIN_EXE_pvisor-daemon"))
+            )
+            .is_err()
     );
 }
 
@@ -1004,7 +1024,7 @@ fn standalone_manager_lifecycle(config: PoolConfig) {
 #[cfg(target_os = "macos")]
 fn macos_compressed_pool_shares_bounds_and_fails_closed_after_service_loss() {
     let config = PoolConfig {
-        mode: pvisor_daemon::memory_pool::PoolMode::Compressed,
+        mode: pvisor_daemon::api::PoolMode::Compressed,
         max_bytes: 8192,
         max_objects: 1,
         max_connections: 8,
@@ -1031,12 +1051,12 @@ fn macos_compressed_pool_shares_bounds_and_fails_closed_after_service_loss() {
         "object budget must reject unique content"
     );
     assert_eq!(
-        ensure_service(
-            state.path(),
-            std::path::Path::new(env!("CARGO_BIN_EXE_pvisor-daemon")),
-            config.clone()
-        )
-        .unwrap(),
+        (config.clone())
+            .ensure_service(
+                state.path(),
+                std::path::Path::new(env!("CARGO_BIN_EXE_pvisor-daemon"))
+            )
+            .unwrap(),
         socket
     );
     let mut output = vec![0; bytes.len()];
@@ -1050,12 +1070,12 @@ fn macos_compressed_pool_shares_bounds_and_fails_closed_after_service_loss() {
         "legacy macOS restore needs its live owner"
     );
     assert!(
-        ensure_service(
-            state.path(),
-            std::path::Path::new(env!("CARGO_BIN_EXE_pvisor-daemon")),
-            config
-        )
-        .is_err()
+        (config)
+            .ensure_service(
+                state.path(),
+                std::path::Path::new(env!("CARGO_BIN_EXE_pvisor-daemon"))
+            )
+            .is_err()
     );
 }
 
@@ -1092,13 +1112,15 @@ fn daemon_compressed_pool_shares_and_retains_local_recovery_after_service_exit()
     let inode = fs::metadata(&socket).unwrap().ino();
     let executable = std::path::Path::new(env!("CARGO_BIN_EXE_pvisor-daemon"));
     assert_eq!(
-        ensure_service(state.path(), executable, config.clone()).unwrap(),
+        (config.clone())
+            .ensure_service(state.path(), executable)
+            .unwrap(),
         socket
     );
     assert_eq!(fs::metadata(&socket).unwrap().ino(), inode);
     let mut changed = config.clone();
-    changed.mode = pvisor_daemon::memory_pool::PoolMode::Physical;
-    assert!(ensure_service(state.path(), executable, changed).is_err());
+    changed.mode = pvisor_daemon::api::PoolMode::Physical;
+    assert!((changed).ensure_service(state.path(), executable).is_err());
 
     child.0.kill().unwrap();
     child.0.wait().unwrap();
@@ -1112,7 +1134,7 @@ fn daemon_compressed_pool_shares_and_retains_local_recovery_after_service_exit()
     assert_eq!(output, bytes);
     a.restore(&unique, &mut output).unwrap();
     assert_eq!(output, vec![3; 65536]);
-    assert!(ensure_service(state.path(), executable, config).is_err());
+    assert!((config).ensure_service(state.path(), executable).is_err());
     assert_eq!(
         fs::metadata(&socket).unwrap().ino(),
         inode,
@@ -1137,7 +1159,7 @@ fn legacy_pool_configuration_retains_physical_mode() {
         "max_bytes": 4096, "max_objects": 16, "max_connections": 8, "max_references": 16
     }))
     .unwrap();
-    assert_eq!(config.mode, pvisor_daemon::memory_pool::PoolMode::Physical);
+    assert_eq!(config.mode, pvisor_daemon::api::PoolMode::Physical);
     assert!(serde_json::from_value::<PoolConfig>(serde_json::json!({
         "mode": "unknown", "max_bytes": 4096, "max_objects": 16, "max_connections": 8, "max_references": 16
     })).is_err());

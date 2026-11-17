@@ -1,6 +1,7 @@
 use super::store::CommitPoint;
 use super::{Config, CreateRequest, Daemon};
-use crate::runtime::{Runtime, RuntimeSpec, RuntimeState};
+use crate::api::DaemonService;
+use crate::api::{Runtime, RuntimeSpec, RuntimeState};
 use serde_json::{Value, json};
 use std::{
     collections::BTreeMap,
@@ -633,6 +634,12 @@ impl FakeRuntime {
 
 #[async_trait::async_trait]
 impl Runtime for FakeRuntime {
+    async fn preflight(&self) -> anyhow::Result<()> {
+        Ok(())
+    }
+    async fn e2b_template(&self, _: &str) -> anyhow::Result<crate::api::E2bTemplate> {
+        anyhow::bail!("E2B prepared templates are not supported by this runtime")
+    }
     async fn create(&self, spec: &RuntimeSpec) -> anyhow::Result<()> {
         let gate = self.create_gate.lock().unwrap().take();
         if let Some(gate) = gate {
@@ -642,9 +649,7 @@ impl Runtime for FakeRuntime {
         let mut state = self.state.lock().unwrap();
         state.creates += 1;
         if let Some(uncertain) = state.create_failure {
-            return Err(
-                crate::runtime::CreateError::new("injected create failure", uncertain).into(),
-            );
+            return Err(crate::api::CreateError::new("injected create failure", uncertain).into());
         }
         anyhow::ensure!(!state.sandboxes.contains_key(&spec.id), "duplicate sandbox");
         state.specs.push(spec.clone());
@@ -1234,7 +1239,7 @@ async fn concurrent_stalled_proxy_headers_bound_delete_delay() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     runtime.state.lock().unwrap().endpoint_override =
         Some(format!("http://{}", listener.local_addr().unwrap()));
-    let app = super::api::router(daemon.clone());
+    let app = super::http::router(daemon.clone());
     let mut requests = Vec::new();
     for _ in 0..2 {
         let app = app.clone();
@@ -1297,7 +1302,7 @@ async fn established_proxy_response_stream_does_not_block_delete() {
         .header("open-sandbox-api-key", API_KEY)
         .body(Body::empty())
         .unwrap();
-    let proxy = tokio::spawn(super::api::router(daemon.clone()).oneshot(request));
+    let proxy = tokio::spawn(super::http::router(daemon.clone()).oneshot(request));
     let (mut connection, _) = bounded(listener.accept()).await.unwrap();
     let mut buffer = [0; 4096];
     assert!(bounded(connection.read(&mut buffer)).await.unwrap() > 0);
@@ -1321,7 +1326,7 @@ async fn established_proxy_response_stream_does_not_block_delete() {
         .header("open-sandbox-api-key", API_KEY)
         .body(Body::empty())
         .unwrap();
-    let denied = bounded(super::api::router(daemon.clone()).oneshot(request))
+    let denied = bounded(super::http::router(daemon.clone()).oneshot(request))
         .await
         .unwrap();
     assert_eq!(denied.status(), 429);
@@ -1359,7 +1364,7 @@ async fn proxy_connections_are_not_reused_across_sandboxes_and_cancellation_rele
             .header("open-sandbox-api-key", API_KEY)
             .body(Body::empty())
             .unwrap();
-        let proxy = tokio::spawn(super::api::router(daemon.clone()).oneshot(request));
+        let proxy = tokio::spawn(super::http::router(daemon.clone()).oneshot(request));
         // Even though the prior server socket remains open and advertises
         // keep-alive, the next sandbox must establish a fresh connection.
         let (mut connection, _) = bounded(listener.accept()).await.unwrap();
@@ -1388,7 +1393,7 @@ async fn proxy_connections_are_not_reused_across_sandboxes_and_cancellation_rele
         .header("open-sandbox-api-key", API_KEY)
         .body(Body::empty())
         .unwrap();
-    let proxy = tokio::spawn(super::api::router(daemon.clone()).oneshot(request));
+    let proxy = tokio::spawn(super::http::router(daemon.clone()).oneshot(request));
     let (connection, _) = bounded(listener.accept()).await.unwrap();
     proxy.abort();
     assert!(bounded(proxy).await.unwrap_err().is_cancelled());

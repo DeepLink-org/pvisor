@@ -1,4 +1,5 @@
 use super::models::{Record, Registry};
+use crate::api::RuntimeValidation;
 use anyhow::{Context, ensure};
 use fs2::FileExt;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
@@ -82,7 +83,7 @@ fn invoke_commit_hook(hook: Option<&CommitHook>, point: CommitPoint) -> anyhow::
 }
 
 impl Store {
-    pub fn open(directory: &Path) -> anyhow::Result<(Self, Registry)> {
+    pub(crate) fn open(directory: &Path) -> anyhow::Result<(Self, Registry)> {
         fs::create_dir_all(directory)?;
         check_directory(directory)?;
         #[cfg(unix)]
@@ -154,7 +155,7 @@ impl Store {
     /// Activate individual records only AFTER the runtime accepts the old owner.
     /// The root header is the activation boundary: a v1 header always owns its
     /// complete snapshot; a v2 header always requires its committed records tree.
-    pub fn initialize(&self, registry: &mut Registry) -> anyhow::Result<()> {
+    pub(crate) fn initialize(&self, registry: &mut Registry) -> anyhow::Result<()> {
         ensure!(registry.owner == self.owner, "registry owner changed");
         let mut layout = self
             .layout
@@ -236,7 +237,7 @@ impl Store {
 
     /// One operation changes one sandbox. Atomic replacement/unlink plus a
     /// directory sync is its durability boundary; the header is never rewritten.
-    pub fn commit_record(&self, id: &str, record: Option<&Record>) -> anyhow::Result<()> {
+    pub(crate) fn commit_record(&self, id: &str, record: Option<&Record>) -> anyhow::Result<()> {
         validate_id(id)?;
         if let Some(record) = record {
             validate_record(id, record)?;
@@ -1040,7 +1041,7 @@ mod tests {
     #[test]
     fn e2b_records_bind_profile_credentials_and_deadline() {
         let mut value = record(ID);
-        value.e2b = Some(crate::runtime::E2bTemplate {
+        value.e2b = Some(crate::api::E2bTemplate {
             cpu_millis: value.cpu_millis,
             memory_bytes: value.memory_bytes,
             envd_version: "0.10.2".into(),

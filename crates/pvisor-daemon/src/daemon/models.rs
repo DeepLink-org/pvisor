@@ -3,23 +3,23 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ApiError {
-    pub status: u16,
-    pub code: String,
-    pub message: String,
+pub(crate) struct ApiError {
+    pub(crate) status: u16,
+    pub(crate) code: String,
+    pub(crate) message: String,
 }
 impl ApiError {
-    pub fn new(status: u16, code: &str, message: impl Into<String>) -> Self {
+    pub(crate) fn new(status: u16, code: &str, message: impl Into<String>) -> Self {
         Self {
             status,
             code: code.into(),
             message: message.into(),
         }
     }
-    pub fn bad_request(message: impl Into<String>) -> Self {
+    pub(crate) fn bad_request(message: impl Into<String>) -> Self {
         Self::new(400, "INVALID_REQUEST", message)
     }
-    pub fn internal(message: impl Into<String>) -> Self {
+    pub(crate) fn internal(message: impl Into<String>) -> Self {
         Self::new(500, "INTERNAL_ERROR", message)
     }
 }
@@ -32,44 +32,44 @@ impl std::error::Error for ApiError {}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct Image {
-    pub uri: String,
+pub(crate) struct Image {
+    pub(crate) uri: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub auth: Option<serde_json::Value>,
+    pub(crate) auth: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct CreateRequest {
-    pub image: Option<Image>,
-    pub snapshot_id: Option<String>,
-    pub template_id: Option<String>,
-    pub entrypoint: Option<Vec<String>>,
-    pub resource_limits: Option<BTreeMap<String, String>>,
-    pub timeout: Option<u64>,
+pub(crate) struct CreateRequest {
+    pub(crate) image: Option<Image>,
+    pub(crate) snapshot_id: Option<String>,
+    pub(crate) template_id: Option<String>,
+    pub(crate) entrypoint: Option<Vec<String>>,
+    pub(crate) resource_limits: Option<BTreeMap<String, String>>,
+    pub(crate) timeout: Option<u64>,
     #[serde(default)]
-    pub env: BTreeMap<String, String>,
+    pub(crate) env: BTreeMap<String, String>,
     #[serde(default)]
-    pub metadata: BTreeMap<String, String>,
-    pub extensions: Option<BTreeMap<String, String>>,
-    pub platform: Option<serde_json::Value>,
-    pub resource_requests: Option<serde_json::Value>,
-    pub network_policy: Option<serde_json::Value>,
-    pub credential_proxy: Option<serde_json::Value>,
-    pub secure_access: Option<serde_json::Value>,
-    pub volumes: Option<serde_json::Value>,
-    pub lifecycle: Option<serde_json::Value>,
+    pub(crate) metadata: BTreeMap<String, String>,
+    pub(crate) extensions: Option<BTreeMap<String, String>>,
+    pub(crate) platform: Option<serde_json::Value>,
+    pub(crate) resource_requests: Option<serde_json::Value>,
+    pub(crate) network_policy: Option<serde_json::Value>,
+    pub(crate) credential_proxy: Option<serde_json::Value>,
+    pub(crate) secure_access: Option<serde_json::Value>,
+    pub(crate) volumes: Option<serde_json::Value>,
+    pub(crate) lifecycle: Option<serde_json::Value>,
 }
 
 pub(super) struct Validated {
-    pub image: Image,
-    pub entrypoint: Vec<String>,
-    pub timeout: Option<u64>,
-    pub env: BTreeMap<String, String>,
-    pub metadata: BTreeMap<String, String>,
-    pub cpu_millis: u64,
-    pub memory_bytes: u64,
-    pub e2b: Option<crate::runtime::E2bTemplate>,
+    pub(crate) image: Image,
+    pub(crate) entrypoint: Vec<String>,
+    pub(crate) timeout: Option<u64>,
+    pub(crate) env: BTreeMap<String, String>,
+    pub(crate) metadata: BTreeMap<String, String>,
+    pub(crate) cpu_millis: u64,
+    pub(crate) memory_bytes: u64,
+    pub(crate) e2b: Option<crate::api::E2bTemplate>,
 }
 
 impl CreateRequest {
@@ -260,53 +260,53 @@ fn memory_quantity(value: &str) -> Result<u64, ApiError> {
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub struct EndpointResponse {
-    pub endpoint: String,
+pub(crate) struct EndpointResponse {
+    pub(crate) endpoint: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub headers: Option<BTreeMap<String, String>>,
+    pub(crate) headers: Option<BTreeMap<String, String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct RenewRequest {
-    pub expires_at: DateTime<Utc>,
+pub(crate) struct RenewRequest {
+    pub(crate) expires_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct SandboxStatus {
-    pub state: String,
+pub(crate) struct SandboxStatus {
+    pub(crate) state: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub message: Option<String>,
+    pub(crate) message: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub last_transition_at: Option<DateTime<Utc>>,
+    pub(crate) last_transition_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct Sandbox {
-    pub id: String,
-    pub status: SandboxStatus,
-    pub created_at: DateTime<Utc>,
+pub(crate) struct Sandbox {
+    pub(crate) id: String,
+    pub(crate) status: SandboxStatus,
+    pub(crate) created_at: DateTime<Utc>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub expires_at: Option<DateTime<Utc>>,
-    pub image: Image,
-    pub entrypoint: Vec<String>,
-    pub metadata: BTreeMap<String, String>,
+    pub(crate) expires_at: Option<DateTime<Utc>>,
+    pub(crate) image: Image,
+    pub(crate) entrypoint: Vec<String>,
+    pub(crate) metadata: BTreeMap<String, String>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Record {
-    pub sandbox: Sandbox,
-    pub env: BTreeMap<String, String>,
-    pub cpu_millis: u64,
-    pub memory_bytes: u64,
-    pub endpoint_token: String,
+    pub(crate) sandbox: Sandbox,
+    pub(crate) env: BTreeMap<String, String>,
+    pub(crate) cpu_millis: u64,
+    pub(crate) memory_bytes: u64,
+    pub(crate) endpoint_token: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub e2b: Option<crate::runtime::E2bTemplate>,
+    pub(crate) e2b: Option<crate::api::E2bTemplate>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub claim: Option<ClaimRecord>,
+    pub(crate) claim: Option<ClaimRecord>,
 }
 
 /// Durable Home OFFER identity; every operation checks all four fields.
@@ -314,13 +314,13 @@ pub(super) struct Record {
 #[serde(deny_unknown_fields)]
 pub(super) struct ClaimIdentity {
     /// Canonical hyphenated UUID; local sandbox ID is `sb-<claim_id>`.
-    pub claim_id: String,
+    pub(crate) claim_id: String,
     /// Stable Home node identity.
-    pub home: String,
+    pub(crate) home: String,
     /// Home task identity.
-    pub task_id: String,
+    pub(crate) task_id: String,
     /// Home assignment generation, compared exactly on retries.
-    pub generation: u64,
+    pub(crate) generation: u64,
 }
 
 /// Executor-side durable launch fence, independent of runtime observations.
@@ -340,30 +340,30 @@ pub(super) enum ClaimPhase {
 #[cfg(test)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(super) struct ClaimView {
-    pub identity: ClaimIdentity,
-    pub sandbox: Sandbox,
-    pub phase: ClaimPhase,
+    pub(crate) identity: ClaimIdentity,
+    pub(crate) sandbox: Sandbox,
+    pub(crate) phase: ClaimPhase,
     /// Mutable lifecycle failure or launch uncertainty, not the create result.
-    pub error: Option<ApiError>,
+    pub(crate) error: Option<ApiError>,
     /// Immutable terminal create outcome for Home reporting; None means unresolved.
     /// Success retains the original public Sandbox (including metadata, which may
     /// contain caller secrets) even after deletion. Environment is never included.
-    pub creation_result: Option<Result<Sandbox, ApiError>>,
+    pub(crate) creation_result: Option<Result<Sandbox, ApiError>>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct ClaimRecord {
-    pub identity: ClaimIdentity,
-    pub phase: ClaimPhase,
-    pub request_digest: String,
-    pub timeout: Option<u64>,
-    pub error: Option<ApiError>,
+    pub(crate) identity: ClaimIdentity,
+    pub(crate) phase: ClaimPhase,
+    pub(crate) request_digest: String,
+    pub(crate) timeout: Option<u64>,
+    pub(crate) error: Option<ApiError>,
     /// Written once on confirmed launch success/failure, never on uncertainty.
-    pub creation_result: Option<Result<Sandbox, ApiError>>,
+    pub(crate) creation_result: Option<Result<Sandbox, ApiError>>,
     /// Fixed logical byte reservation, including future result and lifecycle growth.
     /// Retained on release: tombstones cannot consume another claim's headroom.
-    pub storage_charge: usize,
+    pub(crate) storage_charge: usize,
 }
 
 impl Record {
@@ -385,9 +385,9 @@ impl Record {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Registry {
-    pub version: u32,
-    pub owner: String,
-    pub sandboxes: BTreeMap<String, Record>,
+    pub(crate) version: u32,
+    pub(crate) owner: String,
+    pub(crate) sandboxes: BTreeMap<String, Record>,
 }
 
 #[cfg(test)]
