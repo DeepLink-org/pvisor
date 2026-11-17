@@ -1,6 +1,7 @@
 //! LLM request/response capture handler (non-streaming path + upstream orchestration).
 
 use crate::config::{effective_provider, resolve_upstream_url};
+use pvisor_overlaynet::api::ForwardingHeaders;
 
 use std::sync::Arc;
 
@@ -34,7 +35,6 @@ use crate::model_wait::{PendingModelWait, unless_stopped};
 use crate::runtime::debug::{self, truncate_body_bytes};
 use crate::session::storage::resolve_capture_route_with_root;
 use crate::understanding::understand_request;
-use pvisor_overlaynet::headers::{is_websocket_upgrade, skip_response_header_after_reframing};
 
 fn client_request_url(parts: &axum::http::request::Parts) -> String {
     let path_and_query = parts
@@ -127,7 +127,7 @@ pub(super) async fn llm_capture(
 ) -> anyhow::Result<Response> {
     let (parts, body) = req.into_parts();
 
-    if is_websocket_upgrade(&parts.headers) {
+    if ForwardingHeaders::is_websocket_upgrade(&parts.headers) {
         return Ok(Response::builder()
             .status(StatusCode::NOT_IMPLEMENTED)
             .header("content-type", "text/plain; charset=utf-8")
@@ -515,7 +515,7 @@ pub(super) async fn llm_capture(
         );
         let mut builder = Response::builder().status(status);
         for (name, value) in &resp_headers {
-            if skip_response_header_after_reframing(
+            if ForwardingHeaders::skip_response_header_after_reframing(
                 &resp_headers,
                 name.as_str(),
                 body_was_rewritten,
@@ -579,7 +579,11 @@ pub(super) async fn llm_capture(
     let mut builder = Response::builder().status(status);
     // Rebuilt bodies invalidate framing and length; translation also invalidates encoding and media type.
     for (name, value) in resp_headers.iter() {
-        if skip_response_header_after_reframing(&resp_headers, name.as_str(), body_was_rewritten) {
+        if ForwardingHeaders::skip_response_header_after_reframing(
+            &resp_headers,
+            name.as_str(),
+            body_was_rewritten,
+        ) {
             continue;
         }
         builder = builder.header(name, value);

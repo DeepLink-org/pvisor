@@ -1,5 +1,8 @@
 # pvisor-gateway
 
+Network data-plane callers use `pvisor_overlaynet::api` and its declared traits;
+policy records remain owned by `pvisor_core::network`.
+
 **pVisor's built-in Agent protocol driver: LLM HTTP forwarding plus canonical
 trajectory capture.**
 
@@ -48,7 +51,8 @@ byte limit returns 413; a transport/body read failure returns 400 instead of
 claiming an oversized payload. Neither rejection dispatches upstream nor creates
 a capture or model-wait obligation. Failed readers release the incoming body.
 
-This crate implements `pvisor-overlaynet::OverlaySink`. Protocol rendering
+This crate implements `pvisor_overlaynet::api::OverlaySink`; its single
+`observe(ProxyEvent)` callback records proxy decisions and outcomes. Protocol rendering
 and capture share one in-memory `LlmRequestEventPayload` (`llm/v1`). Provider
 wire formats are never chained through Chat Completions as an intermediate
 protocol. Derived trajectory views are not part of the online

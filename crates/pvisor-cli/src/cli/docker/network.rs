@@ -1,6 +1,7 @@
 //! Docker network command syntax and rendering.
 use super::*;
 use clap::{Args, Subcommand};
+use pvisor_overlaynet::api::VmNetworkConfiguration;
 use std::io::Write;
 
 #[derive(Debug, Args)]
@@ -112,7 +113,7 @@ pub(super) fn run(args: NetworkArgs) -> anyhow::Result<i32> {
                             .peers
                             .as_ref()
                             .map(|peer| {
-                                pvisor_overlaynet::vm::guest_mac(peer.address)
+                                pvisor_overlaynet::api::VmNetworkConfig::guest_mac(peer.address)
                                     .map(|b| format!("{b:02x}"))
                                     .join(":")
                             })

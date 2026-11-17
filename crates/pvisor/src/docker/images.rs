@@ -531,7 +531,12 @@ mod tests {
         assert_eq!(config["config"]["Shell"][0], "/custom-shell");
         assert_eq!(derived.cmd, ["/payload"]);
         let resolver = temporary.path().join("resolver");
-        prepare_resolver(root.rootfs(), &resolver, pvisor_overlaynet::vm::ROUTER_IPV4).unwrap();
+        prepare_resolver(
+            root.rootfs(),
+            &resolver,
+            pvisor_overlaynet::api::ROUTER_IPV4,
+        )
+        .unwrap();
         assert_eq!(
             fs::read(resolver.join("etc/resolv.conf")).unwrap(),
             b"nameserver 192.0.2.1\n"

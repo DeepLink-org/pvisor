@@ -60,7 +60,7 @@ Source entry points: `pvisor/src/execution_context/lifecycle.rs`, `pvisor-overla
 
 ## API boundaries and migration status {#api-boundaries}
 
-Only `pvisor-vm`, `pvisor-overlayfs` and `pvisor-journal` currently use a sole `api` entry point. Other crates retain existing interfaces and have not completed this migration.
+`pvisor-vm`, `pvisor-overlayfs`, `pvisor-journal`, `pvisor-containers`, `pvisor-replay` and `pvisor-overlaynet` use a sole `api` entry point. Other crates retain their existing interfaces.
 
 | Crate | Current public boundary | Implementation and resource ownership |
 | --- | --- | --- |
@@ -68,8 +68,11 @@ Only `pvisor-vm`, `pvisor-overlayfs` and `pvisor-journal` currently use a sole `
 | `pvisor-overlayfs` | `pvisor_overlayfs::api`; configuration, mount, session and metrics contracts | Private `fs`, `mount` and `observation`; owns neither apply nor Run lifecycle |
 | `pvisor-journal` | `pvisor_journal::api`; `JournalStore`, `TraceProducer`, `DurableFiles` | Private `journal`, `trace`, `persistence`; Core owns Event/Receipt |
 | `pvisor-core` | Domain modules and root re-exports; not migrated | Shared identities, protocols, pure validation and policy definitions; no execution resources |
-| `pvisor-overlay-core`, `pvisor-overlaynet` | Existing public modules and root interfaces; not migrated | File semantics, dual-entry file service, proxies and egress data plane |
-| `pvisor`, Gateway, Replay, Daemon and others | Retain existing entries; no uniform sole-`api` model yet | Continue evolving within actual lifecycle and domain boundaries |
+| `pvisor-overlay-core` | Existing public modules and root interfaces; not migrated | File semantics and dual-entry file service |
+| `pvisor-overlaynet` | `pvisor_overlaynet::api`; proxy, egress, VM transport and observation traits | Private connectors, peer membership, counters and worker lifecycle; Core owns policy records |
+| `pvisor-replay` | `pvisor_replay::api`; owned requests, one loading/execution trait and result/error records | Private adapters, validation, process supervision and journal ownership |
+| `pvisor-containers` | `pvisor_containers::api`; catalog and lifecycle traits | Private store, image and native transport implementations |
+| `pvisor`, Gateway, Daemon and others | Retain existing entries; no uniform sole-`api` model yet | Continue evolving within actual lifecycle and domain boundaries |
 
 Migrated `api` modules declare public data, fields and trait methods. Opaque owners may be re-exported from private implementations while retaining private state. Method bodies, validation, platform dispatch and resource management live in implementations; public traits have no default bodies. Callers import contracts from the owning crate's `api`. Declarations keep the same shape across supported platforms/features; capability queries and explicit unsupported errors describe actual support.
 

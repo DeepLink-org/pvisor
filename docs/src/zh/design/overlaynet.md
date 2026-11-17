@@ -2,6 +2,21 @@
 
 VM 的网络控制点位于 virtio-net 之后：guest 输出 Ethernet frame，OverlayNet 在宿主终止 TCP、还原逻辑目标、完成策略授权，再连接外部服务。Host/OCI 的显式代理是另一条协作路径，其覆盖取决于应用是否使用代理。
 
+
+## 公开 API 边界 {#api-boundary}
+
+`pvisor_overlaynet::api` 是唯一公开入口，声明配置、请求/覆盖记录和 trait；
+策略定义由 `pvisor_core::network` 所有。代理准入状态、实时策略单元、peer 成员
+和 VM worker 所有权保留在私有实现中。
+
+`OverlaySink::observe(ProxyEvent)` 统一接收拒绝、分派、响应和失败观测。
+执行强度直接读取 profile 字段，guest MAC 统一由
+`VmNetworkConfiguration::guest_mac` 推导。调用方显式实现每个 sink 方法，通过 `OverlayProxy` 将绑定后的状态
+转移到 Axum router。VM 调用方自行创建传输端点，将后端工厂交给
+`VmNetworkRuntime::start_with_io`，保留 guest 端点。各平台使用相同契约。
+显式 shutdown 取消并等待 worker，报告失败。边界测试和外部契约测试与现有
+代理、DNS、peer 测试共同约束这些规则。
+
 ## 子系统框图与所有权 {#architecture}
 
 ![VM 的虚拟网卡、合成 DNS、策略门与宿主 TCP 出口](assets/network-subsystem.svg)

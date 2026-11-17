@@ -60,7 +60,7 @@ OverlayNet 拥有连接授权与转发，VM 的 virtio-net 将 Ethernet frame �
 
 ## API 边界与迁移状态 {#api-boundaries}
 
-当前只有 `pvisor-vm`、`pvisor-overlayfs` 和 `pvisor-journal` 已采用唯一 `api` 入口；其他 crate 保留既有接口，尚未完成这项迁移。
+`pvisor-vm`、`pvisor-overlayfs`、`pvisor-journal`、`pvisor-containers`、`pvisor-replay` 和 `pvisor-overlaynet` 已采用唯一 `api` 入口；其他 crate 保留既有接口。
 
 | crate | 当前公开边界 | 实现与资源归属 |
 | --- | --- | --- |
@@ -68,8 +68,11 @@ OverlayNet 拥有连接授权与转发，VM 的 virtio-net 将 Ethernet frame �
 | `pvisor-overlayfs` | `pvisor_overlayfs::api`；配置、mount、session 与 metrics 契约 | `fs`、`mount`、`observation` 私有；不拥有 apply 或 Run 生命周期 |
 | `pvisor-journal` | `pvisor_journal::api`；`JournalStore`、`TraceProducer`、`DurableFiles` | `journal`、`trace`、`persistence` 私有；Event/Receipt 由 Core 定义 |
 | `pvisor-core` | 领域模块与根级 re-export，尚未迁移 | 共享身份、协议、纯校验与策略定义；不拥有执行资源 |
-| `pvisor-overlay-core`、`pvisor-overlaynet` | 现有公开模块与根级接口，尚未迁移 | 文件语义、双入口文件服务、网络代理与出口数据面 |
-| `pvisor`、Gateway、Replay、Daemon 等 | 保留各自既有入口，未统一成单一 `api` 模型 | 继续按实际生命周期与领域边界演进 |
+| `pvisor-overlay-core` | 现有公开模块与根级接口，尚未迁移 | 文件语义与双入口文件服务 |
+| `pvisor-overlaynet` | `pvisor_overlaynet::api`；代理、出口、VM 传输和观测 trait | connector、peer 成员、计数器和 worker 生命周期私有；策略记录归 Core 所有 |
+| `pvisor-replay` | `pvisor_replay::api`；拥有请求、统一加载/执行 trait 与结果/错误记录 | 适配器、校验、进程监管和 journal 所有权私有 |
+| `pvisor-containers` | `pvisor_containers::api`；目录和生命周期 trait | store、镜像和原生传输实现私有 |
+| `pvisor`、Gateway、Daemon 等 | 保留各自既有入口，未统一成单一 `api` 模型 | 继续按实际生命周期与领域边界演进 |
 
 已迁移 crate 的 `api` 声明公开数据、字段和 trait 方法；不透明 owner 可以从私有实现重新导出，但状态保持私有。方法体、校验、平台分派和资源管理放在实现中，公开 trait 没有默认方法体；调用方通过所属 crate 的 `api` 导入合同。API 在支持的平台和 feature 间保持同一声明形状，实际能力用能力查询和明确的不支持错误表达。
 

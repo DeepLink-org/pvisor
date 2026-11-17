@@ -2,10 +2,10 @@ use std::path::Path;
 
 use serde_json::{Value, json};
 
-use crate::error::ReplayError;
+use crate::api::ReplayError;
 use crate::io::atomic_write_json;
 
-pub fn write_next_action(
+pub(crate) fn write_next_action(
     path: &Path,
     original: &Value,
     replayed: &Value,

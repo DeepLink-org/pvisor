@@ -230,7 +230,7 @@ pub(crate) fn compile(
 pub(crate) fn observe(
     plan: &Operation,
     result: &RunResult,
-    network: Option<&pvisor_overlaynet::InterceptionSnapshot>,
+    network: Option<&pvisor_overlaynet::api::InterceptionSnapshot>,
     filesystem: Option<&FilesystemObservation>,
 ) -> anyhow::Result<OperationObservation> {
     let outcome = if result.state == RunState::Completed {

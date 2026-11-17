@@ -5,11 +5,11 @@
 //! smoltcp, serves DHCP and synthetic DNS locally, and opens policy-authorized
 //! host TCP streams only after the guest SYN has been observed.
 
+use crate::api::{GUEST_IPV4, ROUTER_IPV4, VmNetworkConfig};
+use crate::api::{InterceptionObservation, VmNetworkConfiguration, VmNetworkRuntime};
 use std::collections::{HashMap, VecDeque};
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-#[cfg(unix)]
-use std::os::unix::net::UnixStream as StdUnixStream;
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration as StdDuration;
@@ -28,33 +28,17 @@ use smoltcp::wire::{
 };
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
-#[cfg(unix)]
-use tokio::net::UnixStream;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc, oneshot};
 use tokio::task::JoinHandle;
 
-use crate::PeerNetworkConfig;
+use crate::api::PeerNetworkConfig;
+use crate::api::{EgressContext, EgressRuntime};
+use crate::api::{InterceptionMetrics, InterceptionSnapshot};
 use crate::egress::{
-    CONNECT_TIMEOUT, EgressContext, EgressError, EgressRuntime, connect_tcp_addresses,
-    connect_via_ambient_http_proxy,
+    CONNECT_TIMEOUT, EgressError, connect_tcp_addresses, connect_via_ambient_http_proxy,
 };
-use crate::interception::{InterceptionMetrics, InterceptionSnapshot};
+
 use crate::peer::{BoundPeer, PeerNetwork};
-
-pub const ROUTER_IPV4: Ipv4Addr = Ipv4Addr::new(192, 0, 2, 1);
-pub const GUEST_IPV4: Ipv4Addr = Ipv4Addr::new(192, 0, 2, 2);
-pub const VM_MAC: [u8; 6] = [0x02, 0x50, 0x56, 0x00, 0x00, 0x02];
-
-/// Deterministic locally administered MAC for a guest IPv4 address.
-/// The default address retains [`VM_MAC`]; peers use unique final octets.
-pub fn guest_mac(address: Ipv4Addr) -> [u8; 6] {
-    let [a, b, c, d] = address.octets();
-    if address == GUEST_IPV4 {
-        VM_MAC
-    } else {
-        [0x02, 0x50, a, b, c, d]
-    }
-}
 
 const ROUTER_MAC: EthernetAddress = EthernetAddress([0x02, 0x50, 0x56, 0x00, 0x00, 0x01]);
 const FRAME_MTU: usize = 1514;
@@ -80,28 +64,6 @@ const SYNTHETIC_DNS_CAPACITY: usize = 4096;
 const DNS_MAX_MESSAGE: usize = 4096;
 const FRAME_BATCH: usize = 32;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct VmGatewayRoute {
-    /// Port exposed on the guest's virtual router (default [`ROUTER_IPV4`]).
-    pub guest_port: u16,
-    /// Execution-local Gateway listener on the host.
-    pub host: SocketAddr,
-}
-
-#[derive(Clone)]
-pub struct VmNetworkConfig {
-    pub egress: EgressRuntime,
-    pub context: EgressContext,
-    pub gateway: Option<VmGatewayRoute>,
-    pub max_flows: usize,
-    pub metrics: InterceptionMetrics,
-    /// Optional same-host packet-network membership. Requires unrestricted
-    /// egress constructed by EgressRuntime::for_peer_network; replaces the
-    /// default guest address with the member address.
-    /// Membership grants TCP/UDP/ICMP to all other members of this directory.
-    pub peer_network: Option<PeerNetworkConfig>,
-}
-
 fn router_address(config: &VmNetworkConfig) -> Ipv4Addr {
     config
         .peer_network
@@ -119,116 +81,12 @@ impl std::fmt::Debug for VmNetworkConfig {
     }
 }
 
-impl VmNetworkConfig {
-    pub fn new(egress: EgressRuntime, context: EgressContext) -> Self {
-        Self {
-            egress,
-            context,
-            gateway: None,
-            max_flows: DEFAULT_MAX_FLOWS,
-            metrics: InterceptionMetrics::default(),
-            peer_network: None,
-        }
-    }
-}
-
 /// Execution-scoped smoltcp backend. The returned peer stream is passed to
 /// `pvisor_vm::api::VmConfiguration::network`; this side owns the policy and host sockets.
 pub struct VmNetwork {
     shutdown: Option<oneshot::Sender<()>>,
     thread: Option<thread::JoinHandle<anyhow::Result<()>>>,
     metrics: InterceptionMetrics,
-}
-
-impl VmNetwork {
-    #[cfg(unix)]
-    pub fn start(config: VmNetworkConfig) -> anyhow::Result<(Self, StdUnixStream)> {
-        let (backend, guest) = StdUnixStream::pair().context("create VM network socket pair")?;
-        backend
-            .set_nonblocking(true)
-            .context("make VM network backend nonblocking")?;
-        let network = Self::start_with_io(config, move || UnixStream::from_std(backend))?;
-        Ok((network, guest))
-    }
-
-    /// Start the same Ethernet/TCP/DNS data plane on a caller-owned duplex
-    /// transport. The constructor runs inside the network's Tokio runtime,
-    /// allowing IOCP pipe adoption on Windows. Frames use a four-byte big-endian
-    /// length followed by Ethernet bytes. Startup validates membership and
-    /// adopts the transport before returning; drop cancels and joins the driver.
-    /// The caller must exclusively own the local endpoint and keep host network
-    /// authority outside guest shares. Ordinary egress and peer policy are
-    /// identical to the Unix socket constructor; no transport fallback occurs.
-    pub fn start_with_io<T, F>(config: VmNetworkConfig, make_stream: F) -> anyhow::Result<Self>
-    where
-        T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
-        F: FnOnce() -> io::Result<T> + Send + 'static,
-    {
-        anyhow::ensure!(
-            config.max_flows > 0,
-            "VM network max_flows must be non-zero"
-        );
-        let peer = config
-            .peer_network
-            .as_ref()
-            .map(|peer| {
-                anyhow::ensure!(
-                    config.egress.permits_peer_network(),
-                    "peer networking requires EgressRuntime::for_peer_network with unrestricted policy and no bandwidth limits"
-                );
-                BoundPeer::bind(peer, config.context.execution_id.clone())
-            })
-            .transpose()?;
-        let (shutdown_tx, shutdown_rx) = oneshot::channel();
-        let (started, ready) = std::sync::mpsc::sync_channel(1);
-        let metrics = config.metrics.clone();
-        let thread_metrics = metrics.clone();
-        let thread = thread::Builder::new()
-            .name("pvisor-smoltcp".into())
-            .spawn(move || {
-                let result = (|| {
-                    let runtime = tokio::runtime::Builder::new_current_thread()
-                        .enable_all()
-                        .build()
-                        .context("build VM network runtime")?;
-                    runtime.block_on(async {
-                        let stream = make_stream().context("adopt VM network transport")?;
-                        let peer = peer.map(|p| p.adopt(thread_metrics.clone())).transpose()?;
-                        let _ = started.send(Ok::<_, String>(()));
-                        run_backend(stream, config, thread_metrics, shutdown_rx, peer).await
-                    })
-                })();
-                if let Err(error) = &result {
-                    let _ = started.send(Err(format!("{error:#}")));
-                }
-                result
-            })
-            .context("spawn VM network backend")?;
-        match ready.recv().context("VM network startup disconnected")? {
-            Ok(()) => Ok(Self {
-                shutdown: Some(shutdown_tx),
-                thread: Some(thread),
-                metrics,
-            }),
-            Err(error) => {
-                let _ = shutdown_tx.send(());
-                let _ = thread.join();
-                Err(anyhow::anyhow!(error))
-            }
-        }
-    }
-
-    pub fn shutdown(mut self) -> anyhow::Result<InterceptionSnapshot> {
-        if let Some(shutdown) = self.shutdown.take() {
-            let _ = shutdown.send(());
-        }
-        if let Some(thread) = self.thread.take() {
-            thread
-                .join()
-                .map_err(|_| anyhow::anyhow!("VM network backend panicked"))??;
-        }
-        Ok(self.metrics.snapshot())
-    }
 }
 
 impl Drop for VmNetwork {
@@ -1505,7 +1363,9 @@ impl TxToken for FrameTxToken<'_> {
 #[cfg(test)]
 mod transport_tests {
     use super::*;
-    use crate::{BandwidthRegistry, NetworkConfig, NetworkMode, NetworkPolicy};
+    use crate::api::BandwidthRegistry;
+    use crate::api::EgressControl;
+    use pvisor_core::network::{NetworkConfig, NetworkMode, NetworkPolicy};
 
     fn config() -> VmNetworkConfig {
         let policy = NetworkPolicy::compile(&NetworkConfig {
@@ -1538,6 +1398,98 @@ mod transport_tests {
         })
         .unwrap();
         network.shutdown().unwrap();
+    }
+}
+
+impl VmNetworkConfiguration for VmNetworkConfig {
+    fn new(egress: EgressRuntime, context: EgressContext) -> Self {
+        Self {
+            egress,
+            context,
+            gateway: None,
+            max_flows: DEFAULT_MAX_FLOWS,
+            metrics: InterceptionMetrics::default(),
+            peer_network: None,
+        }
+    }
+    fn guest_mac(address: Ipv4Addr) -> [u8; 6] {
+        let [a, b, c, d] = address.octets();
+        if address == GUEST_IPV4 {
+            [0x02, 0x50, 0x56, 0x00, 0x00, 0x02]
+        } else {
+            [0x02, 0x50, a, b, c, d]
+        }
+    }
+}
+impl VmNetworkRuntime for VmNetwork {
+    fn start_with_io<T, F>(config: VmNetworkConfig, make_stream: F) -> anyhow::Result<Self>
+    where
+        T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+        F: FnOnce() -> io::Result<T> + Send + 'static,
+    {
+        anyhow::ensure!(
+            config.max_flows > 0,
+            "VM network max_flows must be non-zero"
+        );
+        let peer = config
+            .peer_network
+            .as_ref()
+            .map(|peer| {
+                anyhow::ensure!(
+                    config.egress.permits_peer_network(),
+                    "peer networking requires EgressRuntime::for_peer_network with unrestricted policy and no bandwidth limits"
+                );
+                BoundPeer::bind(peer, config.context.execution_id.clone())
+            })
+            .transpose()?;
+        let (shutdown_tx, shutdown_rx) = oneshot::channel();
+        let (started, ready) = std::sync::mpsc::sync_channel(1);
+        let metrics = config.metrics.clone();
+        let thread_metrics = metrics.clone();
+        let thread = thread::Builder::new()
+            .name("pvisor-smoltcp".into())
+            .spawn(move || {
+                let result = (|| {
+                    let runtime = tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()
+                        .context("build VM network runtime")?;
+                    runtime.block_on(async {
+                        let stream = make_stream().context("adopt VM network transport")?;
+                        let peer = peer.map(|p| p.adopt(thread_metrics.clone())).transpose()?;
+                        let _ = started.send(Ok::<_, String>(()));
+                        run_backend(stream, config, thread_metrics, shutdown_rx, peer).await
+                    })
+                })();
+                if let Err(error) = &result {
+                    let _ = started.send(Err(format!("{error:#}")));
+                }
+                result
+            })
+            .context("spawn VM network backend")?;
+        match ready.recv().context("VM network startup disconnected")? {
+            Ok(()) => Ok(Self {
+                shutdown: Some(shutdown_tx),
+                thread: Some(thread),
+                metrics,
+            }),
+            Err(error) => {
+                let _ = shutdown_tx.send(());
+                let _ = thread.join();
+                Err(anyhow::anyhow!(error))
+            }
+        }
+    }
+    fn shutdown(mut self) -> anyhow::Result<InterceptionSnapshot> {
+        if let Some(shutdown) = self.shutdown.take() {
+            let _ = shutdown.send(());
+        }
+        if let Some(thread) = self.thread.take() {
+            thread
+                .join()
+                .map_err(|_| anyhow::anyhow!("VM network backend panicked"))??;
+        }
+        Ok(self.metrics.snapshot())
     }
 }
 
@@ -1850,7 +1802,7 @@ mod tests {
         let handle = sockets.add(socket);
         let mut frame = vec![0; 14 + 20 + 20];
         let mut ethernet = EthernetFrame::new_unchecked(&mut frame);
-        ethernet.set_src_addr(EthernetAddress(VM_MAC));
+        ethernet.set_src_addr(EthernetAddress(VmNetworkConfig::guest_mac(GUEST_IPV4)));
         ethernet.set_dst_addr(ROUTER_MAC);
         ethernet.set_ethertype(EthernetProtocol::Ipv4);
         let mut ip = Ipv4Packet::new_unchecked(ethernet.payload_mut());
@@ -1982,7 +1934,7 @@ mod tests {
     #[tokio::test]
     async fn batched_guest_writes_preserve_framing_under_socket_backpressure() {
         use std::os::fd::AsRawFd;
-        let (left, mut right) = UnixStream::pair().unwrap();
+        let (left, mut right) = tokio::net::UnixStream::pair().unwrap();
         let bytes: libc::c_int = 1024;
         assert_eq!(
             unsafe {
@@ -2041,19 +1993,23 @@ mod tests {
 #[cfg(all(test, unix))]
 mod flow_lifecycle_regressions {
     use super::*;
+    use crate::api::EgressControl;
 
     #[tokio::test]
     async fn queued_events_do_not_mutate_reused_flow_key() {
-        let policy = crate::NetworkPolicy::compile(&crate::NetworkConfig::default()).unwrap();
+        let policy = pvisor_core::network::NetworkPolicy::compile(
+            &pvisor_core::network::NetworkConfig::default(),
+        )
+        .unwrap();
         let mut config = VmNetworkConfig::new(
             EgressRuntime::with_bandwidth_registry(
                 policy,
                 Arc::new(pvisor_core::PolicyControlController),
-                crate::BandwidthRegistry::default(),
+                crate::api::BandwidthRegistry::default(),
             ),
             EgressContext::default(),
         );
-        config.gateway = Some(VmGatewayRoute {
+        config.gateway = Some(crate::api::VmGatewayRoute {
             guest_port: 443,
             host: "127.0.0.1:443".parse().unwrap(),
         });

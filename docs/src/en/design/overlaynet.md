@@ -2,6 +2,23 @@
 
 The VM network control point sits after virtio-net: the guest emits Ethernet frames, and OverlayNet terminates TCP on the host, recovers logical destinations, authorizes them and connects to external services. Host/OCI explicit proxies use a separate cooperative path whose coverage depends on application proxy use.
 
+
+## Public API boundary {#api-boundary}
+
+`pvisor_overlaynet::api` is the sole public entry. It declares configuration,
+request/coverage records and traits; policy definitions belong to
+`pvisor_core::network`. Proxy admission state, live policy cells, peer membership
+and VM worker ownership remain private.
+
+`OverlaySink::observe(ProxyEvent)` is the single denial/dispatch/response/failure
+observation entry. Enforcement strength is a profile field; guest MACs come from
+`VmNetworkConfiguration::guest_mac`. Callers implement every sink method explicitly, then use `OverlayProxy`
+to consume the bound state into an Axum router. VM callers create their transport
+endpoints and pass the backend factory to `VmNetworkRuntime::start_with_io`;
+the guest endpoint remains theirs. The contract is identical across platforms.
+Explicit shutdown cancels and joins the worker and reports failures. API boundary
+and external contract tests preserve these rules alongside proxy/DNS/peer tests.
+
 ## Subsystem diagram and ownership {#architecture}
 
 ![VM virtual NIC, synthetic DNS, policy gate and host TCP egress](assets/network-subsystem.svg)

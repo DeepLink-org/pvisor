@@ -1,11 +1,15 @@
 //! VM egress authorization, resolution, and rate limiting.
 
+use crate::api::EgressContext;
+use crate::api::EgressControl;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::bandwidth::{BandwidthRegistry, BandwidthSession};
-use crate::policy::{DenyReason, NetworkPolicy};
+use crate::api::BandwidthRegistry;
+use crate::bandwidth::BandwidthSession;
+use pvisor_core::network::{DenyReason, NetworkPolicy};
+
 use crate::resolver::{
     ResolvedAddressPolicy, TargetAuthorizationError, authorize_target_with_policy,
 };
@@ -15,12 +19,6 @@ use tokio::net::TcpStream;
 use tokio::time::timeout;
 
 pub(crate) const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
-
-#[derive(Debug, Clone, Default)]
-pub struct EgressContext {
-    pub run_id: Option<String>,
-    pub execution_id: Option<String>,
-}
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum EgressError {
@@ -70,57 +68,12 @@ impl std::fmt::Debug for EgressRuntime {
 }
 
 impl EgressRuntime {
-    /// Construct default-controller egress that can also admit a peer packet network.
-    ///
-    /// Rejects policies with scoped rules, denies or bandwidth budgets. Peer
-    /// membership explicitly grants all supported packet protocols, so custom
-    /// controllers are unsupported. A subsequent restrictive policy replacement
-    /// closes the packet gate; clones share the policy and its gate.
-    pub fn for_peer_network(
-        policy: NetworkPolicy,
-        bandwidth: BandwidthRegistry,
-    ) -> anyhow::Result<Self> {
-        anyhow::ensure!(
-            policy.allows_unrestricted_packets(),
-            "peer networking requires unrestricted network policy without bandwidth limits"
-        );
-        let mut runtime = Self::with_bandwidth_registry(
-            policy,
-            Arc::new(pvisor_core::PolicyControlController),
-            bandwidth,
-        );
-        runtime.peer_capable = true;
-        Ok(runtime)
-    }
-
     pub(crate) fn permits_peer_network(&self) -> bool {
         self.peer_capable
             && self
                 .policy
                 .read()
                 .is_ok_and(|policy| policy.allows_unrestricted_packets())
-    }
-    pub fn with_bandwidth_registry(
-        policy: NetworkPolicy,
-        controller: Arc<dyn ControlController>,
-        bandwidth: BandwidthRegistry,
-    ) -> Self {
-        Self {
-            policy: Arc::new(std::sync::RwLock::new(policy)),
-            controller,
-            bandwidth,
-            peer_capable: false,
-        }
-    }
-
-    /// Atomically replace the compiled policy. The caller supplies an
-    /// already-compiled policy (compilation failures never weaken the
-    /// running policy); clones of this runtime observe the swap because the
-    /// cell is shared.
-    pub fn replace_policy(&self, policy: NetworkPolicy) {
-        if let Ok(mut slot) = self.policy.write() {
-            *slot = policy;
-        }
     }
 
     fn current_policy(&self) -> NetworkPolicy {
@@ -129,8 +82,8 @@ impl EgressRuntime {
             .map(|slot| slot.clone())
             .unwrap_or_else(|_| {
                 // Lock poisoning must fail closed with an empty deny policy.
-                NetworkPolicy::compile(&crate::policy::NetworkConfig {
-                    mode: crate::policy::NetworkMode::NoNetwork,
+                NetworkPolicy::compile(&pvisor_core::network::NetworkConfig {
+                    mode: pvisor_core::network::NetworkMode::NoNetwork,
                     ..Default::default()
                 })
                 .expect("no-network policy compiles")
@@ -298,8 +251,45 @@ async fn connect_via_http_proxy(proxy: &str, host: &str, port: u16) -> std::io::
     .map_err(|_| std::io::Error::new(std::io::ErrorKind::TimedOut, "upstream proxy timeout"))?
 }
 
+impl EgressControl for EgressRuntime {
+    fn for_peer_network(
+        policy: NetworkPolicy,
+        bandwidth: BandwidthRegistry,
+    ) -> anyhow::Result<Self> {
+        anyhow::ensure!(
+            policy.allows_unrestricted_packets(),
+            "peer networking requires unrestricted network policy without bandwidth limits"
+        );
+        let mut runtime = Self::with_bandwidth_registry(
+            policy,
+            Arc::new(pvisor_core::PolicyControlController),
+            bandwidth,
+        );
+        runtime.peer_capable = true;
+        Ok(runtime)
+    }
+    fn with_bandwidth_registry(
+        policy: NetworkPolicy,
+        controller: Arc<dyn ControlController>,
+        bandwidth: BandwidthRegistry,
+    ) -> Self {
+        Self {
+            policy: Arc::new(std::sync::RwLock::new(policy)),
+            controller,
+            bandwidth,
+            peer_capable: false,
+        }
+    }
+    fn replace_policy(&self, policy: NetworkPolicy) {
+        if let Ok(mut slot) = self.policy.write() {
+            *slot = policy;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use crate::api::EgressControl;
 
     #[tokio::test]
     async fn proxy_connect_uses_authorized_address_not_upstream_dns() {
@@ -340,8 +330,9 @@ mod tests {
     #[tokio::test]
     async fn policy_replacement_takes_effect_for_new_flows() {
         use super::{DenyReason, NetworkPolicy};
-        use crate::bandwidth::BandwidthRegistry;
-        use crate::policy::{NetworkAccessRule, NetworkConfig, NetworkMode};
+        use crate::api::BandwidthRegistry;
+        use pvisor_core::network::{NetworkAccessRule, NetworkConfig, NetworkMode};
+
         use pvisor_core::PolicyControlController;
 
         let deny = NetworkPolicy::compile(&NetworkConfig {

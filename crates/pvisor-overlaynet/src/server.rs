@@ -1,10 +1,12 @@
 //! Generic explicit-proxy server and request dispatch.
 
+use crate::api::OverlayProxy;
+use crate::api::OverlayRequestContext;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use async_trait::async_trait;
+use crate::api::{DownloadWait, OverlaySink};
 use axum::Router;
 use axum::extract::{ConnectInfo, Request, State};
 use axum::http::{Method, StatusCode};
@@ -14,38 +16,17 @@ use http_body_util::BodyExt;
 use pvisor_core::ControlController;
 use pvisor_core::{NetworkAccessRequest, NetworkTransport, RunId};
 
-use crate::bandwidth::{BandwidthRegistry, BandwidthSession, throttle_body};
+use crate::api::BandwidthRegistry;
+use crate::api::InterceptionMetrics;
+use crate::bandwidth::{BandwidthSession, throttle_body};
 use crate::forward::{
     handle_connect_authorized, is_forward_proxy_request, parse_connect_target,
     transparent_forward_authorized,
 };
-use crate::interception::InterceptionMetrics;
-use crate::policy::{DenyReason, NetworkPolicy, forbidden_response};
+use crate::policy::forbidden_response;
 use crate::resolver::{AuthorizedTarget, TargetAuthorizationError};
 const MAX_ACTIVE_REQUESTS: usize = 128;
-#[derive(Clone)]
-pub struct OverlayRequestContext<T> {
-    pub policy: NetworkPolicy,
-    pub run_id: Option<String>,
-    pub execution_id: Option<String>,
-    pub session_id: String,
-    pub sink: T,
-}
 
-/// Optional Host lifecycle for a policy-authorized GET or CONNECT downstream.
-/// Waiting is a hint, not guest-idle proof. Implementations own fencing and
-/// native resume, including cancellation during either asynchronous method.
-// async_trait adds must_use to an already must-use boxed future.
-#[allow(clippy::double_must_use)]
-#[async_trait]
-pub trait DownloadWait: Send {
-    /// Begin/rearm upstream waiting; must not await a future guest pause.
-    async fn waiting(&mut self) -> anyhow::Result<()>;
-    /// Resume and acknowledge native cleanup before headers/data/errors escape.
-    async fn ready(&mut self) -> anyhow::Result<()>;
-    /// Nonblocking cleanup on stream/handler drop, including in-flight calls.
-    fn cancel(&mut self);
-}
 pub(crate) struct DownloadGuard(pub(crate) Box<dyn DownloadWait>);
 impl Drop for DownloadGuard {
     fn drop(&mut self) {
@@ -53,77 +34,7 @@ impl Drop for DownloadGuard {
     }
 }
 
-/// Application sink attached to the generic OverlayNet proxy data plane.
-///
-/// A sink decides which absolute-URI requests it consumes. Requests it does
-/// not accept remain transparent proxy traffic. Relative gateway requests are
-/// always delivered to the configured sink. OverlayNet is independent of any
-/// concrete sink; an implementation may also compose several downstream sinks.
-#[async_trait]
-pub trait OverlaySink: Clone + Send + Sync + 'static {
-    type RequestContext: Clone + Send + Sync + 'static;
-
-    fn request_context(
-        &self,
-        request: &Request,
-    ) -> anyhow::Result<OverlayRequestContext<Self::RequestContext>>;
-
-    // async_trait adds #[must_use] to the already must-use boxed future.
-    #[allow(clippy::double_must_use)]
-    async fn handle(
-        &self,
-        request: Request,
-        peer: SocketAddr,
-        context: &OverlayRequestContext<Self::RequestContext>,
-    ) -> anyhow::Result<Response>;
-
-    /// Called after authorization for forwarded HTTP GET or CONNECT downstream.
-    /// CONNECT bytes stay opaque; a transport wait is not a semantic model hint.
-    /// Defaults to normal forwarding. Context comes from the bound sink.
-    fn download_wait(
-        &self,
-        _context: &OverlayRequestContext<Self::RequestContext>,
-    ) -> anyhow::Result<Option<Box<dyn DownloadWait>>> {
-        Ok(None)
-    }
-
-    fn accepts(&self, _request: &Request) -> bool {
-        false
-    }
-
-    fn on_denied(
-        &self,
-        _context: &OverlayRequestContext<Self::RequestContext>,
-        _host: &str,
-        _reason: &DenyReason,
-    ) {
-    }
-
-    fn on_dispatch(
-        &self,
-        _context: &OverlayRequestContext<Self::RequestContext>,
-        _request: &Request,
-        _target: &str,
-    ) {
-    }
-
-    fn on_proxy_result(
-        &self,
-        _context: &OverlayRequestContext<Self::RequestContext>,
-        _target: &str,
-        _status: StatusCode,
-    ) {
-    }
-
-    fn on_proxy_error(
-        &self,
-        _context: &OverlayRequestContext<Self::RequestContext>,
-        _target: &str,
-        _error: &str,
-    ) {
-    }
-}
-
+/// Proxy admission owner. Clones share slots, counters and the controller.
 #[derive(Clone)]
 pub struct OverlayServerState<S> {
     control_controller: Arc<dyn ControlController>,
@@ -133,57 +44,6 @@ pub struct OverlayServerState<S> {
     bandwidth_registry: BandwidthRegistry,
     request_slots: Arc<tokio::sync::Semaphore>,
     resolved_address_policy: crate::resolver::ResolvedAddressPolicy,
-}
-
-impl<S> OverlayServerState<S>
-where
-    S: OverlaySink,
-{
-    /// Bind this proxy to the owning execution's resolved-address constraints.
-    /// VM executions must select VmEgress before serving requests; host proxies
-    /// default to HostConnectorAliases. This does not change logical grants.
-    pub fn with_resolved_address_policy(
-        mut self,
-        policy: crate::policy::ResolvedAddressPolicy,
-    ) -> Self {
-        self.resolved_address_policy = policy;
-        self
-    }
-
-    pub fn new(
-        control_controller: Arc<dyn ControlController>,
-        sink: S,
-        active_requests: Arc<AtomicUsize>,
-    ) -> Self {
-        Self {
-            control_controller,
-            resolved_address_policy: crate::resolver::ResolvedAddressPolicy::HostConnectorAliases,
-            sink,
-            active_requests,
-            interception_metrics: InterceptionMetrics::default(),
-            bandwidth_registry: BandwidthRegistry::default(),
-            request_slots: Arc::new(tokio::sync::Semaphore::new(MAX_ACTIVE_REQUESTS)),
-        }
-    }
-
-    pub fn with_interception_metrics(mut self, metrics: InterceptionMetrics) -> Self {
-        self.interception_metrics = metrics;
-        self
-    }
-
-    pub fn with_bandwidth_registry(mut self, registry: BandwidthRegistry) -> Self {
-        self.bandwidth_registry = registry;
-        self
-    }
-}
-
-pub fn build_router<S>(state: OverlayServerState<S>) -> Router
-where
-    S: OverlaySink,
-{
-    Router::new()
-        .fallback(any(proxy_handler::<S>))
-        .with_state(state)
 }
 
 async fn proxy_handler<S>(
@@ -284,7 +144,13 @@ where
                     target.port,
                     NetworkTransport::TcpTunnel,
                 );
-                state.sink.on_denied(&context, &host, &reason);
+                state.sink.observe(
+                    &context,
+                    crate::api::ProxyEvent::Denied {
+                        host: &host,
+                        reason: &reason,
+                    },
+                );
                 let (status, message) = forbidden_response(&host, &reason);
                 return Ok((status, message).into_response());
             }
@@ -301,7 +167,13 @@ where
         state
             .interception_metrics
             .target_allowed(&host, target.port, NetworkTransport::TcpTunnel);
-        state.sink.on_dispatch(&context, &request, "connect");
+        state.sink.observe(
+            &context,
+            crate::api::ProxyEvent::Dispatched {
+                request: &request,
+                target: "connect",
+            },
+        );
         let bandwidth =
             bandwidth_session(state, &context, &host, Some(target.port), Some(&authorized)).await;
         let wait = state.sink.download_wait(&context)?.map(DownloadGuard);
@@ -314,15 +186,23 @@ where
                         port,
                         NetworkTransport::TcpTunnel,
                     );
-                    state
-                        .sink
-                        .on_proxy_error(&context, &authority, &format!("{error:#}"));
+                    state.sink.observe(
+                        &context,
+                        crate::api::ProxyEvent::Failed {
+                            target: &authority,
+                            error: &format!("{error:#}"),
+                        },
+                    );
                     return Err(error);
                 }
             };
-        state
-            .sink
-            .on_proxy_result(&context, &authority, response.status());
+        state.sink.observe(
+            &context,
+            crate::api::ProxyEvent::Response {
+                target: &authority,
+                status: response.status(),
+            },
+        );
         return Ok(response);
     }
 
@@ -370,7 +250,13 @@ where
                 state
                     .interception_metrics
                     .target_denied(&host, port, transport);
-                state.sink.on_denied(&context, &host, &reason);
+                state.sink.observe(
+                    &context,
+                    crate::api::ProxyEvent::Denied {
+                        host: &host,
+                        reason: &reason,
+                    },
+                );
                 let (status, message) = forbidden_response(&host, &reason);
                 return Ok((status, message).into_response());
             }
@@ -389,7 +275,13 @@ where
             bandwidth_session(state, &context, &host, Some(port), Some(&authorized)).await;
         if state.sink.accepts(&request) {
             state.interception_metrics.sink_request();
-            state.sink.on_dispatch(&context, &request, "sink");
+            state.sink.observe(
+                &context,
+                crate::api::ProxyEvent::Dispatched {
+                    request: &request,
+                    target: "sink",
+                },
+            );
             let request = throttle_request(request, bandwidth.clone());
             let response = state
                 .sink
@@ -402,7 +294,13 @@ where
                 })?;
             return Ok(throttle_response(response, bandwidth));
         }
-        state.sink.on_dispatch(&context, &request, "forward");
+        state.sink.observe(
+            &context,
+            crate::api::ProxyEvent::Dispatched {
+                request: &request,
+                target: "forward",
+            },
+        );
         let target = request.uri().to_string();
         let wait = if request.method() == Method::GET {
             state.sink.download_wait(&context)?.map(DownloadGuard)
@@ -416,20 +314,34 @@ where
                     state
                         .interception_metrics
                         .target_failed(&host, port, transport);
-                    state
-                        .sink
-                        .on_proxy_error(&context, &target, &format!("{error:#}"));
+                    state.sink.observe(
+                        &context,
+                        crate::api::ProxyEvent::Failed {
+                            target: &target,
+                            error: &format!("{error:#}"),
+                        },
+                    );
                     return Err(error);
                 }
             };
-        state
-            .sink
-            .on_proxy_result(&context, &target, response.status());
+        state.sink.observe(
+            &context,
+            crate::api::ProxyEvent::Response {
+                target: &target,
+                status: response.status(),
+            },
+        );
         return Ok(response);
     }
 
     state.interception_metrics.sink_request();
-    state.sink.on_dispatch(&context, &request, "sink");
+    state.sink.observe(
+        &context,
+        crate::api::ProxyEvent::Dispatched {
+            request: &request,
+            target: "sink",
+        },
+    );
     let bandwidth = bandwidth_session(state, &context, "", None, None).await;
     let request = throttle_request(request, bandwidth.clone());
     let response = state.sink.handle(request, peer, &context).await?;
@@ -517,10 +429,52 @@ impl Drop for ActiveRequestGuard {
     }
 }
 
+impl<S: OverlaySink> OverlayProxy<S> for OverlayServerState<S> {
+    fn with_resolved_address_policy(
+        mut self,
+        policy: pvisor_core::network::ResolvedAddressPolicy,
+    ) -> Self {
+        self.resolved_address_policy = policy;
+        self
+    }
+    fn new(
+        control_controller: Arc<dyn ControlController>,
+        sink: S,
+        active_requests: Arc<AtomicUsize>,
+    ) -> Self {
+        Self {
+            control_controller,
+            resolved_address_policy: crate::resolver::ResolvedAddressPolicy::HostConnectorAliases,
+            sink,
+            active_requests,
+            interception_metrics: InterceptionMetrics::default(),
+            bandwidth_registry: BandwidthRegistry::default(),
+            request_slots: Arc::new(tokio::sync::Semaphore::new(MAX_ACTIVE_REQUESTS)),
+        }
+    }
+    fn with_interception_metrics(mut self, metrics: InterceptionMetrics) -> Self {
+        self.interception_metrics = metrics;
+        self
+    }
+    fn with_bandwidth_registry(mut self, registry: BandwidthRegistry) -> Self {
+        self.bandwidth_registry = registry;
+        self
+    }
+    fn into_router(self) -> Router {
+        Router::new()
+            .fallback(any(proxy_handler::<S>))
+            .with_state(self)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::policy::{NetworkConfig, NetworkMode};
+    use crate::api::InterceptionObservation;
+    use async_trait::async_trait;
+    use pvisor_core::network::NetworkPolicy;
+    use pvisor_core::network::{NetworkConfig, NetworkMode};
+
     use pvisor_core::PolicyControlController;
 
     struct FailedResume;
@@ -735,7 +689,7 @@ mod tests {
         let wait_cancelled = Arc::new(AtomicUsize::new(0));
         let bandwidth = BandwidthRegistry::default()
             .session(if phase == "throttled_reset" {
-                vec![crate::policy::NetworkBandwidthLimit {
+                vec![pvisor_core::network::NetworkBandwidthLimit {
                     host: None,
                     port: None,
                     bytes_per_second: 1,
@@ -938,7 +892,7 @@ mod tests {
         let slots = Arc::new(tokio::sync::Semaphore::new(1));
         let bandwidth = BandwidthRegistry::default()
             .session(if fail_resume {
-                vec![crate::policy::NetworkBandwidthLimit {
+                vec![pvisor_core::network::NetworkBandwidthLimit {
                     host: None,
                     port: None,
                     bytes_per_second: 1,
@@ -1110,6 +1064,20 @@ mod tests {
         fn accepts(&self, request: &Request) -> bool {
             request.uri().path().starts_with("/events/")
         }
+
+        fn download_wait(
+            &self,
+            _context: &crate::api::OverlayRequestContext<Self::RequestContext>,
+        ) -> anyhow::Result<Option<Box<dyn crate::api::DownloadWait>>> {
+            Ok(None)
+        }
+
+        fn observe(
+            &self,
+            _context: &crate::api::OverlayRequestContext<Self::RequestContext>,
+            _event: crate::api::ProxyEvent<'_>,
+        ) {
+        }
     }
 
     #[test]
@@ -1184,6 +1152,24 @@ mod tests {
             _context: &OverlayRequestContext<Self::RequestContext>,
         ) -> anyhow::Result<Response> {
             unreachable!("denied requests do not reach the sink")
+        }
+
+        fn download_wait(
+            &self,
+            _context: &crate::api::OverlayRequestContext<Self::RequestContext>,
+        ) -> anyhow::Result<Option<Box<dyn crate::api::DownloadWait>>> {
+            Ok(None)
+        }
+
+        fn accepts(&self, _request: &axum::extract::Request) -> bool {
+            false
+        }
+
+        fn observe(
+            &self,
+            _context: &crate::api::OverlayRequestContext<Self::RequestContext>,
+            _event: crate::api::ProxyEvent<'_>,
+        ) {
         }
     }
 
@@ -1272,6 +1258,24 @@ mod tests {
         ) -> anyhow::Result<Response> {
             unreachable!()
         }
+
+        fn download_wait(
+            &self,
+            _context: &crate::api::OverlayRequestContext<Self::RequestContext>,
+        ) -> anyhow::Result<Option<Box<dyn crate::api::DownloadWait>>> {
+            Ok(None)
+        }
+
+        fn accepts(&self, _request: &axum::extract::Request) -> bool {
+            false
+        }
+
+        fn observe(
+            &self,
+            _context: &crate::api::OverlayRequestContext<Self::RequestContext>,
+            _event: crate::api::ProxyEvent<'_>,
+        ) {
+        }
     }
 
     #[test]
@@ -1356,7 +1360,7 @@ mod tests {
                 &self,
                 _request: &Request,
             ) -> anyhow::Result<OverlayRequestContext<()>> {
-                let rule = crate::policy::NetworkAccessRule {
+                let rule = pvisor_core::network::NetworkAccessRule {
                     host: "::1".into(),
                     ports: vec![self.port],
                     transports: vec![NetworkTransport::Http],
@@ -1383,6 +1387,24 @@ mod tests {
                 _context: &OverlayRequestContext<()>,
             ) -> anyhow::Result<Response> {
                 unreachable!("literal traffic must use transparent forwarding")
+            }
+
+            fn download_wait(
+                &self,
+                _context: &crate::api::OverlayRequestContext<Self::RequestContext>,
+            ) -> anyhow::Result<Option<Box<dyn crate::api::DownloadWait>>> {
+                Ok(None)
+            }
+
+            fn accepts(&self, _request: &axum::extract::Request) -> bool {
+                false
+            }
+
+            fn observe(
+                &self,
+                _context: &crate::api::OverlayRequestContext<Self::RequestContext>,
+                _event: crate::api::ProxyEvent<'_>,
+            ) {
             }
         }
 
@@ -1487,7 +1509,7 @@ mod tests {
                 Ok(OverlayRequestContext {
                     policy: NetworkPolicy::compile(&NetworkConfig {
                         mode: NetworkMode::Allowlist,
-                        rules: vec![crate::policy::NetworkAccessRule {
+                        rules: vec![pvisor_core::network::NetworkAccessRule {
                             host: "127.0.0.1".into(),
                             ports: vec![80],
                             transports: vec![NetworkTransport::Http],
@@ -1513,6 +1535,20 @@ mod tests {
                 _context: &OverlayRequestContext<()>,
             ) -> anyhow::Result<Response> {
                 Ok(StatusCode::OK.into_response())
+            }
+
+            fn download_wait(
+                &self,
+                _context: &crate::api::OverlayRequestContext<Self::RequestContext>,
+            ) -> anyhow::Result<Option<Box<dyn crate::api::DownloadWait>>> {
+                Ok(None)
+            }
+
+            fn observe(
+                &self,
+                _context: &crate::api::OverlayRequestContext<Self::RequestContext>,
+                _event: crate::api::ProxyEvent<'_>,
+            ) {
             }
         }
 

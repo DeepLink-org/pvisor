@@ -3,6 +3,8 @@
 //! Directory records describe membership independently of the packet transport.
 //! The address lease serializes publication/restart, never packet forwarding.
 
+use crate::api::VmNetworkConfig;
+use crate::api::VmNetworkConfiguration;
 use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
@@ -18,10 +20,9 @@ use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use tokio::net::UnixDatagram;
 
-use crate::interception::InterceptionMetrics;
-use crate::vm::guest_mac;
+use crate::api::InterceptionMetrics;
 
-pub use crate::peer_protocol::PeerNetworkConfig;
+use crate::api::PeerNetworkConfig;
 pub(crate) use crate::peer_protocol::{FRAME_LIMIT, member_address, reserved_frame};
 use crate::peer_protocol::{HEADER, MAGIC, frame_addresses, valid_frame};
 const CACHE_TTL: Duration = Duration::from_millis(250);
@@ -88,7 +89,9 @@ fn load_member(root: &Path, gateway: Ipv4Addr, address: Ipv4Addr) -> anyhow::Res
         "unsupported peer protocol"
     );
     ensure!(
-        record.address == address && record.gateway == gateway && record.mac == guest_mac(address),
+        record.address == address
+            && record.gateway == gateway
+            && record.mac == VmNetworkConfig::guest_mac(address),
         "peer address mismatch"
     );
     let socket = fs::symlink_metadata(slot.join("net.sock"))?;
@@ -297,7 +300,7 @@ impl BoundPeer {
             address: config.address,
             gateway: config.gateway,
             aliases: config.aliases.clone(),
-            mac: guest_mac(config.address),
+            mac: VmNetworkConfig::guest_mac(config.address),
             generation: *uuid::Uuid::new_v4().as_bytes(),
             instance,
             socket_device: metadata.dev(),

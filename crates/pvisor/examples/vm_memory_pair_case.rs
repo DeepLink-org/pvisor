@@ -119,8 +119,8 @@ async fn run() -> anyhow::Result<()> {
         let runtime = if mode.starts_with("cold-net") {
             builder.network(pvisor::NetworkDriverConfig::new(
                 pvisor::OverlayNetMode::Auto,
-                pvisor_overlaynet::NetworkConfig {
-                    mode: pvisor_overlaynet::NetworkMode::Allowlist,
+                pvisor_core::network::NetworkConfig {
+                    mode: pvisor_core::network::NetworkMode::Allowlist,
                     rules: vec![pvisor_core::NetworkAccessRule {
                         host: "localhost".into(),
                         ports: vec![network_port],

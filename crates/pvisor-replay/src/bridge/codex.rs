@@ -10,7 +10,8 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 use super::host::{self, BridgeHost, Cancellation, WorkerRuntime, merged_no_proxy_environment};
-use crate::error::{ReplayError, ReplayErrorKind};
+use crate::api::{ReplayError, ReplayErrorKind};
+
 use anyhow::Context;
 use axum::Router;
 use axum::body::{Body, Bytes};
@@ -25,13 +26,13 @@ const BRIDGE_VERSION: &str = "sandbox-replay-codex-responses-bridge/1";
 const MAX_BODY_BYTES: usize = 64 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PromptMode {
+pub(crate) enum PromptMode {
     TransportNonce,
     ExplicitUserPrompt,
 }
 
 impl PromptMode {
-    pub fn as_str(self) -> &'static str {
+    pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::TransportNonce => "transport_nonce",
             Self::ExplicitUserPrompt => "explicit_user_prompt",
@@ -39,8 +40,8 @@ impl PromptMode {
     }
 }
 
-pub struct CodexBridgeHandle {
-    pub base_url: String,
+pub(crate) struct CodexBridgeHandle {
+    pub(crate) base_url: String,
     api_key: String,
     shared: Arc<BridgeShared>,
     host: BridgeHost,
@@ -78,7 +79,7 @@ impl BridgeState {
 }
 
 impl CodexBridgeHandle {
-    pub fn start(
+    pub(crate) fn start(
         routing_session_id: &str,
         transport_prompt: String,
         explicit_prompt: Option<&str>,
@@ -143,7 +144,7 @@ impl CodexBridgeHandle {
         })
     }
 
-    pub fn child_environment(&self) -> BTreeMap<String, String> {
+    pub(crate) fn child_environment(&self) -> BTreeMap<String, String> {
         let no_proxy = merged_no_proxy_environment();
         BTreeMap::from([
             ("OPENAI_BASE_URL".into(), self.base_url.clone()),
@@ -154,11 +155,11 @@ impl CodexBridgeHandle {
         ])
     }
 
-    pub fn prompt_mode(&self) -> PromptMode {
+    pub(crate) fn prompt_mode(&self) -> PromptMode {
         self.shared.prompt_mode
     }
 
-    pub fn finish(mut self) -> Result<usize, ReplayError> {
+    pub(crate) fn finish(mut self) -> Result<usize, ReplayError> {
         self.host.stop()?;
         let state = self
             .shared

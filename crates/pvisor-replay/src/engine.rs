@@ -1,3 +1,4 @@
+use crate::api::{AgentProfile, ReplayErrorClassification};
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::Path;
@@ -5,26 +6,16 @@ use std::path::Path;
 use serde_json::{Value, json};
 
 use crate::adapter::{LaunchSpec, RunContext, build_plan, resolve_launch_spec, run};
+use crate::api::{
+    AgentKind, AgentResult, AgentStatus, Artifact, ExecutionReport, PlaybackRequest,
+    RESULT_SCHEMA_VERSION, ReplayFailure, ReplayMode, ReplayPhase, ReplayQuality, ReplayResult,
+};
+use crate::api::{ReplayError, ReplayErrorKind};
 use crate::comparison::write_next_action;
-use crate::error::{ReplayError, ReplayErrorKind, ResultExt};
+use crate::error::ResultExt;
 use crate::io::{atomic_write_json, canonicalize, sha256};
 use crate::journal::Journal;
-use crate::model::{
-    AgentKind, AgentResult, AgentStatus, Artifact, ExecutionReport, PlaybackRequest,
-    RESULT_SCHEMA_VERSION, ReplayFailure, ReplayMode, ReplayOutcome, ReplayPhase, ReplayPlan,
-    ReplayQuality, ReplayResult,
-};
-
-pub fn execute(request: PlaybackRequest) -> Result<ExecutionReport, ReplayError> {
-    let run_id = request
-        .run_id
-        .clone()
-        .unwrap_or_else(|| format!("replay-{}", uuid::Uuid::new_v4().simple()));
-    let state_dir = location_hint(&request.state_dir, &run_id);
-    let output_dir = location_hint(&request.output_dir, &run_id);
-    execute_with_run_id(request, run_id.clone())
-        .map_err(|error| error.with_default_locations(run_id, state_dir, output_dir))
-}
+use crate::model::{ReplayOutcome, ReplayPlan};
 
 fn execute_with_run_id(
     mut request: PlaybackRequest,
@@ -261,7 +252,7 @@ fn finalize_failure(
     );
     atomic_write_json(&output_dir.join("result.json"), &result)?;
     Ok(ExecutionReport {
-        exit_code: error.exit_code(),
+        exit_code: error.kind.exit_code(),
         result,
     })
 }
@@ -786,8 +777,20 @@ fn artifact(role: &str, format: &str, path: std::path::PathBuf) -> Artifact {
     }
 }
 
+pub(crate) fn execute(request: PlaybackRequest) -> Result<ExecutionReport, ReplayError> {
+    let run_id = request
+        .run_id
+        .clone()
+        .unwrap_or_else(|| format!("replay-{}", uuid::Uuid::new_v4().simple()));
+    let state_dir = location_hint(&request.state_dir, &run_id);
+    let output_dir = location_hint(&request.output_dir, &run_id);
+    execute_with_run_id(request, run_id.clone())
+        .map_err(|error| error.with_default_locations(run_id, state_dir, output_dir))
+}
+
 #[cfg(test)]
 mod tests {
+    use crate::api::ReplayRequest;
     #[test]
     fn failed_replay_counts_completed_tools_in_current_run() {
         let temporary = tempfile::tempdir().unwrap();
@@ -834,8 +837,13 @@ mod tests {
             boundary_user_prompt: None,
         };
 
-        let error = execute(request).unwrap_err();
-        let (run_id, state_dir, output_dir) = error.locations().unwrap();
+        let error = PlaybackRequest::execute(request).unwrap_err();
+        let locations = error.locations.as_ref().unwrap();
+        let (run_id, state_dir, output_dir) = (
+            locations.run_id.as_str(),
+            locations.state_dir.as_path(),
+            locations.output_dir.as_path(),
+        );
         assert_eq!(run_id, "replay-1");
         assert_eq!(state_dir, Path::new("/state/replay-1"));
         assert_eq!(output_dir, Path::new("/output/replay-1"));
@@ -863,7 +871,7 @@ mod tests {
             boundary_user_prompt: Some(" \n\t".into()),
         };
 
-        let error = execute(request).unwrap_err();
+        let error = PlaybackRequest::execute(request).unwrap_err();
 
         assert!(
             error
@@ -900,7 +908,7 @@ mod tests {
             boundary_user_prompt: None,
         };
 
-        let error = execute(request).unwrap_err();
+        let error = PlaybackRequest::execute(request).unwrap_err();
 
         assert_eq!(error.kind, ReplayErrorKind::Trajectory);
         assert!(!output_root.join("reserved-run").exists());

@@ -1,4 +1,8 @@
 //! Contract tests use only the public network owner and framed guest link.
+mod support;
+use pvisor_overlaynet::api::{
+    EgressControl, InterceptionObservation, VmNetworkConfiguration, VmNetworkRuntime,
+};
 use std::io::{Read, Write};
 use std::net::Ipv4Addr;
 use std::os::unix::fs::PermissionsExt;
@@ -11,11 +15,11 @@ use std::sync::{
 };
 use std::time::{Duration, Instant};
 
-use pvisor_overlaynet::vm::{VmNetwork, VmNetworkConfig, guest_mac};
-use pvisor_overlaynet::{
-    BandwidthRegistry, EgressContext, EgressRuntime, InterceptionMetrics, NetworkConfig,
-    NetworkMode, NetworkPolicy, PeerNetworkConfig,
+use pvisor_core::network::{NetworkConfig, NetworkMode, NetworkPolicy};
+use pvisor_overlaynet::api::{
+    BandwidthRegistry, EgressContext, EgressRuntime, InterceptionMetrics, PeerNetworkConfig,
 };
+use pvisor_overlaynet::api::{VmNetwork, VmNetworkConfig};
 use smoltcp::wire::{EthernetAddress, EthernetFrame, EthernetProtocol, IpProtocol, Ipv4Packet};
 
 fn directory() -> tempfile::TempDir {
@@ -45,7 +49,7 @@ fn config(directory: &Path, last: u8) -> VmNetworkConfig {
 fn start(directory: &Path, last: u8) -> (VmNetwork, UnixStream, InterceptionMetrics) {
     let config = config(directory, last);
     let metrics = config.metrics.clone();
-    let (network, stream) = VmNetwork::start(config).unwrap();
+    let (network, stream) = support::start(config).unwrap();
     stream
         .set_read_timeout(Some(Duration::from_secs(3)))
         .unwrap();
@@ -55,8 +59,8 @@ fn start(directory: &Path, last: u8) -> (VmNetwork, UnixStream, InterceptionMetr
 fn ip_frame(src: u8, dst: u8, protocol: IpProtocol) -> Vec<u8> {
     let mut frame = vec![0; 14 + 20 + 32];
     let mut ethernet = EthernetFrame::new_unchecked(frame.as_mut_slice());
-    ethernet.set_src_addr(EthernetAddress(guest_mac(address(src))));
-    ethernet.set_dst_addr(EthernetAddress(guest_mac(address(dst))));
+    ethernet.set_src_addr(EthernetAddress(VmNetworkConfig::guest_mac(address(src))));
+    ethernet.set_dst_addr(EthernetAddress(VmNetworkConfig::guest_mac(address(dst))));
     ethernet.set_ethertype(EthernetProtocol::Ipv4);
     let mut ip = Ipv4Packet::new_unchecked(ethernet.payload_mut());
     ip.set_version(4);
@@ -75,17 +79,17 @@ fn ip_frame(src: u8, dst: u8, protocol: IpProtocol) -> Vec<u8> {
 fn arp(src: u8, dst: u8, reply: bool) -> Vec<u8> {
     let mut frame = vec![0; 42];
     let destination = if reply {
-        guest_mac(address(dst))
+        VmNetworkConfig::guest_mac(address(dst))
     } else {
         [255; 6]
     };
     frame[..6].copy_from_slice(&destination);
-    frame[6..12].copy_from_slice(&guest_mac(address(src)));
+    frame[6..12].copy_from_slice(&VmNetworkConfig::guest_mac(address(src)));
     frame[12..22].copy_from_slice(&[8, 6, 0, 1, 8, 0, 6, 4, 0, if reply { 2 } else { 1 }]);
-    frame[22..28].copy_from_slice(&guest_mac(address(src)));
+    frame[22..28].copy_from_slice(&VmNetworkConfig::guest_mac(address(src)));
     frame[28..32].copy_from_slice(&address(src).octets());
     if reply {
-        frame[32..38].copy_from_slice(&guest_mac(address(dst)));
+        frame[32..38].copy_from_slice(&VmNetworkConfig::guest_mac(address(dst)));
     }
     frame[38..42].copy_from_slice(&address(dst).octets());
     frame
@@ -158,7 +162,7 @@ fn duplicate_address_fails_synchronously_and_restart_refreshes_generation() {
     let (a, mut sa, ma) = start(root.path(), 11);
     let (b, mut sb, _) = start(root.path(), 12);
     assert!(
-        VmNetwork::start(config(root.path(), 12))
+        support::start(config(root.path(), 12))
             .err()
             .unwrap()
             .to_string()
@@ -184,13 +188,13 @@ fn duplicate_address_fails_synchronously_and_restart_refreshes_generation() {
 fn rejects_unsafe_directories_invalid_addresses_and_restrictive_egress() {
     let root = directory();
     for last in [0, 1, 255] {
-        assert!(VmNetwork::start(config(root.path(), last)).is_err());
+        assert!(support::start(config(root.path(), last)).is_err());
     }
     let alias = root.path().join("alias");
     std::os::unix::fs::symlink(root.path(), &alias).unwrap();
-    assert!(VmNetwork::start(config(&alias, 11)).is_err());
+    assert!(support::start(config(&alias, 11)).is_err());
     std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
-    assert!(VmNetwork::start(config(root.path(), 11)).is_err());
+    assert!(support::start(config(root.path(), 11)).is_err());
     std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
     for mode in [NetworkMode::NoNetwork, NetworkMode::Allowlist] {
         let cfg = config(root.path(), 11);
@@ -202,7 +206,7 @@ fn rejects_unsafe_directories_invalid_addresses_and_restrictive_egress() {
             .unwrap(),
         );
         assert!(
-            VmNetwork::start(cfg)
+            support::start(cfg)
                 .err()
                 .unwrap()
                 .to_string()
@@ -243,7 +247,7 @@ fn live_policy_replacement_closes_the_packet_gate() {
     let cfg = config(root.path(), 11);
     let egress = cfg.egress.clone();
     let ma = cfg.metrics.clone();
-    let (a, mut sa) = VmNetwork::start(cfg).unwrap();
+    let (a, mut sa) = support::start(cfg).unwrap();
     let (b, mut sb, mb) = start(root.path(), 12);
     egress.replace_policy(
         NetworkPolicy::compile(&NetworkConfig {
@@ -416,9 +420,9 @@ mod tcp_guests {
     impl Guest {
         fn new(stream: UnixStream, last: u8) -> Self {
             let mut link = Link::default();
-            let mut cfg = Config::new(HardwareAddress::Ethernet(EthernetAddress(guest_mac(
-                address(last),
-            ))));
+            let mut cfg = Config::new(HardwareAddress::Ethernet(EthernetAddress(
+                VmNetworkConfig::guest_mac(address(last)),
+            )));
             cfg.random_seed = u64::from(last);
             let mut interface = Interface::new(cfg, &mut link, SmolInstant::ZERO);
             interface.update_ip_addrs(|addrs| {
@@ -1116,7 +1120,7 @@ fn peer_membership_requires_the_default_controller_constructor() {
         BandwidthRegistry::default(),
     );
     assert!(
-        VmNetwork::start(cfg)
+        support::start(cfg)
             .err()
             .unwrap()
             .to_string()
@@ -1142,7 +1146,7 @@ fn peer_guest_address_keeps_the_existing_router_and_dns_path() {
     let ip_length = 20 + 8 + query.len();
     let mut frame = vec![0; 14 + ip_length];
     let mut ethernet = EthernetFrame::new_unchecked(frame.as_mut_slice());
-    ethernet.set_src_addr(EthernetAddress(guest_mac(address(11))));
+    ethernet.set_src_addr(EthernetAddress(VmNetworkConfig::guest_mac(address(11))));
     ethernet.set_dst_addr(EthernetAddress(router_mac));
     ethernet.set_ethertype(EthernetProtocol::Ipv4);
     let mut ip = Ipv4Packet::new_unchecked(ethernet.payload_mut());
@@ -1188,8 +1192,8 @@ fn named_network_uses_its_subnet_gateway_and_live_container_dns() {
         peer.aliases = vec![name.into()];
         cfg
     };
-    let (a, mut sa) = VmNetwork::start(named_config(address_a, "client")).unwrap();
-    let (b, mut sb) = VmNetwork::start(named_config(address_b, "web")).unwrap();
+    let (a, mut sa) = support::start(named_config(address_a, "client")).unwrap();
+    let (b, mut sb) = support::start(named_config(address_b, "web")).unwrap();
     sa.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
     sb.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
     let packet = ip_frame_at(address_a, address_b, IpProtocol::Udp);
@@ -1209,8 +1213,8 @@ fn named_network_uses_its_subnet_gateway_and_live_container_dns() {
 fn ip_frame_at(src: Ipv4Addr, dst: Ipv4Addr, protocol: IpProtocol) -> Vec<u8> {
     let mut bytes = ip_frame(11, 12, protocol);
     let mut frame = EthernetFrame::new_unchecked(bytes.as_mut_slice());
-    frame.set_src_addr(EthernetAddress(guest_mac(src)));
-    frame.set_dst_addr(EthernetAddress(guest_mac(dst)));
+    frame.set_src_addr(EthernetAddress(VmNetworkConfig::guest_mac(src)));
+    frame.set_dst_addr(EthernetAddress(VmNetworkConfig::guest_mac(dst)));
     let mut ip = Ipv4Packet::new_unchecked(frame.payload_mut());
     ip.set_src_addr(src);
     ip.set_dst_addr(dst);
@@ -1221,8 +1225,8 @@ fn ip_frame_at(src: Ipv4Addr, dst: Ipv4Addr, protocol: IpProtocol) -> Vec<u8> {
 fn resolve_name(stream: &mut UnixStream, guest: Ipv4Addr, router: Ipv4Addr, name: &str) -> Vec<u8> {
     use smoltcp::wire::UdpPacket;
     let mut arp = arp(11, 1, false);
-    arp[6..12].copy_from_slice(&guest_mac(guest));
-    arp[22..28].copy_from_slice(&guest_mac(guest));
+    arp[6..12].copy_from_slice(&VmNetworkConfig::guest_mac(guest));
+    arp[22..28].copy_from_slice(&VmNetworkConfig::guest_mac(guest));
     arp[28..32].copy_from_slice(&guest.octets());
     arp[38..42].copy_from_slice(&router.octets());
     send(stream, &arp);
@@ -1240,7 +1244,7 @@ fn resolve_name(stream: &mut UnixStream, guest: Ipv4Addr, router: Ipv4Addr, name
     let length = 20 + 8 + query.len();
     let mut bytes = vec![0; 14 + length];
     let mut frame = EthernetFrame::new_unchecked(bytes.as_mut_slice());
-    frame.set_src_addr(EthernetAddress(guest_mac(guest)));
+    frame.set_src_addr(EthernetAddress(VmNetworkConfig::guest_mac(guest)));
     frame.set_dst_addr(EthernetAddress([2, 0x50, 0x56, 0, 0, 1]));
     frame.set_ethertype(EthernetProtocol::Ipv4);
     let mut ip = Ipv4Packet::new_unchecked(frame.payload_mut());

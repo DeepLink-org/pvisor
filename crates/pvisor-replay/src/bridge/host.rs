@@ -9,7 +9,8 @@ use std::time::Duration;
 use axum::Router;
 use tokio::sync::Notify;
 
-use crate::error::{ReplayError, ReplayErrorKind, ResultExt};
+use crate::api::{ReplayError, ReplayErrorKind};
+use crate::error::ResultExt;
 
 const START_TIMEOUT: Duration = Duration::from_secs(10);
 const STOP_TIMEOUT: Duration = Duration::from_secs(5);

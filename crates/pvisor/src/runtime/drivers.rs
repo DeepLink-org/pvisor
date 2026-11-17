@@ -14,6 +14,7 @@ use anyhow::Context as _;
 use pvisor_core::ControlController;
 #[cfg(feature = "gateway")]
 use pvisor_core::NetworkCapability;
+use pvisor_core::network::{NetworkConfig, NetworkPolicy};
 use pvisor_core::{ProcessInvocation, RunInvocation, RunSpec, RunState};
 #[cfg(feature = "gateway")]
 use pvisor_gateway::injection::{client_gateway_config_args, proxy_environment_with_local_auth};
@@ -32,9 +33,12 @@ use pvisor_gateway::sink::JournalObserver;
 #[cfg(feature = "gateway")]
 use pvisor_journal::api::JournalStore;
 use pvisor_overlayfs::api::{FilesystemMetrics, FsMetrics};
-use pvisor_overlaynet::{
-    BandwidthRegistry, EgressContext, EgressRuntime, InterceptionMetrics, NetworkConfig,
-    NetworkPolicy,
+use pvisor_overlaynet::api::{
+    BandwidthRegistry, EgressContext, EgressRuntime, InterceptionMetrics,
+};
+use pvisor_overlaynet::api::{
+    EgressControl, InterceptionCoverage, InterceptionObservation, VmNetworkConfiguration,
+    VmNetworkRuntime,
 };
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -152,7 +156,7 @@ impl SessionDrivers {
         apply_implant(process, &plan);
         self.run_record.overlaynet_listen = Some(proxy.listen.clone());
         self.run_record.network_interception =
-            Some(pvisor_overlaynet::InterceptionProfile::explicit_proxy());
+            Some(pvisor_overlaynet::api::InterceptionProfile::explicit_proxy());
         self.run_record.network_policy = Some(serde_json::to_value(&network.network)?);
         self.run_record.environment.runtime_injected_keys = plan.env.keys().cloned().collect();
         self.network_metrics = Some(metrics.clone());
@@ -480,7 +484,7 @@ pub(crate) struct VmNetworkPrepareOpts {
 pub struct VmNetworkAttachment {
     guest_config: pvisor_guest::NetworkConfig,
     guest_stream: std::os::unix::net::UnixStream,
-    backend: pvisor_overlaynet::vm::VmNetwork,
+    backend: pvisor_overlaynet::api::VmNetwork,
     enforcing: bool,
 }
 
@@ -491,7 +495,7 @@ impl VmNetworkAttachment {
     }
     /// Ethernet address expected by the packet backend.
     pub fn mac_address(&self) -> [u8; 6] {
-        pvisor_overlaynet::vm::VM_MAC
+        pvisor_overlaynet::api::VmNetworkConfig::guest_mac(pvisor_overlaynet::api::GUEST_IPV4)
     }
 
     /// Whether this backend enforces egress at the guest transport boundary.
@@ -512,7 +516,7 @@ impl VmNetworkAttachment {
     /// Close the peer first so a backend blocked on socket I/O can observe EOF
     /// before we join its thread.
     /// Consume the owner and join the backend. On error the owner is still consumed.
-    pub fn shutdown(self) -> anyhow::Result<pvisor_overlaynet::InterceptionSnapshot> {
+    pub fn shutdown(self) -> anyhow::Result<pvisor_overlaynet::api::InterceptionSnapshot> {
         let Self {
             backend,
             guest_stream,
@@ -734,7 +738,7 @@ pub(crate) fn prepare_execution(
     run_record.network_interception = Some(if opts.vm_network {
         vm_network_profile(spec)
     } else {
-        pvisor_overlaynet::InterceptionProfile::explicit_proxy()
+        pvisor_overlaynet::api::InterceptionProfile::explicit_proxy()
     });
     run_record.gateway_listen = opts.config.gateway_enabled.then(|| gateway.listen.clone());
     run_record.network_policy = Some(serde_json::to_value(&config.network)?);
@@ -1021,8 +1025,8 @@ pub(crate) fn prepare_storage_execution(
     })
 }
 
-fn vm_network_profile(spec: &RunSpec) -> pvisor_overlaynet::InterceptionProfile {
-    let mut profile = pvisor_overlaynet::InterceptionProfile::vm_smoltcp();
+fn vm_network_profile(spec: &RunSpec) -> pvisor_overlaynet::api::InterceptionProfile {
+    let mut profile = pvisor_overlaynet::api::InterceptionProfile::vm_smoltcp();
     profile.peer_ipv4 = spec.metadata.contains_key("pvisor.network.peers");
     profile
 }
@@ -1041,7 +1045,7 @@ fn start_vm_network(
     } else {
         EgressRuntime::with_bandwidth_registry(policy, opts.controller, bandwidth_registry)
     };
-    let mut config = pvisor_overlaynet::vm::VmNetworkConfig::new(
+    let mut config = pvisor_overlaynet::api::VmNetworkConfig::new(
         egress,
         EgressContext {
             run_id: Some(spec.run_id.as_str().to_owned()),
@@ -1057,11 +1061,11 @@ fn start_vm_network(
     let guest_address = config
         .peer_network
         .as_ref()
-        .map_or(pvisor_overlaynet::vm::GUEST_IPV4, |peer| peer.address);
+        .map_or(pvisor_overlaynet::api::GUEST_IPV4, |peer| peer.address);
     let router = config
         .peer_network
         .as_ref()
-        .map_or(pvisor_overlaynet::vm::ROUTER_IPV4, |p| p.gateway);
+        .map_or(pvisor_overlaynet::api::ROUTER_IPV4, |p| p.gateway);
     spec.metadata.insert(
         "pvisor.network.gateway_ipv4".into(),
         serde_json::to_value(router)?,
@@ -1078,12 +1082,16 @@ fn start_vm_network(
             .unwrap_or(listen)
             .parse()
             .with_context(|| format!("parse Execution Gateway listen address `{listen}`"))?;
-        config.gateway = Some(pvisor_overlaynet::vm::VmGatewayRoute {
+        config.gateway = Some(pvisor_overlaynet::api::VmGatewayRoute {
             guest_port: host.port(),
             host,
         });
     }
-    let (backend, guest_stream) = pvisor_overlaynet::vm::VmNetwork::start(config)?;
+    let (transport, guest_stream) = std::os::unix::net::UnixStream::pair()?;
+    transport.set_nonblocking(true)?;
+    let backend = pvisor_overlaynet::api::VmNetwork::start_with_io(config, move || {
+        tokio::net::UnixStream::from_std(transport)
+    })?;
     spec.metadata.insert(
         "pvisor.network.driver".into(),
         serde_json::Value::String("vm-smoltcp".into()),
@@ -2053,7 +2061,7 @@ mod peer_attachment_tests {
                 &uuid::Uuid::new_v4().simple().to_string()[..12]
             ),
             address: "192.0.2.11".parse().unwrap(),
-            gateway: pvisor_overlaynet::vm::ROUTER_IPV4,
+            gateway: pvisor_overlaynet::api::ROUTER_IPV4,
             aliases: vec![],
         };
         let mut spec = RunSpec::process("peer-attachment", "test", "/bin/true");

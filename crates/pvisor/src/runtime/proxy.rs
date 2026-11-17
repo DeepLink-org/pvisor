@@ -5,8 +5,10 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use pvisor_core::ControlController;
-use pvisor_overlaynet::server::{OverlayRequestContext, OverlayServerState, OverlaySink};
-use pvisor_overlaynet::{BandwidthRegistry, InterceptionMetrics, NetworkPolicy};
+use pvisor_core::network::NetworkPolicy;
+use pvisor_overlaynet::api::OverlayProxy;
+use pvisor_overlaynet::api::{BandwidthRegistry, InterceptionMetrics};
+use pvisor_overlaynet::api::{OverlayRequestContext, OverlayServerState, OverlaySink};
 use std::{
     net::SocketAddr,
     sync::{Arc, atomic::AtomicUsize},
@@ -39,6 +41,24 @@ impl OverlaySink for Sink {
         _context: &OverlayRequestContext<()>,
     ) -> anyhow::Result<Response> {
         Ok((StatusCode::NOT_FOUND, "Gateway capture is disabled").into_response())
+    }
+
+    fn download_wait(
+        &self,
+        _context: &pvisor_overlaynet::api::OverlayRequestContext<Self::RequestContext>,
+    ) -> anyhow::Result<Option<Box<dyn pvisor_overlaynet::api::DownloadWait>>> {
+        Ok(None)
+    }
+
+    fn accepts(&self, _request: &axum::extract::Request) -> bool {
+        false
+    }
+
+    fn observe(
+        &self,
+        _context: &pvisor_overlaynet::api::OverlayRequestContext<Self::RequestContext>,
+        _event: pvisor_overlaynet::api::ProxyEvent<'_>,
+    ) {
     }
 }
 
@@ -78,7 +98,7 @@ impl Proxy {
                     use std::future::IntoFuture;
                     let server = axum::serve(
                         tokio::net::TcpListener::from_std(listener)?,
-                        pvisor_overlaynet::server::build_router(state)
+                        pvisor_overlaynet::api::OverlayProxy::into_router(state)
                             .into_make_service_with_connect_info::<SocketAddr>(),
                     )
                     .into_future();
@@ -121,8 +141,8 @@ mod tests {
     #[test]
     fn plain_proxy_enforces_policy_and_releases_its_listener() {
         let metrics = InterceptionMetrics::default();
-        let policy = NetworkPolicy::compile(&pvisor_overlaynet::NetworkConfig {
-            mode: pvisor_overlaynet::NetworkMode::NoNetwork,
+        let policy = NetworkPolicy::compile(&pvisor_core::network::NetworkConfig {
+            mode: pvisor_core::network::NetworkMode::NoNetwork,
             ..Default::default()
         })
         .unwrap();

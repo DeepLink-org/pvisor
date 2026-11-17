@@ -14,11 +14,11 @@ use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
-pub const TRANSPORT_SCHEMA_VERSION: &str = "sandbox-playback.claude-resume-transport/v1";
-pub const PROFILE_ID: &str = "claude-code/2.1.220/native-resume-v1";
-pub const CLAUDE_CODE_VERSION: &str = "2.1.220";
-pub const CONTINUE_TEXT: &str = "Continue from where you left off.";
-pub const NO_RESPONSE_TEXT: &str = "No response requested.";
+pub(crate) const TRANSPORT_SCHEMA_VERSION: &str = "sandbox-playback.claude-resume-transport/v1";
+pub(crate) const PROFILE_ID: &str = "claude-code/2.1.220/native-resume-v1";
+pub(crate) const CLAUDE_CODE_VERSION: &str = "2.1.220";
+pub(crate) const CONTINUE_TEXT: &str = "Continue from where you left off.";
+pub(crate) const NO_RESPONSE_TEXT: &str = "No response requested.";
 
 const SKILLS_SYSTEM_PREFIX: &str =
     "The following skills are available for use with the Skill tool:\n\n- ";
@@ -31,22 +31,22 @@ const CURRENT_DATE_SUFFIX: &str = ".\n\n      IMPORTANT: this context may or may
 /// Run-scoped integrity contract shared by session reconstruction and the
 /// local Claude bridge.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ResumeTransportManifest {
-    pub schema_version: String,
-    pub profile_id: String,
-    pub claude_code_version: String,
-    pub nonce: String,
-    pub session_id: String,
-    pub boundary_tool_use_ids: Vec<String>,
-    pub boundary_observation_sha256: Vec<String>,
-    pub canonical_message_count: usize,
-    pub canonical_prefix_sha256: String,
+pub(crate) struct ResumeTransportManifest {
+    pub(crate) schema_version: String,
+    pub(crate) profile_id: String,
+    pub(crate) claude_code_version: String,
+    pub(crate) nonce: String,
+    pub(crate) session_id: String,
+    pub(crate) boundary_tool_use_ids: Vec<String>,
+    pub(crate) boundary_observation_sha256: Vec<String>,
+    pub(crate) canonical_message_count: usize,
+    pub(crate) canonical_prefix_sha256: String,
     #[serde(default)]
-    pub canonical_message_sha256: Vec<String>,
+    pub(crate) canonical_message_sha256: Vec<String>,
 }
 
 impl ResumeTransportManifest {
-    pub fn create(
+    pub(crate) fn create(
         session_id: &str,
         boundary_tool_use_ids: Vec<String>,
         canonical_messages: Vec<Value>,
@@ -112,7 +112,7 @@ impl ResumeTransportManifest {
         Ok(manifest)
     }
 
-    pub fn validate(&self) -> Result<()> {
+    pub(crate) fn validate(&self) -> Result<()> {
         ensure!(
             self.schema_version == TRANSPORT_SCHEMA_VERSION,
             "unsupported transport schema {:?}",
@@ -182,26 +182,26 @@ impl ResumeTransportManifest {
 /// The caller may use these for fail-closed checks; this module never persists
 /// them.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ResumeTransportValidation {
-    pub request_sequence: usize,
-    pub profile_id: String,
-    pub nonce_message_index: usize,
-    pub sentinel_removed: usize,
-    pub closure_messages_removed: usize,
-    pub boundary_tool_use_ids: Vec<String>,
-    pub boundary_observation_sha256: Vec<String>,
-    pub clean_message_count: usize,
-    pub clean_prefix_sha256: String,
-    pub first_request_boundary_ok: bool,
+pub(crate) struct ResumeTransportValidation {
+    pub(crate) request_sequence: usize,
+    pub(crate) profile_id: String,
+    pub(crate) nonce_message_index: usize,
+    pub(crate) sentinel_removed: usize,
+    pub(crate) closure_messages_removed: usize,
+    pub(crate) boundary_tool_use_ids: Vec<String>,
+    pub(crate) boundary_observation_sha256: Vec<String>,
+    pub(crate) clean_message_count: usize,
+    pub(crate) clean_prefix_sha256: String,
+    pub(crate) first_request_boundary_ok: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct CleanedResumeRequest {
-    pub payload: Value,
-    pub validation: ResumeTransportValidation,
+pub(crate) struct CleanedResumeRequest {
+    pub(crate) payload: Value,
+    pub(crate) validation: ResumeTransportValidation,
 }
 
-pub fn canonical_messages_sha256(messages: &[Value]) -> Result<String> {
+pub(crate) fn canonical_messages_sha256(messages: &[Value]) -> Result<String> {
     ensure!(
         messages.iter().all(Value::is_object),
         "messages must be a list of JSON objects"
@@ -211,7 +211,7 @@ pub fn canonical_messages_sha256(messages: &[Value]) -> Result<String> {
     ))
 }
 
-pub fn canonical_observation_sha256(tool_result_block: &Value) -> Result<String> {
+pub(crate) fn canonical_observation_sha256(tool_result_block: &Value) -> Result<String> {
     ensure!(
         tool_result_block.get("type").and_then(Value::as_str) == Some("tool_result"),
         "observation hash input must be a tool_result block"
@@ -231,7 +231,7 @@ pub fn canonical_observation_sha256(tool_result_block: &Value) -> Result<String>
 /// The first model request discards every message after the nonce because all
 /// such messages are resume-time additions. Later requests retain their suffix,
 /// which contains the newly generated continuation.
-pub fn clean_resume_transport_envelope(
+pub(crate) fn clean_resume_transport_envelope(
     payload: &Value,
     manifest: &ResumeTransportManifest,
     request_sequence: usize,

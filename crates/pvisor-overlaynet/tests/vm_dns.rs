@@ -1,13 +1,14 @@
 //! Bounded hostile DNS trace through the public length-prefixed guest link.
+mod support;
+use pvisor_overlaynet::api::{EgressControl, VmNetworkConfiguration, VmNetworkRuntime};
 use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
 use std::sync::Arc;
 use std::time::Duration;
 
-use pvisor_overlaynet::vm::{GUEST_IPV4, ROUTER_IPV4, VM_MAC, VmNetwork, VmNetworkConfig};
-use pvisor_overlaynet::{
-    BandwidthRegistry, EgressContext, EgressRuntime, NetworkConfig, NetworkMode, NetworkPolicy,
-};
+use pvisor_core::network::{NetworkConfig, NetworkMode, NetworkPolicy};
+use pvisor_overlaynet::api::{BandwidthRegistry, EgressContext, EgressRuntime};
+use pvisor_overlaynet::api::{GUEST_IPV4, ROUTER_IPV4, VmNetworkConfig};
 use smoltcp::wire::{EthernetFrame, IpProtocol, Ipv4Packet, TcpPacket, UdpPacket};
 
 fn send(stream: &mut UnixStream, frame: &[u8]) {
@@ -40,7 +41,7 @@ fn query(labels: &[usize]) -> Vec<u8> {
 fn dns_frame(query: &[u8]) -> Vec<u8> {
     let mut frame = vec![0; 14 + 20 + 8 + query.len()];
     frame[..6].copy_from_slice(&[2, 0x50, 0x56, 0, 0, 1]);
-    frame[6..12].copy_from_slice(&VM_MAC);
+    frame[6..12].copy_from_slice(&VmNetworkConfig::guest_mac(GUEST_IPV4));
     frame[12..14].copy_from_slice(&[8, 0]);
     let mut ip = Ipv4Packet::new_unchecked(&mut frame[14..]);
     ip.set_version(4);
@@ -92,7 +93,7 @@ fn malformed_dns_and_wire_name_limit_do_not_poison_later_queries() {
         BandwidthRegistry::default(),
     );
     let (network, mut stream) =
-        VmNetwork::start(VmNetworkConfig::new(egress, EgressContext::default())).unwrap();
+        support::start(VmNetworkConfig::new(egress, EgressContext::default())).unwrap();
     stream
         .set_read_timeout(Some(Duration::from_secs(2)))
         .unwrap();
@@ -102,9 +103,9 @@ fn malformed_dns_and_wire_name_limit_do_not_poison_later_queries() {
     // ARP primes the real stack's neighbor cache; no host networking is used.
     let mut arp = vec![0; 42];
     arp[..6].fill(255);
-    arp[6..12].copy_from_slice(&VM_MAC);
+    arp[6..12].copy_from_slice(&VmNetworkConfig::guest_mac(GUEST_IPV4));
     arp[12..22].copy_from_slice(&[8, 6, 0, 1, 8, 0, 6, 4, 0, 1]);
-    arp[22..28].copy_from_slice(&VM_MAC);
+    arp[22..28].copy_from_slice(&VmNetworkConfig::guest_mac(GUEST_IPV4));
     arp[28..32].copy_from_slice(&GUEST_IPV4.octets());
     arp[38..42].copy_from_slice(&ROUTER_IPV4.octets());
     send(&mut stream, &arp);
@@ -156,7 +157,7 @@ fn rejected_syn_headers_do_not_consume_the_only_flow_slot() {
     );
     let mut config = VmNetworkConfig::new(egress, EgressContext::default());
     config.max_flows = 1;
-    let (network, mut stream) = VmNetwork::start(config).unwrap();
+    let (network, mut stream) = support::start(config).unwrap();
     stream
         .set_read_timeout(Some(Duration::from_secs(2)))
         .unwrap();
@@ -165,9 +166,9 @@ fn rejected_syn_headers_do_not_consume_the_only_flow_slot() {
         .unwrap();
     let mut arp = vec![0; 42];
     arp[..6].fill(255);
-    arp[6..12].copy_from_slice(&VM_MAC);
+    arp[6..12].copy_from_slice(&VmNetworkConfig::guest_mac(GUEST_IPV4));
     arp[12..22].copy_from_slice(&[8, 6, 0, 1, 8, 0, 6, 4, 0, 1]);
-    arp[22..28].copy_from_slice(&VM_MAC);
+    arp[22..28].copy_from_slice(&VmNetworkConfig::guest_mac(GUEST_IPV4));
     arp[28..32].copy_from_slice(&GUEST_IPV4.octets());
     arp[38..42].copy_from_slice(&ROUTER_IPV4.octets());
     send(&mut stream, &arp);

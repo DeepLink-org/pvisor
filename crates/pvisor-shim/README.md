@@ -1,5 +1,8 @@
 # pvisor-shim
 
+Network data-plane callers use `pvisor_overlaynet::api` and its declared traits;
+policy records remain owned by `pvisor_core::network`.
+
 `containerd-shim-pvisor-v2`: a [containerd Runtime v2] shim for pVisor,
 registered under the runtime type `io.containerd.pvisor.v2` (the binary name
 follows containerd's discovery rule: dots become dashes, last two

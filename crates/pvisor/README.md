@@ -1,5 +1,8 @@
 # PolicyVisor (pVisor)
 
+Network data-plane callers use `pvisor_overlaynet::api` and its declared traits;
+policy records remain owned by `pvisor_core::network`.
+
 **Run a coding agent in a staged workspace, review its file changes, and apply
 only what you keep.**
 

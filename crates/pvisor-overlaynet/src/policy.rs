@@ -1,8 +1,8 @@
 //! HTTP adapter for the shared Control network policy.
 use axum::http::StatusCode;
-pub use pvisor_core::network::*;
+use pvisor_core::network::DenyReason;
 
-pub fn forbidden_response(host: &str, reason: &DenyReason) -> (StatusCode, String) {
+pub(crate) fn forbidden_response(host: &str, reason: &DenyReason) -> (StatusCode, String) {
     (
         StatusCode::FORBIDDEN,
         format!(

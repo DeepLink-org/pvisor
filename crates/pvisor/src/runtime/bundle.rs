@@ -9,7 +9,7 @@ use pvisor_core::{
     IsolationKind, ProcessOutput, ResourceLimits, RunFailure, RunResult, RunState,
 };
 use pvisor_journal::api::{DurableFiles, Persistence};
-use pvisor_overlaynet::{InterceptionProfile, InterceptionSnapshot};
+use pvisor_overlaynet::api::{InterceptionProfile, InterceptionSnapshot};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::os::unix::fs::MetadataExt;
@@ -618,6 +618,7 @@ mod tests {
     use super::*;
     use crate::runtime::{OverlayRecord, OverlayUpper};
     use pvisor_core::{CapabilityEnforcementEvidence, ExecutionId, NetworkCapability, RunId};
+    use pvisor_overlaynet::api::InterceptionCoverage;
     use std::os::unix::fs::PermissionsExt;
 
     const V1_MINIMAL_FIXTURE: &[u8] = include_bytes!(concat!(

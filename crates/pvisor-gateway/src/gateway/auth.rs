@@ -1,6 +1,7 @@
 //! Upstream API key resolution (OpenAI Bearer vs Anthropic x-api-key).
 
 use crate::config::{api_key_value, provider_kind};
+use pvisor_overlaynet::api::ForwardingHeaders;
 
 use axum::http::HeaderMap;
 use reqwest::RequestBuilder;
@@ -31,7 +32,6 @@ pub(super) fn consume_local_token(headers: &mut HeaderMap, expected: &str) -> bo
     authorized
 }
 use crate::provider::ProviderKind;
-use pvisor_overlaynet::headers::skip_upstream_forward_header_for;
 
 pub fn resolve_upstream_api_key(
     route: &ModelRoute,
@@ -79,7 +79,7 @@ pub fn apply_upstream_headers(
         // and removes stale Content-Encoding/Content-Length response headers.
         if name == axum::http::header::ACCEPT_ENCODING
             || name == crate::model_wait::INFERENCE_IDLE_HEADER
-            || skip_upstream_forward_header_for(client_headers, name.as_str())
+            || ForwardingHeaders::skip_upstream_forward_header(client_headers, name.as_str())
         {
             continue;
         }

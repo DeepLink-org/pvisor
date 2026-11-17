@@ -6,8 +6,10 @@ use axum::extract::Request;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use bytes::Bytes;
-use pvisor_overlaynet::policy::{DenyReason, NetworkPolicy};
-use pvisor_overlaynet::server::{OverlayRequestContext, OverlayServerState, OverlaySink};
+use pvisor_core::network::NetworkPolicy;
+use pvisor_overlaynet::api::OverlayProxy;
+
+use pvisor_overlaynet::api::{OverlayRequestContext, OverlayServerState, OverlaySink};
 
 use super::llm_capture::llm_capture;
 use super::state::GatewayState;
@@ -31,7 +33,7 @@ pub(crate) fn build_router(state: GatewayState) -> Router {
     .with_resolved_address_policy(state.resolved_address_policy)
     .with_interception_metrics(state.interception_metrics.clone())
     .with_bandwidth_registry(state.bandwidth_registry.clone());
-    let router = pvisor_overlaynet::server::build_router(server);
+    let router = pvisor_overlaynet::api::OverlayProxy::into_router(server);
     let Some(token) = client_token else {
         return router;
     };
@@ -109,7 +111,7 @@ impl OverlaySink for GatewayState {
     fn download_wait(
         &self,
         _context: &OverlayRequestContext<Self::RequestContext>,
-    ) -> anyhow::Result<Option<Box<dyn pvisor_overlaynet::server::DownloadWait>>> {
+    ) -> anyhow::Result<Option<Box<dyn pvisor_overlaynet::api::DownloadWait>>> {
         match &self.model_wait {
             Some(lifecycle) => lifecycle.reserve_download(),
             None => Ok(None),
@@ -122,64 +124,54 @@ impl OverlaySink for GatewayState {
                 != crate::protocol::ProtocolKind::Unknown
     }
 
-    fn on_denied(
+    fn observe(
         &self,
-        context: &OverlayRequestContext<Self::RequestContext>,
-        host: &str,
-        reason: &DenyReason,
+        context: &pvisor_overlaynet::api::OverlayRequestContext<Self::RequestContext>,
+        event: pvisor_overlaynet::api::ProxyEvent<'_>,
     ) {
-        if context.sink.debug_on {
-            debug::log_network_denied(
-                self.storage.as_path(),
-                host,
-                context.policy.mode_str(),
-                reason.as_str(),
-                &context.session_id,
-            );
-        }
-    }
-
-    fn on_dispatch(
-        &self,
-        context: &OverlayRequestContext<Self::RequestContext>,
-        request: &Request,
-        target: &str,
-    ) {
-        if context.sink.debug_on {
-            debug::log_dispatch(
-                self.storage.as_path(),
-                request.method().as_str(),
-                &request.uri().to_string(),
-                &context.session_id,
-                target,
-            );
-        }
-    }
-
-    fn on_proxy_result(
-        &self,
-        context: &OverlayRequestContext<Self::RequestContext>,
-        target: &str,
-        status: StatusCode,
-    ) {
-        if context.sink.debug_on {
-            debug::log_proxy_result(
-                self.storage.as_path(),
-                target,
-                status.as_u16(),
-                &context.session_id,
-            );
-        }
-    }
-
-    fn on_proxy_error(
-        &self,
-        context: &OverlayRequestContext<Self::RequestContext>,
-        target: &str,
-        error: &str,
-    ) {
-        if context.sink.debug_on {
-            debug::log_proxy_error(self.storage.as_path(), target, error, &context.session_id);
+        match event {
+            pvisor_overlaynet::api::ProxyEvent::Denied { host, reason } => {
+                if context.sink.debug_on {
+                    debug::log_network_denied(
+                        self.storage.as_path(),
+                        host,
+                        context.policy.mode_str(),
+                        reason.as_str(),
+                        &context.session_id,
+                    );
+                }
+            }
+            pvisor_overlaynet::api::ProxyEvent::Dispatched { request, target } => {
+                if context.sink.debug_on {
+                    debug::log_dispatch(
+                        self.storage.as_path(),
+                        request.method().as_str(),
+                        &request.uri().to_string(),
+                        &context.session_id,
+                        target,
+                    );
+                }
+            }
+            pvisor_overlaynet::api::ProxyEvent::Response { target, status } => {
+                if context.sink.debug_on {
+                    debug::log_proxy_result(
+                        self.storage.as_path(),
+                        target,
+                        status.as_u16(),
+                        &context.session_id,
+                    );
+                }
+            }
+            pvisor_overlaynet::api::ProxyEvent::Failed { target, error } => {
+                if context.sink.debug_on {
+                    debug::log_proxy_error(
+                        self.storage.as_path(),
+                        target,
+                        error,
+                        &context.session_id,
+                    );
+                }
+            }
         }
     }
 }

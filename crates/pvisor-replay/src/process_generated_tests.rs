@@ -1,7 +1,7 @@
 //! Bounded native full-duplex and healthy-successor composition. No shell,
 //! interpreter, descendants, external services or production test hook.
 use super::{ProcessSpec, process_group_exists, run_process};
-use crate::error::ReplayErrorKind;
+use crate::api::ReplayErrorKind;
 use std::{
     fs,
     io::{self, Read, Write},

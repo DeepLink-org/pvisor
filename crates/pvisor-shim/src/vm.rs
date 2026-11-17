@@ -14,6 +14,7 @@ use crate::plan::{ContainerPlan, guest_config, vm_exec_enabled, vm_ram_dedup_ena
 use crate::sockets::{bridge_socket_path, control_socket_path};
 use anyhow::{Context, Result};
 use pvisor_guest::control::CONTROL_PORT;
+use pvisor_overlaynet::api::VmNetworkConfiguration;
 use pvisor_vm::api::{RamDedupControl, VmConfiguration, VmRuntime};
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
@@ -118,8 +119,8 @@ pub fn boot_vm(
         // task's policy authorizes it. The supervisor configures the
         // static address without DHCP.
         guest.network = Some(pvisor_guest::NetworkConfig {
-            address: pvisor_overlaynet::vm::GUEST_IPV4.octets(),
-            gateway: pvisor_overlaynet::vm::ROUTER_IPV4.octets(),
+            address: pvisor_overlaynet::api::GUEST_IPV4.octets(),
+            gateway: pvisor_overlaynet::api::ROUTER_IPV4.octets(),
         });
     }
     let guest_config = serde_json::to_vec(&guest)?;
@@ -255,7 +256,10 @@ pub fn boot_vm(
         }
     }
     if let Some(stream) = network {
-        vm.network(stream, pvisor_overlaynet::vm::VM_MAC)?;
+        vm.network(
+            stream,
+            pvisor_overlaynet::api::VmNetworkConfig::guest_mac(pvisor_overlaynet::api::GUEST_IPV4),
+        )?;
     }
     if let Some((stdin, stdout, stderr)) = stdio {
         // Route the krun-stdio console ports to the task's own descriptors:

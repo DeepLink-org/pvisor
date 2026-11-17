@@ -1,3 +1,4 @@
+use crate::api::AgentProfile;
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -14,12 +15,12 @@ mod swe_agent;
 
 use serde_json::{Value, json};
 
-use crate::error::{ReplayError, ReplayErrorKind, ResultExt};
+use crate::api::{AgentKind, PlaybackRequest, ReplayMode};
+use crate::api::{ReplayError, ReplayErrorKind};
+use crate::error::ResultExt;
 use crate::io::{atomic_write, atomic_write_json, read_regular_file, sha256};
 use crate::journal::Journal;
-use crate::model::{
-    AgentKind, FreshObservation, PlaybackRequest, ReplayMode, ReplayOutcome, ReplayPlan,
-};
+use crate::model::{FreshObservation, ReplayOutcome, ReplayPlan};
 use crate::process::{ProcessSpec, run_process};
 pub(crate) use runtime::{LaunchSpec, resolve_launch_spec};
 use runtime::{
@@ -29,16 +30,16 @@ use runtime::{
 
 const MAX_TOOL_OUTPUT_BYTES: usize = 4 * 1024 * 1024;
 
-pub struct RunContext<'a> {
-    pub request: &'a PlaybackRequest,
-    pub state_dir: &'a Path,
-    pub output_dir: &'a Path,
-    pub launch: Option<&'a LaunchSpec>,
-    pub session_id: &'a str,
-    pub nonce: &'a str,
+pub(crate) struct RunContext<'a> {
+    pub(crate) request: &'a PlaybackRequest,
+    pub(crate) state_dir: &'a Path,
+    pub(crate) output_dir: &'a Path,
+    pub(crate) launch: Option<&'a LaunchSpec>,
+    pub(crate) session_id: &'a str,
+    pub(crate) nonce: &'a str,
 }
 
-pub fn build_plan(request: &PlaybackRequest) -> Result<ReplayPlan, ReplayError> {
+pub(crate) fn build_plan(request: &PlaybackRequest) -> Result<ReplayPlan, ReplayError> {
     match request.agent {
         AgentKind::ClaudeCode => claude_code::build(request),
         AgentKind::Codex => generic::build(request, generic::NativeJsonlAgent::Codex),
@@ -50,7 +51,7 @@ pub fn build_plan(request: &PlaybackRequest) -> Result<ReplayPlan, ReplayError> 
     }
 }
 
-pub fn run(
+pub(crate) fn run(
     plan: &ReplayPlan,
     context: &RunContext<'_>,
     journal: &mut Journal,

@@ -1,125 +1,14 @@
+use crate::api::ReplayToml;
+use crate::api::{ReplayConfiguration, ReplayRequest};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 use serde::Deserialize;
 
-use crate::error::{ReplayError, ReplayErrorKind, ResultExt};
-use crate::model::{AgentKind, PlaybackRequest, REQUEST_SCHEMA_VERSION, ReplayMode};
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ReplayToml {
-    pub replay: ReplayConfig,
-    #[serde(default)]
-    pub run: RunConfig,
-    #[serde(default)]
-    pub overlayfs: OverlayFsConfig,
-    #[serde(default)]
-    pub overlaynet: OverlayNetConfig,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ReplayConfig {
-    pub agent: String,
-    pub trajectory: PathBuf,
-    pub after_step: usize,
-    pub agent_entrypoint: Option<PathBuf>,
-    pub agent_runtime: Option<PathBuf>,
-    #[serde(default)]
-    pub disallowed_tools: Vec<String>,
-    pub trajectory_assets: Option<PathBuf>,
-    pub max_steps: Option<usize>,
-    pub session_id: Option<String>,
-    #[serde(default)]
-    pub replay_only: bool,
-    #[serde(default)]
-    pub prepare_only: bool,
-    #[serde(default)]
-    pub allow_stale_observations: bool,
-    #[serde(default)]
-    pub disable_thinking: bool,
-    pub boundary_user_prompt: Option<String>,
-    pub run_id: Option<String>,
-    pub workspace: Option<PathBuf>,
-    pub state_dir: Option<PathBuf>,
-    pub output_dir: Option<PathBuf>,
-}
-
-#[derive(Debug, Clone, Default, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct RunConfig {
-    #[serde(default)]
-    pub safe: bool,
-    pub executor: Option<String>,
-    pub timeout_ms: Option<u64>,
-    pub policy: Option<String>,
-    #[serde(default)]
-    pub inherit_env: bool,
-    #[serde(default)]
-    pub pass_env: Vec<String>,
-}
-
-#[derive(Debug, Clone, Default, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct OverlayFsConfig {
-    /// Absolute path visible to the replay Agent.
-    pub path: Option<PathBuf>,
-    /// Host layers composed in declaration order.
-    #[serde(default)]
-    pub compose: Vec<PathBuf>,
-    pub commit: Option<String>,
-}
-
-#[derive(Debug, Clone, Default, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct OverlayNetConfig {
-    pub mode: Option<String>,
-    pub policy: Option<String>,
-}
-
-impl ReplayToml {
-    pub fn from_file(path: &Path) -> Result<Self, ReplayError> {
-        let source = fs::read_to_string(path).replay_context(
-            ReplayErrorKind::Configuration,
-            format!("read replay config {}", path.display()),
-        )?;
-        toml::from_str(&source).replay_context(
-            ReplayErrorKind::Configuration,
-            format!("parse replay config {}", path.display()),
-        )
-    }
-
-    pub fn into_request(self, cwd: &Path) -> Result<PlaybackRequest, ReplayError> {
-        let replay = self.replay;
-        let mode = replay_mode(replay.prepare_only, replay.replay_only)?;
-        Ok(PlaybackRequest {
-            agent: AgentKind::from_str(&replay.agent)
-                .map_err(|message| ReplayError::new(ReplayErrorKind::UnsupportedAgent, message))?,
-            trajectory: replay.trajectory,
-            after_step: replay.after_step,
-            workspace: replay.workspace.unwrap_or_else(|| cwd.to_path_buf()),
-            state_dir: replay
-                .state_dir
-                .unwrap_or_else(|| PathBuf::from("/tmp/pvisor-sandbox-replay/state")),
-            output_dir: replay
-                .output_dir
-                .unwrap_or_else(|| PathBuf::from("/tmp/pvisor-sandbox-replay/output")),
-            agent_entrypoint: replay.agent_entrypoint,
-            agent_runtime: replay.agent_runtime,
-            disallowed_tools: replay.disallowed_tools,
-            trajectory_assets: replay.trajectory_assets,
-            session_id: replay.session_id,
-            max_steps: replay.max_steps,
-            mode,
-            allow_stale_observations: replay.allow_stale_observations,
-            run_id: replay.run_id,
-            disable_thinking: replay.disable_thinking,
-            boundary_user_prompt: replay.boundary_user_prompt,
-        })
-    }
-}
+use crate::api::{AgentKind, PlaybackRequest, REQUEST_SCHEMA_VERSION, ReplayMode};
+use crate::api::{ReplayError, ReplayErrorKind};
+use crate::error::ResultExt;
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -157,43 +46,6 @@ struct JsonAgent {
     disallowed_tools: Vec<String>,
 }
 
-pub fn request_from_json(path: &Path) -> Result<PlaybackRequest, ReplayError> {
-    let bytes = fs::read(path).replay_context(
-        ReplayErrorKind::Configuration,
-        format!("read request {}", path.display()),
-    )?;
-    let request: JsonRequest = serde_json::from_slice(&bytes).replay_context(
-        ReplayErrorKind::Configuration,
-        "parse sandbox-playback request",
-    )?;
-    if request.schema_version != REQUEST_SCHEMA_VERSION {
-        return Err(ReplayError::configuration(format!(
-            "request schema_version must be {REQUEST_SCHEMA_VERSION:?}"
-        )));
-    }
-    let mode = replay_mode(request.prepare_only, request.replay_only)?;
-    Ok(PlaybackRequest {
-        agent: AgentKind::from_str(&request.agent.kind)
-            .map_err(|message| ReplayError::new(ReplayErrorKind::UnsupportedAgent, message))?,
-        trajectory: request.trajectory,
-        after_step: request.after_step,
-        workspace: request.workspace,
-        state_dir: request.state_dir,
-        output_dir: request.output_dir,
-        agent_entrypoint: request.agent.entrypoint,
-        agent_runtime: request.agent.runtime,
-        disallowed_tools: request.agent.disallowed_tools,
-        trajectory_assets: request.trajectory_assets,
-        session_id: request.session_id,
-        max_steps: request.max_steps,
-        mode,
-        allow_stale_observations: request.allow_stale_observations,
-        run_id: request.run_id,
-        disable_thinking: request.disable_thinking,
-        boundary_user_prompt: request.boundary_user_prompt,
-    })
-}
-
 fn replay_mode(prepare_only: bool, replay_only: bool) -> Result<ReplayMode, ReplayError> {
     match (prepare_only, replay_only) {
         (true, true) => Err(ReplayError::configuration(
@@ -205,10 +57,101 @@ fn replay_mode(prepare_only: bool, replay_only: bool) -> Result<ReplayMode, Repl
     }
 }
 
+impl ReplayConfiguration for ReplayToml {
+    fn from_file(path: &Path) -> Result<Self, ReplayError> {
+        let source = fs::read_to_string(path).replay_context(
+            ReplayErrorKind::Configuration,
+            format!("read replay config {}", path.display()),
+        )?;
+        toml::from_str(&source).replay_context(
+            ReplayErrorKind::Configuration,
+            format!("parse replay config {}", path.display()),
+        )
+    }
+    fn into_request(self, cwd: &Path) -> Result<PlaybackRequest, ReplayError> {
+        let replay = self.replay;
+        let mode = replay_mode(replay.prepare_only, replay.replay_only)?;
+        Ok(PlaybackRequest {
+            agent: AgentKind::from_str(&replay.agent)
+                .map_err(|message| ReplayError::new(ReplayErrorKind::UnsupportedAgent, message))?,
+            trajectory: replay.trajectory,
+            after_step: replay.after_step,
+            workspace: replay.workspace.unwrap_or_else(|| cwd.to_path_buf()),
+            state_dir: replay
+                .state_dir
+                .unwrap_or_else(|| PathBuf::from("/tmp/pvisor-sandbox-replay/state")),
+            output_dir: replay
+                .output_dir
+                .unwrap_or_else(|| PathBuf::from("/tmp/pvisor-sandbox-replay/output")),
+            agent_entrypoint: replay.agent_entrypoint,
+            agent_runtime: replay.agent_runtime,
+            disallowed_tools: replay.disallowed_tools,
+            trajectory_assets: replay.trajectory_assets,
+            session_id: replay.session_id,
+            max_steps: replay.max_steps,
+            mode,
+            allow_stale_observations: replay.allow_stale_observations,
+            run_id: replay.run_id,
+            disable_thinking: replay.disable_thinking,
+            boundary_user_prompt: replay.boundary_user_prompt,
+        })
+    }
+}
+
+impl ReplayRequest for PlaybackRequest {
+    fn from_json(path: &Path) -> Result<PlaybackRequest, ReplayError> {
+        let bytes = fs::read(path).replay_context(
+            ReplayErrorKind::Configuration,
+            format!("read request {}", path.display()),
+        )?;
+        let request: JsonRequest = serde_json::from_slice(&bytes).replay_context(
+            ReplayErrorKind::Configuration,
+            "parse sandbox-playback request",
+        )?;
+        if request.schema_version != REQUEST_SCHEMA_VERSION {
+            return Err(ReplayError::configuration(format!(
+                "request schema_version must be {REQUEST_SCHEMA_VERSION:?}"
+            )));
+        }
+        let mode = replay_mode(request.prepare_only, request.replay_only)?;
+        Ok(PlaybackRequest {
+            agent: AgentKind::from_str(&request.agent.kind)
+                .map_err(|message| ReplayError::new(ReplayErrorKind::UnsupportedAgent, message))?,
+            trajectory: request.trajectory,
+            after_step: request.after_step,
+            workspace: request.workspace,
+            state_dir: request.state_dir,
+            output_dir: request.output_dir,
+            agent_entrypoint: request.agent.entrypoint,
+            agent_runtime: request.agent.runtime,
+            disallowed_tools: request.agent.disallowed_tools,
+            trajectory_assets: request.trajectory_assets,
+            session_id: request.session_id,
+            max_steps: request.max_steps,
+            mode,
+            allow_stale_observations: request.allow_stale_observations,
+            run_id: request.run_id,
+            disable_thinking: request.disable_thinking,
+            boundary_user_prompt: request.boundary_user_prompt,
+        })
+    }
+    fn execute(self) -> Result<crate::api::ExecutionReport, ReplayError> {
+        crate::engine::execute(self)
+    }
+}
+
+impl PlaybackRequest {
+    pub(crate) fn boundary_user_prompt(&self) -> Option<&str> {
+        self.boundary_user_prompt
+            .as_deref()
+            .filter(|prompt| !prompt.is_empty())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::ReplayMode;
+    use crate::api::ReplayMode;
 
     #[test]
     fn toml_maps_prepare_and_replay_modes_and_rejects_both() {
@@ -378,7 +321,7 @@ mode = "off"
         )
         .unwrap();
 
-        let request = request_from_json(&path).unwrap();
+        let request = PlaybackRequest::from_json(&path).unwrap();
 
         assert_eq!(request.agent, AgentKind::MiniSweAgent);
         assert_eq!(request.after_step, 49);
@@ -407,13 +350,13 @@ mode = "off"
         });
         fs::write(&path, serde_json::to_vec(&value).unwrap()).unwrap();
 
-        let request = request_from_json(&path).unwrap();
+        let request = PlaybackRequest::from_json(&path).unwrap();
         assert_eq!(request.mode, ReplayMode::PrepareOnly);
         assert!(request.allow_stale_observations);
 
         value["replay_only"] = serde_json::Value::Bool(true);
         fs::write(&path, serde_json::to_vec(&value).unwrap()).unwrap();
-        assert!(request_from_json(&path).is_err());
+        assert!(PlaybackRequest::from_json(&path).is_err());
     }
 
     #[test]
@@ -439,7 +382,7 @@ mode = "off"
         )
         .unwrap();
 
-        let request = request_from_json(&path).unwrap();
+        let request = PlaybackRequest::from_json(&path).unwrap();
 
         assert!(request.disable_thinking);
     }
@@ -464,8 +407,13 @@ mode = "off"
         )
         .unwrap();
 
-        let request = request_from_json(&path).unwrap();
+        let request = PlaybackRequest::from_json(&path).unwrap();
 
         assert_eq!(request.boundary_user_prompt(), Some("Inspect O-prime N."));
+        let mut request = request;
+        request.boundary_user_prompt = Some(String::new());
+        assert_eq!(request.boundary_user_prompt(), None);
+        request.boundary_user_prompt = Some(" ".into());
+        assert_eq!(request.boundary_user_prompt(), Some(" "));
     }
 }

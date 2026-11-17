@@ -283,7 +283,7 @@ pub(crate) fn filesystem_activity(
 }
 
 pub(crate) fn network_activity(
-    value: &pvisor_overlaynet::InterceptionSnapshot,
+    value: &pvisor_overlaynet::api::InterceptionSnapshot,
     source: ObservationSource,
 ) -> NetworkActivity {
     let denied_samples = value

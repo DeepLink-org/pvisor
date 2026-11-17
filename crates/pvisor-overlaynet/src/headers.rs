@@ -1,5 +1,6 @@
 //! Shared HTTP header filtering for proxy forwarding.
 
+use crate::api::ForwardingHeaders;
 use axum::http::HeaderMap;
 
 const HOP_BY_HOP: &[&str] = &[
@@ -15,56 +16,25 @@ const HOP_BY_HOP: &[&str] = &[
     "upgrade",
 ];
 
-pub fn is_hop_by_hop(name: &str) -> bool {
+pub(crate) fn is_hop_by_hop(name: &str) -> bool {
     HOP_BY_HOP.iter().any(|h| name.eq_ignore_ascii_case(h))
 }
 
-pub fn skip_transparent_forward_header(name: &str) -> bool {
+pub(crate) fn skip_transparent_forward_header(name: &str) -> bool {
     is_hop_by_hop(name) || name.eq_ignore_ascii_case("host")
 }
 
 /// RFC 9110 allows `Connection` to nominate additional hop-by-hop headers.
 /// Those fields must be removed alongside the fixed proxy header set.
-pub fn skip_transparent_forward_header_for(headers: &HeaderMap, name: &str) -> bool {
+pub(crate) fn skip_transparent_forward_header_for(headers: &HeaderMap, name: &str) -> bool {
     skip_transparent_forward_header(name) || connection_nominates_header(headers, name)
 }
 
-pub fn skip_upstream_forward_header(name: &str) -> bool {
+pub(crate) fn skip_upstream_forward_header(name: &str) -> bool {
     matches!(
         name.to_ascii_lowercase().as_str(),
         "host" | "content-length" | "x-api-key" | "x-goog-api-key" | "authorization" | "expect"
     ) || is_hop_by_hop(name)
-}
-
-/// Apply upstream credential/body filtering and Connection nominations together.
-pub fn skip_upstream_forward_header_for(headers: &HeaderMap, name: &str) -> bool {
-    skip_upstream_forward_header(name) || connection_nominates_header(headers, name)
-}
-
-pub fn skip_response_header_when_body_changed(name: &str) -> bool {
-    is_hop_by_hop(name)
-        || matches!(
-            name.to_ascii_lowercase().as_str(),
-            "content-length" | "content-encoding" | "content-type"
-        )
-}
-
-/// Filter upstream response headers after a proxy has consumed and rebuilt the
-/// response body. HTTP framing is always local to the current hop, so stale
-/// transfer metadata must not survive even when the payload bytes are unchanged.
-pub fn skip_response_header_after_reframing(
-    headers: &HeaderMap,
-    name: &str,
-    body_changed: bool,
-) -> bool {
-    is_hop_by_hop(name)
-        || connection_nominates_header(headers, name)
-        || name.eq_ignore_ascii_case("content-length")
-        || (body_changed
-            && matches!(
-                name.to_ascii_lowercase().as_str(),
-                "content-encoding" | "content-type"
-            ))
 }
 
 fn connection_nominates_header(headers: &HeaderMap, name: &str) -> bool {
@@ -77,14 +47,28 @@ fn connection_nominates_header(headers: &HeaderMap, name: &str) -> bool {
         .any(|token| token.eq_ignore_ascii_case(name))
 }
 
-pub fn is_websocket_upgrade(headers: &HeaderMap) -> bool {
-    headers
-        .get_all("upgrade")
-        .iter()
-        .filter_map(|value| value.to_str().ok())
-        .flat_map(|value| value.split(','))
-        .map(str::trim)
-        .any(|protocol| protocol.eq_ignore_ascii_case("websocket"))
+impl ForwardingHeaders for HeaderMap {
+    fn skip_upstream_forward_header(&self, name: &str) -> bool {
+        skip_upstream_forward_header(name) || connection_nominates_header(self, name)
+    }
+    fn skip_response_header_after_reframing(&self, name: &str, body_changed: bool) -> bool {
+        is_hop_by_hop(name)
+            || connection_nominates_header(self, name)
+            || name.eq_ignore_ascii_case("content-length")
+            || (body_changed
+                && matches!(
+                    name.to_ascii_lowercase().as_str(),
+                    "content-encoding" | "content-type"
+                ))
+    }
+    fn is_websocket_upgrade(&self) -> bool {
+        self.get_all("upgrade")
+            .iter()
+            .filter_map(|value| value.to_str().ok())
+            .flat_map(|value| value.split(','))
+            .map(str::trim)
+            .any(|protocol| protocol.eq_ignore_ascii_case("websocket"))
+    }
 }
 
 #[cfg(test)]
@@ -115,8 +99,16 @@ mod tests {
     fn filters_hop_by_hop_and_rewritten_body_headers() {
         assert!(skip_transparent_forward_header("host"));
         assert!(skip_upstream_forward_header("authorization"));
-        assert!(skip_response_header_when_body_changed("content-length"));
-        assert!(!skip_response_header_when_body_changed("x-request-id"));
+        assert!(ForwardingHeaders::skip_response_header_after_reframing(
+            &HeaderMap::new(),
+            "content-length",
+            true
+        ));
+        assert!(!ForwardingHeaders::skip_response_header_after_reframing(
+            &HeaderMap::new(),
+            "x-request-id",
+            true
+        ));
     }
 
     #[test]
@@ -124,27 +116,27 @@ mod tests {
         let mut headers = HeaderMap::new();
         headers.insert("connection", "keep-alive, x-upstream-hop".parse().unwrap());
 
-        assert!(skip_response_header_after_reframing(
+        assert!(ForwardingHeaders::skip_response_header_after_reframing(
             &headers,
             "transfer-encoding",
             false
         ));
-        assert!(skip_response_header_after_reframing(
+        assert!(ForwardingHeaders::skip_response_header_after_reframing(
             &headers,
             "content-length",
             false
         ));
-        assert!(skip_response_header_after_reframing(
+        assert!(ForwardingHeaders::skip_response_header_after_reframing(
             &headers,
             "x-upstream-hop",
             false
         ));
-        assert!(!skip_response_header_after_reframing(
+        assert!(!ForwardingHeaders::skip_response_header_after_reframing(
             &headers,
             "content-type",
             false
         ));
-        assert!(skip_response_header_after_reframing(
+        assert!(ForwardingHeaders::skip_response_header_after_reframing(
             &headers,
             "content-type",
             true
@@ -191,9 +183,9 @@ mod tests {
     fn websocket_upgrade_is_a_case_insensitive_protocol_token() {
         let mut headers = HeaderMap::new();
         headers.insert("upgrade", "h2c, WebSocket".parse().unwrap());
-        assert!(is_websocket_upgrade(&headers));
+        assert!(ForwardingHeaders::is_websocket_upgrade(&headers));
         headers.insert("upgrade", "h2c".parse().unwrap());
-        assert!(!is_websocket_upgrade(&headers));
+        assert!(!ForwardingHeaders::is_websocket_upgrade(&headers));
     }
 
     proptest! {
@@ -232,17 +224,17 @@ mod tests {
             body_changed in any::<bool>(),
         ) {
             let headers = HeaderMap::new();
-            prop_assert!(skip_response_header_after_reframing(
+            prop_assert!(ForwardingHeaders::skip_response_header_after_reframing(
                 &headers,
                 "content-length",
                 body_changed,
             ));
             prop_assert_eq!(
-                skip_response_header_after_reframing(&headers, "content-type", body_changed),
+                ForwardingHeaders::skip_response_header_after_reframing(&headers, "content-type", body_changed),
                 body_changed,
             );
             prop_assert_eq!(
-                skip_response_header_after_reframing(&headers, "content-encoding", body_changed),
+                ForwardingHeaders::skip_response_header_after_reframing(&headers, "content-encoding", body_changed),
                 body_changed,
             );
         }
@@ -257,9 +249,9 @@ mod tests {
                 "upgrade",
                 format!("{prefix}, WebSocket, {suffix}").parse().unwrap(),
             );
-            prop_assert!(is_websocket_upgrade(&headers));
+            prop_assert!(ForwardingHeaders::is_websocket_upgrade(&headers));
             headers.insert("upgrade", format!("{prefix}websocket{suffix}").parse().unwrap());
-            prop_assert!(!is_websocket_upgrade(&headers));
+            prop_assert!(!ForwardingHeaders::is_websocket_upgrade(&headers));
         }
     }
 }

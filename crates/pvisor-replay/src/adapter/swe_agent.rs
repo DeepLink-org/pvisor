@@ -4,12 +4,12 @@ use serde_json::{Value, json};
 
 use super::runtime::safe_relative;
 use super::{RunContext, check_boundary, prepared_outcome, run_sdk_bridge};
-use crate::error::{ReplayError, ReplayErrorKind, ResultExt};
+use crate::api::{AgentKind, PlaybackRequest, ReplayMode};
+use crate::api::{ReplayError, ReplayErrorKind};
+use crate::error::ResultExt;
 use crate::io::{atomic_write_json, canonicalize, read_regular_file, sha256};
 use crate::journal::Journal;
-use crate::model::{
-    AgentKind, PlaybackRequest, ReplayMode, ReplayOutcome, ReplayPlan, ToolBatch, ToolCall,
-};
+use crate::model::{ReplayOutcome, ReplayPlan, ToolBatch, ToolCall};
 
 pub(super) fn execute(
     plan: &ReplayPlan,

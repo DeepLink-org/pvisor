@@ -3,7 +3,11 @@
 //! Coverage is deliberately separate from egress policy. A deny decision is
 //! only an enforcement guarantee when the active driver is non-bypassable.
 
-use serde::{Deserialize, Serialize};
+use crate::api::{InterceptionCoverage, InterceptionObservation};
+use crate::api::{
+    InterceptionDriver, InterceptionProfile, InterceptionSnapshot, InterceptionStrength,
+    TargetCounters,
+};
 use std::collections::BTreeMap;
 use std::net::IpAddr;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -12,115 +16,6 @@ use std::sync::{Arc, Mutex};
 use pvisor_core::NetworkTransport;
 
 const MAX_TARGETS: usize = 256;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum InterceptionDriver {
-    ExplicitProxy,
-    VmSmoltcp,
-    LinuxNetns,
-    LinuxSeccompNotify,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum InterceptionStrength {
-    /// Only traffic that cooperates with the configured proxy is observed.
-    Cooperative,
-    /// The process tree has no network path around the driver.
-    NonBypassable,
-}
-
-/// Stable description of what an active interception driver actually covers.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct InterceptionProfile {
-    pub driver: InterceptionDriver,
-    pub strength: InterceptionStrength,
-    pub http: bool,
-    pub tcp_connect: bool,
-    pub dns: bool,
-    /// General UDP forwarding; local DNS/DHCP responders are not UDP egress.
-    pub udp: bool,
-    pub inherited_by_children: bool,
-    /// Explicit member-to-member IPv4 TCP/UDP/ICMP; independent of UDP egress.
-    #[serde(default)]
-    pub peer_ipv4: bool,
-}
-
-impl InterceptionProfile {
-    pub const fn explicit_proxy() -> Self {
-        Self {
-            driver: InterceptionDriver::ExplicitProxy,
-            strength: InterceptionStrength::Cooperative,
-            http: true,
-            tcp_connect: true,
-            dns: false,
-            udp: false,
-            inherited_by_children: false,
-            peer_ipv4: false,
-        }
-    }
-
-    pub const fn is_enforcing(&self) -> bool {
-        matches!(self.strength, InterceptionStrength::NonBypassable)
-    }
-
-    pub const fn vm_smoltcp() -> Self {
-        Self {
-            driver: InterceptionDriver::VmSmoltcp,
-            strength: InterceptionStrength::NonBypassable,
-            http: false,
-            tcp_connect: true,
-            dns: true,
-            udp: false,
-            inherited_by_children: true,
-            peer_ipv4: false,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default)]
-pub struct InterceptionSnapshot {
-    pub requests_seen: u64,
-    pub policy_allowed: u64,
-    pub policy_denied: u64,
-    pub connect_requests: u64,
-    pub absolute_http_requests: u64,
-    pub sink_requests: u64,
-    pub failures: u64,
-    pub dns_queries: u64,
-    pub dns_answers: u64,
-    pub tcp_flows_opened: u64,
-    pub tcp_flows_denied: u64,
-    pub tcp_connect_failures: u64,
-    pub bytes_guest_to_host: u64,
-    pub bytes_host_to_guest: u64,
-    pub unsupported_packets: u64,
-    /// Ethernet frames accepted by the direct peer transport (including ARP).
-    #[serde(default)]
-    pub peer_packets_sent: u64,
-    /// Validated peer frames queued for delivery to this guest.
-    #[serde(default)]
-    pub peer_packets_received: u64,
-    /// Peer frames dropped for invalid identity, policy, missing destination or congestion.
-    #[serde(default)]
-    pub peer_packets_dropped: u64,
-    pub active_tcp_flows: u64,
-    pub peak_tcp_flows: u64,
-    /// Bounded decisions for destinations that reached this driver. A proxy
-    /// cannot account for traffic that bypassed it.
-    pub targets: BTreeMap<String, TargetCounters>,
-    pub target_overflow: u64,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default)]
-pub struct TargetCounters {
-    pub allowed: u64,
-    pub denied: u64,
-    pub failed: u64,
-}
 
 #[derive(Default)]
 struct TargetObservations {
@@ -185,38 +80,6 @@ impl InterceptionMetrics {
         self.counters
             .peer_packets_dropped
             .fetch_add(1, Ordering::Relaxed);
-    }
-
-    pub fn snapshot(&self) -> InterceptionSnapshot {
-        let targets = self
-            .counters
-            .targets
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        InterceptionSnapshot {
-            requests_seen: self.counters.requests_seen.load(Ordering::Relaxed),
-            policy_allowed: self.counters.policy_allowed.load(Ordering::Relaxed),
-            policy_denied: self.counters.policy_denied.load(Ordering::Relaxed),
-            connect_requests: self.counters.connect_requests.load(Ordering::Relaxed),
-            absolute_http_requests: self.counters.absolute_http_requests.load(Ordering::Relaxed),
-            sink_requests: self.counters.sink_requests.load(Ordering::Relaxed),
-            failures: self.counters.failures.load(Ordering::Relaxed),
-            dns_queries: self.counters.dns_queries.load(Ordering::Relaxed),
-            dns_answers: self.counters.dns_answers.load(Ordering::Relaxed),
-            tcp_flows_opened: self.counters.tcp_flows_opened.load(Ordering::Relaxed),
-            tcp_flows_denied: self.counters.tcp_flows_denied.load(Ordering::Relaxed),
-            tcp_connect_failures: self.counters.tcp_connect_failures.load(Ordering::Relaxed),
-            bytes_guest_to_host: self.counters.bytes_guest_to_host.load(Ordering::Relaxed),
-            bytes_host_to_guest: self.counters.bytes_host_to_guest.load(Ordering::Relaxed),
-            unsupported_packets: self.counters.unsupported_packets.load(Ordering::Relaxed),
-            peer_packets_sent: self.counters.peer_packets_sent.load(Ordering::Relaxed),
-            peer_packets_received: self.counters.peer_packets_received.load(Ordering::Relaxed),
-            peer_packets_dropped: self.counters.peer_packets_dropped.load(Ordering::Relaxed),
-            active_tcp_flows: self.counters.active_tcp_flows.load(Ordering::Relaxed),
-            peak_tcp_flows: self.counters.peak_tcp_flows.load(Ordering::Relaxed),
-            targets: targets.targets.clone(),
-            target_overflow: targets.overflow,
-        }
     }
 
     fn observe_target(
@@ -390,6 +253,66 @@ impl InterceptionMetrics {
     }
 }
 
+impl InterceptionCoverage for InterceptionProfile {
+    fn explicit_proxy() -> Self {
+        Self {
+            driver: InterceptionDriver::ExplicitProxy,
+            strength: InterceptionStrength::Cooperative,
+            http: true,
+            tcp_connect: true,
+            dns: false,
+            udp: false,
+            inherited_by_children: false,
+            peer_ipv4: false,
+        }
+    }
+    fn vm_smoltcp() -> Self {
+        Self {
+            driver: InterceptionDriver::VmSmoltcp,
+            strength: InterceptionStrength::NonBypassable,
+            http: false,
+            tcp_connect: true,
+            dns: true,
+            udp: false,
+            inherited_by_children: true,
+            peer_ipv4: false,
+        }
+    }
+}
+impl InterceptionObservation for InterceptionMetrics {
+    fn snapshot(&self) -> InterceptionSnapshot {
+        let targets = self
+            .counters
+            .targets
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        InterceptionSnapshot {
+            requests_seen: self.counters.requests_seen.load(Ordering::Relaxed),
+            policy_allowed: self.counters.policy_allowed.load(Ordering::Relaxed),
+            policy_denied: self.counters.policy_denied.load(Ordering::Relaxed),
+            connect_requests: self.counters.connect_requests.load(Ordering::Relaxed),
+            absolute_http_requests: self.counters.absolute_http_requests.load(Ordering::Relaxed),
+            sink_requests: self.counters.sink_requests.load(Ordering::Relaxed),
+            failures: self.counters.failures.load(Ordering::Relaxed),
+            dns_queries: self.counters.dns_queries.load(Ordering::Relaxed),
+            dns_answers: self.counters.dns_answers.load(Ordering::Relaxed),
+            tcp_flows_opened: self.counters.tcp_flows_opened.load(Ordering::Relaxed),
+            tcp_flows_denied: self.counters.tcp_flows_denied.load(Ordering::Relaxed),
+            tcp_connect_failures: self.counters.tcp_connect_failures.load(Ordering::Relaxed),
+            bytes_guest_to_host: self.counters.bytes_guest_to_host.load(Ordering::Relaxed),
+            bytes_host_to_guest: self.counters.bytes_host_to_guest.load(Ordering::Relaxed),
+            unsupported_packets: self.counters.unsupported_packets.load(Ordering::Relaxed),
+            peer_packets_sent: self.counters.peer_packets_sent.load(Ordering::Relaxed),
+            peer_packets_received: self.counters.peer_packets_received.load(Ordering::Relaxed),
+            peer_packets_dropped: self.counters.peer_packets_dropped.load(Ordering::Relaxed),
+            active_tcp_flows: self.counters.active_tcp_flows.load(Ordering::Relaxed),
+            peak_tcp_flows: self.counters.peak_tcp_flows.load(Ordering::Relaxed),
+            targets: targets.targets.clone(),
+            target_overflow: targets.overflow,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -398,7 +321,7 @@ mod tests {
     fn explicit_proxy_never_claims_non_bypassable_enforcement() {
         let profile = InterceptionProfile::explicit_proxy();
         assert_eq!(profile.strength, InterceptionStrength::Cooperative);
-        assert!(!profile.is_enforcing());
+        assert!(profile.strength != InterceptionStrength::NonBypassable);
         assert!(!profile.dns);
         assert!(!profile.udp);
     }
@@ -406,7 +329,7 @@ mod tests {
     #[test]
     fn vm_smoltcp_claims_only_implemented_protocols() {
         let profile = InterceptionProfile::vm_smoltcp();
-        assert!(profile.is_enforcing());
+        assert!(profile.strength == InterceptionStrength::NonBypassable);
         assert!(profile.tcp_connect);
         assert!(profile.dns);
         assert!(profile.inherited_by_children);

@@ -10,17 +10,17 @@ use super::{
     MAX_TOOL_OUTPUT_BYTES, RunContext, agent_command, check_boundary, sanitized_environment,
     with_boundary_user_prompt_metadata,
 };
+use crate::api::{PlaybackRequest, ReplayMode};
+use crate::api::{ReplayError, ReplayErrorKind};
 use crate::bridge::claude::ClaudeBridgeHandle;
 use crate::bridge::claude_resume::ResumeTransportManifest;
-use crate::error::{ReplayError, ReplayErrorKind, ResultExt};
+use crate::error::ResultExt;
 use crate::io::{
     BoundedFileRead, atomic_write, atomic_write_json, canonicalize, read_confined_regular_file,
     read_regular_file, sha256,
 };
 use crate::journal::Journal;
-use crate::model::{
-    FreshObservation, PlaybackRequest, ReplayMode, ReplayOutcome, ReplayPlan, ToolBatch, ToolCall,
-};
+use crate::model::{FreshObservation, ReplayOutcome, ReplayPlan, ToolBatch, ToolCall};
 use crate::process::{ProcessSpec, run_process};
 
 const FRESH_CLAUDE_TOOLS: &[&str] = &["Bash", "Edit", "Glob", "Grep", "MultiEdit", "Read", "Write"];
@@ -2110,10 +2110,11 @@ mod tests {
         validate_claude_tool_policy, wildcard_match,
     };
     use crate::adapter::{MAX_TOOL_OUTPUT_BYTES, RunContext, build_plan, run};
+    use crate::api::{AgentKind, PlaybackRequest, ReplayMode};
     use crate::bridge::claude_resume::ResumeTransportManifest;
     use crate::io::BoundedFileRead;
     use crate::journal::Journal;
-    use crate::model::{AgentKind, FreshObservation, PlaybackRequest, ReplayMode, ToolCall};
+    use crate::model::{FreshObservation, ToolCall};
 
     fn claude_tool_call(name: &str, arguments: Value) -> ToolCall {
         ToolCall {

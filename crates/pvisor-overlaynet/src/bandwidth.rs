@@ -9,8 +9,9 @@ use futures_util::StreamExt;
 use tokio::sync::Mutex;
 use tokio::time::Instant;
 
-use crate::policy::NetworkBandwidthLimit;
+use pvisor_core::network::NetworkBandwidthLimit;
 
+/// Shared aggregate bandwidth owner. Default is empty; clones share scheduling buckets.
 #[derive(Debug, Clone, Default)]
 pub struct BandwidthRegistry {
     buckets: Arc<Mutex<HashMap<NetworkBandwidthLimit, Arc<BandwidthBucket>>>>,

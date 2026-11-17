@@ -6,6 +6,7 @@
 //! prefix can be rebuilt without an Agent SDK.  The live phase is delegated to
 //! the native CLI after the reconstructed transcript has been staged.
 
+use crate::api::AgentProfile;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -17,15 +18,14 @@ use super::{
     MAX_TOOL_OUTPUT_BYTES, RunContext, agent_command, check_boundary, prepared_outcome,
     with_boundary_user_prompt_metadata,
 };
+use crate::api::{AgentKind, PlaybackRequest, ReplayMode};
+use crate::api::{ReplayError, ReplayErrorKind};
 use crate::bridge::codex::{CodexBridgeHandle, PromptMode};
 use crate::bridge::opencode as opencode_bridge;
-use crate::error::{ReplayError, ReplayErrorKind, ResultExt};
+use crate::error::ResultExt;
 use crate::io::{atomic_write, atomic_write_json, canonicalize, read_regular_file, sha256};
 use crate::journal::Journal;
-use crate::model::{
-    AgentKind, FreshObservation, PlaybackRequest, ReplayMode, ReplayOutcome, ReplayPlan, ToolBatch,
-    ToolCall,
-};
+use crate::model::{FreshObservation, ReplayOutcome, ReplayPlan, ToolBatch, ToolCall};
 use crate::process::{ProcessSpec, run_process};
 
 #[derive(Debug, Clone, Copy)]
@@ -2157,7 +2157,8 @@ mod tests {
         opencode_provider_config, parse_codex, parse_jsonl, parse_opencode,
         redact_codex_transport_nonce, validate_codex_continuation,
     };
-    use crate::model::{AgentKind, PlaybackRequest, ReplayMode, ReplayPlan, ToolBatch, ToolCall};
+    use crate::api::{AgentKind, PlaybackRequest, ReplayMode};
+    use crate::model::{ReplayPlan, ToolBatch, ToolCall};
     use serde_json::{Value, json};
 
     #[test]

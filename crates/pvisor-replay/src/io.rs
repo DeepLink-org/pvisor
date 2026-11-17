@@ -4,9 +4,10 @@ use std::path::{Path, PathBuf};
 
 use sha2::{Digest, Sha256};
 
-use crate::error::{ReplayError, ReplayErrorKind, ResultExt};
+use crate::api::{ReplayError, ReplayErrorKind};
+use crate::error::ResultExt;
 
-pub fn read_regular_file(path: &Path) -> Result<Vec<u8>, ReplayError> {
+pub(crate) fn read_regular_file(path: &Path) -> Result<Vec<u8>, ReplayError> {
     let mut options = OpenOptions::new();
     options.read(true);
     #[cfg(unix)]
@@ -60,8 +61,8 @@ pub fn read_regular_file(path: &Path) -> Result<Vec<u8>, ReplayError> {
 }
 
 pub(crate) struct BoundedFileRead {
-    pub bytes: Vec<u8>,
-    pub truncated: bool,
+    pub(crate) bytes: Vec<u8>,
+    pub(crate) truncated: bool,
 }
 
 /// Read a resolved workspace target without following replacement symlinks.
@@ -155,14 +156,14 @@ fn open_confined_file(_workspace: &Path, _relative: &Path) -> std::io::Result<Fi
     ))
 }
 
-pub fn sha256(bytes: &[u8]) -> String {
+pub(crate) fn sha256(bytes: &[u8]) -> String {
     Sha256::digest(bytes)
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect()
 }
 
-pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), ReplayError> {
+pub(crate) fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), ReplayError> {
     let parent = path
         .parent()
         .ok_or_else(|| ReplayError::configuration("output path has no parent"))?;
@@ -204,14 +205,17 @@ pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), ReplayError> {
     Ok(())
 }
 
-pub fn atomic_write_json(path: &Path, value: &impl serde::Serialize) -> Result<(), ReplayError> {
+pub(crate) fn atomic_write_json(
+    path: &Path,
+    value: &impl serde::Serialize,
+) -> Result<(), ReplayError> {
     let mut bytes = serde_json::to_vec_pretty(value)
         .replay_context(ReplayErrorKind::Internal, "serialize replay artifact")?;
     bytes.push(b'\n');
     atomic_write(path, &bytes)
 }
 
-pub fn canonicalize(
+pub(crate) fn canonicalize(
     path: &Path,
     kind: ReplayErrorKind,
     label: &str,

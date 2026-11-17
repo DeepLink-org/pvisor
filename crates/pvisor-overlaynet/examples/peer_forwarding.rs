@@ -1,15 +1,14 @@
 //! Standalone peer exercise for B-PEER-NET-ENG; see benchmark/REGISTRY.md.
+use pvisor_overlaynet::api::{EgressControl, VmNetworkConfiguration, VmNetworkRuntime};
 use std::io::{Read, Write};
 use std::net::Ipv4Addr;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixStream;
 use std::time::{Duration, Instant};
 
-use pvisor_overlaynet::vm::{VmNetwork, VmNetworkConfig, guest_mac};
-use pvisor_overlaynet::{
-    BandwidthRegistry, EgressContext, EgressRuntime, NetworkConfig, NetworkPolicy,
-    PeerNetworkConfig,
-};
+use pvisor_core::network::{NetworkConfig, NetworkPolicy};
+use pvisor_overlaynet::api::{BandwidthRegistry, EgressContext, EgressRuntime, PeerNetworkConfig};
+use pvisor_overlaynet::api::{VmNetwork, VmNetworkConfig};
 use smoltcp::wire::{EthernetAddress, EthernetFrame, EthernetProtocol, IpProtocol, Ipv4Packet};
 
 const PINGS: usize = 2000;
@@ -24,8 +23,8 @@ fn ip(last: u8) -> Ipv4Addr {
 fn frame(src: u8, dst: u8, length: usize, sequence: usize) -> Vec<u8> {
     let mut bytes = vec![0; length];
     let mut ethernet = EthernetFrame::new_unchecked(bytes.as_mut_slice());
-    ethernet.set_src_addr(EthernetAddress(guest_mac(ip(src))));
-    ethernet.set_dst_addr(EthernetAddress(guest_mac(ip(dst))));
+    ethernet.set_src_addr(EthernetAddress(VmNetworkConfig::guest_mac(ip(src))));
+    ethernet.set_dst_addr(EthernetAddress(VmNetworkConfig::guest_mac(ip(dst))));
     ethernet.set_ethertype(EthernetProtocol::Ipv4);
     let mut packet = Ipv4Packet::new_unchecked(ethernet.payload_mut());
     packet.set_version(4);
@@ -86,7 +85,11 @@ fn main() {
             gateway: ip(1),
             aliases: vec![],
         });
-        let (owner, stream) = VmNetwork::start(config).unwrap();
+        let (transport, stream) = std::os::unix::net::UnixStream::pair().unwrap();
+        transport.set_nonblocking(true).unwrap();
+        let owner =
+            VmNetwork::start_with_io(config, move || tokio::net::UnixStream::from_std(transport))
+                .unwrap();
         stream
             .set_read_timeout(Some(Duration::from_secs(10)))
             .unwrap();

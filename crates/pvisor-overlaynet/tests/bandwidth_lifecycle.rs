@@ -2,6 +2,7 @@
 //! Reservations are not promised to be refunded on cancellation. Recovery is
 //! checked only after the cancelled reservation's original deadline has passed.
 
+use pvisor_overlaynet::api::OverlayProxy;
 use std::future::Future;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -17,10 +18,11 @@ use axum::http::StatusCode;
 use axum::response::Response;
 use futures_util::poll;
 use http_body_util::BodyExt;
-use pvisor_overlaynet::server::build_router;
-use pvisor_overlaynet::{
-    BandwidthRegistry, NetworkAccessRule, NetworkBandwidthLimit, NetworkConfig, NetworkMode,
-    NetworkPolicy, OverlayRequestContext, OverlayServerState, OverlaySink,
+use pvisor_core::network::{
+    NetworkAccessRule, NetworkBandwidthLimit, NetworkConfig, NetworkMode, NetworkPolicy,
+};
+use pvisor_overlaynet::api::{
+    BandwidthRegistry, OverlayRequestContext, OverlayServerState, OverlaySink,
 };
 use tower::ServiceExt;
 
@@ -83,6 +85,20 @@ impl OverlaySink for EchoSink {
         assert_eq!(bytes.as_ref(), PAYLOAD);
         Ok(Response::new(Body::from(bytes)))
     }
+
+    fn download_wait(
+        &self,
+        _context: &pvisor_overlaynet::api::OverlayRequestContext<Self::RequestContext>,
+    ) -> anyhow::Result<Option<Box<dyn pvisor_overlaynet::api::DownloadWait>>> {
+        Ok(None)
+    }
+
+    fn observe(
+        &self,
+        _context: &pvisor_overlaynet::api::OverlayRequestContext<Self::RequestContext>,
+        _event: pvisor_overlaynet::api::ProxyEvent<'_>,
+    ) {
+    }
 }
 
 fn proxy(host_rate: u64) -> (Router, EchoSink, Arc<AtomicUsize>) {
@@ -94,7 +110,7 @@ fn proxy(host_rate: u64) -> (Router, EchoSink, Arc<AtomicUsize>) {
         active.clone(),
     )
     .with_bandwidth_registry(BandwidthRegistry::default());
-    (build_router(state), sink, active)
+    (OverlayProxy::into_router(state), sink, active)
 }
 
 fn request(router: &Router) -> impl Future<Output = Response> + use<> {

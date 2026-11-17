@@ -7,6 +7,7 @@
 //! bypassed from inside the VM (see pvisor-overlaynet's `vm_smoltcp`
 //! interception profile).
 
+use pvisor_overlaynet::api::{EgressControl, VmNetworkConfiguration, VmNetworkRuntime};
 use std::os::fd::{AsRawFd, FromRawFd, RawFd};
 use std::path::{Path, PathBuf};
 
@@ -16,9 +17,9 @@ use crate::plan::{ContainerPlan, VmNetworkMode};
 /// runner. Dropping the attachment stops policy enforcement; task deletion
 /// owns this lifecycle.
 pub struct VmNetworkAttachment {
-    backend: pvisor_overlaynet::vm::VmNetwork,
+    backend: pvisor_overlaynet::api::VmNetwork,
     guest_stream: std::os::unix::net::UnixStream,
-    egress: pvisor_overlaynet::EgressRuntime,
+    egress: pvisor_overlaynet::api::EgressRuntime,
 }
 
 /// Where the egress sidecar container's Create publishes the OpenSandbox
@@ -172,19 +173,23 @@ impl VmNetworkAttachment {
     fn from_config(config: pvisor_core::NetworkConfig, run_id: &str) -> anyhow::Result<Self> {
         let policy = pvisor_core::NetworkPolicy::compile(&config)?;
         let controller = std::sync::Arc::new(pvisor_core::PolicyControlController);
-        let egress = pvisor_overlaynet::EgressRuntime::with_bandwidth_registry(
+        let egress = pvisor_overlaynet::api::EgressRuntime::with_bandwidth_registry(
             policy,
             controller,
-            pvisor_overlaynet::BandwidthRegistry::default(),
+            pvisor_overlaynet::api::BandwidthRegistry::default(),
         );
-        let vm_config = pvisor_overlaynet::vm::VmNetworkConfig::new(
+        let vm_config = pvisor_overlaynet::api::VmNetworkConfig::new(
             egress.clone(),
-            pvisor_overlaynet::EgressContext {
+            pvisor_overlaynet::api::EgressContext {
                 run_id: Some(run_id.to_string()),
                 execution_id: Some("containerd-shim".to_string()),
             },
         );
-        let (backend, guest_stream) = pvisor_overlaynet::vm::VmNetwork::start(vm_config)?;
+        let (transport, guest_stream) = std::os::unix::net::UnixStream::pair()?;
+        transport.set_nonblocking(true)?;
+        let backend = pvisor_overlaynet::api::VmNetwork::start_with_io(vm_config, move || {
+            tokio::net::UnixStream::from_std(transport)
+        })?;
         Ok(Self {
             backend,
             guest_stream,
@@ -194,7 +199,7 @@ impl VmNetworkAttachment {
 
     /// The shared egress runtime; a policy replaced here takes effect for
     /// every TCP flow the VM backend authorizes afterwards.
-    pub fn egress_runtime(&self) -> &pvisor_overlaynet::EgressRuntime {
+    pub fn egress_runtime(&self) -> &pvisor_overlaynet::api::EgressRuntime {
         &self.egress
     }
 
@@ -220,7 +225,7 @@ impl VmNetworkAttachment {
     /// Stop the backend and return its interception counters. Closing the
     /// guest stream first lets a backend blocked on socket I/O observe EOF
     /// before its thread joins.
-    pub fn shutdown(self) -> anyhow::Result<pvisor_overlaynet::InterceptionSnapshot> {
+    pub fn shutdown(self) -> anyhow::Result<pvisor_overlaynet::api::InterceptionSnapshot> {
         let Self {
             backend,
             guest_stream,
@@ -254,7 +259,7 @@ const GATE_WATCH_INTERVAL: std::time::Duration = std::time::Duration::from_milli
 /// that fails to compile keeps the previous policy (the VM never runs on a
 /// half-built policy), logs the rejection, and is not retried until the file
 /// changes again.
-pub fn watch_gate(egress: pvisor_overlaynet::EgressRuntime, gate: &Path, allow_private: bool) {
+pub fn watch_gate(egress: pvisor_overlaynet::api::EgressRuntime, gate: &Path, allow_private: bool) {
     let egress = egress;
     let gate = gate.to_owned();
     std::thread::Builder::new()
@@ -299,6 +304,7 @@ mod tests {
     use pvisor_core::{
         NetworkAccessRequest, NetworkPolicy, NetworkTransport, PolicyControlController,
     };
+    use pvisor_overlaynet::api::EgressControl;
 
     fn rules(default_action: &str, egress: &[(&str, &str)]) -> EgressRules {
         EgressRules {
@@ -373,7 +379,7 @@ mod tests {
 
     #[test]
     fn gate_watcher_applies_first_read_and_subsequent_deny_all() {
-        use pvisor_overlaynet::{BandwidthRegistry, EgressRuntime};
+        use pvisor_overlaynet::api::{BandwidthRegistry, EgressRuntime};
         use std::{
             sync::Arc,
             time::{Duration, Instant},

@@ -5,7 +5,10 @@
 //! connects live Agents directly to their configured model endpoint.
 //! Agent-specific bridges handle replay and continuation protocol adjustments.
 
+#![deny(missing_docs)]
+
 mod adapter;
+pub mod api;
 mod bridge;
 mod comparison;
 mod config;
@@ -15,13 +18,3 @@ mod io;
 mod journal;
 mod model;
 mod process;
-
-pub use config::{
-    OverlayFsConfig, OverlayNetConfig, ReplayConfig, ReplayToml, RunConfig, request_from_json,
-};
-pub use engine::execute;
-pub use error::{ReplayError, ReplayErrorKind};
-pub use model::{
-    AgentKind, AgentStatus, ExecutionReport, PlaybackRequest, RESULT_SCHEMA_VERSION, ReplayFailure,
-    ReplayMode, ReplayPhase, ReplayQuality, ReplayResult,
-};

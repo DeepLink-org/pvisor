@@ -1,5 +1,8 @@
 # Native container profile
 
+Network data-plane callers use `pvisor_overlaynet::api` and its declared traits;
+policy records remain owned by `pvisor_core::network`.
+
 Owns the native Windows Docker-style container profile. Public callers use
 `api` only. The existing Unix Docker profile keeps its richer cache, network and
 staging implementation; this crate does not port Sessions or expose that state.

@@ -8,7 +8,7 @@ use url::Url;
 
 pub use crate::protocol::ProtocolKind;
 pub use crate::provider::ProviderKind;
-pub use pvisor_overlaynet::{NetworkConfig, NetworkMode};
+pub use pvisor_core::network::{NetworkConfig, NetworkMode};
 
 /// Top-level config for capture proxy / daemon.
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -84,7 +84,7 @@ impl ProxyConfig {
 
     /// Validate model entries, `forward` references, network policy, and duplicate names.
     pub fn validate(&self) -> anyhow::Result<()> {
-        pvisor_overlaynet::policy::validate_network_config(&self.network)?;
+        pvisor_core::network::validate_network_config(&self.network)?;
         if self.overlay.auto_apply && self.overlay.auto_discard {
             anyhow::bail!("overlay auto_apply and auto_discard are mutually exclusive");
         }

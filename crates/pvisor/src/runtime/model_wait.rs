@@ -15,7 +15,7 @@ pub(super) struct ModelWaitAdapter {
 impl ModelWaitLifecycle for ModelWaitAdapter {
     fn reserve_download(
         &self,
-    ) -> anyhow::Result<Option<Box<dyn pvisor_overlaynet::server::DownloadWait>>> {
+    ) -> anyhow::Result<Option<Box<dyn pvisor_overlaynet::api::DownloadWait>>> {
         if !self.coordinator.downloads_enabled() {
             return Ok(None);
         }
@@ -104,7 +104,7 @@ struct NativeDownload {
     passive: bool,
 }
 #[async_trait]
-impl pvisor_overlaynet::server::DownloadWait for NativeDownload {
+impl pvisor_overlaynet::api::DownloadWait for NativeDownload {
     async fn waiting(&mut self) -> anyhow::Result<()> {
         if self.entry.is_none() && !self.passive {
             self.entry = self.owner.observe()?;
@@ -140,6 +140,6 @@ impl pvisor_overlaynet::server::DownloadWait for NativeDownload {
 }
 impl Drop for NativeDownload {
     fn drop(&mut self) {
-        pvisor_overlaynet::server::DownloadWait::cancel(self);
+        pvisor_overlaynet::api::DownloadWait::cancel(self);
     }
 }

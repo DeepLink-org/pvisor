@@ -11,43 +11,44 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crate::error::{ReplayError, ReplayErrorKind, ResultExt};
+use crate::api::{ReplayError, ReplayErrorKind};
+use crate::error::ResultExt;
 
 pub(crate) struct ProcessSpec {
-    pub command: Command,
-    pub stdin: Option<Vec<u8>>,
+    pub(crate) command: Command,
+    pub(crate) stdin: Option<Vec<u8>>,
     /// Terminate the process when neither stdout, stderr, nor a redirected
     /// stdout file produced new bytes for this long. Long silent stretches
     /// are the signature of an agent CLI that wedged internally instead of
     /// working.
-    pub idle_timeout: Option<Duration>,
+    pub(crate) idle_timeout: Option<Duration>,
     /// Terminate after this many complete `message=loop step=N` stderr lines. OpenCode ignores its
     /// `agent.steps` budget on resumed sessions, so pVisor enforces the
     /// remaining live-action budget itself.
-    pub step_finish_limit: Option<usize>,
+    pub(crate) step_finish_limit: Option<usize>,
     /// Redirect the child's stdout straight to this file instead of a pipe.
     /// OpenCode's Bun runtime fully buffers stdout on pipes (events only
     /// appear at exit) but streams into regular files, so event-driven
     /// watchdogs must watch the file.
-    pub stdout_redirect: Option<std::path::PathBuf>,
-    pub timeout: Duration,
-    pub termination_grace: Duration,
-    pub pipe_grace: Duration,
-    pub retained_bytes: usize,
-    pub log_path: PathBuf,
+    pub(crate) stdout_redirect: Option<std::path::PathBuf>,
+    pub(crate) timeout: Duration,
+    pub(crate) termination_grace: Duration,
+    pub(crate) pipe_grace: Duration,
+    pub(crate) retained_bytes: usize,
+    pub(crate) log_path: PathBuf,
     /// Combined stdout/stderr log quota for short probes; full replay logs use None.
-    pub log_bytes_limit: Option<u64>,
+    pub(crate) log_bytes_limit: Option<u64>,
 }
 
 pub(crate) struct ProcessOutput {
-    pub status: ExitStatus,
-    pub stdout_tail: Vec<u8>,
-    pub stderr_tail: Vec<u8>,
-    pub stdout_truncated: bool,
-    pub stderr_truncated: bool,
-    pub timed_out: bool,
-    pub step_limited: bool,
-    pub background_cleanup: bool,
+    pub(crate) status: ExitStatus,
+    pub(crate) stdout_tail: Vec<u8>,
+    pub(crate) stderr_tail: Vec<u8>,
+    pub(crate) stdout_truncated: bool,
+    pub(crate) stderr_truncated: bool,
+    pub(crate) timed_out: bool,
+    pub(crate) step_limited: bool,
+    pub(crate) background_cleanup: bool,
 }
 
 struct StreamCapture {

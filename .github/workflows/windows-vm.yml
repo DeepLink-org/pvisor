@@ -87,14 +87,14 @@ jobs:
       - name: Shared network data plane and Windows packet transport (no WHP required)
         if: ${{ !cancelled() }}
         timeout-minutes: 10
-        run: mise run test -- pvisor-overlaynet -- --lib --profile windows-ci 2>&1 | tee "$NATIVE_EVIDENCE/network.log"
+        run: mise run test -- pvisor-overlaynet -- --lib --test api_boundary --test api_contract --test proxy_observation --profile windows-ci 2>&1 | tee "$NATIVE_EVIDENCE/network.log"
       - name: VM contracts without the embedded guest supervisor
         if: ${{ !cancelled() }}
         timeout-minutes: 10
         run: mise run test -- pvisor-vm -- --no-default-features --lib --tests --profile windows-ci 2>&1 | tee "$NATIVE_EVIDENCE/vm-minimal.log"
       - name: API documentation
         if: ${{ !cancelled() }}
-        run: RUSTDOCFLAGS='-D warnings' mise exec -- cargo doc --locked -p pvisor-vm -p pvisor-containers --no-deps 2>&1 | tee "$NATIVE_EVIDENCE/rustdoc.log"
+        run: RUSTDOCFLAGS='-D warnings' mise exec -- cargo doc --locked -p pvisor-vm -p pvisor-containers -p pvisor-overlaynet --no-deps 2>&1 | tee "$NATIVE_EVIDENCE/rustdoc.log"
       - name: Upload native contract logs
         if: always()
         uses: actions/upload-artifact@v4

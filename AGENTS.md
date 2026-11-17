@@ -61,7 +61,8 @@ must satisfy these rules:
   coverage gaps separately from passing contract tests.
 
 Crates not yet migrated retain their current interfaces until their own focused
-refactor. `pvisor-vm`, `pvisor-overlayfs`, and `pvisor-journal` currently follow
+refactor. `pvisor-vm`, `pvisor-overlayfs`, `pvisor-journal`,
+`pvisor-containers`, `pvisor-replay`, and `pvisor-overlaynet` currently follow
 this boundary.
 
 ## Benchmarks

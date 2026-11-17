@@ -65,8 +65,8 @@ fn completion_crash_child() {
                 .instance_control(false)
                 .network(pvisor::NetworkDriverConfig::new(
                     pvisor::OverlayNetMode::Proxy,
-                    pvisor_overlaynet::NetworkConfig {
-                        mode: pvisor_overlaynet::NetworkMode::NoNetwork,
+                    pvisor_core::network::NetworkConfig {
+                        mode: pvisor_core::network::NetworkMode::NoNetwork,
                         ..Default::default()
                     },
                 ))
