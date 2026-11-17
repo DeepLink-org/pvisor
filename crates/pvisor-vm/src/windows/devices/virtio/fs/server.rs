@@ -1754,7 +1754,9 @@ fn get_extensions(options: FsOptions, skip: usize, request_bytes: &[u8]) -> Resu
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pvisor_guest::api::{EXIT_CLAIM_IOCTL, EXIT_REPORT_IOCTL, GuestExitReport};
+    use pvisor_guest::api::{
+        EXIT_CLAIM_IOCTL, EXIT_REPORT_IOCTL, EXIT_TOKEN_BYTES, GuestExitReport,
+    };
 
     struct NullFs;
     impl FileSystem for NullFs {
@@ -1772,7 +1774,7 @@ mod tests {
             .store(FsOptions::ALLOW_IDMAP.bits(), Ordering::Relaxed);
         assert!(claim(2, u32::MAX).is_err());
         assert!(claim(1, 1000).is_err());
-        let token = claim(1, u32::MAX).unwrap().try_into().unwrap();
+        let token: [u8; EXIT_TOKEN_BYTES] = claim(1, u32::MAX).unwrap().try_into().unwrap();
         assert!(claim(1, u32::MAX).is_err());
         let body = GuestExitReport::report(&token, 7).unwrap();
         let submit = |pid, uid, body: &[u8]| {
