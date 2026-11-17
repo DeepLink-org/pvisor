@@ -2504,7 +2504,11 @@ optimization or a claim of faster end-to-end branch startup without KVM results.
 Branch generations persist `startup-GENERATION-PHASE.json` receipts for retained
 image/build verification, RAM/machine hashes, filesystem checks/rebinding, backing
 preparation/handoff, VM restore and guest readiness. Running receipts survive a
-killed runner; only an observed completion marks a phase complete. Wall-clock
+killed runner; only an observed completion marks a phase complete. During
+sequential restore checks, the runner syncs both the completed and upcoming
+running receipt files, renames them in that order, then syncs their directory
+once before executing the next check. The final completion and any failure
+still publish their own durable receipt. Wall-clock
 labels accompany monotonic elapsed times. No input data, credentials, guest
 commands or new retry are added. Hash verification remains enabled.
 

@@ -147,13 +147,18 @@ impl StartupSpan {
         instance: &Instance<B>,
         phase: &str,
     ) -> anyhow::Result<Self> {
+        let span = Self::new(store, instance, phase)?;
+        span.write("running", None)?;
+        Ok(span)
+    }
+    fn new<B>(store: &Store, instance: &Instance<B>, phase: &str) -> anyhow::Result<Self> {
         ensure!(
             phase
                 .bytes()
                 .all(|c| c.is_ascii_alphanumeric() || c == b'-'),
             "invalid startup phase"
         );
-        let mut span = Self {
+        Ok(Self {
             path: instance.branch_base.as_ref().map(|_| {
                 store
                     .directory(&instance.id)
@@ -164,21 +169,19 @@ impl StartupSpan {
             started_ms: crate::unix_now_ms(),
             started: Instant::now(),
             finished: false,
-        };
-        span.write("running", None)?;
-        Ok(span)
+        })
     }
-    fn write(&mut self, status: &str, error: Option<&str>) -> anyhow::Result<()> {
+    fn record(&self, status: &str, error: Option<&str>) -> serde_json::Value {
+        serde_json::json!({
+            "generation": self.generation, "phase": self.phase, "status": status,
+            "pid": std::process::id(), "started_ms": self.started_ms,
+            "observed_ms": crate::unix_now_ms(), "elapsed_ms": self.started.elapsed().as_millis(),
+            "error": error,
+        })
+    }
+    fn write(&self, status: &str, error: Option<&str>) -> anyhow::Result<()> {
         if let Some(path) = &self.path {
-            crate::util::write_private_json(
-                path,
-                &serde_json::json!({
-                    "generation": self.generation, "phase": self.phase, "status": status,
-                    "pid": std::process::id(), "started_ms": self.started_ms,
-                    "observed_ms": crate::unix_now_ms(), "elapsed_ms": self.started.elapsed().as_millis(),
-                    "error": error,
-                }),
-            )?;
+            crate::util::write_private_json(path, &self.record(status, error))?;
         }
         Ok(())
     }
@@ -198,6 +201,68 @@ impl StartupSpan {
         Ok(())
     }
 }
+// A completed check and the following running marker share a directory barrier.
+// Both files are synced before either rename; no new action starts until the
+// two names are durable. An interruption between renames starts no new work.
+#[derive(Default)]
+struct RestoreChecks {
+    previous: Option<StartupSpan>,
+}
+impl RestoreChecks {
+    fn run<B, T>(
+        &mut self,
+        store: &Store,
+        instance: &Instance<B>,
+        phase: &str,
+        action: impl FnOnce() -> anyhow::Result<T>,
+    ) -> anyhow::Result<T> {
+        let current = StartupSpan::new(store, instance, phase)?;
+        if let Some(previous) = self.previous.take() {
+            let directory = store.directory(&instance.id);
+            let prepare = |span: &StartupSpan, status| -> anyhow::Result<_> {
+                let mut file = tempfile::NamedTempFile::new_in(&directory)?;
+                file.write_all(&serde_json::to_vec_pretty(&span.record(status, None))?)?;
+                Ok(file)
+            };
+            let done = prepare(&previous, "complete")?;
+            let running = prepare(&current, "running")?;
+            done.as_file().sync_all()?;
+            running.as_file().sync_all()?;
+            done.persist(
+                previous
+                    .path
+                    .as_ref()
+                    .context("missing branch receipt path")?,
+            )?;
+            running.persist(
+                current
+                    .path
+                    .as_ref()
+                    .context("missing branch receipt path")?,
+            )?;
+            File::open(directory)?.sync_all()?;
+        } else {
+            current.write("running", None)?;
+        }
+        match action() {
+            Ok(value) => {
+                self.previous = Some(current);
+                Ok(value)
+            }
+            Err(error) => {
+                current.write("failed", Some(&format!("{error:#}")))?;
+                Err(error)
+            }
+        }
+    }
+    fn finish(self) -> anyhow::Result<()> {
+        if let Some(previous) = self.previous {
+            previous.write("complete", None)?;
+        }
+        Ok(())
+    }
+}
+
 pub(super) fn startup_stage<B, T>(
     store: &Store,
     instance: &Instance<B>,
@@ -718,24 +783,26 @@ pub(super) fn restore<B>(
         "branch image projection changed"
     );
     let directory = store.directory(&instance.id);
-    let ram = startup_stage(store, instance, saved.ram_identity.phase(), || {
+    let mut checks = RestoreChecks::default();
+    let ram = checks.run(store, instance, saved.ram_identity.phase(), || {
         saved.ram_identity.open_verified(&base.join("ram"))
     })?;
-    ensure!(
-        startup_stage(store, instance, "machine-hash", || hash(
-            &base.join("machine.json")
-        ))? == saved.machine_sha256,
-        "branch baseline content changed"
-    );
+    checks.run(store, instance, "machine-hash", || {
+        ensure!(
+            hash(&base.join("machine.json"))? == saved.machine_sha256,
+            "branch baseline content changed"
+        );
+        Ok(())
+    })?;
     for (part, inventory) in [("upper", &saved.upper), ("work", &saved.work)] {
-        startup_stage(store, instance, &format!("verify-base-{part}"), || {
+        checks.run(store, instance, &format!("verify-base-{part}"), || {
             crate::environment_snapshot::verify_tree(&base.join(part), inventory)
         })?;
-        startup_stage(store, instance, &format!("verify-child-{part}"), || {
+        checks.run(store, instance, &format!("verify-child-{part}"), || {
             crate::environment_snapshot::verify_tree(&directory.join(part), inventory)
         })?;
     }
-    let mut state: MachineSnapshot = startup_stage(store, instance, "machine-decode", || {
+    let mut state: MachineSnapshot = checks.run(store, instance, "machine-decode", || {
         let file = File::open(base.join("machine.json"))?;
         Ok(serde_json::from_reader(std::io::BufReader::new(file))?)
     })?;
@@ -743,13 +810,14 @@ pub(super) fn restore<B>(
         (base.join("upper"), directory.join("upper")),
         (base.join("work"), directory.join("work")),
     ];
-    ensure!(
-        startup_stage(store, instance, "filesystem-rebind", || state
+    checks.run(store, instance, "filesystem-rebind", || {
+        let count = state
             .rebind_filesystem_stage("/dev/root", &copies, &[lower.to_owned()])
-            .map_err(anyhow::Error::from))?
-            == 1,
-        "branch root binding missing"
-    );
+            .map_err(anyhow::Error::from)?;
+        ensure!(count == 1, "branch root binding missing");
+        Ok(())
+    })?;
+    checks.finish()?;
     state.rebind_vsock_listener(control::CONTROL_PORT, &saved.control, &socket(instance)?)?;
     Ok(Some(MachineRestore {
         state,
