@@ -658,10 +658,7 @@ fn drive_flows(
         }
 
         if flow.phase == FlowPhase::Connected {
-            // The host connection is established before we release the paused
-            // SYN|ACK. Until the guest ACK arrives, `may_recv()` is false in
-            // smoltcp's SynReceived state; treating that as guest EOF would
-            // close the upstream write half before the first payload.
+            // `may_recv()` is false until the guest ACK; SynReceived is not guest EOF.
             if guest_handshake_pending(socket.state()) {
                 continue;
             }
@@ -1045,9 +1042,7 @@ fn reap_closed_flows(
             metrics.tcp_flow_closed();
         }
     }
-    // Abort stalled handshakes so their slot returns on the next pass
-    // (the abort moves the socket to Closed); the RST the abort emits also
-    // converts an indefinite pause into an explicit refusal for the guest.
+    // Abort sends RST and releases the stalled handshake slot on the next pass.
     for key in expired {
         if let Some(flow) = flows.get_mut(&key) {
             sockets.get_mut::<tcp::Socket>(flow.handle).abort();

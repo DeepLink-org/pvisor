@@ -36,9 +36,9 @@ Known gaps are listed with their impact, source, and mitigation. Report new find
 
 | Limitation | Impact | Mitigation |
 | --- | --- | --- |
-| No executor claims complete subprocess enforcement | `--strict` currently refuses to run on every executor | Use `--strict` to verify fail-closed behavior |
+| Complete subprocess enforcement evidence is unavailable on every executor | `--strict` currently refuses to run on every executor | Use `--strict` to verify fail-closed behavior |
 | Descendants that actively leave the process group are outside process-group cleanup | Processes may survive after the Run ends | Use Linux namespaces or the VM |
-| The container executor does not claim complete capability enforcement | `--safe` refuses to start on container | Use host or VM |
+| The container executor lacks complete capability enforcement evidence | `--safe` refuses to start on container | Use host or VM |
 | On macOS the VMM holds the calling user's host permissions | The VM is not a hostile multi-tenant boundary | Do not use it to isolate mutually untrusted tenants |
 
 ## Irreversible effects

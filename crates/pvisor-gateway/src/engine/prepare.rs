@@ -87,7 +87,6 @@ impl CapturePreparer {
             ctx.level,
         );
         attach_recorded_headers(&mut rec.payload, &event.headers);
-        // Prefer event headers for connection flags; fall back to ctx request headers.
         let hdrs = if event.headers.is_empty() {
             &ctx.request_headers
         } else {

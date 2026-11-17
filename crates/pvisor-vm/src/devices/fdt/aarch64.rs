@@ -259,10 +259,7 @@ fn create_gic_node(fdt: &mut FdtWriter, gic_device: &IrqChip) -> Result<()> {
 }
 
 fn create_clock_node(fdt: &mut FdtWriter) -> Result<()> {
-    // The Advanced Peripheral Bus (APB) is part of the Advanced Microcontroller Bus Architecture
-    // (AMBA) protocol family. It defines a low-cost interface that is optimized for minimal power
-    // consumption and reduced interface complexity.
-    // PCLK is the clock source and this node defines exactly the clock for the APB.
+    // PCLK supplies the APB peripheral clock.
     let node = fdt.begin_node("apb-pclk")?;
     fdt.property_string("compatible", "fixed-clock")?;
     fdt.property_u32("#clock-cells", 0x0)?;
@@ -430,7 +427,6 @@ fn create_devices_node<T: DeviceInfoForFDT + Clone + Debug>(
     fdt: &mut FdtWriter,
     dev_info: &HashMap<(DeviceType, String), T>,
 ) -> Result<()> {
-    // Create one temp Vec to store all virtio devices
     let mut ordered_virtio_device: Vec<&T> = Vec::new();
 
     for ((device_type, _device_id), info) in dev_info {

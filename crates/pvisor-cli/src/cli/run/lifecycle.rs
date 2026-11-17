@@ -391,9 +391,7 @@ async fn execute_restored(
     })
 }
 
-// Stage directories can sit below a workspace that the guest sees. Keep the
-// immutable capture store outside every guest backing root, without changing
-// the stage, normal filesystem configuration, or guest I/O path.
+// Keep immutable captures outside every guest backing root, including workspace-nested stages.
 pub(super) fn execution_store_location(
     config: &RunConfig,
     workspace: &Path,

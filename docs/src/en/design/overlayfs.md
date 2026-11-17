@@ -201,7 +201,7 @@ The path bytes encode `new.txt`. Fingerprint variants are:
 | symlink | Raw target bytes, uid, gid, optional xattrs |
 | other | Mode, uid, gid, rdev, optional xattrs |
 
-Xattrs distinguish Unsupported from sorted `(name-bytes, value-sha256)` entries; internal opaque xattrs are excluded. Compatibility with older fingerprints lacking xattrs does not claim those attributes were verified. File hashing uses a 64 KiB buffer but reads bytes proportional to file size. Directory fingerprints are not whole-subtree Merkle hashes.
+Xattrs distinguish Unsupported from sorted `(name-bytes, value-sha256)` entries; internal opaque xattrs are excluded. Xattrs remain unverified when comparing older fingerprints that lack them. File hashing uses a 64 KiB buffer but reads bytes proportional to file size. Directory fingerprints are not whole-subtree Merkle hashes.
 
 An empty new upper initializes `complete-v1`, containing `pvisor-overlay-preimage-journal-v1` and LF. A complete journal missing a selected path rejects apply. Legacy stages without the marker can fingerprint at apply time for compatibility, without equivalent execution-time conflict protection. Preimages are published atomically per entry, not through whole-document replacement; corrupt complete entries fail loading, with no JSONL-style tail repair.
 

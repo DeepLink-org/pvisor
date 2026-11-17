@@ -2156,7 +2156,6 @@ impl OverlayCore {
                 .lock()
                 .unwrap_or_else(|p| p.into_inner());
             if cache.len() >= IMMUTABLE_LOWER_CACHE_LIMIT && !cache.contains_key(&key) {
-                // Coarse bounded eviction keeps this first version simple.
                 cache.clear();
                 self.profile.add("immutable_lower_cache_evictions", 1);
             }

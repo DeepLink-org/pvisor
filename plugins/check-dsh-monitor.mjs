@@ -34,8 +34,7 @@ try {
   run = await backend.run({ argv: ["sh", "-c", "mkdir src; printf candidate > src/a; printf 'monitor output\\n'"] },
     undefined, { name: "候选修复" });
   assert.equal(run.exit_code, 0, JSON.stringify(run));
-  // Resolve the real published bundle's package name from the patch's owning
-  // tree. An absolute dsh.mjs fixture hides package-subpath discovery failures.
+  // Resolve the packed package by name; absolute entrypoints bypass package discovery.
   await symlink(path.resolve(modules), path.join(root, "node_modules"), "dir");
   const fixture = path.join(root, "session.mjs");
   await writeFile(fixture, `export const inject=["sessions"];

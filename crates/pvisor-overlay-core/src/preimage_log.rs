@@ -796,9 +796,7 @@ mod tests {
         let synced = log.state.synced;
         assert!(log.state.cursor > synced);
 
-        // O_PATH pins this owned inode but cannot fsync it (EBADF). Invoke
-        // the existing private sync seam without replacing the locked writer,
-        // changing its binding, filling storage, or relying on DAC privileges.
+        // O_PATH cannot fsync (EBADF); inject sync failure while retaining the locked writer and its binding.
         let unsyncable = OpenOptions::new()
             .read(true)
             .custom_flags(libc::O_PATH | libc::O_NOFOLLOW)

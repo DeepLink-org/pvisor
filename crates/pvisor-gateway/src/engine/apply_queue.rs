@@ -251,9 +251,7 @@ impl Drop for RejectedEventWriter {
     }
 }
 
-// Each admitted task holds the scheduler alive until it finishes. Idle workers
-// hold no scheduler reference, so dropping the runtime still drains accepted
-// work (including cross-story backfills) without a permanent sender/task cycle.
+// Accepted tasks retain the scheduler through backfill; idle workers must not form an ownership cycle.
 enum ApplyTask {
     Capture {
         owner: Arc<SchedulingOwner>,

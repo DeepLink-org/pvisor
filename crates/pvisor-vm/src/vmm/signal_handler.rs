@@ -124,10 +124,7 @@ pub fn register_sigint_handler(sigint_fd: RawFd) -> crate::utils::errno::Result<
 ///
 /// Custom handlers are installed for: `SIGBUS`, `SIGSEGV`, `SIGSYS`.
 pub fn register_signal_handlers() -> crate::utils::errno::Result<()> {
-    // Call to unsafe register_signal_handler which is considered unsafe because it will
-    // register a signal handler which will be called in the current thread and will interrupt
-    // whatever work is done on the current thread, so we have to keep in mind that the registered
-    // signal handler must only do async-signal-safe operations.
+    // SAFETY: registered handlers must perform only async-signal-safe operations.
     register_signal_handler(SIGSYS, sigsys_handler)?;
     register_signal_handler(SIGBUS, sigbus_sigsegv_handler)?;
     register_signal_handler(SIGSEGV, sigbus_sigsegv_handler)?;

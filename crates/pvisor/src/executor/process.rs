@@ -639,12 +639,7 @@ impl ProcessExecutor {
             use std::os::unix::process::CommandExt;
             command.as_std_mut().process_group(0);
             let mut limits = spec.runtime.resource_limits.clone();
-            // RLIMIT_NPROC must be applied after the rootless launcher has
-            // created its private PID namespace and reaper. Applying it to
-            // the launcher itself can make setup fail with EAGAIN when the
-            // host user already has more processes than the requested cap.
-            // A Landlock-only run has no PID namespace, so the limit must stay
-            // on the launched process.
+            // Apply RLIMIT_NPROC after PID-namespace setup to avoid host-count EAGAIN; Landlock-only limits the workload.
             if sandbox_plan.is_some() && !self.landlock_only {
                 limits.processes = None;
             }
@@ -660,10 +655,7 @@ impl ProcessExecutor {
         // This is a reserved supervisor-to-launcher capability. Apply it last
         // so an untrusted Run environment cannot remove or replace the policy.
         if sandbox_plan.is_some() {
-            // The launcher canonicalizes the executable so it can project the
-            // real inode into a synthetic root. Preserve the caller's original
-            // argv[0] separately: Alpine's /bin commands are often BusyBox
-            // symlinks, and BusyBox chooses its applet from that basename.
+            // Preserve original argv[0]: BusyBox selects its applet by basename, not the canonical executable.
             command.env(SANDBOX_ARG0_ENV, &invocation.program);
         }
         if let Some(sandbox_plan) = sandbox_plan {

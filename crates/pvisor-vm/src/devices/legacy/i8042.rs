@@ -244,11 +244,7 @@ impl BusDevice for I8042Device {
                 self.push_byte(control).unwrap();
             }
             OFS_STATUS if data[0] == CMD_WRITE_CTR => {
-                // The guest wants to write the control register. This is a two-step command:
-                // 1. port 0x64 < CMD_WRITE_CTR
-                // 2. port 0x60 < <control reg value>
-                // Make sure we'll be expecting the control reg value on port 0x60 for the next
-                // write.
+                // CMD_WRITE_CTR on port 0x64 makes the next port 0x60 byte the control-register value.
                 self.flush_buf();
                 self.status |= SB_I8042_CMD_DATA;
                 self.cmd = data[0];
@@ -270,11 +266,7 @@ impl BusDevice for I8042Device {
                 self.cmd = data[0];
             }
             OFS_DATA if (self.status & SB_I8042_CMD_DATA) != 0 => {
-                // The guest is writing to port 0x60. This byte can either be:
-                // 1. the payload byte of a CMD_WRITE_CTR or CMD_WRITE_OUTP command, in which case
-                //    the status reg bit SB_I8042_CMD_DATA will be set, or
-                // 2. a direct command sent to the keyboard
-                // This match arm handles the first option (when the SB_I8042_CMD_DATA bit is set).
+                // SB_I8042_CMD_DATA marks a pending controller-register payload on port 0x60.
                 match self.cmd {
                     CMD_WRITE_CTR => self.control = data[0],
                     CMD_WRITE_OUTP => self.outp = data[0],
@@ -283,10 +275,7 @@ impl BusDevice for I8042Device {
                 self.status &= !SB_I8042_CMD_DATA;
             }
             OFS_DATA => {
-                // The guest is sending a command straight to the keyboard (so this byte is not
-                // addressed to the 8042, but to the keyboard). Since we're emulating a pretty
-                // dumb keyboard, we can get away with blindly ack-in anything (byte 0xFA).
-                // Something along the lines of "Yeah, uhm-uhm, yeah, okay, honey, that's great."
+                // Keyboard commands are acknowledged with 0xFA without command-specific emulation.
                 self.flush_buf();
                 // Buffer is empty, push() will always succeed.
                 self.push_byte(0xFA).unwrap();

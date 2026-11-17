@@ -30,11 +30,7 @@ use crate::utils::align_upwards;
 use vm_memory::Bytes;
 use vm_memory::{Address, ByteValued, GuestAddress, GuestMemoryMmap};
 
-// This is a workaround to the Rust enforcement specifying that any implementation of a foreign
-// trait (in this case `ByteValued`) where:
-// *    the type that is implementing the trait is foreign or
-// *    all of the parameters being passed to the trait (if there are any) are also foreign
-// is prohibited.
+// A local wrapper permits ByteValued implementation for the foreign boot_params type.
 #[derive(Copy, Clone, Default)]
 struct BootParamsWrapper(boot_params);
 

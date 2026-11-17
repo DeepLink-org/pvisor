@@ -131,11 +131,7 @@ impl Subscriber for Console {
         }
 
         if self.is_activated() {
-            // interest_list() registers sigwinch_evt and control.queue_evt() with
-            // epoll at creation time, but queue_events is only populated later in
-            // activate(). If a spurious event arrives before activation, indexing
-            // into the empty queue_events would panic — so these must stay inside
-            // the is_activated() guard.
+            // queue_events is populated only by activate(); pre-activation epoll events must not index it.
             let control_rxq = self.queue_events[CONTROL_RXQ_INDEX].as_raw_fd();
             let control_txq = self.queue_events[CONTROL_TXQ_INDEX].as_raw_fd();
             let control_rxq_control = self.control.queue_evt().as_raw_fd();

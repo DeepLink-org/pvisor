@@ -241,9 +241,7 @@ fn absent(error: &anyhow::Error) -> bool {
 
 pub(super) fn start(options: &StartOptions) -> Result<ServiceStatus> {
     let state = options.location.path(true)?;
-    // Another starter may have bound control.sock but not yet set its mode.
-    // Join bootstrap before inspecting the endpoint, including the fast path
-    // for an already running manager. Socket/peer checks remain unchanged.
+    // Join bootstrap before endpoint inspection: a concurrent starter may not yet have secured control.sock.
     let startup = lock_file(&state, "startup.lock")?;
     let deadline = Instant::now() + START_TIMEOUT;
     loop {

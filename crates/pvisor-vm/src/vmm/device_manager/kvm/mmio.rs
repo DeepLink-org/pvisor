@@ -169,11 +169,7 @@ impl MMIODeviceManager {
         mmio_base: u64,
         irq: u32,
     ) -> Result<()> {
-        // as per doc, [virtio_mmio.]device=<size>@<baseaddr>:<irq> needs to be appended
-        // to kernel commandline for virtio mmio devices to get recognized
-        // the size parameter has to be transformed to KiB, so dividing hexadecimal value in
-        // bytes to 1024; further, the '{}' formatting rust construct will automatically
-        // transform it to decimal
+        // virtio_mmio.device=<size>@<baseaddr>:<irq> requires the device size in KiB.
         cmdline
             .insert(
                 "virtio_mmio.device",

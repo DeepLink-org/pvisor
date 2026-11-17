@@ -17,13 +17,11 @@ KERNEL_FLAGS += KBUILD_BUILD_USER=root
 KERNEL_FLAGS += KBUILD_BUILD_HOST=libkrunfw
 
 ifeq ($(origin OS),command line)
-    # Use the explicit OS value from command line (e.g. make OS=Windows)
 else
     OS := $(shell uname -s)
 endif
 ifeq ($(OS),Darwin)
     ifeq ($(origin MACOS_BUILDER),command line)
-        # Use the explicit MACOS_BUILDER value from command line (e.g. MACOS_BUILDER=native)
     else
         MACOS_BUILDER := krunvm
     endif

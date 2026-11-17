@@ -603,9 +603,7 @@ export class Backend {
     }
     const page = records.slice(offset, offset + limit);
     const items = new Array(page.length);
-    // Validate the separately installed runtime once per page, not per row.
-    // Bound each read independently: one stale owner must not stall discovery
-    // of every other task or consume the monitor's whole request budget.
+    // Share runtime validation per page; per-row deadlines prevent one stale owner from blocking discovery.
     const runtime = page.length ? resolveRuntime(this.binary).then(async (binary) => ({
       binary, lifecycle: await supportsLifecycleStatus(binary),
     })) : null;
@@ -699,8 +697,7 @@ export class Backend {
       if (inventory.review_status !== "complete" || input.include_diff === false) {
         return { ...task, ...json, stdout: "", ...inventory, diff_status: "not_collected" };
       }
-      // Native JSON and diff cannot be requested together. Keep this separate
-      // observation explicit: neither response is a frozen historical snapshot.
+      // JSON and diff are separate observations, not a frozen snapshot.
       const detail = await execute(binary, ["review", task.stage, "--diff"], {
         cwd: task.project, signal,
       });
@@ -719,9 +716,7 @@ export class Backend {
     }
     const binary = await resolveRuntime(this.binary);
     if (action === "preview") {
-      // Native preview only observes existing lock inodes. Ordinary Host
-      // Sessions reconcile/initialize their control state through status first.
-      // Do not create lock files ourselves or relax read-only native preview.
+      // Host status initializes control state before read-only preview; never create native lock files here.
       const observed = await execute(binary, ["status", task.stage, "--json"], { cwd: task.project, signal });
       if (observed.exit_code !== 0 || observed.interrupted) {
         return presentApplyPreview({ ...task, ...observed }, input);
@@ -745,8 +740,7 @@ export class Backend {
     if (action !== "preview") return result;
     const initial = presentApplyPreview(result, input);
     if (!initial.approval_ready) return initial;
-    // 0.3.2 rejects --json together with --diff. Use two read-only interfaces,
-    // then bind the display to a stable native plan rather than mixing streams.
+    // JSON and diff require separate reads; bind the display to a revalidated native plan.
     const detailArgs = ["apply", task.stage, "--dry-run", "--diff"];
     for (const item of paths) detailArgs.push("--path", item);
     const detail = await execute(binary, detailArgs, { cwd: task.project, signal, outputLimit: REVIEW_LIMIT });

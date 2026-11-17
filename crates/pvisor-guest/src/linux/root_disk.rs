@@ -74,9 +74,7 @@ pub(super) fn enter(root: &RootDisk, network: Option<&NetworkConfig>) -> io::Res
         apply_layer(input, &media)?;
     }
     if let Some(network) = network {
-        // OCI images need not ship a resolver. The native disk profile owns
-        // its guest root, just as the Unix host profile owns its resolver
-        // layer. Refresh this after extraction and on retained-disk starts.
+        // Refresh the owned disk resolver after extraction and on retained-disk starts; OCI images may omit it.
         install_resolver(Path::new("/etc/resolv.conf"), network.gateway)?;
     }
     Ok(())

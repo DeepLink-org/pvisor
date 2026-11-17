@@ -1323,11 +1323,7 @@ fn enter_synthetic_root(plan: &SandboxPlan) -> anyhow::Result<()> {
         return Err(Error::last_os_error().into());
     }
 
-    // Give the Agent a private temporary directory.  Binding the host /tmp
-    // would let a staged Run mutate unrelated host state, while omitting it
-    // breaks ordinary tools that need a scratch directory.  This tmpfs is
-    // intentionally ephemeral and is not part of the durable workspace
-    // OverlayFS stage.
+    // Private /tmp isolates host scratch files and is outside the durable workspace stage.
     let tmp = plan.root.join("tmp");
     std::fs::create_dir(&tmp)?;
     let tmp = path_cstring(&tmp)?;
@@ -2149,19 +2145,13 @@ fn mount_pid_namespace_procfs() -> std::io::Result<()> {
             std::ptr::null(),
         )
     };
-    // A fresh procfs makes /proc describe this PID namespace instead of the
-    // host's. Shadowing the host-procfs projection already present here is
-    // enough on most kernels; detaching it first is only needed when the
-    // kernel refuses to mount over an existing mount point.
+    // Mount PID-namespace procfs; detach the host projection only if mounting over it fails.
     if mount_procfs() == 0 {
         return Ok(());
     }
     let shadow_error = std::io::Error::last_os_error();
     if shadow_error.raw_os_error() == Some(libc::EPERM) {
-        // Container runtimes commonly deny mounting procfs outright, which
-        // would otherwise abort the whole sandbox. The synthetic root already
-        // projects the host procfs, so keep it: the Agent stays runnable under
-        // the same Landlock policy, at the cost of seeing host PIDs.
+        // EPERM retains host procfs: host PIDs remain visible under the existing Landlock policy.
         return Ok(());
     }
     if unsafe { libc::umount2(c"/proc".as_ptr(), libc::MNT_DETACH) } != 0 {

@@ -60,7 +60,7 @@ Source entry points: `pvisor/src/execution_context/lifecycle.rs`, `pvisor-overla
 
 ## API boundaries and migration status {#api-boundaries}
 
-Logical crate responsibilities and Rust visibility require separate checks. Only `pvisor-vm`, `pvisor-overlayfs` and `pvisor-journal` currently use a sole `api` entry point. Other crates retain existing interfaces; layering in an architecture diagram does not establish a completed workspace migration.
+Only `pvisor-vm`, `pvisor-overlayfs` and `pvisor-journal` currently use a sole `api` entry point. Other crates retain existing interfaces and have not completed this migration.
 
 | Crate | Current public boundary | Implementation and resource ownership |
 | --- | --- | --- |
@@ -75,7 +75,7 @@ Migrated `api` modules declare public data, fields and trait methods. Opaque own
 
 Migration proceeds one crate at a time, updating its consumers, README, public documentation and boundary checks together while preserving external contract coverage. Unmigrated crates should not gain blanket re-export layers or duplicate DTOs merely to appear uniform, nor expose internals to bypass compilation boundaries. Hardware/private-state checks remain inside the crate; callers rely on ownership, lifecycle, post-failure state and synchronization contracts.
 
-This Rust boundary does not automatically establish stable wire protocols or old-record compatibility. The frontend verifies the same binary when self-executing its owner; later CLIs use instance-protocol compatibility without requiring matching binary digests. Stored formats have independent readers. See [Records and version matrix](records-and-versions.md). Status follows static inspection of `lib.rs`, VM `runtime_modules.rs`, `api.rs` and directory READMEs; it does not claim fresh contract-test or platform validation.
+This Rust boundary does not automatically establish stable wire protocols or old-record compatibility. The frontend verifies the same binary when self-executing its owner; later CLIs use instance-protocol compatibility without requiring matching binary digests. Stored formats have independent readers. See [Records and version matrix](records-and-versions.md). Migration status is based on static inspection of `lib.rs`, VM `runtime_modules.rs`, `api.rs` and directory READMEs. Contract tests and platform validation have not been rerun for this status report.
 
 ## Host and Guest AgentCtl {#host-agentctl}
 

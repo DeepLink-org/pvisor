@@ -316,8 +316,7 @@ for (const kind of ["pi", "dsh", "codex"]) {
       assert.ok(host.approvals.every((request) => request.reason.includes("Accept the reviewed greeting file.")));
       assert.ok(host.approvals.every((request) => !request.reason.includes("+candidate")));
     } else {
-      // Run the exact documented native commands with the documented shell
-      // variable. The private PATH supplies the built CLI, without source edits.
+      // Private PATH selects the built CLI for the unmodified documented commands.
       const bin = path.join(f.root, "cli-bin");
       await mkdir(bin);
       await symlink(f.binary, path.join(bin, "pvisor"));

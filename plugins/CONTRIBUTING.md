@@ -126,7 +126,7 @@ or use derived counts/text as acceptance authority. Keep non-UTF-8/control
 names available in inventory without guessing text framing. Native acceptance
 covers added/modified/deleted files, directories, binary data and actual budget
 truncation. The browser caps rendered file/diff rows independently.
-Human titles and command previews are deliberately lossy display heuristics,
+Human titles and command previews are lossy display heuristics,
 never shell inputs. Elapsed-time clocks update their own cells, not the list's
 network-loading state. Preserve one primary run status and localized change
 labels rather than showing execution and filesystem enums as peer status chips.

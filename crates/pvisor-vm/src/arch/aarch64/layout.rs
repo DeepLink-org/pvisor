@@ -65,12 +65,7 @@ pub const CMDLINE_MAX_SIZE: usize = 2048;
 /// Maximum size of the device tree blob as specified in https://www.kernel.org/doc/Documentation/arm64/booting.txt.
 pub const FDT_MAX_SIZE: usize = 0x20_0000;
 
-// As per virt/kvm/arm/vgic/vgic-kvm-device.c we need
-// the number of interrupts our GIC will support to be:
-// * bigger than 32
-// * less than 1023 and
-// * a multiple of 32.
-// We are setting up our interrupt controller to support a maximum of 128 interrupts.
+// KVM GIC interrupt counts must be multiples of 32, greater than 32 and less than 1023.
 /// First usable interrupt on aarch64.
 pub const IRQ_BASE: u32 = 32;
 

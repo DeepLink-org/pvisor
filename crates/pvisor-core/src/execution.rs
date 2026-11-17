@@ -826,15 +826,12 @@ pub fn requested_enforcement_dimensions(
             requested.insert(CapabilityDimension::FilesystemWrite);
         }
     }
-    // PolicyMode::Enforce must fail closed for `Ambient` too: selecting ambient
-    // access is not evidence that direct sockets are confined by a boundary.
+    // Ambient access does not prove socket confinement in Enforce mode.
     requested.insert(CapabilityDimension::Network);
     if !capabilities.secrets.is_empty() {
         requested.insert(CapabilityDimension::Secrets);
     }
-    // `false` is a deny policy, not the absence of a request. Enforce mode must
-    // have a non-bypassable mechanism that prevents fork/exec. When subprocesses
-    // are explicitly allowed there is no deny boundary to prove.
+    // `false` requires non-bypassable fork/exec denial in Enforce mode.
     if !capabilities.allow_subprocess {
         requested.insert(CapabilityDimension::Subprocess);
     }

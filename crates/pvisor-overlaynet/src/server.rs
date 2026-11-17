@@ -339,8 +339,7 @@ where
             )
                 .into_response());
         }
-        // URI authorities retain IPv6 brackets; policy controllers and the
-        // tuple resolver take a bare host, just as in the CONNECT path.
+        // Policy controllers and the tuple resolver require unbracketed IPv6 hosts.
         let host = request
             .uri()
             .host()

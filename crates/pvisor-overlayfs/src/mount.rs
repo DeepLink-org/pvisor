@@ -555,9 +555,7 @@ fn prepare(mut config: OverlayMountConfig) -> Result<(OverlayFs, PathBuf, Vec<Mo
     .with_access_policy(&config.access_policy)
     .with_observation(config.observation.clone())
     .with_kernel_cache(config.kernel_cache, cache_locks);
-    // Access time is not part of a pVisor changeset. Disabling it also avoids
-    // macFUSE issuing read-induced SETATTR requests that would otherwise force
-    // lower files into the writable upper.
+    // noatime excludes access-time changes and prevents macFUSE read-induced copy-up.
     let mut options = vec![MountOption::FSName(config.fsname), MountOption::NoAtime];
     if config.debug {
         options.push(MountOption::CUSTOM("debug".into()));
@@ -800,7 +798,6 @@ mod mount_config_tests {
             Some(root.join("work")),
             root.join("merged"),
         );
-        // prepare() validates configuration without mounting either backend.
         config.backend = None;
         config.preimage_dir = Some(root.join("preimages"));
         config

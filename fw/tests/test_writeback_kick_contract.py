@@ -67,8 +67,7 @@ class WritebackKickContractTests(unittest.TestCase):
         prelude = prelude.replace(
             'static bool queue_delayed_work(struct workqueue_struct *queue, struct delayed_work *work, unsigned int delay) { return queue_work(queue, &work->work); }',
             'static bool queue_delayed_work(struct workqueue_struct *queue, struct delayed_work *work, unsigned int delay) { kick_later++; if (work->work.pending) return false; last_delay = delay; return queue_work(queue, &work->work); }')
-        # Reuse only the observable baseline fixture/contracts, never its queue
-        # implementation. The 0049 body above supplies that implementation.
+        # Use baseline fixtures with the actual 0049 queue implementation.
         cases = baseline.CASES.replace('int main(void) {', 'static int baseline_contract_cases(void) {')
         baseline.compile_and_run(self, prelude + '\n'.join(definitions.values()) + '\n' + actual + cases + CASES)
 

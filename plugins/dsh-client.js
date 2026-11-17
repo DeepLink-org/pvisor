@@ -10,8 +10,7 @@ window.__ModuleLoader__.load({
     const ROUTE = "api/pvisor/monitor";
     const TAB_ID = "pvisor-agent-plugins/monitor";
 
-    // Display heuristics only. Never evaluate, re-launch or authorize commands
-    // using a title or this deliberately lossy shell-word preview.
+    // Lossy display text must never execute or authorize commands.
     function displayArgs(task) {
       return Array.isArray(task?.command) ? task.command.filter((arg) => typeof arg === "string") : [];
     }
@@ -180,8 +179,7 @@ window.__ModuleLoader__.load({
       let timer;
       let controller;
       let disposed = false;
-      // Observation time alone is not a UI change. Retain object identity on
-      // unchanged reads so background synchronization cannot repaint the list.
+      // Preserve object identity on unchanged reads to avoid background list repaints.
       const fingerprint = (value) => JSON.stringify(value, (key, item) => key === "observed_at" ? undefined : item);
       const emit = (patch) => {
         let changed = false;

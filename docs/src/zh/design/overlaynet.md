@@ -33,7 +33,7 @@ data plane 的 guest 路径。
 会暴露具体地址的 resolver。
 
 MVP 对通用 UDP、IPv6、ICMP、QUIC、入站连接、virtual/link-local/multicast/
-broadcast 目的地，以及耗尽的 flow/DNS 容量，刻意 fail closed。显式 Gateway
+broadcast 目的地，以及耗尽的 flow/DNS 容量，均 fail closed。显式 Gateway
 capture 是内部 virtual-router 路由；所有普通出口共享同一策略和带宽注册表。
 host 与 container 透明拦截仍是后续工作。
 
@@ -51,7 +51,7 @@ smoltcp 终止 guest TCP，宿主创建另一条 upstream TCP；两条连接的�
 
 ## Loopback、RFC1918 与宿主可达性 {#local-network-boundaries}
 
-不可绕过出口描述的是流量必须经过策略门，实际能否访问宿主或内网仍由有效策略决定。VM 的硬拒绝地址检查有意保留 loopback 和 RFC1918，以支持显式授权的宿主/LAN 服务；`public` / Ambient 在没有额外收窄或拒绝规则时也可允许它们。`public` 这个名字不能理解为“仅允许公网”。
+不可绕过出口描述的是流量必须经过策略门，实际能否访问宿主或内网仍由有效策略决定。VM 的硬拒绝地址检查允许经策略授权的 loopback 和 RFC1918 目标，用于访问宿主/LAN 服务；`public` / Ambient 在没有额外收窄或拒绝规则时也可允许它们。`public` 这个名字不能理解为“仅允许公网”。
 
 | 目标和路径 | 当前行为 |
 | --- | --- |

@@ -413,8 +413,7 @@ impl SerializableEvent {
                 body_bytes: *body_bytes,
                 user_content: user_content.clone(),
                 body_json: body_json.clone(),
-                // Dead-letter diagnostics retain the exact
-                // client JSON. Replay reconstructs the typed request in prepare.
+                // Retain exact client JSON; prepare reconstructs the typed replay request.
                 semantic: None,
                 model_rewritten: *model_rewritten,
                 headers: headers.clone(),

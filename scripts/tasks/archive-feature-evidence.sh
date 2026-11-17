@@ -19,9 +19,8 @@ if [[ -n "${PVISOR_CASE_ARTIFACTS:-}" ]]; then
   }
   inputs+=(--directory "${cases%/*}" --add-file "${cases##*/}")
 fi
-# OCI rootfs directories can deliberately deny traversal to the runner. Read
-# them without changing evidence ownership/modes, following links or recursing
-# into other filesystems. Redirection keeps the archive owned by the runner.
+# sudo reads restricted OCI evidence without changing ownership/modes, following symlinks or crossing filesystems.
+# Redirection keeps the archive owned by the runner.
 sudo -n tar --create --gzip --numeric-owner --one-file-system \
   --file - "${inputs[@]}" > "$temporary"
 # Publish only a complete archive; never replace an existing result.

@@ -41,4 +41,4 @@ macOS host `--safe` already blocks direct external connections; selective rules 
 
 ## Verify fail-closed
 
-`--strict` requires non-bypassable enforcement evidence for every requested capability dimension, and refuses to start the agent when any is missing. No executor currently claims complete subprocess enforcement, so it refuses to run; use it to confirm that your pipeline stops when a boundary is too weak, not as a stronger sandbox.
+`--strict` requires non-bypassable enforcement evidence for every requested capability dimension, and refuses to start the agent when any is missing. Complete subprocess enforcement evidence is currently unavailable on every executor, so `--strict` refuses to run. Use it to verify that your pipeline stops when required enforcement is missing.

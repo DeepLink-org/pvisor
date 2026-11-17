@@ -99,13 +99,7 @@ pub fn update_extended_apic_id_entry(
     use crate::cpuid::cpu_leaf::leaf_0x8000001e::*;
 
     let mut core_id = u32::from(vm_spec.cpu_id);
-    // When hyper-threading is enabled each pair of 2 consecutive logical CPUs
-    // will have the same core id since they represent 2 threads in the same core.
-    // For Example:
-    // logical CPU 0 -> core id: 0
-    // logical CPU 1 -> core id: 0
-    // logical CPU 2 -> core id: 1
-    // logical CPU 3 -> core id: 1
+    // With hyper-threading, each consecutive pair of logical CPUs shares a core ID.
     if vm_spec.ht_enabled {
         core_id /= 2;
     }

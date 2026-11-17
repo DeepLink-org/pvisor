@@ -158,8 +158,8 @@ rejected for marked replies. The host must reject capture/restore while it is
 negotiated: the hidden guest pages and object IDs are not a snapshot schema.
 This change does not redefine fstat/O_PATH or other namespace metadata identity.
 In particular, VFS copy_file_range checks still inspect the outer namespace
-inode's size before the FUSE method runs; the capability does not claim to fix
-that pre-existing old-fd metadata/EOF boundary. Real guest page ownership,
+inode's size before the FUSE method runs; the existing old-fd metadata/EOF
+limitation remains. Real guest page ownership,
 partial/truncate, mmap/exec, cross-open reuse and release behavior need separate
 validation before any performance or default-enablement claim.
 

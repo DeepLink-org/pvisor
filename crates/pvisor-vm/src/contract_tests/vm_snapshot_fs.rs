@@ -339,11 +339,8 @@ fn batched_requests_survive_freeze_thaw_without_another_guest_kick() {
 #[cfg(target_os = "linux")]
 #[test]
 fn unlinked_cached_inode_rejection_identifies_absence_of_application_handles() {
-    // Characterize a remaining capture limitation: an ordinary LOOKUP/UNLINK
-    // leaves an O_PATH cache pin until the guest sends FORGET. There is no open
-    // application handle, but snapshot capture currently rejects the cache pin.
-    // This is a deterministic reproducer for investigation, not a claim that
-    // POSIX closed/unlinked inode caching must remain unsupported.
+    // LOOKUP/UNLINK retains an O_PATH cache pin until FORGET; capture currently rejects this pin
+    // even without an open application handle.
     let root = tempfile::tempdir().unwrap();
     std::fs::write(root.path().join("atomic"), b"old").unwrap();
     let mut source = GuestFs::new(root.path(), None);
@@ -1761,12 +1758,8 @@ fn overlay_stage_retains_lower_and_restores_open_handles_and_future_alias_copy_u
 
 #[test]
 fn create_release_forget_cycles_do_not_leak_host_descriptors() {
-    // The passthrough backend owns one host descriptor per inode and one per
-    // open handle; RELEASE must return the handle descriptor and FORGET the
-    // inode descriptor. A sequential create/open/close workload therefore has
-    // to keep the host descriptor count flat once the guest releases its
-    // dentry references — otherwise the runner hits RLIMIT_NOFILE and the
-    // guest sees EMFILE while barely holding any descriptors itself.
+    // RELEASE must close handle descriptors and FORGET inode descriptors; repeated closed-file
+    // operations must not grow the host FD count after guest dentry release.
     #[cfg(target_os = "linux")]
     fn descriptor_count(root: &std::path::Path) -> usize {
         // Count only descriptors under this sandbox's own tree: sibling tests

@@ -170,9 +170,7 @@ def check_duplicates(source):
                 normalized = re.sub(r"\s+", " ", " ".join(lines))
                 if len(normalized) < 150:
                     continue
-                # Link definitions, inline-code paths and pure link/image
-                # pointer lines are navigation, not prose; identical targets
-                # across locales or sibling pages are expected.
+                # Navigation targets may repeat across locales and sibling pages.
                 prose = re.sub(r"!?\[[^\]]*\]\([^)]*\)", "", normalized)
                 prose = re.sub(r"`[^`]*`", "", prose)
                 # "Local raw record <path>" is the site's provenance-pointer

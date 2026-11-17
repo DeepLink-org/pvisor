@@ -2589,8 +2589,7 @@ mod tests {
         // macOS pwrite honors the offset even with O_APPEND.
         write_request(&appender, b"efgh", 4, libc::O_APPEND).unwrap();
         drop(appender);
-        // Apply the final FORGET's accounting and the same reclaim helper used
-        // by the callback. No live handle, inode or by_object entry survives.
+        // Final FORGET must release the handle, inode and by_object entry.
         overlay.nodes.get_mut(&old).unwrap().lookups -= 1;
         overlay.reclaim_inode(old);
         assert!(!overlay.nodes.contains_key(&old));
@@ -2984,8 +2983,7 @@ mod tests {
             fs::write(lower.join("input"), b"abcdefghijklmnop").unwrap();
             fs::write(lower.join("target"), b"original").unwrap();
             let mut filesystem = OverlayFs::new(vec![lower.clone()], upper.clone(), None).unwrap();
-            // Existing private per-instance seam fails the server's copy loop,
-            // after actual backing writes, not the client kernel's admission.
+            // Inject failure in the server copy loop after backing writes.
             filesystem.copy_fault_after = Some(limit);
             let filesystem = crate::dispatch::DispatchFs::new(filesystem).unwrap();
             let dispatch = filesystem.control.clone();

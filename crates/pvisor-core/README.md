@@ -42,9 +42,8 @@ replace endpoint authentication or target binding.
 
 `execution::RunProfile` is a typed execution request shared by frontends and
 embedded callers. `RuntimeConfig.profile` defaults to `Default`; `Safe` requires
-runtime sandbox admission before execution. It does not claim that every network
-mechanism is non-bypassable. `PolicyMode::Enforce` and executor installation
-observations retain that separate role.
+runtime sandbox admission before execution. Network non-bypassability is checked
+separately through `PolicyMode::Enforce` and executor installation observations.
 
 Core defines native CPU QoS and telemetry through `cpu`, `memory` and execution
 contracts, not distributed scheduling or admission. `node::EnvironmentLayer`
