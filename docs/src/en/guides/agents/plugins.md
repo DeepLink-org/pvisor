@@ -182,8 +182,8 @@ For repeated external commands in one long-lived VM, Linux [container staged bin
 Plugin 0.1.12 provides a read-only **pVisor** page in the right Sidebar guide
 (also reachable through its tab strip's add control). Restart DSH Web and
 refresh the page after installing. The browser extension targets DSH
-**0.2.2-rc.1**; check `dsh --version`. Earlier alpha tool tests do not prove
-UI compatibility, and Desktop/Electron acceptance is not claimed.
+**0.2.2-rc.1**; check `dsh --version`. Earlier alpha tests cover only the tool
+interface; UI compatibility and Desktop/Electron operation remain unverified.
 
 Upgrade from 0.1.7: its bundle mounted the named `/dsh` subpath, which DSH
 0.2.2-rc.1 skips during browser-module discovery. Tools can work while the
@@ -325,8 +325,8 @@ Each task gets a fresh private HOME and XDG state paths, without host HOME login
 
 ### VM-first policy {#execution-policy}
 
-The source implementation requires a runtime with `vm-check --json`; this is
-not a claim about the published 0.3.2 binary. Configure a prepared Linux
+The source implementation requires a runtime with `vm-check --json`;
+availability in the published 0.3.2 binary is unverified. Configure a prepared Linux
 rootfs before starting the Agent host:
 
 ```sh

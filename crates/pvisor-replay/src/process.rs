@@ -970,10 +970,7 @@ mod tests {
             );
             spec.command.env("PVISOR_REPLAY_CANCEL_MODE", mode);
             spec.stdin = Some(vec![b'x'; 512 * 1024]);
-            // run_process owns spawn and starts deadlines immediately, so a
-            // true readiness handshake would require a production test hook.
-            // Allow 3s for native startup instead of 250ms. READY below detects,
-            // but cannot prevent, startup starvation beyond this finite budget.
+            // Deadlines include startup; missing READY identifies startup starvation.
             spec.timeout = Duration::from_secs(if mode == "wall" { 3 } else { 8 });
             spec.idle_timeout = (mode == "idle").then_some(Duration::from_secs(3));
             spec.log_bytes_limit = (mode == "quota").then_some(4096);

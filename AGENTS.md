@@ -14,6 +14,18 @@ Before changing any file, read the `README.md` of every directory on the path
 from the repository root to that file. A directory README's rules apply to
 everything below it and are not optional context.
 
+## Comment discipline
+
+- Keep comments short and factual. Explain only non-obvious constraints or
+  reasons the code cannot express; do not repeat code or narrate edits.
+- Never use comments to excuse workarounds, deferred fixes or unnecessary
+  complexity. Fix the cause; any retained limitation must state its concrete
+  effect and removal condition, without defending it on effort or scope grounds.
+- Preserve required API documentation and necessary safety, ownership,
+  synchronization and platform preconditions. Brevity must not omit a contract.
+- Prefer code, types or tests for enforceable rules. Remove stale or redundant
+  comments when touching the relevant code.
+
 ## Crate API boundaries
 
 Migrate one crate at a time, following `pvisor-vm`'s API model. Do not turn an

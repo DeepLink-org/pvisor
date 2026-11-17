@@ -272,9 +272,7 @@ async fn serve_with_bound_listeners(
         CaptureEngine::new(Arc::clone(&sink), index.clone(), Arc::clone(&storage)).await?;
     let capture_for_shutdown = capture_engine.clone();
     let mut client_builder = reqwest::Client::builder()
-        // Redirects must return to the proxy client so every destination
-        // gets a fresh OverlayNet authorization decision. Following a
-        // cross-origin Location here would bypass the policy gate.
+        // Return redirects to the client so OverlayNet authorizes each destination.
         .redirect(reqwest::redirect::Policy::none())
         .connect_timeout(std::time::Duration::from_secs(10))
         .read_timeout(std::time::Duration::from_secs(600));

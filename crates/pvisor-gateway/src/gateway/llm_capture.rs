@@ -577,10 +577,7 @@ pub(super) async fn llm_capture(
     );
 
     let mut builder = Response::builder().status(status);
-    // The upstream body has been fully consumed and rebuilt even for protocol
-    // passthrough. Drop hop-by-hop framing and the stale content length on every
-    // buffered response. If translation changed the payload, also drop encoding
-    // and content type before installing the translated media type.
+    // Rebuilt bodies invalidate framing and length; translation also invalidates encoding and media type.
     for (name, value) in resp_headers.iter() {
         if skip_response_header_after_reframing(&resp_headers, name.as_str(), body_was_rewritten) {
             continue;

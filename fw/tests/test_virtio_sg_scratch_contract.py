@@ -32,8 +32,7 @@ def candidate():
 
 
 def definition(source, name):
-    # Enqueue also has an earlier prototype. Match the opening brace of the
-    # definition, never the next unrelated function after that prototype.
+    # Match the definition's opening brace; enqueue has an earlier prototype.
     match = re.search(r"static (?:unsigned int|int|void) " + name + r"\([^;{]*?\)\n\{", source)
     if match is None:
         raise ValueError("missing actual function: " + name)

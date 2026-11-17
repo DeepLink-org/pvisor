@@ -920,26 +920,14 @@ impl Task for PvisorTask {
         plan.injections = crate::inject::resolve(&plan.annotations, &plan.rootfs, &occupied_mounts)
             .map_err(|error| rpc_error(Code::INVALID_ARGUMENT, error.to_string()))?;
         let wants_vm = plan.wants_vm();
-        // Payload delivery for VM pods whose targets sit under a pod volume
-        // (upstream's opensandbox-bin emptyDir at /opt/opensandbox): the
-        // volume becomes a virtio-fs share inside the guest and shadows
-        // anything staged into the rootfs, so the payload must land in the
-        // volume's HOST source. The synthetic installer no longer copies
-        // anything, so this Create does it (a real installer's output is
-        // already there and the copy is skipped).
+        // VM pod volumes shadow rootfs staging; Create delivers payloads to the volume's host source.
+        // Synthetic installers copy nothing; existing real-installer output is retained.
         if wants_vm {
             Self::stage_volume_delivered_payloads(&mut plan)
                 .map_err(|error| rpc_error(Code::INTERNAL, format!("{error:#}")))?;
         }
-        // The egress sidecar publication/gating follows.
-        // OpenSandbox egress delivery. Each container of this pod runs on
-        // its own shim instance (containerd `sandboxer = "shim"`), so the
-        // coordination is purely filesystem, keyed by the CRI sandbox id
-        // (every container's spec carries it as an annotation): the egress
-        // sidecar's Create publishes the pod policy at the gate file, and a
-        // workload that sees the egress-auth pod annotation gates its VM
-        // boot on that file. The sidecar itself always runs on the container
-        // tier (see plan::executor_is_vm).
+        // Per-container shims coordinate egress through a gate file keyed by CRI sandbox ID.
+        // The container-tier sidecar publishes policy; egress-auth workloads wait for it before VM boot.
         #[cfg(feature = "vm")]
         let egress_gate = {
             let rules = spec.process().as_ref().and_then(|process| {
@@ -1293,13 +1281,8 @@ impl Task for PvisorTask {
         };
         match task_response {
             Some(result) => result,
-            // containerd's startup restore probes the shim's Task service
-            // with the sandbox id (sandboxer = "shim": the shim, not
-            // containerd, owns the pod sandbox). Answering NotFound there
-            // makes containerd publish a sandbox exit and kubelet kill the
-            // pod after every containerd restart. The holder is the
-            // process behind that id; report it the way runc's pod-sandbox
-            // mode reports its pause task.
+            // Task-service restore probes use the sandbox ID; report the holder task.
+            // NotFound would trigger sandbox exit and kubelet pod teardown after containerd restart.
             None if req.exec_id.is_empty() => self.sandbox_task_state(&req.id).await,
             None => Err(not_found(&req.id)),
         }

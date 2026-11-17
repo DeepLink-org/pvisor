@@ -39,8 +39,8 @@ pvisor spawn \
 
 ## Known gaps
 
-- The container executor records container isolation but **does not claim complete capability enforcement**.
-- `--safe` therefore refuses to start on a container rather than offering an incomplete boundary.
+- The container executor records container isolation; **complete capability enforcement evidence is unavailable**.
+- `--safe` refuses to start on a container.
 - With host networking, selective network policy is cooperative, just as it is on the host.
 
 Use a [VM](vm.md) when you need an independent kernel or a non-bypassable network boundary.

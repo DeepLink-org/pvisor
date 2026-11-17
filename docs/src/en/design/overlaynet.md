@@ -21,7 +21,7 @@ A native pvisor-vm Execution uses `vm-smoltcp` when `[overlaynet].mode = "auto"`
 
 Some host DNS/TUN connectors return opaque fake IPs in `198.18.0.0/15` for authorized hostnames. The VM connector accepts these only after logical hostname/port pass policy and core authorization; guest literal IPs in that range remain blocked. Because the connector hides the final address, IP/CIDR policy cannot inspect the endpoint behind an alias. Deployments requiring final-address policy should use a resolver exposing concrete addresses.
 
-The MVP deliberately fails closed for general UDP, IPv6, ICMP, QUIC, inbound connections, virtual/link-local/multicast/broadcast destinations and exhausted flow/DNS capacity. Explicit Gateway capture is an internal virtual-router route. All ordinary egress shares policy/bandwidth registries. Transparent host/container interception remains future work.
+The MVP fails closed for general UDP, IPv6, ICMP, QUIC, inbound connections, virtual/link-local/multicast/broadcast destinations and exhausted flow/DNS capacity. Explicit Gateway capture is an internal virtual-router route. All ordinary egress shares policy/bandwidth registries. Transparent host/container interception remains future work.
 
 > Status: the native pvisor-vm driver is implemented on Linux and Apple Silicon macOS. Transparent host-process interception remains an accepted design. Selective host/container policy uses explicit proxies; host deny-all retains platform sandbox behavior.
 
@@ -35,7 +35,7 @@ smoltcp terminates guest TCP while the host opens another upstream TCP connectio
 
 ## Loopback, RFC1918 and host reachability {#local-network-boundaries}
 
-Non-bypassable egress means traffic must pass the policy gate. Effective policy still determines access to host or private-network services. VM hard-deny checks intentionally retain loopback and RFC1918 for explicitly authorized host/LAN services. `public` / Ambient can also allow them when no narrower constraint or deny applies; the name `public` does not mean public-Internet-only access.
+Non-bypassable egress means traffic must pass the policy gate. Effective policy still determines access to host or private-network services. VM hard-deny checks permit policy-authorized loopback and RFC1918 destinations for host/LAN services. `public` / Ambient can also allow them when no narrower constraint or deny applies; the name `public` does not mean public-Internet-only access.
 
 | Destination and path | Current behavior |
 | --- | --- |

@@ -483,7 +483,7 @@ host permission settings are unchanged.
 
 ### Codex and terminal decisions
 
-Codex's MCP surface intentionally has no apply/drop tools. After reviewing the
+Codex's MCP surface has no apply/drop tools. After reviewing the
 diff, run these commands yourself in the project:
 
 Save the returned selector in your terminal as `stage`, then use the native CLI

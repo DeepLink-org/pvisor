@@ -115,10 +115,9 @@ The vocabulary names what the caller receives, not which code path runs:
 Any other value is rejected at task creation (fail-closed): a misspelled
 tier never silently downgrades the task.
 
-There is deliberately no tier weaker than `container`: the shim is a
-containerd runtime, its input is always an OCI task (image rootfs, at
-least a private mount namespace, a cgroup), so a "bare host process"
-cannot be expressed. Standalone pVisor's three executors map as follows:
+The shim accepts OCI tasks with an image rootfs, a private mount namespace
+and a cgroup. Its minimum tier is `container`. Standalone pVisor's three
+executors map as follows:
 `host` (host process) has no shim equivalent and its annotation value is
 rejected here, `container` and `vm` map to the tiers above.
 

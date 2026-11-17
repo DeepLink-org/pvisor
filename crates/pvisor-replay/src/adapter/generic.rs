@@ -1270,11 +1270,7 @@ fn continue_native_cli(
         NativeJsonlAgent::Codex => {
             let codex_home = context.state_dir.join("codex-home");
             let staged_path = codex_session_path(&codex_home, &session_id, &plan.native)?;
-            // `exec resume` may rotate the rollout into a new timestamped
-            // file instead of appending to the staged path.  Prefer the
-            // newest file from this isolated CODEX_HOME so the continuation
-            // is not reported as zero-step merely because we read the stale
-            // prefix file.
+            // `exec resume` may rotate rollout files; read the newest file in the isolated CODEX_HOME.
             let session_path =
                 latest_codex_session_path(&codex_home, session_id.as_str()).unwrap_or(staged_path);
             let raw_events = if session_path.is_file() {

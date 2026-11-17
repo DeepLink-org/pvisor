@@ -712,9 +712,7 @@ pub fn is_public_egress_ip(ip: IpAddr) -> bool {
                 return is_public_egress_ip(IpAddr::V4(mapped));
             }
             let segments = ip.segments();
-            // Only globally-routed unicast space is eligible. This also
-            // rejects IPv4-compatible, site-local, link-local, ULA, and other
-            // special-purpose prefixes before considering narrower carveouts.
+            // Reject non-global unicast space before applying narrower carveouts.
             (segments[0] & 0xe000 == 0x2000)
                 && !(segments[0] == 0x2001 && segments[1] <= 0x01ff)
                 && !(segments[0] == 0x2001 && segments[1] == 0x0db8)

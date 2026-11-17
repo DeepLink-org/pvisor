@@ -16,11 +16,7 @@ use crate::arch_gen::x86::mpspec;
 use crate::arch::x86_64::layout::IOAPIC_NUM_PINS;
 use vm_memory::{Address, ByteValued, Bytes, GuestAddress, GuestMemory, GuestMemoryMmap};
 
-// This is a workaround to the Rust enforcement specifying that any implementation of a foreign
-// trait (in this case `ByteValued`) where:
-// *    the type that is implementing the trait is foreign or
-// *    all of the parameters being passed to the trait (if there are any) are also foreign
-// is prohibited.
+// A local wrapper permits ByteValued implementation for the foreign table type.
 #[derive(Copy, Clone, Default)]
 struct MpcBusWrapper(mpspec::mpc_bus);
 #[derive(Copy, Clone, Default)]

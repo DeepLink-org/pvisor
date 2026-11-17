@@ -1466,9 +1466,7 @@ async fn bridge(listener: TcpListener, path: PathBuf) -> Result<()> {
     }
 }
 
-// This is an honest capability adapter, not an imitation of upstream egress.
-// SDKs resolve this endpoint even when no policy was requested. Health depends
-// on the real guest service; every policy operation fails explicitly.
+// Health probes the real guest service; policy operations are unsupported, including on unconfigured SDK clients.
 async fn native_egress(
     listener: TcpListener,
     execd: String,

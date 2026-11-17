@@ -1073,9 +1073,7 @@ fn owner(store: Store, id: &str, generation: &str) -> anyhow::Result<()> {
             .save(&record)
             .context("publish terminal container record")?;
     }
-    // A fast workload can exit before the attachment thread sees its terminal
-    // record. Retain the owner through reply drain for every foreground launch,
-    // not only auto-remove, or the client receives EOF instead of its exit code.
+    // Retain the foreground owner until replies drain, or a fast exit can produce EOF without its exit code.
     if !record.request.detach {
         let deadline = Instant::now() + Duration::from_secs(15);
         while !delivered.load(Ordering::Acquire)

@@ -60,7 +60,7 @@ OverlayNet 拥有连接授权与转发，VM 的 virtio-net 将 Ethernet frame �
 
 ## API 边界与迁移状态 {#api-boundaries}
 
-crate 的逻辑职责和 Rust 可见性需要分别检查。当前只有 `pvisor-vm`、`pvisor-overlayfs` 和 `pvisor-journal` 已采用唯一 `api` 入口；其他 crate 保留既有接口，不能因为架构图已经分层就假定整个 workspace 完成迁移。
+当前只有 `pvisor-vm`、`pvisor-overlayfs` 和 `pvisor-journal` 已采用唯一 `api` 入口；其他 crate 保留既有接口，尚未完成这项迁移。
 
 | crate | 当前公开边界 | 实现与资源归属 |
 | --- | --- | --- |
@@ -75,7 +75,7 @@ crate 的逻辑职责和 Rust 可见性需要分别检查。当前只有 `pvisor
 
 迁移按 crate 进行：同时调整该 crate 的调用方、README、公开文档和边界检查，保留外部 API 合同覆盖。尚未迁移的 crate 不应临时套一层全量 re-export 或重复 DTO 来制造一致外观，也不能公开内部模块绕过编译边界。硬件/私有状态检查留在 crate 内；外部调用方只依据所有权、生命周期、失败后状态和同步合同。
 
-这套 Rust 边界不自动提供稳定线上协议或旧记录兼容性。前端 self-exec owner 时校验同一二进制身份；后续 CLI 按实例协议兼容，不要求二进制摘要相同。磁盘格式由各自 reader 检查。版本对应关系见[记录与版本矩阵](records-and-versions.md)。状态依据 `lib.rs`、VM 的 `runtime_modules.rs`、各 `api.rs` 与目录 README 静态核对；不代表本次重新运行了契约测试或平台验证。
+这套 Rust 边界不自动提供稳定线上协议或旧记录兼容性。前端 self-exec owner 时校验同一二进制身份；后续 CLI 按实例协议兼容，不要求二进制摘要相同。磁盘格式由各自 reader 检查。版本对应关系见[记录与版本矩阵](records-and-versions.md)。迁移状态依据 `lib.rs`、VM 的 `runtime_modules.rs`、各 `api.rs` 与目录 README 静态核对；此次状态核对未重新运行契约测试或平台验证。
 
 ## Host 与 Guest AgentCtl {#host-agentctl}
 

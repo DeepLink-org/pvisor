@@ -109,8 +109,7 @@ pub fn request_to_gemini(semantic: &LlmRequestEventPayload, upstream_model: &str
                     if is_error == &Some(true) {
                         value["functionResponse"]["response"]["error"] = json!(true);
                     }
-                    // Used only for deterministic ordering below; Gemini does not
-                    // receive this correlation field.
+                    // Ordering-only correlation field; never sent to Gemini.
                     value["functionResponse"]["id"] = json!(call_id);
                     parts.push(value);
                 }

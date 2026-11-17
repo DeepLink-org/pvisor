@@ -126,8 +126,7 @@ export function applyApprovalText(preview, explanation) {
   const count = Number.isSafeInteger(remaining) && remaining >= 0 ? remaining : "unknown";
   const other = Number.isSafeInteger(outside) && outside > 0 ? `, plus ${outside} outside scope` : "";
   const task = plan.source.stage.split("/").at(-2);
-  // Host approval UIs may collapse all whitespace. Keep this a short paragraph;
-  // full paths, raw JSON and native diff stay in the separately readable preview.
+  // Approval UIs may collapse whitespace; keep details in the separate readable preview.
   return `${intent} | Project: ${compactPath(plan.scope.target, 160)}. ` +
     `Apply ${plan.selected.length} ${plan.selected.length === 1 ? "change" : "changes"}: ${selected}${extra}.${required} ` +
     `Remaining staged: ${count}${other}. Task: ${oneLine(task, 64)}. ` +

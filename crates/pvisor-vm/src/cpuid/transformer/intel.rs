@@ -178,10 +178,7 @@ fn update_extended_cache_topology_entry(
                     .write_bits_in_range(&ecx::LEVEL_TYPE_BITRANGE, LEVEL_TYPE_CORE);
             }
         }
-        // Core Level Processor Topology; index >=2
-        // No other levels available; This should already be set to correctly,
-        // and it is added here as a "re-enforcement" in case we run on
-        // different hardware
+        // Topology levels >= 2 advertise no additional levels, regardless of host topology.
         level => {
             entry.ecx = level;
         }

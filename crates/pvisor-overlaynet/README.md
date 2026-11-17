@@ -88,8 +88,7 @@ capture events, or Journal writes.
 for those. pVisor owns Run configuration, executor selection, and the recorded
 interception profile.
 
-The explicit-proxy profile is deliberately marked `cooperative`: policy
-decisions over intercepted requests are not non-bypassable enforcement.
+The explicit-proxy profile is `cooperative`: clients can bypass it with direct sockets.
 `no-network` and `allowlist` mean "for traffic that reached this proxy";
 direct sockets and clients that remove proxy variables remain ambient.
 `InterceptionProfile::vm_smoltcp()` records the VM's implemented non-bypassable

@@ -184,7 +184,7 @@ upper 保存完整 copy-up 文件，修改一字节也可能复制整个文件�
 | symlink | 链接 target 原始字节、uid、gid、可选 xattrs |
 | other | mode、uid、gid、rdev、可选 xattrs |
 
-xattrs 区分 Unsupported 与排序后的 `(name-bytes, value-sha256)`；内部 opaque xattr 排除在用户元数据指纹之外。旧条目没有 xattrs 时，兼容比较也不宣称验证过 xattrs。普通文件哈希使用 64 KiB 缓冲，但总读取量仍与文件长度成正比；目录指纹不是整个子树的 Merkle hash。
+xattrs 区分 Unsupported 与排序后的 `(name-bytes, value-sha256)`；内部 opaque xattr 排除在用户元数据指纹之外。旧条目没有 xattrs 时，兼容比较不验证这些属性。普通文件哈希使用 64 KiB 缓冲，但总读取量仍与文件长度成正比；目录指纹不是整个子树的 Merkle hash。
 
 新空 upper 初始化 `complete-v1`，内容为 `pvisor-overlay-preimage-journal-v1` 加换行。完整日志缺少选中路径时直接拒绝 apply。没有标记的旧 stage 可在 apply 时补取指纹以兼容，但不提供从执行期开始的同等冲突保护。preimage 每条独立原子发布，不整体替换；完整条目损坏会让加载失败，没有类似 JSONL 的尾部修复。
 

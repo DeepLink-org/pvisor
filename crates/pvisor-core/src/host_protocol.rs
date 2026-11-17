@@ -232,8 +232,7 @@ pub enum HostSupervisorCommand {
 
 impl<'de> Deserialize<'de> for HostSupervisorCommand {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        // Empty struct variants enforce unknown-field rejection, as for the
-        // public HostExecutionCommand and HostVmCommand wire adapters above.
+        // Empty struct variants enforce unknown-field rejection.
         #[derive(Deserialize)]
         #[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
         enum WireCommand {

@@ -915,12 +915,8 @@ pub fn validate_vm_process(
     _exec: bool,
 ) -> Result<(), PlanError> {
     validate_process_constraints(process, true)?;
-    // Identity (uid/gid/groups/umask), capabilities, and
-    // no_new_privileges are host-process concepts the VM boundary already
-    // subsumes; accepting them matches how every VM runtime (kata,
-    // firecracker) treats OCI process-level security. Rlimits (init and
-    // exec alike) travel to the guest: init through the launch config,
-    // exec through the guest control protocol's launch overrides.
+    // VM tasks accept identity, capabilities and no_new_privileges as no-ops.
+    // Init and exec rlimits are forwarded to the guest launch and control protocols.
     let _ = process.no_new_privileges();
     let _ = process.capabilities();
     let _ = process.rlimits();
@@ -1030,12 +1026,7 @@ fn validate_process_constraints(
     vm: bool,
 ) -> Result<(), PlanError> {
     let value = serde_json::to_value(process)?;
-    // Host LSM labels and the OOM score are host-kernel concepts: the host
-    // path fails closed on them (dropping a constraint would silently weaken
-    // confinement), while a VM task cannot honor them at all — the guest owns
-    // its kernel — so they are accepted as no-ops, matching how kata and
-    // firecracker treat OCI process-level security. Kubelet/CRI set them on
-    // standard clusters (AppArmor nodes, SELinux nodes, QoS oom_score_adj).
+    // VM tasks accept host LSM labels and OOM scores as no-ops; the host path rejects unsupported constraints.
     let mut allowed = vec![
         "args",
         "env",
@@ -1280,15 +1271,8 @@ fn validate_spec_constraints(
     let vm = disposition.has_guest_contract();
     let linux = &value["linux"];
     if vm {
-        // Guest boot does not install OCI mounts or security constraints;
-        // namespaces, resources metadata, and paths that describe the host
-        // side are accepted as no-ops (the VM owns its own view). Seccomp
-        // filters and SELinux mount labels are host-LSM/kernel concepts the
-        // guest cannot execute; refusing them would block every
-        // PodSecurity-restricted or SELinux cluster pod from VM tasks.
-        // `linux.devices` (device nodes) is the same class: kubelet
-        // materializes the host device set for privileged containers, and
-        // the machine boundary subsumes host device configuration.
+        // VM tasks do not install OCI namespaces, mounts, seccomp, SELinux mount labels or device nodes;
+        // these host-side settings are accepted as no-ops. The guest owns its rootfs and kernel view.
         reject_other_fields(
             linux,
             "linux.",
@@ -1306,16 +1290,9 @@ fn validate_spec_constraints(
                 "devices",
             ],
         )?;
-        // The whole resources subtree describes host-cgroup enforcement the
-        // VM path does not install (kubelet sends unified maps, swap and
-        // device rules on cgroup v2 nodes); VM shape comes from the
-        // io.pvisor.vm.* annotations instead. The host branch below keeps
-        // validating the subfields it actually enforces.
-        // System mounts (proc, sysfs, devpts, ...) and bind mounts are both
-        // no-ops in a VM: the guest supervisor owns the rootfs layout, and
-        // kubelet unconditionally bind-mounts /etc/hosts, /etc/hostname,
-        // /etc/resolv.conf and /dev/termination-log into every pod — the
-        // guest keeps its rootfs's own files for those paths.
+        // VM tasks ignore host-cgroup resources and OCI system/bind mounts; VM sizing uses io.pvisor.vm.*.
+        // The guest retains its own /etc/hosts, /etc/hostname, /etc/resolv.conf and /dev/termination-log.
+        // The host branch validates the resource fields it enforces.
         if value["root"]["readonly"] == true {
             return Err(PlanError::UnsupportedConstraint("VM root.readonly".into()));
         }
@@ -1920,11 +1897,8 @@ mod tests {
 
     #[test]
     fn host_lsm_process_fields_are_no_ops_for_vm_only() {
-        // AppArmor profiles and SELinux labels constrain host processes; a
-        // VM task cannot honor them, so they are no-ops there while the
-        // container tier keeps failing closed on them. (oomScoreAdj is
-        // enforced on the container tier and accepted as a no-op on VMs —
-        // see the carry-through test.)
+        // VM tasks accept AppArmor, SELinux labels and oomScoreAdj as no-ops.
+        // The container tier rejects unsupported LSM constraints and enforces oomScoreAdj.
         for (field, value) in [
             ("apparmorProfile", serde_json::json!("restricted")),
             (
@@ -1994,10 +1968,7 @@ mod tests {
 
     #[test]
     fn vm_accepts_system_and_bind_mounts_as_no_ops() {
-        // kubelet unconditionally bind-mounts /etc/hosts, /etc/hostname,
-        // /etc/resolv.conf and /dev/termination-log into every pod, so a VM
-        // that rejected bind mounts could never run a real pod; the guest
-        // keeps its rootfs's own files for those paths.
+        // VM tasks ignore OCI file binds and retain their rootfs files at kubelet-provided /etc and termination-log paths.
         let mut value = serde_json::to_value(minimal_spec()).unwrap();
         value["annotations"] = serde_json::json!({"io.pvisor.executor":"vm"});
         value["mounts"] = serde_json::json!([

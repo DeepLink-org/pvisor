@@ -112,10 +112,9 @@ walks through fixing failing tests in a small Python project. It includes the
 task prompt and credential setup, then shows how to check staged files, accept
 them, and retest in your project. You need Python, Claude Code, and model access.
 
-> Developer preview: "Coding without sandbox approvals" describes the intended
-> Agent style stagebox experience. The agent guide lists the controlled-client
-> tests already recorded and the cloud-model and approval behavior still awaiting
-> validation. pVisor does not automatically disable agent or IDE approvals.
+> Developer preview: approval-free stagebox operation still needs validation
+> for cloud models and approval behavior. The agent guide lists the recorded
+> controlled-client tests. pVisor does not automatically disable agent or IDE approvals.
 
 `--safe` fails if required controls cannot be installed. Ordinary Host Sessions write
 through by default. File acceptance does not undo remote API calls, database

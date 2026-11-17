@@ -755,11 +755,7 @@ fn run() -> io::Result<i32> {
                         null()
                     }
                 };
-                // Sidecar env is the workload environment overlaid by the
-                // payload's own; give it the same Docker-style HOME
-                // defaulting the workload gets (root's passwd entry) so
-                // command-execution daemons — and the shells they spawn —
-                // see a usable HOME.
+                // Overlay payload env on workload env, then apply the workload's Docker-style HOME default.
                 if !config.env.contains_key("HOME") && !sidecar.env.contains_key("HOME") {
                     command.env(
                         "HOME",

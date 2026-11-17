@@ -804,10 +804,7 @@ pub(crate) fn prepare_execution(
             crate::util::startup_mark_run("storage.record_write_begin", spec.run_id.as_str());
             session.run_record.write()?;
             crate::util::startup_mark_run("storage.record_write_ready", spec.run_id.as_str());
-            // The Execution listener is also the VM's explicit HTTP proxy endpoint.
-            // Rewrite it for every VM OverlayNet run; gateway_enabled only controls
-            // LLM capture, not proxy reachability. Without this, clients in the guest
-            // try to connect to their own 127.0.0.1 and fail immediately.
+            // VM proxy addresses require guest-reachable rewriting even when LLM capture is disabled.
             if opts.vm_network {
                 rewrite_vm_gateway_implant(spec, &listen);
             }

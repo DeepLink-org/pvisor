@@ -182,7 +182,7 @@ Export 的传输 watchdog 为 120 秒。取消进程或丢失/无效/截断的�
 插件 0.1.12 在右侧栏导航页提供只读 **pVisor** 页面，
 也可通过标签栏的新增入口打开。安装后重启 DSH Web 并刷新页面。
 浏览器扩展以 DSH **0.2.2-rc.1** 为基线，请先检查 `dsh --version`。
-旧 alpha 版的工具测试不代表 UI 兼容，也不宣称已验证 Desktop/Electron。
+旧 alpha 版仅验证了工具接口；UI 兼容性和 Desktop/Electron 运行仍未验证。
 
 从 0.1.7 升级：旧包通过 `/dsh` 包子路径挂载，DSH 0.2.2-rc.1
 扫描浏览器模块时会跳过这种名称，所以工具可用而面板缺失。
@@ -312,8 +312,8 @@ DSH 的 `pvisor_apply` 要求提供非空 `summary` 字符串（1–512 字节�
 
 ### VM 优先策略 {#execution-policy}
 
-源码实现要求 runtime 提供 `vm-check --json`，不表示已发布的 0.3.2
-二进制具备此接口。启动 Agent 宿主前先配置准备好的 Linux rootfs：
+源码实现要求 runtime 提供 `vm-check --json`；已发布的 0.3.2
+二进制是否提供此接口尚未验证。启动 Agent 宿主前先配置准备好的 Linux rootfs：
 
 ```sh
 pvisor vm-check --json

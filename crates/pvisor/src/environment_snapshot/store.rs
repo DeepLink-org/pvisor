@@ -401,10 +401,7 @@ fn validate_environment_checked(
 
 impl SnapshotStore {
     pub fn new(root: &Path) -> anyhow::Result<Self> {
-        // mkdir is the arbitration point for concurrent first use. An exists
-        // check followed by mkdir spuriously fails when another runner wins.
-        // Create private directories from the outset, then validate even when
-        // mkdir reports AlreadyExists (including files and dangling symlinks).
+        // mkdir arbitrates first use; validate type and private permissions even on AlreadyExists.
         fn directory(path: &Path) -> anyhow::Result<()> {
             let created = match fs::DirBuilder::new().mode(0o700).create(path) {
                 Ok(()) => true,

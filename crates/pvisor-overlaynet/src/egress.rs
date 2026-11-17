@@ -128,8 +128,7 @@ impl EgressRuntime {
             .read()
             .map(|slot| slot.clone())
             .unwrap_or_else(|_| {
-                // A poisoned lock only happens after a panic mid-read; the
-                // fail-closed answer is the empty deny policy.
+                // Lock poisoning must fail closed with an empty deny policy.
                 NetworkPolicy::compile(&crate::policy::NetworkConfig {
                     mode: crate::policy::NetworkMode::NoNetwork,
                     ..Default::default()
@@ -376,8 +375,7 @@ mod tests {
             ..NetworkConfig::default()
         })
         .unwrap();
-        // A clone shares the policy cell, exactly like the VM backend holding
-        // a clone of the runtime the attachment keeps.
+        // Runtime clones must share policy updates.
         runtime.clone().replace_policy(allow);
         let (addresses, _) = runtime
             .authorize_tcp(&context, "localhost", 80)

@@ -4,8 +4,7 @@ if [[ $# -lt 1 || $# -gt 2 || ( $# -eq 2 && "$2" != --hardware ) ]]; then
   echo "expected docker-cli or docker-compose [--hardware]" >&2
   exit 2
 fi
-# Compose owns its embedded modules and the root-level compose tests in
-# docker_cli. Use the same partition for default and ignored hardware tests.
+# Default and ignored hardware tests use the same Docker/Compose ownership partition.
 compose='test(compose)'
 case "$1" in
   docker-cli)

@@ -1568,11 +1568,7 @@ async fn execute_config(
                     }
                 }
             } else if !safe && filesystem_isolated && pvisor::landlock_only_runtime_available() {
-                // The namespace plan needs mount(2) to build its synthetic
-                // root. Hosts that deny it (container runtimes commonly do)
-                // can still confine the workspace by path: Landlock needs no
-                // namespace, so keep a real filesystem boundary instead of
-                // silently running the Agent on the bare host view.
+                // When mount(2) is denied, Landlock provides path confinement without a synthetic root.
                 run_log!(
                     "pVisor boundary: mount namespaces unavailable; using Landlock-only filesystem isolation"
                 );
@@ -3349,9 +3345,7 @@ fn resolve_overlay(
         );
         compose.push(layer);
     }
-    // The overlay implementation expects highest-priority lowers first. The
-    // workspace/base is the implicit bottom layer beneath explicit compose
-    // entries.
+    // Explicit compose lowers precede the implicit workspace/base, in descending priority.
     compose.push(base);
     let merged_dir = overlayfs.merged_dir.clone();
     Ok(Some(OverlayHint {

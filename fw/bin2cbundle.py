@@ -173,10 +173,8 @@ def write_compact_elf_cbundle(ifile, ofile, page_size):
     for length, source, fill in chunks:
         ofile.write('    {%d, %d, %d},\n' % (length, source, fill))
     ofile.write('};\n')
-    ofile.write(f'''/* Keep the guest addresses and every padding byte, including SRSO/PTI layout.
- * Only the on-disk representation changes. Initialization completes at dlopen.
- * The mapping stays writable because the VMM exposes it as guest kernel RAM.
- */
+    ofile.write(f'''/* Reconstruct exact guest addresses and padding (including SRSO/PTI) at dlopen.
+ * Keep the mapping writable for guest kernel RAM. */
 static char *kernel_bundle;
 #define KERNEL_SIZE {len(data)}UL
 #define KERNEL_ALIGNMENT {page_size}UL

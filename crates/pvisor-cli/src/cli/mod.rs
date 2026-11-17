@@ -250,9 +250,7 @@ fn normalize_default_spawn(mut args: Vec<OsString>, command: &clap::Command) -> 
     if explicit_session {
         args.insert(offset, "spawn".into());
     }
-    // clap propagates globals by replacement across parser levels, not append.
-    // Put leading enables on the command level so pre/post-command repetitions
-    // accumulate together; leave help and companion routing untouched.
+    // clap replaces globals across parser levels; collect leading enables at command level to accumulate repetitions.
     if offset > 1
         && args
             .get(offset)

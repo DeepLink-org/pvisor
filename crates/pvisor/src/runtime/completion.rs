@@ -611,8 +611,7 @@ mod tests {
                         &result,
                     ))
                     .unwrap();
-                // Exercise finish's private publication step after its transition,
-                // without a production hook between Session reread and write.
+                // Exercise publication after the Session transition.
                 let saved = root.path().join("session-before-completion.json");
                 fs::rename(&session_path, &saved).unwrap();
                 fs::create_dir(&session_path).unwrap();

@@ -1,9 +1,7 @@
 fn main() {
     #[cfg(target_os = "linux")]
     {
-        // The shim binary is also the container init parent: when containerd
-        // asks it to create a task it re-executes itself in internal mode
-        // (house "self-exec" pattern, cf. pvisor's INTERNAL_SANDBOX_ARG).
+        // The shim re-executes itself in internal mode as the container init parent.
         if let Err(error) = pvisor_shim::child::run_internal_if_requested() {
             eprintln!("pvisor shim internal init failed: {error:#}");
             std::process::exit(1);

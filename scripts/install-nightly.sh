@@ -39,10 +39,7 @@ api="https://api.github.com/repos/${REPO}/releases/tags/${TAG}"
 
 echo "Fetching nightly release assets from ${REPO} (tag=${TAG})..." >&2
 
-# Write the asset picker to a helper file instead of embedding a here-document
-# inside a command substitution: bash 5.2 mis-parses long heredocs whose body
-# contains a line beginning with the delimiter (for example `PY3_RE`) in that
-# position.
+# A helper file avoids Bash 5.2 heredoc parsing failures inside command substitution.
 asset_helper="$(mktemp)"
 trap 'rm -f "$asset_helper"' EXIT
 cat > "$asset_helper" <<'PY'

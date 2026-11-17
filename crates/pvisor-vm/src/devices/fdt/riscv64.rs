@@ -264,7 +264,6 @@ fn create_devices_node<T: DeviceInfoForFDT + Clone + Debug>(
     fdt: &mut FdtWriter,
     dev_info: &HashMap<(DeviceType, String), T>,
 ) -> Result<()> {
-    // Create one temp Vec to store all virtio devices
     let mut ordered_virtio_device: Vec<&T> = Vec::new();
 
     for ((device_type, _device_id), info) in dev_info {

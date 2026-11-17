@@ -1435,10 +1435,7 @@ fn forget_one(
     count: u64,
 ) {
     if let Some(data) = inodes.get(&inode) {
-        // Acquiring the write lock on the inode map prevents new lookups from incrementing the
-        // refcount but there is the possibility that a previous lookup already acquired a
-        // reference to the inode data and is in the process of updating the refcount so we need
-        // to loop here until we can decrement successfully.
+        // The map write lock blocks new lookups; a previously acquired reference may still update refcount.
         loop {
             let refcount = data.refcount.load(Ordering::Relaxed);
 
@@ -1453,14 +1450,8 @@ fn forget_one(
                 .is_ok()
             {
                 if new_count == 0 {
-                    // If we have unlinked this inode, we have opened a file descriptor to be
-                    // able to operate on it without a path. Close it now.
-                    // InodeData owns its detached descriptor and closes it on drop.
-                    // We just removed the last refcount for this inode. There's no need for an
-                    // acquire fence here because we hold a write lock on the inode map and any
-                    // thread that is waiting to do a forget on the same inode will have to wait
-                    // until we release the lock. So there's is no other release store for us to
-                    // synchronize with before deleting the entry.
+                    // InodeData drops its detached descriptor after unlink. The map write lock serializes
+                    // final removal with other forgets; no acquire fence is needed.
                     inodes.remove(&inode);
                 }
                 break;
@@ -2062,12 +2053,8 @@ impl FileSystem for PassthroughFs {
     {
         let mut callback_error = None;
         self.do_readdir(inode, handle, size, offset, |dir_entry| {
-            // Safe because the kernel guarantees that the buffer is nul-terminated. Additionally,
-            // the kernel will pad the name with '\0' bytes up to 8-byte alignment and there's no
-            // way for us to know exactly how many padding bytes there are. This would cause
-            // `CStr::from_bytes_with_nul` to return an error because it would think there are
-            // interior '\0' bytes. We trust the kernel to provide us with properly formatted data
-            // so we'll just skip the checks here.
+            // SAFETY: the kernel supplies a NUL-terminated name followed by padding to 8-byte alignment.
+            // CStr::from_bytes_with_nul would reject the trailing padding.
             let name = unsafe { CStr::from_bytes_with_nul_unchecked(dir_entry.name) };
             let result = self.lookup(ctx, inode, name).and_then(|entry| {
                 let lookup_inode = entry.inode;
@@ -2369,10 +2356,7 @@ impl FileSystem for PassthroughFs {
                         return Err(linux_error(io::Error::last_os_error()));
                     }
 
-                    // Clear security.capability on truncate unconditionally
-                    //
-                    // Do this here even if it means duplicating the code above to be able to
-                    // reuse the FD we just opened, thus reducing the number of syscalls.
+                    // Clear security.capability on truncate using the open FD.
                     let ihandle = InodeHandle::Fd(f.as_raw_fd());
                     remove_security_capability(&ihandle);
                     let st = istat(&ctx, self.cfg.semantics, &ihandle, false)?;
@@ -3017,13 +3001,7 @@ impl FileSystem for PassthroughFs {
 
         match mode as i32 {
             bindings::LINUX_FALLOC_FL_ALLOCATE_RANGE => {
-                // The closest thing we have on macOS to posix_fallocate is F_PREALLOCATE,
-                // but this one doesn't allow us to allocate arbitrary ranges, only allocate
-                // blocks to the file's end.
-                //
-                // The best thing we can do here is extend the file to (offset + length).
-                // This doesn't adhere to the same semantics, but should work fine (albeit
-                // less performant) for most guest applications.
+                // F_PREALLOCATE allocates from the file end, not an arbitrary range; allocation targets offset + length.
                 let st = fstat(&ctx, self.cfg.semantics, fd, true)?;
                 let new_length = (offset + length) as i64;
 

@@ -162,17 +162,8 @@ macro_rules! scoped_cred {
             // the thread's credentials back to the previous value when the returned
             // struct is dropped.
             fn new(val: $ty) -> io::Result<Option<$name>> {
-                // We want credential changes to be per-thread because otherwise
-                // we might interfere with operations being carried out on other
-                // threads with different uids/gids.  However, posix requires that
-                // all threads in a process share the same credentials.  To do this
-                // libc uses signals to ensure that when one thread changes its
-                // credentials the other threads do the same thing.
-                //
-                // So instead we invoke the syscall directly in order to get around
-                // this limitation.  Another option is to use the setfsuid and
-                // setfsgid systems calls.   However since those calls have no way to
-                // return an error, it's preferable to do this instead.
+                // Raw syscalls change only this thread's credentials; libc propagates changes across threads.
+                // Unlike setfsuid/setfsgid, these calls report errors.
 
                 // Drop must restore the caller's effective id, including a
                 // non-root server with CAP_SETUID/CAP_SETGID. Restoring root
@@ -570,10 +561,7 @@ impl Default for Config {
 /// directory ends up as the root of the file system process. One way to accomplish this is via a
 /// combination of mount namespaces and the pivot_root system call.
 pub struct PassthroughFs {
-    // File descriptors for various points in the file system tree. These fds are always opened with
-    // the `O_PATH` option so they cannot be used for reading or writing any data. See the
-    // documentation of the `O_PATH` flag in `open(2)` for more details on what one can and cannot
-    // do with an fd opened with this flag.
+    // O_PATH descriptors pin tree locations without granting data reads or writes.
     inodes: RwLock<MultikeyBTreeMap<Inode, InodeAltKey, Arc<InodeData>>>,
     inode_alloc: Arc<InodeAllocator>,
     // Virtual device nodes materialized as host-safe placeholder files by
@@ -588,10 +576,7 @@ pub struct PassthroughFs {
     handles: RwLock<BTreeMap<Handle, Arc<HandleData>>>,
     next_handle: AtomicU64,
 
-    // File descriptor pointing to the `/proc/self/fd` directory. This is used to convert an fd from
-    // `inodes` into one that can go into `handles`. This is accomplished by reading the
-    // `/proc/self/fd/{}` symlink. We keep an open fd here in case the file system tree that we are
-    // meant to be serving doesn't have access to `/proc/self/fd`.
+    // Retain /proc/self/fd to reopen inode descriptors even when the served tree lacks procfs.
     proc_self_fd: File,
 
     // Whether writeback caching is enabled for this directory. This will only be true when
@@ -1225,10 +1210,8 @@ impl PassthroughFs {
             flags &= !libc::O_APPEND;
         }
 
-        // Safe because this doesn't modify any memory and we check the return value. We don't
-        // really check `flags` because if the kernel can't handle poorly specified flags then we
-        // have much bigger problems. Also, clear the `O_NOFOLLOW` flag if it is set since we need
-        // to follow the `/proc/self/fd` symlink to get the file.
+        // SAFETY: pathname is live and NUL-terminated; openat errors are checked below.
+        // Clear O_NOFOLLOW to reopen the pinned inode through /proc/self/fd.
         let fd = unsafe {
             libc::openat(
                 self.proc_self_fd.as_raw_fd(),
@@ -1425,10 +1408,7 @@ impl PassthroughFs {
     ) -> io::Result<(Option<Handle>, OpenOptions)> {
         debug!("do_open: {inode:?}");
         if !self.cap_fowner {
-            // O_NOATIME can only be used with CAP_FOWNER or if we are the file
-            // owner. Not worth checking the latter, just drop it if we don't
-            // have the cap. This makes overlayfs mounts with virtiofs lower dirs
-            // work.
+            // Without CAP_FOWNER, clear O_NOATIME to permit opens of files owned by other users.
             flags &= !(libc::O_NOATIME as u32);
         }
 
@@ -1656,10 +1636,7 @@ fn forget_one(
     count: u64,
 ) {
     if let Some(data) = inodes.get(&inode) {
-        // Acquiring the write lock on the inode map prevents new lookups from incrementing the
-        // refcount but there is the possibility that a previous lookup already acquired a
-        // reference to the inode data and is in the process of updating the refcount so we need
-        // to loop here until we can decrement successfully.
+        // The map write lock blocks new lookups; a previously acquired reference may still update refcount.
         loop {
             let refcount = data.refcount.load(Ordering::Relaxed);
 
@@ -1674,11 +1651,7 @@ fn forget_one(
                 .is_ok()
             {
                 if new_count == 0 {
-                    // We just removed the last refcount for this inode. There's no need for an
-                    // acquire fence here because we hold a write lock on the inode map and any
-                    // thread that is waiting to do a forget on the same inode will have to wait
-                    // until we release the lock. So there's is no other release store for us to
-                    // synchronize with before deleting the entry.
+                    // The map write lock serializes final removal with other forgets; no acquire fence is needed.
                     inodes.remove(&inode);
                 }
                 break;

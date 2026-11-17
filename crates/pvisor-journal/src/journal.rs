@@ -543,9 +543,7 @@ mod tests {
         assert_eq!(live.try_recv().unwrap(), accepted);
         let prefix = std::fs::read(&path).unwrap();
 
-        // Existing private descriptor-replacement technique: force write_all
-        // to fail on a read-only regular file, not ENOSPC or a sync failure.
-        // Retain the real locked writer, then restore it without clearing poison.
+        // Inject write_all failure with a read-only FD; restore the locked writer without clearing poison.
         let writer = journal
             .state
             .lock()

@@ -190,10 +190,7 @@ pub fn boot_vm(
         payload.set_permissions(std::fs::Permissions::from_mode(0o755))?;
     }
     if network.is_some() {
-        // The smoltcp backend answers DNS on the synthetic router; without
-        // this file the guest keeps resolving through whatever resolver the
-        // image ships, which has no route off the VM. Written into the
-        // container's own writable layer, like the container tier's resolv.conf.
+        // Write the synthetic router resolver into the writable rootfs; image resolvers may be unreachable.
         let mut resolver = pvisor_overlay_core::sys::prepare_rooted_path(
             &plan.rootfs,
             Path::new("etc/resolv.conf"),
@@ -266,11 +263,8 @@ pub fn boot_vm(
         // (the io.pvisor.vm.log file) without capturing workload stderr.
         vm.task_stdio(stdin, stdout, stderr)?;
     }
-    // `io.pvisor.vm.ram-dedup=true` opts the task's guest RAM into host KSM.
-    // The advice only registers mappings as mergeable; merging still needs
-    // the host KSM scanner, which the shim never configures. Non-fatal on
-    // failure, matching pVisor's VM executor: an unavailable advisor must
-    // not take the task down.
+    // KSM advice registers mergeable RAM; the shim does not configure the host scanner.
+    // Advice failure is non-fatal.
     let ram_dedup = vm_ram_dedup_enabled(&plan.annotations);
     vm.run(move |handle| {
         if ram_dedup {
