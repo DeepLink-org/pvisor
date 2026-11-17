@@ -43,5 +43,6 @@ tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
 vm = ["pvisor-vm", "pvisor-vm/net", "pvisor-overlaynet", "pvisor-core"]
 
 [dev-dependencies]
+syn = { version = "2", features = ["full", "visit"] }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["rt", "time"] }

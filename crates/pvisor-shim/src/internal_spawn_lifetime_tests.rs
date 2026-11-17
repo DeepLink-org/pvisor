@@ -55,7 +55,10 @@ mod linux {
         command
             .args([
                 "--exact",
-                "linux::parent_death_probe",
+                concat!(module_path!(), "::parent_death_probe")
+                    .split_once("::")
+                    .unwrap()
+                    .1,
                 "--ignored",
                 "--nocapture",
                 "--test-threads=1",
@@ -127,8 +130,7 @@ mod linux {
                 let child = if direct {
                     command.spawn().expect("spawn on pool thread")
                 } else {
-                    pvisor_shim::child::fork_internal(command)
-                        .expect("spawn via dedicated fork thread")
+                    crate::child::fork_internal(command).expect("spawn via dedicated fork thread")
                 };
                 let mut probe = Probe { child, channel };
                 // Hold the spawning pool thread alive until pdeath is armed.

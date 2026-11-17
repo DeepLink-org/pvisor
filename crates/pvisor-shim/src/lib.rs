@@ -1,38 +1,42 @@
-//! containerd Runtime v2 shim for pVisor.
-//!
-//! The binary name (`containerd-shim-pvisor-v2`) follows the containerd
-//! runtime-v2 discovery rule for the runtime type `io.containerd.pvisor.v2`.
-//! Pure planning and state logic is cross-platform so it stays unit-testable
-//! on development hosts; everything that touches Linux container primitives
-//! is gated to `target_os = "linux"`.
+//! containerd Runtime v2 shim with one public executable entry.
+#![deny(missing_docs)]
+// Portable tests compile shared records without their Linux syscall consumers.
+#![cfg_attr(all(test, not(target_os = "linux")), allow(dead_code))]
 
-pub mod caps;
-pub mod cgroup;
+pub mod api;
+#[cfg(any(target_os = "linux", test))]
+mod caps;
+#[cfg(any(target_os = "linux", test))]
+mod cgroup;
+#[cfg(target_os = "linux")]
+mod child;
+#[cfg(any(target_os = "linux", test))]
 mod device_policy;
-pub mod inject;
+mod entry;
+#[cfg(target_os = "linux")]
+mod fifo;
+#[cfg(any(target_os = "linux", test))]
+mod inject;
 #[cfg(any(target_os = "linux", test))]
 mod masked_path;
-pub mod plan;
-pub mod sockets;
-pub mod spec;
-pub mod state;
-
 #[cfg(target_os = "linux")]
-pub mod child;
-#[cfg(target_os = "linux")]
-pub mod fifo;
-#[cfg(target_os = "linux")]
-pub mod mount;
+mod mount;
 #[cfg(all(target_os = "linux", feature = "vm"))]
-pub mod network;
+mod network;
+#[cfg(any(target_os = "linux", test))]
+mod plan;
 #[cfg(target_os = "linux")]
-pub mod service;
+mod service;
+#[cfg(any(target_os = "linux", test))]
+mod sockets;
+#[cfg(any(target_os = "linux", test))]
+mod spec;
+#[cfg(any(target_os = "linux", test))]
+mod state;
 #[cfg(all(target_os = "linux", feature = "vm"))]
-pub mod vm;
+mod vm;
 
-/// Runtime type under which containerd discovers this shim.
-pub const RUNTIME_TYPE: &str = "io.containerd.pvisor.v2";
-
-/// Exit code the container init child uses when `execve` itself fails,
-/// matching the OCI runtime convention.
-pub const EXEC_FAILURE_EXIT_CODE: i32 = 127;
+#[cfg(all(test, target_os = "linux"))]
+mod internal_spawn_lifetime_tests;
+#[cfg(test)]
+mod policy_contract_tests;

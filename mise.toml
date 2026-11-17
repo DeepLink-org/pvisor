@@ -519,7 +519,7 @@ mise run lint-workflows --
 
 [tasks.lint-api-docs]
 description = "严格验证已迁移 crate 的公开 API 文档"
-run = "RUSTDOCFLAGS='-D warnings' cargo doc --locked --no-deps -p pvisor-vm -p pvisor-overlayfs -p pvisor-journal -p pvisor-containers -p pvisor-replay -p pvisor-overlaynet -p pvisor-guest -p pvisor-daemon"
+run = "RUSTDOCFLAGS='-D warnings' cargo doc --locked --no-deps -p pvisor-vm -p pvisor-overlayfs -p pvisor-journal -p pvisor-containers -p pvisor-replay -p pvisor-overlaynet -p pvisor-guest -p pvisor-daemon -p pvisor-shim"
 
 [tasks.lint-py]
 description = "Python 静态检查"
@@ -625,7 +625,7 @@ description = "已迁移 API 的 doctest；可传 Cargo 包名选择范围"
 run = '''
 #!/usr/bin/env bash
 set -euo pipefail
-if [[ $# -eq 0 ]]; then set -- pvisor-vm pvisor-overlayfs pvisor-journal pvisor-containers pvisor-replay pvisor-overlaynet pvisor-guest pvisor-daemon; fi
+if [[ $# -eq 0 ]]; then set -- pvisor-vm pvisor-overlayfs pvisor-journal pvisor-containers pvisor-replay pvisor-overlaynet pvisor-guest pvisor-daemon pvisor-shim; fi
 args=()
 for package in "$@"; do args+=(-p "$package"); done
 cargo test --locked --doc "${args[@]}"

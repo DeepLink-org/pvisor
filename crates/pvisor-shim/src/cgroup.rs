@@ -8,10 +8,10 @@
 use crate::plan::CgroupPlan;
 
 /// Default mount point of the cgroup v2 unified hierarchy.
-pub const UNIFIED_MOUNT: &str = "/sys/fs/cgroup";
+pub(crate) const UNIFIED_MOUNT: &str = "/sys/fs/cgroup";
 
 /// Files (relative to the cgroup directory) written for a plan, in order.
-pub fn control_files(plan: &CgroupPlan) -> Vec<(&'static str, String)> {
+pub(crate) fn control_files(plan: &CgroupPlan) -> Vec<(&'static str, String)> {
     let mut files = Vec::new();
     if let Some(value) = plan.pids_max.as_deref() {
         files.push(("pids.max", value.to_string()));
@@ -35,7 +35,7 @@ pub fn control_files(plan: &CgroupPlan) -> Vec<(&'static str, String)> {
 }
 
 /// Absolute directory of the cgroup for a plan, when one is configured.
-pub fn cgroup_dir(plan: &CgroupPlan) -> Option<std::path::PathBuf> {
+pub(crate) fn cgroup_dir(plan: &CgroupPlan) -> Option<std::path::PathBuf> {
     let path = plan.path.as_deref()?;
     if path.is_empty() {
         return None;
@@ -95,13 +95,13 @@ mod tests {
 
 /// Attach the compiled, ordered device permission policy to a cgroup v2 leaf.
 #[cfg(target_os = "linux")]
-pub mod device_bpf {
+pub(crate) mod device_bpf {
     use std::path::Path;
     ///
     /// The program reads the kernel's `bpf_cgroup_dev_ctx`:
     /// `access_type` = (BPF_DEVCG_ACC_* << 16) | BPF_DEVCG_DEV_* at offset 0,
     /// `major` at 4, `minor` at 8.
-    pub fn attach_device_filter(
+    pub(crate) fn attach_device_filter(
         dir: &Path,
         rules: &[crate::plan::DeviceRulePlan],
     ) -> anyhow::Result<()> {

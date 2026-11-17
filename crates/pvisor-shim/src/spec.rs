@@ -10,10 +10,10 @@ use anyhow::{Context, Result};
 use oci_spec::runtime::Spec;
 
 /// Annotation prefix reserved for pVisor policy steering inside bundles.
-pub const ANNOTATION_PREFIX: &str = "io.pvisor.";
+pub(crate) const ANNOTATION_PREFIX: &str = "io.pvisor.";
 
 /// Load and lightly validate the OCI runtime spec of a bundle directory.
-pub fn load_bundle_spec(bundle: &Path) -> Result<Spec> {
+pub(crate) fn load_bundle_spec(bundle: &Path) -> Result<Spec> {
     let config = bundle.join("config.json");
     let spec = Spec::load(&config)
         .with_context(|| format!("failed to load OCI config {}", config.display()))?;
@@ -21,7 +21,7 @@ pub fn load_bundle_spec(bundle: &Path) -> Result<Spec> {
 }
 
 /// Read one `io.pvisor.*` annotation (key given without the prefix).
-pub fn pvisor_annotation<'a>(spec: &'a Spec, key: &str) -> Option<&'a str> {
+pub(crate) fn pvisor_annotation<'a>(spec: &'a Spec, key: &str) -> Option<&'a str> {
     let annotations = spec.annotations().as_ref()?;
     annotations
         .get(&format!("{ANNOTATION_PREFIX}{key}"))
@@ -34,7 +34,7 @@ pub fn pvisor_annotation<'a>(spec: &'a Spec, key: &str) -> Option<&'a str> {
 /// namespaces and cgroups (container-grade isolation); `vm` executes it in
 /// a per-task libkrun microVM on the guest kernel.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ExecutorTier {
+pub(crate) enum ExecutorTier {
     /// Default tier: host-kernel execution of the OCI namespaces/cgroups.
     Container,
     /// Per-task libkrun microVM execution.
@@ -47,7 +47,7 @@ impl ExecutorTier {
     /// value — including `"host"`, the standalone pVisor executor name,
     /// which has no shim equivalent — is rejected so a misspelled tier
     /// never silently downgrades the task to the default tier.
-    pub fn from_annotation(value: Option<&str>) -> Result<Self, String> {
+    pub(crate) fn from_annotation(value: Option<&str>) -> Result<Self, String> {
         match value {
             None | Some("container") => Ok(ExecutorTier::Container),
             Some("vm") => Ok(ExecutorTier::Vm),
@@ -58,7 +58,7 @@ impl ExecutorTier {
     }
 
     /// True for the microVM tier.
-    pub fn is_vm(self) -> bool {
+    pub(crate) fn is_vm(self) -> bool {
         matches!(self, ExecutorTier::Vm)
     }
 }

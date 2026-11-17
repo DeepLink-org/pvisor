@@ -11,7 +11,7 @@ use thiserror::Error;
 
 #[derive(Debug, Error, PartialEq, Eq)]
 #[error("unknown capability: {0}")]
-pub struct UnknownCapability(pub String);
+pub(crate) struct UnknownCapability(pub(crate) String);
 
 /// bit index of every capability known to Linux 6.x (0..=40).
 const CAPABILITY_BITS: &[(&str, u32)] = &[
@@ -69,7 +69,7 @@ fn normalize(name: &str) -> &str {
 }
 
 /// Convert capability names into a u64 bitmask (bit n = capability n).
-pub fn mask_from_names<I>(names: I) -> Result<u64, UnknownCapability>
+pub(crate) fn mask_from_names<I>(names: I) -> Result<u64, UnknownCapability>
 where
     I: IntoIterator,
     I::Item: AsRef<str>,

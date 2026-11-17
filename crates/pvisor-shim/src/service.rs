@@ -135,7 +135,7 @@ struct TaskInner {
     exit: Arc<ExitSignal>,
 }
 
-pub struct PvisorTask {
+pub(crate) struct PvisorTask {
     inner: Arc<TaskInner>,
 }
 
@@ -1735,7 +1735,7 @@ impl Task for PvisorTask {
 
 /// The pod sandbox service (`containerd.runtime.sandbox.v1.Sandbox`),
 /// served on the same ttrpc socket as the task service.
-pub struct PvisorSandbox {
+pub(crate) struct PvisorSandbox {
     inner: Arc<TaskInner>,
 }
 
@@ -2029,7 +2029,7 @@ fn arch_to_containerd(arch: &str) -> String {
 
 /// Shim bootstrap: containerd's `start`/`delete` CLI actions plus task
 /// service construction.
-pub struct PvisorShim {
+pub(crate) struct PvisorShim {
     id: String,
     namespace: String,
     exit: Arc<ExitSignal>,
@@ -2070,8 +2070,7 @@ impl Shim for PvisorShim {
         &self,
         publisher: containerd_shim::asynchronous::publisher::RemotePublisher,
     ) -> Self::T {
-        // The bootstrap owns watcher setup (it registers two services on
-        // one inner); the trait method stays for API compatibility.
+        // The custom bootstrap registers both services from one TaskInner.
         let inner = self.build_inner(publisher);
         PvisorTask { inner }
     }
@@ -2092,25 +2091,11 @@ impl PvisorShim {
     }
 }
 
-/// Binary entry: run the shim bootstrap inside a tokio runtime.
-pub fn shim_main() {
-    let runtime = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime");
-    runtime.block_on(async move {
-        if let Err(error) = bootstrap().await {
-            eprintln!("{}: {error:?}", crate::RUNTIME_TYPE);
-            std::process::exit(1);
-        }
-    });
-}
-
 /// The shim bootstrap, modeled on `containerd_shim::run` (Apache-2.0,
 /// containerd authors) but registering both the task service and the
 /// sandbox service on the same ttrpc socket — required for
 /// `sandboxer = "shim"`.
-async fn bootstrap() -> containerd_shim::Result<()> {
+pub(crate) async fn bootstrap() -> containerd_shim::Result<()> {
     use containerd_shim::StartOpts;
     use containerd_shim_protos::ttrpc::r#async::Server;
     use containerd_shim_protos::ttrpc::r#async::transport::Listener;
@@ -2124,7 +2109,7 @@ async fn bootstrap() -> containerd_shim::Result<()> {
     if flags.info {
         use containerd_shim_protos::protobuf::Message;
         let mut info = containerd_shim_protos::types::introspection::RuntimeInfo::new();
-        info.set_name(crate::RUNTIME_TYPE.to_string());
+        info.set_name(crate::api::RUNTIME_TYPE.to_string());
         info.mut_version().version = env!("CARGO_PKG_VERSION").to_string();
         let bytes = info
             .write_to_bytes()
@@ -2143,7 +2128,7 @@ async fn bootstrap() -> containerd_shim::Result<()> {
         });
     }
 
-    let mut shim = PvisorShim::new(crate::RUNTIME_TYPE, &flags, &mut Config::default()).await;
+    let mut shim = PvisorShim::new(crate::api::RUNTIME_TYPE, &flags, &mut Config::default()).await;
 
     match flags.action.as_str() {
         "start" => {
