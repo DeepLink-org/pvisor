@@ -2639,13 +2639,14 @@ async fn rejected_factory_leaves_occupied_v1_and_prepared_records_unchanged() {
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 #[tokio::test]
 async fn native_factory_rejects_occupied_v1_before_daemon_migration() {
+    use crate::api::{NativeRuntime, NativeRuntimeConfig, NativeRuntimeService};
     let directory = tempfile::tempdir().unwrap();
     let (_, bytes) = occupied_v1(&directory).await;
     let result = bounded(Daemon::open(config(&directory), |owner| {
         assert!(super::store::Store::open(directory.path()).is_err());
         // These paths deliberately do not exist. Constructor ownership rejection
         // must precede preflight; no fake cgroup files or enforcement are involved.
-        let runtime = crate::runtime::NativeRuntime::new(crate::runtime::NativeRuntimeConfig {
+        let runtime = NativeRuntime::new(NativeRuntimeConfig {
             state_dir: directory.path().to_path_buf(),
             owner,
             cgroup_root: directory.path().join("unused-cgroup"),
