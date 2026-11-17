@@ -246,7 +246,7 @@ impl VirtioDevice for Vsock {
         let super::super::DeviceSnapshotState::Vsock(state) = state else {
             return Err("vsock state type mismatch".into());
         };
-        self.muxer.validate_state(state)?;
+        self.muxer.restore_state(state)?;
         self.frozen = true;
         Ok(())
     }

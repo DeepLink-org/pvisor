@@ -1992,10 +1992,14 @@ RAM capture/synchronization and restore hashing are unchanged.
 
 Resumable snapshot capture probes vsock before parking CPUs, sharing the existing
 freeze-acquisition deadline. Workers and guest CPUs keep running while requests,
-responses and five-second closed-proxy tombstones drain; state changes and the
+responses and unsupported closed-proxy records drain; state changes and the
 final blocker are logged. A pre-freeze timeout invokes no capture action. Frozen
-capture checks again and still rejects live connections, responses and reaper
-work. This does not cancel guest commands or retry snapshot publication.
+capture checks again and rejects live connections, responses and unmatched reaper
+work. Closed reverse Unix connections on a configured plain AF_VSOCK listener
+can be captured once they have released their host socket. Each child reserves
+the same connection IDs for their remaining timeout before its workers start.
+Late stream traffic cannot revive a closed socket or reuse a reserved ID.
+This does not cancel guest commands or retry snapshot publication.
 
 Only a concrete Unix acceptor matching its configured port, path and proxy ID,
 with plain AF_VSOCK and an empty accept backlog, may survive as configuration.

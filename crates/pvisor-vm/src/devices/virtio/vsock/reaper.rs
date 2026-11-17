@@ -8,7 +8,7 @@ use super::proxy::Proxy;
 use crossbeam_channel::Receiver;
 
 pub type ProxyMap = Arc<RwLock<HashMap<u64, Mutex<Box<dyn Proxy>>>>>;
-const TIMEOUT: Duration = Duration::new(5, 0);
+pub(super) const TIMEOUT: Duration = Duration::new(5, 0);
 
 pub struct ReaperThread {
     stop: Arc<AtomicBool>,
@@ -69,6 +69,23 @@ impl ReaperThread {
                 self.released_map.insert(id, Instant::now());
             }
         }
+    }
+
+    pub(super) fn drain_releases(&mut self) {
+        for id in self.receiver.try_iter() {
+            self.released_map.insert(id, Instant::now());
+        }
+    }
+
+    pub(super) fn reservations(&self) -> impl Iterator<Item = (u64, Duration)> + '_ {
+        self.released_map
+            .iter()
+            .map(|(&id, start)| (id, TIMEOUT.saturating_sub(start.elapsed())))
+    }
+
+    pub(super) fn reserve(&mut self, id: u64, remaining: Duration) {
+        self.released_map
+            .insert(id, Instant::now() - (TIMEOUT - remaining));
     }
 
     pub(super) fn pending(&self) -> (usize, usize) {
