@@ -19,6 +19,7 @@ tempfile.workspace = true
 uuid = { workspace = true, features = ["v4"] }
 
 [target.'cfg(windows)'.dependencies]
+pvisor-core.workspace = true
 pvisor-vm = { workspace = true, features = ["blk", "net"] }
 pvisor-overlaynet.workspace = true
 tokio = { workspace = true, features = ["net", "io-util"] }

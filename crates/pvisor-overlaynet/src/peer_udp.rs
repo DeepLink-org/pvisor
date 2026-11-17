@@ -1,8 +1,7 @@
 //! Private, generation-authenticated loopback datagrams for Windows peers.
 //! Packet rules are shared with Unix; neither host UDP endpoints nor membership
 //! nonces are exposed to guests. The caller owns the directory's private ACL.
-use crate::api::VmNetworkConfig;
-use crate::api::{PeerNetworkConfig, VmNetworkConfiguration};
+use crate::api::PeerNetworkConfig;
 use crate::{
     interception::InterceptionMetrics,
     peer_protocol::{
@@ -309,6 +308,7 @@ impl PeerNetwork {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::api::{VmNetworkConfig, VmNetworkConfiguration};
     use smoltcp::wire::{ArpHardware, ArpOperation, ArpPacket, EthernetFrame, EthernetProtocol};
     fn arp(source: Ipv4Addr, destination: Ipv4Addr) -> Vec<u8> {
         let mut bytes = vec![0; 42];

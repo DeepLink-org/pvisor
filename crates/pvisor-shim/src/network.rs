@@ -304,6 +304,7 @@ mod tests {
     use pvisor_core::{
         NetworkAccessRequest, NetworkPolicy, NetworkTransport, PolicyControlController,
     };
+    use pvisor_overlaynet::api::EgressControl;
 
     fn rules(default_action: &str, egress: &[(&str, &str)]) -> EgressRules {
         EgressRules {

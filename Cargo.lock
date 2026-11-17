@@ -2803,6 +2803,7 @@ dependencies = [
  "dirs",
  "flate2",
  "fs2",
+ "pvisor-core",
  "pvisor-guest",
  "pvisor-overlaynet",
  "pvisor-vm",
