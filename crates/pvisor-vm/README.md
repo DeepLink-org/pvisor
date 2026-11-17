@@ -2007,3 +2007,8 @@ running-state probe alone is not a freeze or a promise about future arrivals.
 Host-only channel regressions on macOS without mise/nextest use the serial special
 runner `cargo test -p pvisor-vm --lib snapshot_channel -- --test-threads=1`.
 They cover real Unix sockets and failure gates, not full guest branch restoration.
+
+On Linux, full RAM capture can skip filesystem-reported holes in shared,
+file-backed regions while all writers are frozen. Extent queries use an
+independent file description. Unsupported queries retain sequential capture.
+Private mappings are read through guest memory to include COW writes.

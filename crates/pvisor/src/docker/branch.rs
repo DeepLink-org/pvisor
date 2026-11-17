@@ -1,9 +1,12 @@
 //! Opt-in ordinary OCI branching. Capture is explicit at the caller's initialized
 //! request boundary; there is no image conversion, UKSM pool, or automatic retry.
+mod compact_ram;
+mod ram_identity;
 use super::*;
 use pvisor_vm::api::{
     MachineRestore, MachineSnapshot, SnapshotCapture, SnapshotControl, SnapshotState,
 };
+use ram_identity::RamIdentity;
 use std::os::unix::net::UnixListener;
 use std::sync::{
     Arc,
@@ -219,7 +222,10 @@ struct Baseline {
     boot: String,
     image: crate::image::cache::RetainedImage,
     control: PathBuf,
-    ram_sha256: String,
+    #[serde(alias = "ram_sha256")]
+    ram_identity: RamIdentity,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    ram_extents: Vec<pvisor_vm::api::RamRestoreExtent>,
     machine_sha256: String,
     upper: crate::environment_snapshot::TreeInventory,
     work: crate::environment_snapshot::TreeInventory,
@@ -556,6 +562,8 @@ impl Endpoint {
                                         &base.join("machine.json"),
                                         &machine,
                                     )?;
+                                    let (ram, ram_extents) =
+                                        compact_ram::pack(&base.join("ram"), ram)?;
                                     let saved = Baseline {
                                         version: 2,
                                         source,
@@ -563,7 +571,8 @@ impl Endpoint {
                                         boot: boot()?,
                                         image: image.clone(),
                                         control: control.clone(),
-                                        ram_sha256: hash(&base.join("ram"))?,
+                                        ram_identity: RamIdentity::publish(&base.join("ram"), ram)?,
+                                        ram_extents,
                                         machine_sha256: hash(&base.join("machine.json"))?,
                                         upper,
                                         work,
@@ -709,11 +718,13 @@ pub(super) fn restore<B>(
         "branch image projection changed"
     );
     let directory = store.directory(&instance.id);
+    let ram = startup_stage(store, instance, saved.ram_identity.phase(), || {
+        saved.ram_identity.open_verified(&base.join("ram"))
+    })?;
     ensure!(
-        startup_stage(store, instance, "ram-hash", || hash(&base.join("ram")))? == saved.ram_sha256
-            && startup_stage(store, instance, "machine-hash", || hash(
-                &base.join("machine.json")
-            ))? == saved.machine_sha256,
+        startup_stage(store, instance, "machine-hash", || hash(
+            &base.join("machine.json")
+        ))? == saved.machine_sha256,
         "branch baseline content changed"
     );
     for (part, inventory) in [("upper", &saved.upper), ("work", &saved.work)] {
@@ -743,8 +754,8 @@ pub(super) fn restore<B>(
     state.rebind_vsock_listener(control::CONTROL_PORT, &saved.control, &socket(instance)?)?;
     Ok(Some(MachineRestore {
         state,
-        ram_file: Arc::new(File::open(base.join("ram"))?),
-        ram_extents: vec![],
+        ram_file: Arc::new(ram),
+        ram_extents: saved.ram_extents,
     }))
 }
 

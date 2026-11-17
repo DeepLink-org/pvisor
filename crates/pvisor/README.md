@@ -2529,8 +2529,18 @@ Branch startup reuses the executable SHA-256 only between image opening and RAM
 restore in the same private runner. The typed result is not stored in metadata or
 cached across launches. Restore still revalidates the manifest, host boot,
 configuration and retained image, and compares the manifest's build digest with
-that result. RAM content is fully SHA-256 verified for every branch, including
-logical sparse zero ranges; machine and filesystem checks are unchanged. Dev and
+that result. After thaw, Linux OCI branches pack page-aligned data extents
+from the completed sparse capture into a contiguous RAM file. The manifest
+authenticates the logical extent layout and the packed file identity. Children
+restore holes as demand-zero memory. Dense files, unsupported extent queries
+and layouts exceeding the 8192-extent restore limit retain the full-file view.
+Existing unindexed manifests use their original logical layout.
+
+On Linux filesystems with fs-verity support, capture seals the RAM file
+after thaw and records its SHA-256 verity digest in the bound manifest. Each
+child measures the same descriptor it maps (the `ram-verity` startup phase).
+The kernel verifies blocks as they are read. On unsupported filesystems and
+for legacy full-file digests, `ram-hash` scans the entire RAM file on restore. Dev and
 test profiles optimize the `sha2` dependency to avoid spending the startup budget
 in an unoptimized compression backend. No digest algorithm, timeout or runtime
 CPU/memory budget changes. `restore-build-binding` records the reused comparison;

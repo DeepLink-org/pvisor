@@ -92,10 +92,14 @@ pub enum TreeObject {
 }
 
 pub fn file_hash(path: &Path) -> anyhow::Result<String> {
-    let mut file = OpenOptions::new()
+    let file = OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NOFOLLOW)
         .open(path)?;
+    hash_open_file(&file)
+}
+
+pub(crate) fn hash_open_file(mut file: &File) -> anyhow::Result<String> {
     let mut hash = Sha256::new();
     let mut buffer = [0; 1024 * 1024];
     loop {
