@@ -18,6 +18,7 @@ use pvisor_core::{
     ExecutorObservations, ExecutorPlan, IsolationKind, ProcessOutput, ResourceLimits, RunFailure,
     RunFailureKind, RunInvocation, RunState,
 };
+use pvisor_guest::api::GuestValidation;
 use pvisor_journal::api::{DurableFiles, Persistence};
 use pvisor_overlaynet::api::VmNetworkConfiguration;
 use pvisor_vm::api::{RamDedupControl, SnapshotControl, VmControl};
@@ -200,7 +201,7 @@ pub(super) struct RunnerSpec {
     pub(super) root: OverlayDeviceSpec,
     pub(super) workspace: Option<OverlayDeviceSpec>,
     pub(super) workspace_target: Option<PathBuf>,
-    pub(super) guest: pvisor_guest::GuestConfig,
+    pub(super) guest: pvisor_guest::api::GuestConfig,
     pub(super) cpus: u8,
     pub(super) memory_mib: u32,
     #[serde(default)]
@@ -1329,9 +1330,9 @@ impl RunExecutor for VmExecutor {
         // shared guest process/file engine. Ordinary Sessions retain omission.
         guest.control = self
             .vsock_ports
-            .contains_key(&pvisor_guest::control::CONTROL_PORT);
+            .contains_key(&pvisor_guest::api::CONTROL_PORT);
         if guest.control {
-            guest.process = Some(pvisor_guest::ProcessConfig {
+            guest.process = Some(pvisor_guest::api::ProcessConfig {
                 new_session: true,
                 ..Default::default()
             });
@@ -1357,7 +1358,7 @@ impl RunExecutor for VmExecutor {
         let memory_mib = requested_memory_mib
             .map(|requested| requested.min(self.settings.memory_mib))
             .unwrap_or(self.settings.memory_mib);
-        let scratch = pvisor_guest::TemporaryFilesystem {
+        let scratch = pvisor_guest::api::TemporaryFilesystem {
             path: PathBuf::from(format!("/.pvisor-tmp-{}", spec.run_id)),
             size_bytes: (u64::from(memory_mib) * 1024 * 1024 / 4).min(64 * 1024 * 1024),
         };
@@ -1396,7 +1397,7 @@ impl RunExecutor for VmExecutor {
             // fresh scratch injection above, but must not erase a captured mount.
             guest.temporary_filesystem = restore.guest.temporary_filesystem.clone();
         }
-        if let Err(error) = guest.command() {
+        if let Err(error) = guest.validate() {
             return failed_to_start(error.to_string());
         }
         let attestation = match tempfile::NamedTempFile::new_in(temporary.path()) {
@@ -3022,7 +3023,7 @@ mod ram_policy_tests {
         serde_json::from_value(serde_json::json!({
             "setup_attestation": "/tmp/attestation",
             "root": { "lowers": ["/tmp/root"], "upper": "/tmp/upper" },
-            "guest": pvisor_guest::GuestConfig::default(),
+            "guest": pvisor_guest::api::GuestConfig::default(),
             "cpus": 1, "memory_mib": 256, "ram_pager": pager
         }))
         .unwrap()
@@ -3165,7 +3166,7 @@ mod feature_tests {
         let mut runner: RunnerSpec = serde_json::from_value(serde_json::json!({
             "setup_attestation": "/tmp/attestation",
             "root": { "lowers": ["/tmp/root"], "upper": "/tmp/upper" },
-            "guest": pvisor_guest::GuestConfig::default(),
+            "guest": pvisor_guest::api::GuestConfig::default(),
             "cpus": 1, "memory_mib": 256,
             "ram_pager": "disabled",
         }))
@@ -3253,14 +3254,14 @@ fn add_vm_overlay(
 use crate::VmStageStdio as StageStdio;
 
 impl StageStdio {
-    fn process_config(self) -> pvisor_guest::ProcessConfig {
-        pvisor_guest::ProcessConfig {
+    fn process_config(self) -> pvisor_guest::api::ProcessConfig {
+        pvisor_guest::api::ProcessConfig {
             attached: true,
             new_session: true,
             stdin: if self.interactive {
-                pvisor_guest::StdinMode::Pipe
+                pvisor_guest::api::StdinMode::Pipe
             } else {
-                pvisor_guest::StdinMode::Closed
+                pvisor_guest::api::StdinMode::Closed
             },
             tty: self.tty,
             ..Default::default()
@@ -3314,7 +3315,7 @@ fn guest_config(
     workspace: Option<PathBuf>,
     limits: &ResourceLimits,
     network: bool,
-) -> pvisor_guest::GuestConfig {
+) -> pvisor_guest::api::GuestConfig {
     let mut rlimits = BTreeMap::new();
     // The memory budget sizes guest RAM in the runner specification. It is an
     // aggregate physical-memory boundary, not a guest virtual-address limit:
@@ -3333,7 +3334,7 @@ fn guest_config(
             rlimits.insert(name.into(), (value, value));
         }
     }
-    pvisor_guest::GuestConfig {
+    pvisor_guest::api::GuestConfig {
         argv: std::iter::once(program.to_owned())
             .chain(args.iter().cloned())
             .collect(),
@@ -3341,7 +3342,7 @@ fn guest_config(
         cwd,
         workspace,
         limits: rlimits,
-        network: network.then(|| pvisor_guest::NetworkConfig {
+        network: network.then(|| pvisor_guest::api::NetworkConfig {
             address: pvisor_overlaynet::api::GUEST_IPV4.octets(),
             gateway: pvisor_overlaynet::api::ROUTER_IPV4.octets(),
         }),
@@ -3468,7 +3469,7 @@ mod tests {
                 assert!(process.attached && process.new_session);
                 assert_eq!(process.tty, tty);
                 assert_eq!(
-                    matches!(process.stdin, pvisor_guest::StdinMode::Pipe),
+                    matches!(process.stdin, pvisor_guest::api::StdinMode::Pipe),
                     interactive
                 );
             }
@@ -3666,7 +3667,7 @@ mod tests {
         let mut runner: RunnerSpec = serde_json::from_value(serde_json::json!({
             "setup_attestation": directory.path().join("setup"),
             "root": {"lowers": [base.root()], "upper": directory.path().join("upper")},
-            "guest": pvisor_guest::GuestConfig::default(), "cpus": 1, "memory_mib": 128,
+            "guest": pvisor_guest::api::GuestConfig::default(), "cpus": 1, "memory_mib": 128,
             "ram_pager": "disabled"
         }))
         .unwrap();
@@ -3870,7 +3871,7 @@ mod tests {
             "run_id": "run", "setup_attestation": "/private/setup.json",
             "root": {"lowers": [root.path()], "upper": root.path()},
             "workspace": null, "workspace_target": null,
-            "guest": pvisor_guest::GuestConfig::default(), "cpus": 1, "memory_mib": 128,
+            "guest": pvisor_guest::api::GuestConfig::default(), "cpus": 1, "memory_mib": 128,
             "ram_pager": "disabled"
         }))
         .unwrap();
@@ -4023,7 +4024,7 @@ mod tests {
             "root": {"lowers": ["/private/lower"], "upper": "/private/upper"},
             "workspace": null,
             "workspace_target": null,
-            "guest": pvisor_guest::GuestConfig::default(),
+            "guest": pvisor_guest::api::GuestConfig::default(),
             "cpus": 1,
             "memory_mib": 128,
             "ram_pager": "disabled",

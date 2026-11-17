@@ -60,13 +60,14 @@ OverlayNet 拥有连接授权与转发，VM 的 virtio-net 将 Ethernet frame �
 
 ## API 边界与迁移状态 {#api-boundaries}
 
-`pvisor-vm`、`pvisor-overlayfs`、`pvisor-journal`、`pvisor-containers`、`pvisor-replay` 和 `pvisor-overlaynet` 已采用唯一 `api` 入口；其他 crate 保留既有接口。
+`pvisor-vm`、`pvisor-overlayfs`、`pvisor-journal`、`pvisor-containers`、`pvisor-replay`、`pvisor-overlaynet` 和 `pvisor-guest` 已采用唯一 `api` 入口；其他 crate 保留既有接口。
 
 | crate | 当前公开边界 | 实现与资源归属 |
 | --- | --- | --- |
 | `pvisor-vm` | `pvisor_vm::api`；`VmBuilder`、`VmmHandle` 通过 trait 使用 | backend、VMM、设备、RAM 和平台分派私有 |
 | `pvisor-overlayfs` | `pvisor_overlayfs::api`；配置、mount、session 与 metrics 契约 | `fs`、`mount`、`observation` 私有；不拥有 apply 或 Run 生命周期 |
 | `pvisor-journal` | `pvisor_journal::api`；`JournalStore`、`TraceProducer`、`DurableFiles` | `journal`、`trace`、`persistence` 私有；Event/Receipt 由 Core 定义 |
+| `pvisor-guest` | `pvisor_guest::api`；纯校验、帧读写、信号解析和退出编码 | 命令构造与 Linux supervisor 私有；消息解码不授予权限 |
 | `pvisor-core` | 领域模块与根级 re-export，尚未迁移 | 共享身份、协议、纯校验与策略定义；不拥有执行资源 |
 | `pvisor-overlay-core` | 现有公开模块与根级接口，尚未迁移 | 文件语义与双入口文件服务 |
 | `pvisor-overlaynet` | `pvisor_overlaynet::api`；代理、出口、VM 传输和观测 trait | connector、peer 成员、计数器和 worker 生命周期私有；策略记录归 Core 所有 |

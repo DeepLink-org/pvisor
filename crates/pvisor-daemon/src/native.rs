@@ -10,7 +10,7 @@ use axum::{
     response::{IntoResponse, Response},
     routing::any,
 };
-use pvisor_guest::control::{
+use pvisor_guest::api::{
     ExecLaunch, FileRequest, MAX_FRAME, Reply, Request as GuestRequest, StdinFrame,
 };
 use serde_json::{Value, json};

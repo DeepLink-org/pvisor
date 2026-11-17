@@ -2,7 +2,8 @@
 //! pvisor-guest's launch contract; host extraction is intentionally absent.
 use crate::{api::Image, store::ImageRecord};
 use anyhow::{Context, ensure};
-use pvisor_guest::{GuestConfig, ImageLayer, ProcessConfig, RootDisk, StdinMode};
+use pvisor_guest::api::GuestValidation;
+use pvisor_guest::api::{GuestConfig, ImageLayer, ProcessConfig, RootDisk, StdinMode};
 use reqwest::blocking::{Client, Response};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
@@ -362,7 +363,7 @@ pub(crate) fn pull(root: &Path, reference: &str) -> anyhow::Result<ImageRecord> 
     if validate.argv.is_empty() {
         validate.argv.push("/bin/true".into());
     }
-    validate.command()?;
+    validate.validate()?;
     ensure!(
         serde_json::to_vec(&validate)?.len() <= 1 << 20,
         "image launch configuration exceeds 1 MiB"
@@ -375,7 +376,7 @@ pub(crate) fn pull(root: &Path, reference: &str) -> anyhow::Result<ImageRecord> 
         },
         guest,
         entrypoint: entrypoint.len(),
-        stop_signal: pvisor_guest::control::parse_signal(
+        stop_signal: pvisor_guest::api::GuestSignal::parse_signal(
             process["StopSignal"].as_str().unwrap_or("SIGTERM"),
         )?,
     })

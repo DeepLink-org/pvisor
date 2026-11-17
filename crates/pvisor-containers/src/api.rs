@@ -203,7 +203,7 @@ pub trait Containers: Sized {
     fn exec(
         &self,
         selector: &str,
-        launch: pvisor_guest::control::ExecLaunch,
+        launch: pvisor_guest::api::ExecLaunch,
         unset_env: Vec<String>,
         input: Option<&mut dyn InputSource>,
         stdout: &mut dyn Write,

@@ -1,5 +1,9 @@
 # pVisor daemon
 
+Guest launch/control/exit contracts come from `pvisor_guest::api`. Host code
+uses `GuestValidation` for admission; executable command construction stays in
+the guest supervisor.
+
 A **node-local service manager** for sandbox lifecycle, optional image caching
 and a shared memory pool. The `pvisor-daemon` executable owns component startup
 and shutdown, sandbox admission, persistent intentions, native lifecycle,

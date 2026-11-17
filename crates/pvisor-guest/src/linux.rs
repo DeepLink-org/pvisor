@@ -1,5 +1,6 @@
 //! Minimal PID 1: initialize the guest, supervise its workload, and report exit.
-use pvisor_guest::{CONFIG_PATH, GuestConfig, NetworkConfig};
+use pvisor_guest::api::GuestValidation;
+use pvisor_guest::api::{CONFIG_PATH, GuestConfig, NetworkConfig};
 use std::ffi::CString;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
@@ -648,7 +649,7 @@ fn run() -> io::Result<i32> {
     let config: GuestConfig = serde_json::from_slice(&bytes)?;
     let profiling = startup_profile_enabled(&config);
     let mut config_span = startup_profile::Span::since("guest.config", profiling.then_some(entry));
-    config.command()?; // Validate before any configuration side effects.
+    config.validate()?; // Validate before any configuration side effects.
     config_span.complete();
     let mut startup = startup_profile::Span::start("guest.initialize", profiling);
     initialize(config.stdio_ports)?;
@@ -724,12 +725,12 @@ fn run() -> io::Result<i32> {
     // Fatal guest setup finishes before any advisory process spawns: a
     // failed mount must abort the launch without leaking sidecars.
     shares::install(&config)?;
-    for sidecar in &config.sidecars {
+    for (sidecar_index, sidecar) in config.sidecars.iter().enumerate() {
         // Advisory daemons: a spawn or log failure is reported on the
         // console and never aborts the workload. stderr (and stdout) append
         // to the sidecar's log inside the guest root; the workload's task
         // IO is never shared.
-        match config.sidecar_command(sidecar) {
+        match crate::command::sidecar(&config, sidecar_index) {
             Ok(mut command) => {
                 let null = || (Stdio::null(), Stdio::null());
                 let stdio = match OpenOptions::new()
@@ -892,11 +893,11 @@ pub fn main() {
     let root = File::open("/").expect("open root to report guest exit");
     let token = (|| -> io::Result<_> {
         check(unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 0) })?;
-        let mut token = [0u8; pvisor_guest::exit_status::TOKEN_BYTES];
+        let mut token = [0u8; pvisor_guest::api::EXIT_TOKEN_BYTES];
         check(unsafe {
             libc::ioctl(
                 root.as_raw_fd(),
-                pvisor_guest::exit_status::CLAIM_IOCTL as _,
+                pvisor_guest::api::EXIT_CLAIM_IOCTL as _,
                 token.as_mut_ptr(),
             )
         })?;
@@ -922,11 +923,11 @@ pub fn main() {
     }
     unsafe { libc::sync() };
     if let Ok(token) = token {
-        let report = pvisor_guest::exit_status::report(&token, code).and_then(|bytes| {
+        let report = pvisor_guest::api::GuestExitReport::report(&token, code).and_then(|bytes| {
             check(unsafe {
                 libc::ioctl(
                     root.as_raw_fd(),
-                    pvisor_guest::exit_status::REPORT_IOCTL as _,
+                    pvisor_guest::api::EXIT_REPORT_IOCTL as _,
                     bytes.as_ptr(),
                 )
             })

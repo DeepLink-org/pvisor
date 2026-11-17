@@ -1,4 +1,5 @@
-use pvisor_guest::{GuestConfig, ImageLayer, ProcessConfig, RootDisk, StdinMode};
+use pvisor_guest::api::GuestValidation;
+use pvisor_guest::api::{GuestConfig, ImageLayer, ProcessConfig, RootDisk, StdinMode};
 
 fn controlled() -> GuestConfig {
     GuestConfig {
@@ -25,7 +26,7 @@ fn controlled() -> GuestConfig {
 #[test]
 fn disk_and_serial_contract_roundtrip_uses_linux_paths_on_every_host() {
     let config = controlled();
-    config.command().unwrap();
+    config.validate().unwrap();
     let bytes = serde_json::to_vec(&config).unwrap();
     let restored: GuestConfig = serde_json::from_slice(&bytes).unwrap();
     assert!(restored.serial_control && !restored.control);
@@ -47,23 +48,23 @@ fn privileged_or_implicit_serial_input_is_rejected_but_owned_ptys_are_supported(
             .as_mut()
             .unwrap()
             .push(capability);
-        assert!(config.command().is_err(), "{capability}");
+        assert!(config.validate().is_err(), "{capability}");
     }
     let mut config = controlled();
     config.process.as_mut().unwrap().capabilities = None;
-    assert!(config.command().is_err());
+    assert!(config.validate().is_err());
     let mut config = controlled();
     config.process.as_mut().unwrap().stdin = StdinMode::Pipe;
     config.process.as_mut().unwrap().tty = Some([24, 80]);
     assert!(
-        config.command().is_ok(),
+        config.validate().is_ok(),
         "restricted serial launches own real PTY input"
     );
     config.process.as_mut().unwrap().stdin = StdinMode::Inherit;
-    assert!(config.command().is_err());
+    assert!(config.validate().is_err());
     let mut config = controlled();
     config.control = true;
-    assert!(config.command().is_err());
+    assert!(config.validate().is_err());
 }
 
 #[test]
@@ -77,14 +78,14 @@ fn malformed_disk_geometry_and_layer_references_fail_before_io() {
     ] {
         let mut config = controlled();
         config.root_disk.as_mut().unwrap().device = device.into();
-        assert!(config.command().is_err(), "{device}");
+        assert!(config.validate().is_err(), "{device}");
     }
     for digest in ["../escape".into(), "A".repeat(64), "a".repeat(63)] {
         let mut config = controlled();
         config.root_disk.as_mut().unwrap().layers[0].sha256 = digest;
-        assert!(config.command().is_err());
+        assert!(config.validate().is_err());
     }
     let mut config = controlled();
     config.root_disk.as_mut().unwrap().layers[0].media_type = "unknown".into();
-    assert!(config.command().is_err());
+    assert!(config.validate().is_err());
 }

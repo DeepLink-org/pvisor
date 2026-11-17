@@ -5,6 +5,7 @@
 //! consume it after re-exec (house "self-exec" pattern) and so the derivation
 //! logic stays unit-testable on any host.
 
+use pvisor_guest::api::GuestValidation;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -926,7 +927,7 @@ pub fn validate_vm_process(
 pub fn guest_config(
     process: &ProcessPlan,
     control: bool,
-) -> anyhow::Result<pvisor_guest::GuestConfig> {
+) -> anyhow::Result<pvisor_guest::api::GuestConfig> {
     // Identity, capabilities and no_new_privileges were validated at plan
     // time (validate_vm_process): the VM boundary subsumes host-process
     // security, mirroring kata/firecracker treatment of OCI process fields.
@@ -940,7 +941,7 @@ pub fn guest_config(
             Ok((key.to_owned(), value.to_owned()))
         })
         .collect::<anyhow::Result<_>>()?;
-    let config = pvisor_guest::GuestConfig {
+    let config = pvisor_guest::api::GuestConfig {
         argv: process.argv.clone(),
         env,
         cwd: process.cwd.clone(),
@@ -954,13 +955,13 @@ pub fn guest_config(
         // control contract requires the workload to run in its own session
         // so Stop signals its process group without reaching PID 1.
         control,
-        process: control.then(|| pvisor_guest::ProcessConfig {
+        process: control.then(|| pvisor_guest::api::ProcessConfig {
             new_session: true,
             ..Default::default()
         }),
         ..Default::default()
     };
-    config.command()?;
+    config.validate()?;
     Ok(config)
 }
 

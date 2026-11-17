@@ -482,7 +482,7 @@ pub(crate) struct VmNetworkPrepareOpts {
 /// Any duplicated stream must be closed before shutdown; no live control or
 /// checkpoint support is implied by this attachment.
 pub struct VmNetworkAttachment {
-    guest_config: pvisor_guest::NetworkConfig,
+    guest_config: pvisor_guest::api::NetworkConfig,
     guest_stream: std::os::unix::net::UnixStream,
     backend: pvisor_overlaynet::api::VmNetwork,
     enforcing: bool,
@@ -490,7 +490,7 @@ pub struct VmNetworkAttachment {
 
 impl VmNetworkAttachment {
     /// Static guest IPv4 configuration for the transport selected by this owner.
-    pub fn guest_config(&self) -> pvisor_guest::NetworkConfig {
+    pub fn guest_config(&self) -> pvisor_guest::api::NetworkConfig {
         self.guest_config.clone()
     }
     /// Ethernet address expected by the packet backend.
@@ -1107,7 +1107,7 @@ fn start_vm_network(
         // Even a public policy is enforced at the guest's only network device:
         // the guest cannot bypass smoltcp by opening a host socket.
         enforcing: true,
-        guest_config: pvisor_guest::NetworkConfig {
+        guest_config: pvisor_guest::api::NetworkConfig {
             address: guest_address.octets(),
             gateway: router.octets(),
         },

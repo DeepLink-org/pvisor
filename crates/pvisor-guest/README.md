@@ -2,6 +2,38 @@
 
 Rust PID 1 supervisor and the platform-independent launch message in `/.pvisor-guest.json`. It initializes Linux virtual filesystems, applies process limits, supervises the workload and reports its exit to the VMM.
 
+## Public API
+
+Import only `pvisor_guest::api`. It owns launch, control, serial-credit and exit
+records plus five declaration-only traits. `GuestValidation::validate` checks the
+whole launch, including every sidecar, without I/O or mutation. Host callers do
+not receive executable commands; command construction and process ownership stay
+inside the guest binary. Default launch records are non-launchable.
+
+`GuestFrameRead` and `GuestFrameWrite` operate on existing synchronous streams.
+Frames retain a four-byte big-endian length and bounded JSON payload. Codec
+success does not authorize a request: the host-only adapter checks generations,
+request IDs, credits and operation-specific permissions. Partial I/O errors can
+leave a frame incomplete; discard that transport rather than retry uncertain
+work. `GuestSignal` parses Linux signal strings on every supported host.
+
+`GuestExitReport` encodes a borrowed token and bounded status. The `EXIT_*`
+constants retain the existing ioctl numbers, token size and report layout.
+Encoding does not claim, consume or authenticate exit authority. Portable API
+declarations are identical on Linux, macOS and Windows; running PID 1 remains
+Linux-only, and the binary exits 125 on unsupported hosts.
+
+| Contract | Coverage |
+| --- | --- |
+| Launch validation | External `api_contract` and `root_disk_contract`: defaults, unknown fields, Linux paths, whole-sidecar validation, process/control bounds and disk/layer inputs |
+| Framing | External `api_contract`: exact wire shape, inclusive size limit, malformed/truncated input, short/interrupted reads, serialization failure and partial writes |
+| Signals/exit | External `api_contract`: signal names/ranges, fixed ioctl/layout bytes, every valid exit status, invalid bounds and borrowed-token preservation |
+| Private execution | Binary `command` tests retain literal argv, environment isolation, sidecar overlay, invalid selection and native shell behavior; Linux supervisor tests retain process ownership/reaping |
+| Exposure | `api_boundary`: sole public entry, pure/unconditional declarations, exact behavior inventory, private library implementations and platform-specific caller imports |
+
+Validate with `mise run test -- pvisor-guest` and strict rustdoc via
+`RUSTDOCFLAGS='-D warnings' cargo doc --locked -p pvisor-guest --no-deps`.
+
 Launch-message paths always use Linux guest syntax, including when a Windows
 host validates them. A leading `/` is absolute; drive letters and backslashes
 do not supply a guest root or separators. Mount/tmpfs traversal and workspace
@@ -39,7 +71,7 @@ and other shares cannot claim or report. Token bytes stay in PID 1 memory, never
 in launch JSON, argv, environment or an inherited token descriptor. After reaping
 and final synchronization, PID 1 reports that token and a checked `0..=255` code
 once. Missing/failed handshake prevents workload start; there is no legacy ioctl
-fallback. Shared request numbers and byte framing live in `exit_status`.
+fallback. Shared request numbers and byte framing live in `api`.
 
 Whole-VM snapshots preserve the capability in both PID 1 RAM and host device
 state, continuing the captured supervisor rather than rotating its token. Host

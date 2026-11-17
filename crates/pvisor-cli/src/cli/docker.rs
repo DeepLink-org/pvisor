@@ -1,8 +1,10 @@
 //! Docker command syntax; storage, image preparation and VM ownership live in pvisor.
 use anyhow::{Context, bail, ensure};
 use clap::{Args, Subcommand};
-use pvisor::docker::{
-    self, GuestReply, GuestRequest, GuestStdin, Store, read_guest_frame, write_guest_frame,
+use pvisor::docker::{self, Store};
+use pvisor_guest::api::{
+    GuestFrameRead, GuestFrameWrite, Reply as GuestReply, Request as GuestRequest,
+    StdinFrame as GuestStdin,
 };
 use std::collections::BTreeMap;
 use std::io::{self, Read, Write};
@@ -570,7 +572,7 @@ pub(super) fn run(command: DockerCommand) -> anyhow::Result<i32> {
                 stop_signal: args
                     .stop_signal
                     .as_deref()
-                    .map(pvisor_guest::control::parse_signal)
+                    .map(pvisor_guest::api::GuestSignal::parse_signal)
                     .transpose()?,
                 stop_timeout_ms: args
                     .stop_timeout
@@ -594,10 +596,10 @@ pub(super) fn run(command: DockerCommand) -> anyhow::Result<i32> {
             };
             if args.interactive && !args.detach && started.state != "exited" {
                 let mut input = store.connect(&started)?;
-                write_guest_frame(&mut input, &GuestRequest::Input {})?;
+                GuestFrameWrite::write_frame(&mut input, &GuestRequest::Input {})?;
                 ensure!(
                     matches!(
-                        read_guest_frame::<GuestReply>(&mut input)?,
+                        GuestFrameRead::read_frame::<GuestReply>(&mut input)?,
                         GuestReply::Ready
                     ),
                     "guest stdin unavailable"
@@ -606,7 +608,7 @@ pub(super) fn run(command: DockerCommand) -> anyhow::Result<i32> {
                 input.set_write_timeout(None)?;
                 std::thread::spawn(move || {
                     let _ = send_stdin(&mut input);
-                    let _ = read_guest_frame::<GuestReply>(&mut input);
+                    let _ = GuestFrameRead::read_frame::<GuestReply>(&mut input);
                 });
             }
             if args.detach {
@@ -691,7 +693,7 @@ pub(super) fn run(command: DockerCommand) -> anyhow::Result<i32> {
             {
                 env.entry("TERM".into()).or_insert_with(|| "xterm".into());
             }
-            write_guest_frame(
+            GuestFrameWrite::write_frame(
                 &mut stream,
                 &GuestRequest::Exec {
                     argv: args.invocation[1..].to_vec(),
@@ -702,12 +704,12 @@ pub(super) fn run(command: DockerCommand) -> anyhow::Result<i32> {
                     tty: args.tty.then(terminal_size),
                 },
             )?;
-            let first: GuestReply = read_guest_frame(&mut stream)?;
+            let first: GuestReply = GuestFrameRead::read_frame(&mut stream)?;
             match first {
                 GuestReply::Ready => {}
                 GuestReply::Error { message } => {
                     eprintln!("{message}");
-                    if let Ok(GuestReply::Exit { code }) = read_guest_frame(&mut stream) {
+                    if let Ok(GuestReply::Exit { code }) = GuestFrameRead::read_frame(&mut stream) {
                         return Ok(code);
                     }
                     return Ok(125);
@@ -722,10 +724,10 @@ pub(super) fn run(command: DockerCommand) -> anyhow::Result<i32> {
                     let _ = send_stdin(&mut input);
                 });
             } else {
-                write_guest_frame(&mut stream, &GuestStdin::Eof {})?;
+                GuestFrameWrite::write_frame(&mut stream, &GuestStdin::Eof {})?;
             }
             loop {
-                match read_guest_frame(&mut stream)? {
+                match GuestFrameRead::read_frame(&mut stream)? {
                     GuestReply::Output { stream: 1, bytes } => {
                         io::stdout().write_all(&bytes)?;
                         io::stdout().flush()?;
@@ -767,10 +769,10 @@ impl Signals {
                 }
                 let result = (|| -> anyhow::Result<()> {
                     let mut stream = store.connect(&instance)?;
-                    write_guest_frame(&mut stream, &GuestRequest::Stop { signal })?;
+                    GuestFrameWrite::write_frame(&mut stream, &GuestRequest::Stop { signal })?;
                     ensure!(
                         matches!(
-                            read_guest_frame::<GuestReply>(&mut stream)?,
+                            GuestFrameRead::read_frame::<GuestReply>(&mut stream)?,
                             GuestReply::Ready
                         ),
                         "guest rejected signal"
@@ -798,10 +800,10 @@ fn send_stdin(stream: &mut std::os::unix::net::UnixStream) -> anyhow::Result<()>
     loop {
         let size = io::stdin().read(&mut buffer)?;
         if size == 0 {
-            write_guest_frame(stream, &GuestStdin::Eof {})?;
+            GuestFrameWrite::write_frame(stream, &GuestStdin::Eof {})?;
             return Ok(());
         }
-        write_guest_frame(
+        GuestFrameWrite::write_frame(
             stream,
             &GuestStdin::Data {
                 bytes: buffer[..size].to_vec(),

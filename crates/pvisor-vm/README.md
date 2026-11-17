@@ -1,5 +1,9 @@
 # pvisor-vm
 
+Guest launch/control/exit contracts come from `pvisor_guest::api`. Host code
+uses `GuestValidation` for admission; executable command construction stays in
+the guest supervisor.
+
 pVisor 的 Rust VM 运行时。VMM、设备、架构支持和虚拟化后端在同一个 crate 中编译，对外使用统一的 Rust API。
 
 ## 设备支持范围

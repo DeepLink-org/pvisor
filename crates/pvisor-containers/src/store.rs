@@ -3,7 +3,7 @@ use crate::{api::*, images};
 use anyhow::bail;
 use anyhow::{Context, ensure};
 use fs2::FileExt;
-use pvisor_guest::GuestConfig;
+use pvisor_guest::api::GuestConfig;
 use serde::{Deserialize, Serialize};
 use std::{
     fs::{self, File, OpenOptions},
@@ -432,7 +432,7 @@ impl Containers for Store {
     fn exec(
         &self,
         selector: &str,
-        launch: pvisor_guest::control::ExecLaunch,
+        launch: pvisor_guest::api::ExecLaunch,
         unset_env: Vec<String>,
         input: Option<&mut dyn InputSource>,
         stdout: &mut dyn Write,
@@ -529,7 +529,7 @@ impl Containers for Store {
     }
     fn stop(&self, selector: &str, timeout: Duration, signal: Option<&str>) -> anyhow::Result<()> {
         let signal = signal
-            .map(pvisor_guest::control::parse_signal)
+            .map(pvisor_guest::api::GuestSignal::parse_signal)
             .transpose()?;
         if timeout != Duration::MAX {
             Instant::now()

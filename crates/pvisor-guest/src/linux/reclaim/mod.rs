@@ -1,5 +1,5 @@
 //! Cooperative preload worker control. No target suspension or code injection.
-use pvisor_guest::GuestConfig;
+use pvisor_guest::api::GuestConfig;
 use serde_json::{Value, json};
 use std::{
     fs, io,

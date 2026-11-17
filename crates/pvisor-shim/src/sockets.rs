@@ -14,7 +14,7 @@
 //! each socket when the task is deleted.
 
 /// Host-side unix socket that pvisor-vm binds as the vsock proxy for the
-/// guest control protocol ([`pvisor_guest::control::CONTROL_PORT`]).
+/// guest control protocol ([`pvisor_guest::api::CONTROL_PORT`]).
 pub fn control_socket_path(task_id: &str) -> std::path::PathBuf {
     hashed_socket_path(task_id, "control", None)
 }

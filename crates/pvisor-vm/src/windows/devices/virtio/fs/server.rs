@@ -14,8 +14,8 @@ use std::io::{self, Read, Write};
 #[cfg(target_os = "windows")]
 use std::io::{Seek, SeekFrom};
 use std::mem::size_of;
-use std::sync::atomic::{AtomicI32, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicI32, AtomicU64, Ordering};
 
 use vm_memory::ByteValued;
 
@@ -1242,8 +1242,10 @@ impl<F: FileSystem + Sync> Server<F> {
             out_size,
         } = r.read_obj().map_err(Error::DecodeMessage)?;
 
-        use pvisor_guest::exit_status::{CLAIM_IOCTL, REPORT_BYTES, REPORT_IOCTL, TOKEN_BYTES};
-        if matches!(cmd, CLAIM_IOCTL | REPORT_IOCTL | 0x7602) {
+        use pvisor_guest::api::{
+            EXIT_CLAIM_IOCTL, EXIT_REPORT_BYTES, EXIT_REPORT_IOCTL, EXIT_TOKEN_BYTES,
+        };
+        if matches!(cmd, EXIT_CLAIM_IOCTL | EXIT_REPORT_IOCTL | 0x7602) {
             let outcome = (|| -> io::Result<Vec<u8>> {
                 if !self.guest_exit_enabled || in_header.nodeid != ROOT_ID || cmd == 0x7602 {
                     return Err(io::Error::from_raw_os_error(libc::ENOTTY));
@@ -1251,12 +1253,14 @@ impl<F: FileSystem + Sync> Server<F> {
                 // FUSE_IOCTL_DIR is valid on the root directory; compat,
                 // unrestricted/retry and unknown flags are never accepted.
                 if flags & !16 != 0
-                    || (cmd == CLAIM_IOCTL && (in_size != 0 || out_size != TOKEN_BYTES as u32))
-                    || (cmd == REPORT_IOCTL && (in_size != REPORT_BYTES as u32 || out_size != 0))
+                    || (cmd == EXIT_CLAIM_IOCTL
+                        && (in_size != 0 || out_size != EXIT_TOKEN_BYTES as u32))
+                    || (cmd == EXIT_REPORT_IOCTL
+                        && (in_size != EXIT_REPORT_BYTES as u32 || out_size != 0))
                 {
                     return Err(io::Error::from_raw_os_error(libc::EINVAL));
                 }
-                let mut bytes = [0; REPORT_BYTES];
+                let mut bytes = [0; EXIT_REPORT_BYTES];
                 r.read_exact(&mut bytes[..in_size as usize])?;
                 // Negotiated idmapped FUSE omits credentials after guest VFS
                 // authorization. PID is still kernel-provided and must be 1.
@@ -1272,7 +1276,10 @@ impl<F: FileSystem + Sync> Server<F> {
                 Ok(bytes) => reply_ok(Some(IoctlOut::default()), Some(&bytes), in_header.unique, w),
                 Err(error) => {
                     if in_header.pid == 1 {
-                        warn!("supervisor exit handshake rejected: cmd={cmd:#x} uid={} node={} root={} flags={flags:#x} in={in_size} out={out_size}: {error}", in_header.uid, in_header.nodeid, self.guest_exit_enabled);
+                        warn!(
+                            "supervisor exit handshake rejected: cmd={cmd:#x} uid={} node={} root={} flags={flags:#x} in={in_size} out={out_size}: {error}",
+                            in_header.uid, in_header.nodeid, self.guest_exit_enabled
+                        );
                     }
                     reply_error(error, in_header.unique, w)
                 }
@@ -1747,7 +1754,9 @@ fn get_extensions(options: FsOptions, skip: usize, request_bytes: &[u8]) -> Resu
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pvisor_guest::exit_status::{report, CLAIM_IOCTL, REPORT_IOCTL};
+    use pvisor_guest::api::{
+        EXIT_CLAIM_IOCTL, EXIT_REPORT_IOCTL, EXIT_TOKEN_BYTES, GuestExitReport,
+    };
 
     struct NullFs;
     impl FileSystem for NullFs {
@@ -1759,17 +1768,17 @@ mod tests {
     fn omitted_exit_uid_requires_negotiated_idmap_and_pid1_token() {
         let root = Server::new(NullFs, true);
         let status = AtomicI32::new(i32::MAX);
-        let claim = |pid, uid| root.request_guest_exit(pid, uid, CLAIM_IOCTL, &[], &status);
+        let claim = |pid, uid| root.request_guest_exit(pid, uid, EXIT_CLAIM_IOCTL, &[], &status);
         assert!(claim(1, u32::MAX).is_err());
         root.options
             .store(FsOptions::ALLOW_IDMAP.bits(), Ordering::Relaxed);
         assert!(claim(2, u32::MAX).is_err());
         assert!(claim(1, 1000).is_err());
-        let token = claim(1, u32::MAX).unwrap().try_into().unwrap();
+        let token: [u8; EXIT_TOKEN_BYTES] = claim(1, u32::MAX).unwrap().try_into().unwrap();
         assert!(claim(1, u32::MAX).is_err());
-        let body = report(&token, 7).unwrap();
+        let body = GuestExitReport::report(&token, 7).unwrap();
         let submit = |pid, uid, body: &[u8]| {
-            root.request_guest_exit(pid, uid, REPORT_IOCTL, body, &status)
+            root.request_guest_exit(pid, uid, EXIT_REPORT_IOCTL, body, &status)
         };
         assert!(submit(2, u32::MAX, &body).is_err());
         let mut forged = body;

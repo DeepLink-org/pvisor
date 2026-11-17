@@ -288,7 +288,7 @@ pub(super) fn validate(command: &DockerCommand) -> anyhow::Result<()> {
             labels(&args.labels)?;
             args.stop_signal
                 .as_deref()
-                .map(pvisor_guest::control::parse_signal)
+                .map(pvisor_guest::api::GuestSignal::parse_signal)
                 .transpose()?;
             ensure!(
                 args.stop_timeout.is_none_or(|timeout| timeout <= 86_400),
@@ -389,7 +389,7 @@ fn inspect_task(selector: &str, storage: &Path) -> anyhow::Result<Value> {
 }
 
 pub(super) fn kill(args: Kill) -> anyhow::Result<i32> {
-    let signal = pvisor_guest::control::parse_signal(&args.signal)?;
+    let signal = pvisor_guest::api::GuestSignal::parse_signal(args.signal.as_str())?;
     let store = Store::discover()?;
     batch(&args.selectors, |selector| {
         if let Some(instance) = store.find(selector)? {

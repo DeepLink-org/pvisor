@@ -364,7 +364,7 @@ pub fn build(store: &Store, options: &BuildOptions) -> anyhow::Result<Image> {
                 }
                 "STOPSIGNAL" => {
                     let value = expand(&instruction.value, &env)?;
-                    stage.image.stop_signal = signal(&value)?;
+                    stage.image.stop_signal = value.parse_signal()?;
                     stage.config["StopSignal"] = value.into();
                 }
                 "HEALTHCHECK" => {

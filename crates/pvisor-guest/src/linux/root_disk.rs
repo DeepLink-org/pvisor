@@ -1,6 +1,6 @@
 //! OCI filesystem construction stays inside Linux, never on NTFS.
 use super::{check, mount_with_options};
-use pvisor_guest::{NetworkConfig, RootDisk};
+use pvisor_guest::api::{NetworkConfig, RootDisk};
 use sha2::{Digest, Sha256};
 use std::{
     ffi::CString,

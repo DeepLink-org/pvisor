@@ -1,7 +1,6 @@
 //! Guest-local file primitives. No host projection shortcuts or subprocesses.
-use pvisor_guest::{
-    GuestConfig,
-    control::{FileRequest, Reply, StdinFrame, read_frame, write_frame},
+use pvisor_guest::api::{
+    FileRequest, GuestConfig, GuestFrameRead, GuestFrameWrite, Reply, StdinFrame,
 };
 use serde_json::{Value, json};
 use std::{
@@ -74,14 +73,14 @@ pub(super) fn serve(stream: &mut impl Duplex, request: FileRequest) -> io::Resul
                     "read requires a regular file",
                 ));
             }
-            write_frame(stream, &Reply::Ready)?;
+            GuestFrameWrite::write_frame(stream, &Reply::Ready)?;
             let mut bytes = [0; 16384];
             loop {
                 let size = file.read(&mut bytes)?;
                 if size == 0 {
                     break;
                 }
-                write_frame(
+                GuestFrameWrite::write_frame(
                     stream,
                     &Reply::Output {
                         stream: 1,
@@ -89,7 +88,7 @@ pub(super) fn serve(stream: &mut impl Duplex, request: FileRequest) -> io::Resul
                     },
                 )?;
             }
-            return write_frame(stream, &Reply::Exit { code: 0 });
+            return GuestFrameWrite::write_frame(stream, &Reply::Exit { code: 0 });
         }
         FileRequest::Write {
             path: file,
@@ -112,8 +111,9 @@ pub(super) fn serve(stream: &mut impl Duplex, request: FileRequest) -> io::Resul
                 ));
             }
             output.set_len(0)?;
-            write_frame(stream, &Reply::Ready)?;
-            while let StdinFrame::Data { bytes } = read_frame::<StdinFrame>(stream)? {
+            GuestFrameWrite::write_frame(stream, &Reply::Ready)?;
+            while let StdinFrame::Data { bytes } = GuestFrameRead::read_frame::<StdinFrame>(stream)?
+            {
                 output.write_all(&bytes)?;
             }
             output.set_permissions(permission)?;
@@ -187,7 +187,7 @@ pub(super) fn serve(stream: &mut impl Duplex, request: FileRequest) -> io::Resul
             stat(&file)?
         }
     };
-    write_frame(stream, &Reply::Value { value })
+    GuestFrameWrite::write_frame(stream, &Reply::Value { value })
 }
 // Kept generic to exercise streaming without a VM; no test-only public surface.
 pub(super) trait Duplex: Read + Write {}
@@ -250,12 +250,12 @@ mod tests {
             .unwrap()
         });
         assert!(matches!(
-            read_frame::<Reply>(&mut client).unwrap(),
+            GuestFrameRead::read_frame::<Reply>(&mut client).unwrap(),
             Reply::Ready
         ));
         let bytes: Vec<u8> = (0..=255).cycle().take(131073).collect();
         for chunk in bytes.chunks(16384) {
-            write_frame(
+            GuestFrameWrite::write_frame(
                 &mut client,
                 &StdinFrame::Data {
                     bytes: chunk.to_vec(),
@@ -263,9 +263,9 @@ mod tests {
             )
             .unwrap();
         }
-        write_frame(&mut client, &StdinFrame::Eof {}).unwrap();
+        GuestFrameWrite::write_frame(&mut client, &StdinFrame::Eof {}).unwrap();
         assert!(matches!(
-            read_frame::<Reply>(&mut client).unwrap(),
+            GuestFrameRead::read_frame::<Reply>(&mut client).unwrap(),
             Reply::Value { .. }
         ));
         worker.join().unwrap();

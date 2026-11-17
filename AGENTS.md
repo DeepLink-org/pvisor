@@ -62,7 +62,7 @@ must satisfy these rules:
 
 Crates not yet migrated retain their current interfaces until their own focused
 refactor. `pvisor-vm`, `pvisor-overlayfs`, `pvisor-journal`,
-`pvisor-containers`, `pvisor-replay`, and `pvisor-overlaynet` currently follow
+`pvisor-containers`, `pvisor-replay`, `pvisor-overlaynet`, and `pvisor-guest` follow
 this boundary.
 
 ## Benchmarks
