@@ -565,7 +565,10 @@ Overlay listener, stage `control.sock` discovery link and `execution.sock` liste
 are removed. Both local and external inspect share one bounded mount table,
 closed before writable workspace teardown. Capture retains request receipts,
 Session locks and detached operation ownership after frontend timeout. Guest
-AgentCtl retains its separate guest-facing trust boundary.
+AgentCtl retains its separate guest-facing trust boundary. Its listener and
+active connection waits poll the same private stop descriptor; shutdown can
+interrupt silent or partial requests without waiting for the two-second I/O
+timeout. Idle listeners have no periodic wake timer.
 
 Each owner-held inspect entry owns its unique mount directory. Explicit unmount,
 table teardown and failed construction release the read-only mount before
