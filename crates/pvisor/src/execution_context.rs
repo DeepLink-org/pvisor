@@ -43,7 +43,7 @@ impl ExecutionContext {
     /// Snapshot the prepared guest network addresses without claiming its owner.
     /// None means no VM network attachment or an already-claimed owner. Mutex
     /// failure returns an error. Read before `take_vm_network` when preparing IO.
-    pub fn vm_network_config(&self) -> anyhow::Result<Option<pvisor_guest::NetworkConfig>> {
+    pub fn vm_network_config(&self) -> anyhow::Result<Option<pvisor_guest::api::NetworkConfig>> {
         let Some(slot) = &self.attachments.vm_network else {
             return Ok(None);
         };

@@ -1,3 +1,5 @@
+#[cfg(any(target_os = "linux", test))]
+mod command;
 #[cfg(target_os = "linux")]
 mod linux;
 #[cfg(any(target_os = "linux", all(test, unix)))]

@@ -2,10 +2,10 @@
 //! fails its own delivery instead of blocking unrelated execs or growing RAM.
 use anyhow::{Context, ensure};
 #[cfg(all(test, unix))]
-use pvisor_guest::control::SerialReply;
-use pvisor_guest::control::{
-    Reply, Request, SERIAL_MAX_REQUESTS, SerialCancel, SerialGuestFrame, SerialInput,
-    SerialRequest, StdinFrame, read_frame, write_frame,
+use pvisor_guest::api::SerialReply;
+use pvisor_guest::api::{
+    GuestFrameRead, GuestFrameWrite, Reply, Request, SERIAL_MAX_REQUESTS, SerialCancel,
+    SerialGuestFrame, SerialInput, SerialRequest, StdinFrame,
 };
 use std::{
     collections::BTreeMap,
@@ -103,7 +103,7 @@ impl Broker {
         let notification = started.clone();
         std::thread::spawn(move || {
             let error = loop {
-                let frame = match read_frame::<SerialGuestFrame>(&mut reader) {
+                let frame = match GuestFrameRead::read_frame::<SerialGuestFrame>(&mut reader) {
                     Ok(SerialGuestFrame::Reply(frame)) => frame,
                     Ok(SerialGuestFrame::InputAck(ack)) => {
                         let state = input.lock().unwrap();
@@ -220,7 +220,9 @@ impl Broker {
                 },
             );
             drop(state);
-            if let Err(error) = write_frame(&mut writer.stream, &SerialRequest { id, request }) {
+            if let Err(error) =
+                GuestFrameWrite::write_frame(&mut writer.stream, &SerialRequest { id, request })
+            {
                 Self::close(&self.state, error.to_string());
                 self.started.notify_all();
                 return Err(error.into());
@@ -253,7 +255,7 @@ impl Broker {
         loop {
             let reply = ticket.recv()?;
             if output_error.is_none()
-                && let Err(error) = write_frame(output, &reply)
+                && let Err(error) = GuestFrameWrite::write_frame(output, &reply)
             {
                 output_error = Some(error);
             }
@@ -283,7 +285,7 @@ impl InputHandle {
             self.eof.store(true, Ordering::Release);
         }
         let mut writer = self.broker.writer.lock().unwrap();
-        if let Err(error) = write_frame(
+        if let Err(error) = GuestFrameWrite::write_frame(
             &mut writer.stream,
             &SerialInput {
                 input_id: self.id,
@@ -299,7 +301,10 @@ impl InputHandle {
         self.credit.close();
         if !self.eof.load(Ordering::Acquire) {
             let mut writer = self.broker.writer.lock().unwrap();
-            let _ = write_frame(&mut writer.stream, &SerialCancel { cancel_id: self.id });
+            let _ = GuestFrameWrite::write_frame(
+                &mut writer.stream,
+                &SerialCancel { cancel_id: self.id },
+            );
         }
     }
 }
@@ -347,13 +352,13 @@ mod tests {
 
     #[test]
     fn bootstrap_receipt_survives_a_fast_exit_and_stdin_is_credit_bounded() {
-        use pvisor_guest::control::{ExecLaunch, SerialInputAck};
+        use pvisor_guest::api::{ExecLaunch, SerialInputAck};
         let (host, mut guest) = UnixStream::pair().unwrap();
         guest
             .set_read_timeout(Some(Duration::from_secs(5)))
             .unwrap();
         let broker = Broker::new(host.try_clone().unwrap(), host);
-        write_frame(
+        GuestFrameWrite::write_frame(
             &mut guest,
             &SerialReply {
                 id: 0,
@@ -375,8 +380,8 @@ mod tests {
                 },
             })
             .unwrap();
-        let request: SerialRequest = read_frame(&mut guest).unwrap();
-        write_frame(
+        let request: SerialRequest = GuestFrameRead::read_frame(&mut guest).unwrap();
+        GuestFrameWrite::write_frame(
             &mut guest,
             &SerialReply {
                 id: request.id,
@@ -398,7 +403,7 @@ mod tests {
                 bytes: b"one".to_vec(),
             })
             .unwrap();
-        let first: SerialInput = read_frame(&mut guest).unwrap();
+        let first: SerialInput = GuestFrameRead::read_frame(&mut guest).unwrap();
         assert_eq!(first.input_id, request.id);
         let (entered, waiting) = mpsc::channel();
         let (finished, done) = mpsc::channel();
@@ -414,7 +419,7 @@ mod tests {
             done.try_recv().is_err(),
             "input advanced without a returned credit"
         );
-        write_frame(
+        GuestFrameWrite::write_frame(
             &mut guest,
             &SerialInputAck {
                 input_ack: request.id,
@@ -422,9 +427,9 @@ mod tests {
         )
         .unwrap();
         done.recv_timeout(Duration::from_secs(5)).unwrap().unwrap();
-        let second: SerialInput = read_frame(&mut guest).unwrap();
+        let second: SerialInput = GuestFrameRead::read_frame(&mut guest).unwrap();
         assert!(matches!(second.input, StdinFrame::Data { bytes } if bytes == b"two"));
-        write_frame(
+        GuestFrameWrite::write_frame(
             &mut guest,
             &SerialReply {
                 id: request.id,
@@ -455,7 +460,7 @@ mod tests {
                 Ok::<_, anyhow::Error>(out)
             })
         };
-        let a: SerialRequest = read_frame(&mut guest).unwrap();
+        let a: SerialRequest = GuestFrameRead::read_frame(&mut guest).unwrap();
         let second = {
             let broker = broker.clone();
             std::thread::spawn(move || {
@@ -464,9 +469,9 @@ mod tests {
                 Ok::<_, anyhow::Error>(out)
             })
         };
-        let b: SerialRequest = read_frame(&mut guest).unwrap();
+        let b: SerialRequest = GuestFrameRead::read_frame(&mut guest).unwrap();
         assert!(a.id > 0 && b.id > a.id);
-        write_frame(
+        GuestFrameWrite::write_frame(
             &mut guest,
             &SerialReply {
                 id: b.id,
@@ -475,7 +480,8 @@ mod tests {
         )
         .unwrap();
         assert!(matches!(
-            read_frame::<Reply>(&mut second.join().unwrap().unwrap().as_slice()).unwrap(),
+            GuestFrameRead::read_frame::<Reply>(&mut second.join().unwrap().unwrap().as_slice())
+                .unwrap(),
             Reply::Ready
         ));
         guest.shutdown(std::net::Shutdown::Both).unwrap();
@@ -526,11 +532,11 @@ mod tests {
                 )
             })
         };
-        let a: SerialRequest = read_frame(&mut guest).unwrap();
-        let input: SerialInput = read_frame(&mut guest).unwrap();
+        let a: SerialRequest = GuestFrameRead::read_frame(&mut guest).unwrap();
+        let input: SerialInput = GuestFrameRead::read_frame(&mut guest).unwrap();
         assert_eq!(input.input_id, a.id);
         assert!(matches!(input.input, StdinFrame::Eof {}));
-        write_frame(
+        GuestFrameWrite::write_frame(
             &mut guest,
             &SerialReply {
                 id: a.id,
@@ -540,7 +546,7 @@ mod tests {
         .unwrap();
         waiting.recv_timeout(Duration::from_secs(5)).unwrap();
         for _ in 0..=OUTPUT_FRAMES {
-            write_frame(
+            GuestFrameWrite::write_frame(
                 &mut guest,
                 &SerialReply {
                     id: a.id,
@@ -556,8 +562,8 @@ mod tests {
             let broker = broker.clone();
             std::thread::spawn(move || broker.exchange(Request::Ping {}, &mut Vec::new()))
         };
-        let b: SerialRequest = read_frame(&mut guest).unwrap();
-        write_frame(
+        let b: SerialRequest = GuestFrameRead::read_frame(&mut guest).unwrap();
+        GuestFrameWrite::write_frame(
             &mut guest,
             &SerialReply {
                 id: b.id,

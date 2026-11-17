@@ -1,6 +1,6 @@
 //! One process launcher and PID-1 reaper for every guest workload and exec.
 use super::{check, resource};
-use pvisor_guest::{GuestConfig, StdinMode};
+use pvisor_guest::api::{GuestConfig, StdinMode};
 use std::{
     collections::BTreeMap,
     fs::{self, File},
@@ -348,7 +348,7 @@ pub(crate) fn default_home(uid: u32, passwd: &str) -> &str {
 }
 
 fn command(config: &GuestConfig) -> io::Result<Command> {
-    let mut command = config.command()?;
+    let mut command = crate::command::workload(config)?;
     let options = config.process.clone().unwrap_or_default();
     let identity = options.user.as_deref().map(identity).transpose()?;
     if (config.process.is_none() || options.user.is_some()) && !config.env.contains_key("HOME") {
@@ -551,7 +551,7 @@ mod tests {
         let mut config = GuestConfig {
             argv: vec!["/bin/true".into()],
             cwd: "/".into(),
-            process: Some(pvisor_guest::ProcessConfig {
+            process: Some(pvisor_guest::api::ProcessConfig {
                 attached: true,
                 ..Default::default()
             }),
@@ -576,7 +576,7 @@ mod tests {
         GuestConfig {
             argv: vec!["/bin/sh".into(), "-c".into(), script.into()],
             cwd: "/".into(),
-            process: Some(pvisor_guest::ProcessConfig {
+            process: Some(pvisor_guest::api::ProcessConfig {
                 attached: true,
                 new_session: true,
                 stdin: if interactive {
@@ -740,7 +740,7 @@ mod tests {
                 let config = GuestConfig {
                     argv: vec!["/bin/sh".into(), "-c".into(), format!("exit {code}")],
                     cwd: "/".into(),
-                    process: Some(pvisor_guest::ProcessConfig {
+                    process: Some(pvisor_guest::api::ProcessConfig {
                         new_session: true,
                         ..Default::default()
                     }),

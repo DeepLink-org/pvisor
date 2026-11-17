@@ -62,8 +62,9 @@ use crate::spec::load_bundle_spec;
 use crate::state::{ExecEntry, ExitInfo, ExitTarget, TaskEntry, TaskStatus};
 
 #[cfg(feature = "vm")]
-use pvisor_guest::control::{
-    ExecLaunch, Reply as GuestReply, Request as GuestRequest, StdinFrame, read_frame, write_frame,
+use pvisor_guest::api::{
+    ExecLaunch, GuestFrameRead, GuestFrameWrite, Reply as GuestReply, Request as GuestRequest,
+    StdinFrame,
 };
 
 fn notify_exit(sender: &watch::Sender<Option<ExitInfo>>, exit: ExitInfo) {
@@ -495,7 +496,7 @@ fn vm_exec_connect_and_start(
         let (key, value) = entry.split_once('=').context("invalid env entry")?;
         env.insert(key.to_string(), value.to_string());
     }
-    write_frame(
+    GuestFrameWrite::write_frame(
         &mut stream,
         &GuestRequest::Start {
             launch: ExecLaunch {
@@ -524,8 +525,8 @@ fn vm_exec_connect_and_start(
             },
         },
     )?;
-    let message =
-        read_frame::<GuestReply>(&mut stream).context("guest control closed before starting")?;
+    let message = GuestFrameRead::read_frame::<GuestReply>(&mut stream)
+        .context("guest control closed before starting")?;
     match message {
         GuestReply::Started { pid, generation } => Ok((VmExecIdentity { pid, generation }, stream)),
         GuestReply::Error { message } => anyhow::bail!("guest exec: {message}"),
@@ -545,8 +546,8 @@ fn vm_exec_control(
     request: &GuestRequest,
 ) -> Result<(), anyhow::Error> {
     let mut stream = std::os::unix::net::UnixStream::connect(socket_path)?;
-    write_frame(&mut stream, request)?;
-    match read_frame::<GuestReply>(&mut stream)? {
+    GuestFrameWrite::write_frame(&mut stream, request)?;
+    match GuestFrameRead::read_frame::<GuestReply>(&mut stream)? {
         GuestReply::Ready => Ok(()),
         GuestReply::Failure { errno, message } => {
             anyhow::bail!("guest control failed (errno {errno}): {message}")
@@ -600,11 +601,11 @@ fn spawn_vm_exec_relay(
                 // later drops (detached execs); the guest only kills on an
                 // abrupt disconnect before EOF.
                 Ok(0) | Err(_) => {
-                    let _ = write_frame(&mut writer, &StdinFrame::Eof {});
+                    let _ = GuestFrameWrite::write_frame(&mut writer, &StdinFrame::Eof {});
                     break;
                 }
                 Ok(n) => {
-                    if write_frame(
+                    if GuestFrameWrite::write_frame(
                         &mut writer,
                         &StdinFrame::Data {
                             bytes: buffer[..n].to_vec(),
@@ -633,7 +634,7 @@ fn spawn_vm_exec_relay(
             vm_exec_signal(&socket_path, identity, 9);
         };
         let status = loop {
-            match read_frame::<GuestReply>(&mut stream) {
+            match GuestFrameRead::read_frame::<GuestReply>(&mut stream) {
                 Ok(GuestReply::Output { stream: 1, bytes }) => {
                     if stdout.write_all(&bytes).is_err() {
                         io_consumer_gone(&stream);

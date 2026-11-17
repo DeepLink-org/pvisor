@@ -325,7 +325,9 @@ impl Project {
             // do not apply the shared image parser's legacy empty => SIGTERM.
             service.stop_signal = service.stop_signal.take().filter(|value| !value.is_empty());
             if let Some(stop_signal) = &service.stop_signal {
-                signal(stop_signal).with_context(|| format!("service {key} stop_signal"))?;
+                stop_signal
+                    .parse_signal()
+                    .with_context(|| format!("service {key} stop_signal"))?;
             }
             if let Some(grace) = &service.stop_grace_period {
                 readiness::milliseconds(grace).context("invalid stop_grace_period")?;
@@ -781,7 +783,11 @@ impl Project {
                 ])
                 .collect(),
             restart: service.restart,
-            stop_signal: service.stop_signal.as_deref().map(signal).transpose()?,
+            stop_signal: service
+                .stop_signal
+                .as_deref()
+                .map(GuestSignal::parse_signal)
+                .transpose()?,
             stop_timeout_ms: service
                 .stop_grace_period
                 .as_deref()

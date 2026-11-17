@@ -4,7 +4,8 @@ use crate::{
     transport::Broker,
 };
 use anyhow::{Context, bail, ensure};
-use pvisor_guest::control::{self, Reply, Request, read_frame, write_frame};
+use pvisor_guest::api::GuestValidation;
+use pvisor_guest::api::{self as control, GuestFrameRead, GuestFrameWrite, Reply, Request};
 use pvisor_overlaynet::api::{EgressControl, VmNetworkConfiguration, VmNetworkRuntime};
 use pvisor_vm::api::{VmBuilder, VmConfiguration, VmRuntime};
 use serde::{Deserialize, Serialize};
@@ -101,7 +102,7 @@ fn exchange(port: &Port, request: Request, output: &mut impl Write) -> anyhow::R
 fn rpc(generation: &str, request: &HostRequest) -> anyhow::Result<ipc::Duplex> {
     ensure!(store::valid_id(generation), "invalid container generation");
     let mut stream = ipc::connect_control(&owner_pipe(generation))?;
-    write_frame(&mut stream, request).context("send container owner request")?;
+    GuestFrameWrite::write_frame(&mut stream, request).context("send container owner request")?;
     Ok(stream)
 }
 fn receive(
@@ -110,7 +111,7 @@ fn receive(
     stderr: &mut dyn Write,
 ) -> anyhow::Result<i32> {
     loop {
-        match read_frame::<Reply>(stream)? {
+        match GuestFrameRead::read_frame::<Reply>(stream)? {
             Reply::Ready => (),
             Reply::Started { .. } => (),
             Reply::Output { stream, bytes } => {
@@ -135,11 +136,11 @@ fn receive(
 fn validate_process_options(request: &Run) -> anyhow::Result<()> {
     // Image defaults are not available at preflight. Use the guest root only
     // for omitted cwd; GuestConfig::default intentionally has no launch path.
-    let validation = pvisor_guest::GuestConfig {
+    let validation = pvisor_guest::api::GuestConfig {
         argv: vec!["/bin/true".into()],
         cwd: request.cwd.clone().unwrap_or_else(|| "/".into()),
         env: request.env.clone(),
-        process: Some(pvisor_guest::ProcessConfig {
+        process: Some(pvisor_guest::api::ProcessConfig {
             user: request.user.clone(),
             tty: request.tty,
             new_session: true,
@@ -147,7 +148,7 @@ fn validate_process_options(request: &Run) -> anyhow::Result<()> {
         }),
         ..Default::default()
     };
-    validation.command()?;
+    validation.validate()?;
     Ok(())
 }
 
@@ -211,9 +212,9 @@ pub(crate) fn run(store: &Store, request: Run) -> anyhow::Result<Container> {
         .context("image process configuration missing")?
         .tty = request.tty;
     guest.process.as_mut().unwrap().stdin = if request.interactive {
-        pvisor_guest::StdinMode::Pipe
+        pvisor_guest::api::StdinMode::Pipe
     } else {
-        pvisor_guest::StdinMode::Closed
+        pvisor_guest::api::StdinMode::Closed
     };
     if let Some(entrypoint) = &request.entrypoint {
         guest.argv.clear();
@@ -235,7 +236,7 @@ pub(crate) fn run(store: &Store, request: Run) -> anyhow::Result<Container> {
     if let Some(user) = &request.user {
         guest.process.get_or_insert_default().user = Some(user.clone());
     }
-    guest.command()?;
+    guest.validate()?;
     let id = uuid::Uuid::new_v4().simple().to_string();
     let mut info = Container {
         id: id.clone(),
@@ -263,7 +264,7 @@ pub(crate) fn run(store: &Store, request: Run) -> anyhow::Result<Container> {
         if request.network == Network::Bridge {
             let address = store.allocate_address()?;
             info.ipv4 = Some(address);
-            guest.network = Some(pvisor_guest::NetworkConfig {
+            guest.network = Some(pvisor_guest::api::NetworkConfig {
                 address: address.octets(),
                 gateway: [172, 17, 0, 1],
             });
@@ -402,7 +403,7 @@ fn input_link_closed(error: &std::io::Error) -> bool {
         || matches!(error.raw_os_error(), Some(109 | 232 | 233))
 }
 fn input_ready(stream: &mut ipc::Duplex) -> anyhow::Result<bool> {
-    match read_frame::<Reply>(stream) {
+    match GuestFrameRead::read_frame::<Reply>(stream) {
         Ok(Reply::Ready) => Ok(true),
         // The process may finish before its stdin attachment is admitted.
         // Completion/output remains authoritative; input closure is not an
@@ -430,7 +431,7 @@ fn pump_input(
             if cancel.load(Ordering::Acquire) {
                 return Ok(());
             }
-            let sent = write_frame(
+            let sent = GuestFrameWrite::write_frame(
                 &mut stream,
                 &if size == 0 {
                     control::StdinFrame::Eof {}
@@ -534,7 +535,7 @@ mod input_tests {
     #[test]
     fn an_early_guest_input_close_does_not_become_an_alternate_exit_status() {
         let (mut server, client) = pair();
-        write_frame(
+        GuestFrameWrite::write_frame(
             &mut server,
             &Reply::Failure {
                 errno: 32,
@@ -551,7 +552,7 @@ mod input_tests {
         )
         .unwrap();
         let (mut server, client) = pair();
-        write_frame(&mut server, &failure("admission rejected")).unwrap();
+        GuestFrameWrite::write_frame(&mut server, &failure("admission rejected")).unwrap();
         assert!(
             pump_input(
                 &mut Source { fail: false },
@@ -566,14 +567,14 @@ mod input_tests {
     #[test]
     fn source_errors_cancel_output_but_idle_input_does_not_retain_completion() {
         let (mut server, client) = pair();
-        write_frame(&mut server, &Reply::Ready).unwrap();
+        GuestFrameWrite::write_frame(&mut server, &Reply::Ready).unwrap();
         assert_eq!(
             with_input(&mut Source { fail: false }, client, None, true, || Ok(7)).unwrap(),
             7
         );
 
         let (mut server, client) = pair();
-        write_frame(&mut server, &Reply::Ready).unwrap();
+        GuestFrameWrite::write_frame(&mut server, &Reply::Ready).unwrap();
         let (_open_output_peer, output) = pair();
         let mut reader = output.clone();
         let error = with_input(
@@ -581,7 +582,7 @@ mod input_tests {
             client,
             Some(output),
             true,
-            || read_frame::<Reply>(&mut reader).map_err(anyhow::Error::from),
+            || GuestFrameRead::read_frame::<Reply>(&mut reader).map_err(anyhow::Error::from),
         )
         .unwrap_err();
         assert!(format!("{error:#}").contains("source failure fixture"));
@@ -611,7 +612,7 @@ fn wait_output(
     }
     let code =
         receive(&mut stream, stdout, stderr).context("receive container output and exit status")?;
-    write_frame(&mut stream, &HostRequest::Acknowledged)
+    GuestFrameWrite::write_frame(&mut stream, &HostRequest::Acknowledged)
         .context("acknowledge container completion")?;
     let mut byte = [0; 1];
     match stream.read(&mut byte) {
@@ -712,7 +713,7 @@ pub(crate) fn stop(
                 interactive: false,
             },
         ) {
-            let _ = read_frame::<Reply>(&mut stream);
+            let _ = GuestFrameRead::read_frame::<Reply>(&mut stream);
         }
     });
     let deadline = if timeout == Duration::MAX {
@@ -731,7 +732,7 @@ pub(crate) fn stop(
     }
     if generation_live(&dir, &r.info.generation)? {
         let mut stream = rpc(&r.info.generation, &HostRequest::Kill)?;
-        match read_frame::<Reply>(&mut stream)? {
+        match GuestFrameRead::read_frame::<Reply>(&mut stream)? {
             Reply::Ready => (),
             reply => bail!("force-stop rejected: {reply:?}"),
         }
@@ -765,7 +766,7 @@ fn follow(
         if n == 0 {
             break;
         }
-        write_frame(
+        GuestFrameWrite::write_frame(
             stream,
             &Reply::Output {
                 stream: channel,
@@ -786,11 +787,11 @@ fn serve_owner(
     delivered: Arc<AtomicBool>,
 ) -> anyhow::Result<()> {
     let store = Store::open(Some(root))?;
-    match read_frame::<HostRequest>(&mut stream)? {
+    match GuestFrameRead::read_frame::<HostRequest>(&mut stream)? {
         HostRequest::Acknowledged => bail!("completion acknowledgment requires an attachment"),
         HostRequest::Kill => {
             kill.store(true, Ordering::Release);
-            write_frame(&mut stream, &Reply::Ready)?;
+            GuestFrameWrite::write_frame(&mut stream, &Reply::Ready)?;
         }
         HostRequest::Input => {
             let broker = connected(&command)?;
@@ -798,25 +799,25 @@ fn serve_owner(
                 let mut ticket = broker.begin(Request::Input {})?;
                 let input = ticket.input();
                 let first = ticket.recv()?;
-                write_frame(&mut stream, &first)?;
+                GuestFrameWrite::write_frame(&mut stream, &first)?;
                 ensure!(matches!(first, Reply::Ready), "guest stdin unavailable");
                 loop {
-                    let frame: control::StdinFrame = read_frame(&mut stream)?;
+                    let frame: control::StdinFrame = GuestFrameRead::read_frame(&mut stream)?;
                     let eof = matches!(frame, control::StdinFrame::Eof {});
                     input.send(frame)?;
                     if eof {
                         let reply = ticket.recv()?;
                         ensure!(matches!(reply, Reply::Ready), "guest stdin did not close");
-                        write_frame(&mut stream, &reply)?;
+                        GuestFrameWrite::write_frame(&mut stream, &reply)?;
                         break;
                     }
-                    write_frame(&mut stream, &Reply::Ready)?;
+                    GuestFrameWrite::write_frame(&mut stream, &Reply::Ready)?;
                 }
                 ipc::drain(&stream)?;
                 Ok(())
             })();
             if result.is_err() && broker.is_closed() {
-                write_frame(
+                GuestFrameWrite::write_frame(
                     &mut stream,
                     &Reply::Failure {
                         errno: 32,
@@ -857,7 +858,8 @@ fn serve_owner(
                     let worker = scope.spawn(move || {
                         let result = (|| -> anyhow::Result<()> {
                             loop {
-                                let frame: control::StdinFrame = read_frame(&mut reader)?;
+                                let frame: control::StdinFrame =
+                                    GuestFrameRead::read_frame(&mut reader)?;
                                 let eof = matches!(frame, control::StdinFrame::Eof {});
                                 input.send(frame)?;
                                 if eof {
@@ -873,7 +875,7 @@ fn serve_owner(
                     let result = (|| -> anyhow::Result<()> {
                         loop {
                             let reply = ticket.recv()?;
-                            write_frame(&mut stream, &reply)?;
+                            GuestFrameWrite::write_frame(&mut stream, &reply)?;
                             if ticket.complete() {
                                 break;
                             }
@@ -908,7 +910,7 @@ fn serve_owner(
                         let mut boot = 0;
                         follow(&dir.join("boot.stderr"), &mut boot, 2, &mut stream)?;
                     }
-                    write_frame(
+                    GuestFrameWrite::write_frame(
                         &mut stream,
                         &Reply::Exit {
                             code: r.info.exit_code.context("missing exit status")?,
@@ -916,7 +918,7 @@ fn serve_owner(
                     )?;
                     ensure!(
                         matches!(
-                            read_frame::<HostRequest>(&mut stream)?,
+                            GuestFrameRead::read_frame::<HostRequest>(&mut stream)?,
                             HostRequest::Acknowledged
                         ),
                         "completion was not acknowledged"
@@ -976,7 +978,7 @@ fn owner(store: Store, id: &str, generation: &str) -> anyhow::Result<()> {
                     let mut response = stream.clone();
                     if let Err(e) = serve_owner(stream, root, id, command, signal, kill, delivered)
                     {
-                        let _ = write_frame(&mut response, &failure(e));
+                        let _ = GuestFrameWrite::write_frame(&mut response, &failure(e));
                         let _ = ipc::drain(&response);
                     }
                 });
@@ -1175,7 +1177,7 @@ fn runner(store: Store, id: &str, generation: &str) -> anyhow::Result<()> {
     )?;
     vm.virtual_file(
         "/dev/root",
-        pvisor_guest::CONFIG_PATH,
+        pvisor_guest::api::CONFIG_PATH,
         serde_json::to_vec(&r.guest)?,
         0o400,
         true,

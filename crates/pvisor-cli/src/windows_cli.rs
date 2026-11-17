@@ -368,7 +368,7 @@ fn dispatch(command: Command) -> anyhow::Result<i32> {
                     let (env, unset_env) = environment(&env, &env_files)?;
                     let code = store.exec(
                         &container,
-                        pvisor_guest::control::ExecLaunch {
+                        pvisor_guest::api::ExecLaunch {
                             argv: command,
                             env,
                             replace_env: false,

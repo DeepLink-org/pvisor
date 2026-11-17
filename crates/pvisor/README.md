@@ -1,5 +1,9 @@
 # PolicyVisor (pVisor)
 
+Guest launch/control/exit contracts come from `pvisor_guest::api`. Host code
+uses `GuestValidation` for admission; executable command construction stays in
+the guest supervisor.
+
 Network data-plane callers use `pvisor_overlaynet::api` and its declared traits;
 policy records remain owned by `pvisor_core::network`.
 

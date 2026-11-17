@@ -3,9 +3,8 @@ use super::{
     check,
     process::{Processes, Spawned, read_chunk, spawn_error},
 };
-use pvisor_guest::{
-    GuestConfig,
-    control::{self, Reply, Request, StdinFrame, read_frame, write_frame},
+use pvisor_guest::api::{
+    self as control, GuestConfig, GuestFrameRead, GuestFrameWrite, Reply, Request, StdinFrame,
 };
 use std::{
     collections::BTreeMap,
@@ -51,7 +50,7 @@ fn pump(mut reader: impl Read, writer: Arc<Mutex<UnixStream>>, stream: u8) -> io
         if size == 0 {
             return Ok(());
         }
-        write_frame(
+        GuestFrameWrite::write_frame(
             &mut *writer.lock().unwrap(),
             &Reply::Output {
                 stream,
@@ -63,7 +62,7 @@ fn pump(mut reader: impl Read, writer: Arc<Mutex<UnixStream>>, stream: u8) -> io
 
 fn consume_input(stream: &mut UnixStream, output: &mut impl Write) -> io::Result<()> {
     loop {
-        match read_frame::<StdinFrame>(stream)? {
+        match GuestFrameRead::read_frame::<StdinFrame>(stream)? {
             StdinFrame::Data { bytes } => {
                 output.write_all(&bytes)?;
                 output.flush()?;
@@ -81,7 +80,7 @@ fn serve(
     input: &Input,
 ) -> io::Result<()> {
     stream.set_read_timeout(Some(std::time::Duration::from_secs(10)))?;
-    let request: Request = read_frame(&mut stream)?;
+    let request: Request = GuestFrameRead::read_frame(&mut stream)?;
     let tracked = matches!(request, Request::Start { .. });
     let mut replace_env = false;
     let mut exec_limits = BTreeMap::new();
@@ -101,8 +100,8 @@ fn serve(
     };
     stream.set_read_timeout(None)?;
     match request {
-        Request::Ping {} => write_frame(&mut stream, &Reply::Ready),
-        Request::Info {} => write_frame(
+        Request::Ping {} => GuestFrameWrite::write_frame(&mut stream, &Reply::Ready),
+        Request::Info {} => GuestFrameWrite::write_frame(
             &mut stream,
             &Reply::Value {
                 value: super::files::info(config)?,
@@ -113,7 +112,7 @@ fn serve(
             pid,
             generation,
             trim,
-        } => write_frame(
+        } => GuestFrameWrite::write_frame(
             &mut stream,
             &Reply::Value {
                 value: processes.reclaim_allocator(pid, generation, trim)?,
@@ -125,7 +124,7 @@ fn serve(
             signal,
         } => {
             processes.signal_tracked(pid, generation, signal)?;
-            write_frame(&mut stream, &Reply::Ready)
+            GuestFrameWrite::write_frame(&mut stream, &Reply::Ready)
         }
         Request::Resize {
             pid,
@@ -134,7 +133,7 @@ fn serve(
             columns,
         } => {
             processes.resize(pid, generation, rows, columns)?;
-            write_frame(&mut stream, &Reply::Ready)
+            GuestFrameWrite::write_frame(&mut stream, &Reply::Ready)
         }
         Request::Start { .. } => unreachable!("normalized above"),
         Request::Input {} => {
@@ -143,14 +142,14 @@ fn serve(
                 .unwrap()
                 .take()
                 .ok_or_else(|| io::Error::other("stdin is closed or already attached"))?;
-            write_frame(&mut stream, &Reply::Ready)?;
+            GuestFrameWrite::write_frame(&mut stream, &Reply::Ready)?;
             consume_input(&mut stream, &mut input)?;
             drop(input);
-            write_frame(&mut stream, &Reply::Ready)
+            GuestFrameWrite::write_frame(&mut stream, &Reply::Ready)
         }
         Request::Stop { signal } => {
             processes.signal(pid, signal)?;
-            write_frame(&mut stream, &Reply::Ready)
+            GuestFrameWrite::write_frame(&mut stream, &Reply::Ready)
         }
         Request::Connect { port } => {
             let tcp = std::net::TcpStream::connect_timeout(
@@ -203,7 +202,7 @@ fn serve(
             if tracked {
                 options.new_session = true;
             }
-            options.stdin = pvisor_guest::StdinMode::Pipe;
+            options.stdin = pvisor_guest::api::StdinMode::Pipe;
             options.create_workdir = false;
             let Spawned {
                 process,
@@ -213,18 +212,18 @@ fn serve(
                 Ok(child) => child,
                 Err(error) => {
                     let code = spawn_error(&error).unwrap_or(125);
-                    write_frame(
+                    GuestFrameWrite::write_frame(
                         &mut stream,
                         &Reply::Error {
                             message: error.to_string(),
                         },
                     )?;
-                    return write_frame(&mut stream, &Reply::Exit { code });
+                    return GuestFrameWrite::write_frame(&mut stream, &Reply::Exit { code });
                 }
             };
             let exec_pid = process.id();
             let exec_generation = process.generation();
-            if let Err(error) = write_frame(
+            if let Err(error) = GuestFrameWrite::write_frame(
                 &mut stream,
                 &if tracked {
                     Reply::Started {
@@ -265,7 +264,7 @@ fn serve(
                 }
             }
             if !drained {
-                let _ = write_frame(
+                let _ = GuestFrameWrite::write_frame(
                     &mut *output.lock().unwrap(),
                     &Reply::Failure {
                         errno: libc::EIO,
@@ -273,14 +272,14 @@ fn serve(
                     },
                 );
             }
-            write_frame(&mut *output.lock().unwrap(), &Reply::Exit { code })?;
+            GuestFrameWrite::write_frame(&mut *output.lock().unwrap(), &Reply::Exit { code })?;
             Ok(())
         }
     }
 }
 
 fn forward_tcp(mut stream: UnixStream, mut tcp: std::net::TcpStream) -> io::Result<()> {
-    write_frame(&mut stream, &Reply::Ready)?;
+    GuestFrameWrite::write_frame(&mut stream, &Reply::Ready)?;
     let mut input = stream.try_clone()?;
     let mut output = tcp.try_clone()?;
     let upstream = std::thread::spawn(move || {
@@ -299,7 +298,7 @@ fn forward_tcp(mut stream: UnixStream, mut tcp: std::net::TcpStream) -> io::Resu
             if size == 0 {
                 break;
             }
-            write_frame(
+            GuestFrameWrite::write_frame(
                 &mut stream,
                 &Reply::Output {
                     stream: 1,
@@ -307,7 +306,7 @@ fn forward_tcp(mut stream: UnixStream, mut tcp: std::net::TcpStream) -> io::Resu
                 },
             )?;
         }
-        write_frame(&mut stream, &Reply::Exit { code: 0 })
+        GuestFrameWrite::write_frame(&mut stream, &Reply::Exit { code: 0 })
     })();
     // A completed response or error owns both pumps. Cancel blocked input reads
     // and TCP writes before joining; cloned descriptors must not retain a tunnel.
@@ -374,7 +373,7 @@ pub(super) fn start(
                     pid,
                     &input,
                 ) {
-                    let _ = write_frame(
+                    let _ = GuestFrameWrite::write_frame(
                         &mut stream,
                         &Reply::Failure {
                             errno: error.raw_os_error().unwrap_or(libc::EIO),
@@ -389,7 +388,7 @@ pub(super) fn start(
 }
 
 pub(super) fn serial_ports() -> io::Result<(std::fs::File, std::fs::File)> {
-    use pvisor_guest::control::{SERIAL_COMMAND_PORT, SERIAL_SIGNAL_PORT};
+    use pvisor_guest::api::{SERIAL_COMMAND_PORT, SERIAL_SIGNAL_PORT};
     use std::{
         fs,
         path::Path,
@@ -455,9 +454,9 @@ pub(super) fn start_serial(
 ) -> io::Result<()> {
     // This frame is emitted after process creation and before PID 1 can reap a
     // fast workload. It is distinct from a later Ping and cannot race its exit.
-    write_frame(
+    GuestFrameWrite::write_frame(
         &mut ports.0,
-        &pvisor_guest::control::SerialReply {
+        &pvisor_guest::api::SerialReply {
             id: 0,
             reply: Reply::Ready,
         },
@@ -494,7 +493,7 @@ fn serial_loop(
     pid: u32,
     input: Input,
 ) -> io::Result<()> {
-    use pvisor_guest::control::{SerialHostFrame, SerialInputAck, SerialReply, SerialRequest};
+    use pvisor_guest::api::{SerialHostFrame, SerialInputAck, SerialReply, SerialRequest};
     let trace = config
         .env
         .get("PVISOR_SERIAL_TRACE")
@@ -516,7 +515,9 @@ fn serial_loop(
         if trace {
             eprintln!("serial control signal={signals}: awaiting request");
         }
-        let SerialRequest { id, request } = match read_frame::<SerialHostFrame>(&mut serial)? {
+        let SerialRequest { id, request } = match GuestFrameRead::read_frame::<SerialHostFrame>(
+            &mut serial,
+        )? {
             SerialHostFrame::Request(request) => request,
             SerialHostFrame::Cancel(cancel) => {
                 if let Some(route) = routes.lock().unwrap().get(&cancel.cancel_id) {
@@ -532,7 +533,7 @@ fn serial_loop(
                     let eof = matches!(frame.input, StdinFrame::Eof {});
                     if route.eof || oversized || route.sender.try_send(frame.input).is_err() {
                         let _ = route.cancel.shutdown(std::net::Shutdown::Both);
-                        write_frame(
+                        GuestFrameWrite::write_frame(
                             &mut *writer.lock().unwrap(),
                             &SerialReply {
                                 id: frame.input_id,
@@ -546,7 +547,7 @@ fn serial_loop(
                         route.eof = eof;
                     }
                 } else {
-                    write_frame(
+                    GuestFrameWrite::write_frame(
                         &mut *writer.lock().unwrap(),
                         &SerialInputAck {
                             input_ack: frame.input_id,
@@ -576,7 +577,7 @@ fn serial_loop(
                 ))
             || (!signals && (exec || main_input));
         if !allowed || active.load(Ordering::Acquire) >= control::SERIAL_MAX_REQUESTS {
-            write_frame(
+            GuestFrameWrite::write_frame(
                 &mut *writer.lock().unwrap(),
                 &SerialReply {
                     id,
@@ -594,7 +595,7 @@ fn serial_loop(
             continue;
         }
         let (mut client, mut server) = UnixStream::pair()?;
-        write_frame(&mut client, &request)?;
+        GuestFrameWrite::write_frame(&mut client, &request)?;
         let input_worker = if exec || main_input {
             let (sender, receiver) = std::sync::mpsc::sync_channel(1);
             routes.lock().unwrap().insert(
@@ -610,10 +611,10 @@ fn serial_loop(
             Some(std::thread::spawn(move || {
                 while let Ok(frame) = receiver.recv() {
                     let eof = matches!(frame, StdinFrame::Eof {});
-                    if write_frame(&mut input_stream, &frame).is_err() {
+                    if GuestFrameWrite::write_frame(&mut input_stream, &frame).is_err() {
                         break;
                     }
-                    if write_frame(
+                    if GuestFrameWrite::write_frame(
                         &mut *writer.lock().unwrap(),
                         &SerialInputAck { input_ack: id },
                     )
@@ -649,7 +650,7 @@ fn serial_loop(
                     .try_clone()
                     .and_then(|stream| serve(stream, &config, &processes, pid, &input));
                 if let Err(error) = result {
-                    let _ = write_frame(
+                    let _ = GuestFrameWrite::write_frame(
                         &mut server,
                         &Reply::Failure {
                             errno: error.raw_os_error().unwrap_or(libc::EIO),
@@ -661,12 +662,15 @@ fn serial_loop(
             let result = (|| -> io::Result<()> {
                 let mut input_ready = false;
                 loop {
-                    let reply: Reply = read_frame(&mut client)?;
+                    let reply: Reply = GuestFrameRead::read_frame(&mut client)?;
                     let complete = matches!(reply, Reply::Failure { .. } | Reply::Exit { .. })
                         || (!exec
                             && matches!(reply, Reply::Ready)
                             && (!main_input || std::mem::replace(&mut input_ready, true)));
-                    write_frame(&mut *writer.lock().unwrap(), &SerialReply { id, reply })?;
+                    GuestFrameWrite::write_frame(
+                        &mut *writer.lock().unwrap(),
+                        &SerialReply { id, reply },
+                    )?;
                     if complete {
                         break;
                     }
@@ -676,7 +680,7 @@ fn serial_loop(
             let _ = client.shutdown(std::net::Shutdown::Both);
             routes.lock().unwrap().remove(&id);
             if let Err(error) = result {
-                let _ = write_frame(
+                let _ = GuestFrameWrite::write_frame(
                     &mut *writer.lock().unwrap(),
                     &SerialReply {
                         id,
@@ -702,7 +706,7 @@ mod tests {
 
     #[test]
     fn serial_request_id_replay_closes_the_connection_before_readmission() {
-        use pvisor_guest::control::{SerialReply, SerialRequest};
+        use pvisor_guest::api::{SerialReply, SerialRequest};
         let (mut host, guest) = UnixStream::pair().unwrap();
         host.set_read_timeout(Some(std::time::Duration::from_secs(5)))
             .unwrap();
@@ -717,7 +721,7 @@ mod tests {
                 Arc::new(Mutex::new(None)),
             )
         });
-        write_frame(
+        GuestFrameWrite::write_frame(
             &mut host,
             &SerialRequest {
                 id: 1,
@@ -726,13 +730,13 @@ mod tests {
         )
         .unwrap();
         assert!(matches!(
-            read_frame::<SerialReply>(&mut host).unwrap(),
+            GuestFrameRead::read_frame::<SerialReply>(&mut host).unwrap(),
             SerialReply {
                 id: 1,
                 reply: Reply::Ready
             }
         ));
-        write_frame(
+        GuestFrameWrite::write_frame(
             &mut host,
             &SerialRequest {
                 id: 1,
@@ -751,9 +755,9 @@ mod tests {
         let config = GuestConfig {
             argv: vec!["/bin/sleep".into(), "30".into()],
             cwd: "/".into(),
-            process: Some(pvisor_guest::ProcessConfig {
+            process: Some(pvisor_guest::api::ProcessConfig {
                 new_session: true,
-                stdin: pvisor_guest::StdinMode::Pipe,
+                stdin: pvisor_guest::api::StdinMode::Pipe,
                 ..Default::default()
             }),
             ..Default::default()
@@ -816,8 +820,8 @@ mod tests {
                 input,
             )
         });
-        use pvisor_guest::control::{SerialReply, SerialRequest};
-        write_frame(
+        use pvisor_guest::api::{SerialReply, SerialRequest};
+        GuestFrameWrite::write_frame(
             &mut command,
             &SerialRequest {
                 id: 1,
@@ -826,13 +830,13 @@ mod tests {
         )
         .unwrap();
         assert!(matches!(
-            read_frame::<SerialReply>(&mut command).unwrap(),
+            GuestFrameRead::read_frame::<SerialReply>(&mut command).unwrap(),
             SerialReply {
                 id: 1,
                 reply: Reply::Ready
             }
         ));
-        write_frame(
+        GuestFrameWrite::write_frame(
             &mut command,
             &SerialRequest {
                 id: 2,
@@ -852,18 +856,18 @@ mod tests {
         )
         .unwrap();
         assert!(matches!(
-            read_frame::<SerialReply>(&mut command).unwrap(),
+            GuestFrameRead::read_frame::<SerialReply>(&mut command).unwrap(),
             SerialReply {
                 id: 2,
                 reply: Reply::Ready
             }
         ));
-        let output: SerialReply = read_frame(&mut command).unwrap();
+        let output: SerialReply = GuestFrameRead::read_frame(&mut command).unwrap();
         assert!(
             matches!(output, SerialReply { id: 2, reply: Reply::Output { stream: 1, ref bytes } } if bytes == b"serial-output")
         );
         // A second exec on the same port must finish while the first sleeps.
-        write_frame(
+        GuestFrameWrite::write_frame(
             &mut command,
             &SerialRequest {
                 id: 3,
@@ -880,7 +884,7 @@ mod tests {
         .unwrap();
         let mut second = Vec::new();
         loop {
-            match read_frame::<SerialReply>(&mut command).unwrap() {
+            match GuestFrameRead::read_frame::<SerialReply>(&mut command).unwrap() {
                 SerialReply {
                     id: 3,
                     reply: Reply::Ready,
@@ -897,8 +901,8 @@ mod tests {
             }
         }
         assert_eq!(second, b"concurrent-output\n");
-        use pvisor_guest::control::{ExecLaunch, SerialGuestFrame, SerialInput};
-        write_frame(&mut command, &SerialRequest { id: 4, request: Request::Start {
+        use pvisor_guest::api::{ExecLaunch, SerialGuestFrame, SerialInput};
+        GuestFrameWrite::write_frame(&mut command, &SerialRequest { id: 4, request: Request::Start {
             launch: ExecLaunch {
                 argv: vec!["/bin/sh".into(), "-c".into(),
                     "test -t 0 && test -t 1 && stty size; read line; printf 'terminal:%s' \"$line\"".into()],
@@ -907,13 +911,13 @@ mod tests {
             },
         }}).unwrap();
         assert!(matches!(
-            read_frame::<SerialGuestFrame>(&mut command).unwrap(),
+            GuestFrameRead::read_frame::<SerialGuestFrame>(&mut command).unwrap(),
             SerialGuestFrame::Reply(SerialReply {
                 id: 4,
                 reply: Reply::Started { .. }
             })
         ));
-        write_frame(
+        GuestFrameWrite::write_frame(
             &mut command,
             &SerialInput {
                 input_id: 4,
@@ -926,7 +930,7 @@ mod tests {
         let mut terminal = Vec::new();
         let (mut ack, mut exited) = (false, false);
         while !ack || !exited {
-            match read_frame::<SerialGuestFrame>(&mut command).unwrap() {
+            match GuestFrameRead::read_frame::<SerialGuestFrame>(&mut command).unwrap() {
                 SerialGuestFrame::InputAck(a) if a.input_ack == 4 => ack = true,
                 SerialGuestFrame::Reply(SerialReply {
                     id: 4,
@@ -945,7 +949,7 @@ mod tests {
             "{terminal:?}"
         );
         // Main input uses the very same adapter, including explicit EOF.
-        write_frame(
+        GuestFrameWrite::write_frame(
             &mut command,
             &SerialRequest {
                 id: 5,
@@ -954,13 +958,13 @@ mod tests {
         )
         .unwrap();
         assert!(matches!(
-            read_frame::<SerialGuestFrame>(&mut command).unwrap(),
+            GuestFrameRead::read_frame::<SerialGuestFrame>(&mut command).unwrap(),
             SerialGuestFrame::Reply(SerialReply {
                 id: 5,
                 reply: Reply::Ready
             })
         ));
-        write_frame(
+        GuestFrameWrite::write_frame(
             &mut command,
             &SerialInput {
                 input_id: 5,
@@ -970,7 +974,7 @@ mod tests {
         .unwrap();
         let (mut ack, mut closed) = (false, false);
         while !ack || !closed {
-            match read_frame::<SerialGuestFrame>(&mut command).unwrap() {
+            match GuestFrameRead::read_frame::<SerialGuestFrame>(&mut command).unwrap() {
                 SerialGuestFrame::InputAck(a) if a.input_ack == 5 => ack = true,
                 SerialGuestFrame::Reply(SerialReply {
                     id: 5,
@@ -979,7 +983,7 @@ mod tests {
                 frame => panic!("unexpected main-input frame: {frame:?}"),
             }
         }
-        write_frame(
+        GuestFrameWrite::write_frame(
             &mut command,
             &SerialRequest {
                 id: 6,
@@ -998,13 +1002,13 @@ mod tests {
         )
         .unwrap();
         assert!(matches!(
-            read_frame::<SerialGuestFrame>(&mut command).unwrap(),
+            GuestFrameRead::read_frame::<SerialGuestFrame>(&mut command).unwrap(),
             SerialGuestFrame::Reply(SerialReply {
                 id: 6,
                 reply: Reply::Started { .. }
             })
         ));
-        write_frame(
+        GuestFrameWrite::write_frame(
             &mut command,
             &SerialInput {
                 input_id: 6,
@@ -1014,7 +1018,7 @@ mod tests {
         .unwrap();
         let (mut ack, mut interrupted) = (false, false);
         while !ack || !interrupted {
-            match read_frame::<SerialGuestFrame>(&mut command).unwrap() {
+            match GuestFrameRead::read_frame::<SerialGuestFrame>(&mut command).unwrap() {
                 SerialGuestFrame::InputAck(a) if a.input_ack == 6 => ack = true,
                 SerialGuestFrame::Reply(SerialReply {
                     id: 6,
@@ -1027,7 +1031,7 @@ mod tests {
                 frame => panic!("unexpected interrupt frame: {frame:?}"),
             }
         }
-        write_frame(
+        GuestFrameWrite::write_frame(
             &mut signal,
             &SerialRequest {
                 id: 1,
@@ -1038,14 +1042,14 @@ mod tests {
         )
         .unwrap();
         assert!(matches!(
-            read_frame::<SerialReply>(&mut signal).unwrap(),
+            GuestFrameRead::read_frame::<SerialReply>(&mut signal).unwrap(),
             SerialReply {
                 id: 1,
                 reply: Reply::Ready
             }
         ));
         loop {
-            match read_frame::<SerialReply>(&mut command).unwrap() {
+            match GuestFrameRead::read_frame::<SerialReply>(&mut command).unwrap() {
                 SerialReply {
                     id: 2,
                     reply: Reply::Exit { code },
@@ -1086,13 +1090,13 @@ mod tests {
                 .chain(mode.map(str::to_owned))
                 .collect(),
             cwd: "/".into(),
-            process: Some(pvisor_guest::ProcessConfig {
+            process: Some(pvisor_guest::api::ProcessConfig {
                 allocator_reclaim: Some(
                     std::env::var("PVISOR_RECLAIM_SO")
                         .expect("preload SO")
                         .into(),
                 ),
-                stdin: pvisor_guest::StdinMode::Pipe,
+                stdin: pvisor_guest::api::StdinMode::Pipe,
                 ..Default::default()
             }),
             ..Default::default()
@@ -1124,7 +1128,7 @@ mod tests {
             let mut report = serde_json::Value::Null;
             for trim in [false, true] {
                 let (mut client, server) = UnixStream::pair()?;
-                write_frame(
+                GuestFrameWrite::write_frame(
                     &mut client,
                     &Request::ReclaimAllocator {
                         pid,
@@ -1139,7 +1143,7 @@ mod tests {
                     pid,
                     &Arc::new(Mutex::new(None)),
                 )?;
-                let Reply::Value { value } = read_frame(&mut client)? else {
+                let Reply::Value { value } = GuestFrameRead::read_frame(&mut client)? else {
                     return Err(io::Error::other("missing report"));
                 };
                 eprintln!("allocator-reclaim {mode:?}: {value}");
@@ -1388,14 +1392,14 @@ mod tests {
                 &Arc::new(Mutex::new(None)),
             )
         });
-        write_frame(&mut client, &Request::Connect { port }).unwrap();
+        GuestFrameWrite::write_frame(&mut client, &Request::Connect { port }).unwrap();
         assert!(matches!(
-            read_frame::<Reply>(&mut client).unwrap(),
+            GuestFrameRead::read_frame::<Reply>(&mut client).unwrap(),
             Reply::Ready
         ));
         let mut body = Vec::new();
         loop {
-            match read_frame::<Reply>(&mut client).unwrap() {
+            match GuestFrameRead::read_frame::<Reply>(&mut client).unwrap() {
                 Reply::Output { bytes, .. } => body.extend(bytes),
                 Reply::Exit { code: 0 } => break,
                 other => panic!("{other:?}"),
@@ -1444,22 +1448,22 @@ mod tests {
                 &Arc::new(Mutex::new(None)),
             )
         });
-        write_frame(&mut client, &Request::Connect { port }).unwrap();
+        GuestFrameWrite::write_frame(&mut client, &Request::Connect { port }).unwrap();
         assert!(matches!(
-            read_frame::<Reply>(&mut client).unwrap(),
+            GuestFrameRead::read_frame::<Reply>(&mut client).unwrap(),
             Reply::Ready
         ));
-        write_frame(
+        GuestFrameWrite::write_frame(
             &mut client,
             &StdinFrame::Data {
                 bytes: b"request".to_vec(),
             },
         )
         .unwrap();
-        write_frame(&mut client, &StdinFrame::Eof {}).unwrap();
+        GuestFrameWrite::write_frame(&mut client, &StdinFrame::Eof {}).unwrap();
         let mut actual = Vec::new();
         loop {
-            match read_frame::<Reply>(&mut client).unwrap() {
+            match GuestFrameRead::read_frame::<Reply>(&mut client).unwrap() {
                 Reply::Output { bytes, .. } => actual.extend(bytes),
                 Reply::Exit { code: 0 } => break,
                 other => panic!("{other:?}"),
@@ -1496,10 +1500,10 @@ mod tests {
             )
             .unwrap()
         });
-        write_frame(
+        GuestFrameWrite::write_frame(
             &mut client,
             &Request::Start {
-                launch: pvisor_guest::control::ExecLaunch {
+                launch: pvisor_guest::api::ExecLaunch {
                     argv: vec![
                         "/bin/sh".into(),
                         "-c".into(),
@@ -1516,7 +1520,8 @@ mod tests {
             },
         )
         .unwrap();
-        let Reply::Started { pid, generation } = read_frame(&mut client).unwrap() else {
+        let Reply::Started { pid, generation } = GuestFrameRead::read_frame(&mut client).unwrap()
+        else {
             panic!("missing PID");
         };
         assert_eq!(
@@ -1526,17 +1531,17 @@ mod tests {
                 .kind(),
             io::ErrorKind::NotFound
         );
-        write_frame(
+        GuestFrameWrite::write_frame(
             &mut client,
             &StdinFrame::Data {
                 bytes: b"hello\n".to_vec(),
             },
         )
         .unwrap();
-        write_frame(&mut client, &StdinFrame::Eof {}).unwrap();
+        GuestFrameWrite::write_frame(&mut client, &StdinFrame::Eof {}).unwrap();
         let mut output = Vec::new();
         loop {
-            match read_frame::<Reply>(&mut client).unwrap() {
+            match GuestFrameRead::read_frame::<Reply>(&mut client).unwrap() {
                 Reply::Output { bytes, .. } => output.extend(bytes),
                 Reply::Exit { code } => {
                     assert_eq!(code, 0);
@@ -1586,10 +1591,10 @@ mod tests {
             )
             .unwrap()
         });
-        write_frame(
+        GuestFrameWrite::write_frame(
             &mut client,
             &Request::Start {
-                launch: pvisor_guest::control::ExecLaunch {
+                launch: pvisor_guest::api::ExecLaunch {
                     argv: vec![
                         "/bin/sh".into(),
                         "-c".into(),
@@ -1612,14 +1617,14 @@ mod tests {
         let Reply::Started {
             pid: _,
             generation: _,
-        } = read_frame(&mut client).unwrap()
+        } = GuestFrameRead::read_frame(&mut client).unwrap()
         else {
             panic!("missing PID");
         };
-        write_frame(&mut client, &StdinFrame::Eof {}).unwrap();
+        GuestFrameWrite::write_frame(&mut client, &StdinFrame::Eof {}).unwrap();
         let mut output = Vec::new();
         loop {
-            match read_frame::<Reply>(&mut client).unwrap() {
+            match GuestFrameRead::read_frame::<Reply>(&mut client).unwrap() {
                 Reply::Output { bytes, .. } => output.extend(bytes),
                 Reply::Exit { code } => {
                     assert_eq!(code, 0);

@@ -1,6 +1,6 @@
 //! Streaming copies through guest control or a fenced stopped OverlayCore.
 use super::*;
-use pvisor_guest::control::{FileRequest, StdinFrame};
+use pvisor_guest::api::{FileRequest, StdinFrame};
 use pvisor_overlay_core::{OverlayCore, backend, sys};
 use std::ffi::{CString, OsStr, OsString};
 use std::os::{
@@ -227,11 +227,11 @@ struct Guest<'a> {
 impl Guest<'_> {
     fn connect(&self, request: FileRequest) -> anyhow::Result<UnixStream> {
         let mut stream = self.store.connect(self.instance)?;
-        write_frame(&mut stream, &Request::File { request })?;
+        GuestFrameWrite::write_frame(&mut stream, &Request::File { request })?;
         Ok(stream)
     }
     fn value(&self, request: FileRequest) -> anyhow::Result<Option<serde_json::Value>> {
-        match read_frame(&mut self.connect(request)?)? {
+        match GuestFrameRead::read_frame(&mut self.connect(request)?)? {
             Reply::Value { value } => Ok(Some(value)),
             Reply::Failure {
                 errno: libc::ENOENT,
@@ -288,7 +288,7 @@ impl Tree for Guest<'_> {
             path: Self::path(path),
         })?;
         loop {
-            match read_frame(&mut stream)? {
+            match GuestFrameRead::read_frame(&mut stream)? {
                 Reply::Ready => {}
                 Reply::Output { stream: 1, bytes } => output.write_all(&bytes)?,
                 Reply::Exit { code: 0 } => return Ok(()),
@@ -302,7 +302,7 @@ impl Tree for Guest<'_> {
             path: Self::path(path),
             mode: mode & 0o777,
         })?;
-        match read_frame(&mut stream)? {
+        match GuestFrameRead::read_frame(&mut stream)? {
             Reply::Ready => {}
             Reply::Failure { message, .. } | Reply::Error { message } => bail!("{message}"),
             _ => bail!("invalid guest write admission"),
@@ -313,15 +313,15 @@ impl Tree for Guest<'_> {
             if count == 0 {
                 break;
             }
-            write_frame(
+            GuestFrameWrite::write_frame(
                 &mut stream,
                 &StdinFrame::Data {
                     bytes: bytes[..count].to_vec(),
                 },
             )?;
         }
-        write_frame(&mut stream, &StdinFrame::Eof {})?;
-        match read_frame(&mut stream)? {
+        GuestFrameWrite::write_frame(&mut stream, &StdinFrame::Eof {})?;
+        match GuestFrameRead::read_frame(&mut stream)? {
             Reply::Value { .. } => Ok(()),
             Reply::Failure { message, .. } | Reply::Error { message } => bail!("{message}"),
             _ => bail!("invalid guest write completion"),

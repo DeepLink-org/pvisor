@@ -5,6 +5,7 @@ use crate::environment_snapshot::{Compatibility, SnapshotStore, file_hash};
 use crate::startup_profile;
 use anyhow::{Context, ensure};
 use pvisor_core::operation::{ExecutionCheckpoint, OperationKind, SnapshotRamStorage};
+use pvisor_guest::api::GuestValidation;
 use pvisor_journal::api::{DurableFiles, Persistence};
 use pvisor_vm::api::{RamDeltaState, RestoreState, RuntimeSupport, SnapshotCapture, SnapshotState};
 use serde::{Deserialize, Serialize};
@@ -122,7 +123,7 @@ pub(super) struct PreparedRestore {
     pub root: super::supported::OverlayDeviceSpec,
     pub workspace: Option<super::supported::OverlayDeviceSpec>,
     pub workspace_target: Option<PathBuf>,
-    pub guest: pvisor_guest::GuestConfig,
+    pub guest: pvisor_guest::api::GuestConfig,
     pub ram: std::sync::Arc<fs::File>,
     pub ram_path: PathBuf,
     pub _eager_ram: Option<tempfile::NamedTempFile>,
@@ -917,7 +918,7 @@ pub(super) mod native {
         pub root: OverlayDeviceSpec,
         pub workspace: Option<OverlayDeviceSpec>,
         pub workspace_target: Option<PathBuf>,
-        pub guest: pvisor_guest::GuestConfig,
+        pub guest: pvisor_guest::api::GuestConfig,
         pub cpus: u8,
         pub memory_mib: u32,
         pub state: MachineSnapshot,
@@ -1540,7 +1541,7 @@ pub(super) mod native {
                 && saved.guest.network.is_none(),
             "snapshot identity, resource budget or no-network contract mismatch"
         );
-        saved.guest.command()?;
+        saved.guest.validate()?;
         if let Some(delta) = &saved.ram_delta {
             delta.validate().map_err(anyhow::Error::msg)?;
             ensure!(

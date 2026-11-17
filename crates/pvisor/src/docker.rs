@@ -5,8 +5,8 @@
 #![deny(missing_docs)]
 use anyhow::{Context, bail, ensure};
 use fs2::FileExt;
-use pvisor_guest::control::{
-    self, Reply, Request, parse_signal as signal, read_frame, write_frame,
+use pvisor_guest::api::{
+    self as control, GuestFrameRead, GuestFrameWrite, GuestSignal, Reply, Request,
 };
 use pvisor_overlaynet::api::{EgressControl, VmNetworkConfiguration, VmNetworkRuntime};
 use serde::{Deserialize, Serialize};
@@ -765,7 +765,9 @@ impl Store {
             cmd: prepared.cmd,
             cwd: cwd.into(),
             user: config["User"].as_str().unwrap_or("").into(),
-            stop_signal: signal(config["StopSignal"].as_str().unwrap_or("SIGTERM"))?,
+            stop_signal: GuestSignal::parse_signal(
+                config["StopSignal"].as_str().unwrap_or("SIGTERM"),
+            )?,
             volumes: config["Volumes"]
                 .as_object()
                 .map(|v| v.keys().map(PathBuf::from).collect())
@@ -1323,7 +1325,9 @@ impl Store {
         timeout: Duration,
         requested_signal: Option<&str>,
     ) -> anyhow::Result<()> {
-        let parsed_signal = requested_signal.map(signal).transpose()?;
+        let parsed_signal = requested_signal
+            .map(GuestSignal::parse_signal)
+            .transpose()?;
         let deadline = if timeout == Duration::MAX {
             None
         } else {
@@ -1387,7 +1391,7 @@ impl Store {
     /// suppresses automatic restart; other signals may leave it running.
     /// Signals are routed through the owned guest generation, never a host PID.
     pub fn signal(&self, selector: &str, requested: &str) -> anyhow::Result<()> {
-        let number = signal(requested)?;
+        let number = GuestSignal::parse_signal(requested)?;
         let instance = self.resolve(selector)?;
         ensure!(self.active(&instance)?, "Session is not running");
         if number == 9 {
@@ -1447,8 +1451,8 @@ impl Store {
     }
     fn request(&self, instance: &Instance, request: &Request) -> anyhow::Result<Reply> {
         let mut stream = self.connect(instance)?;
-        write_frame(&mut stream, request)?;
-        let reply = read_frame(&mut stream)?;
+        GuestFrameWrite::write_frame(&mut stream, request)?;
+        let reply = GuestFrameRead::read_frame(&mut stream)?;
         if let Reply::Error { message } = &reply {
             bail!("{message}");
         }
@@ -2035,9 +2039,12 @@ fn validate_owner_lease(file: &File, path: &Path) -> anyhow::Result<()> {
 fn forward(mut client: std::net::TcpStream, endpoint: &Path, port: u16) -> anyhow::Result<()> {
     let mut stream = UnixStream::connect(endpoint)?;
     stream.set_read_timeout(Some(Duration::from_secs(10)))?;
-    write_frame(&mut stream, &Request::Connect { port })?;
+    GuestFrameWrite::write_frame(&mut stream, &Request::Connect { port })?;
     ensure!(
-        matches!(read_frame::<Reply>(&mut stream)?, Reply::Ready),
+        matches!(
+            GuestFrameRead::read_frame::<Reply>(&mut stream)?,
+            Reply::Ready
+        ),
         "guest connection refused"
     );
     stream.set_read_timeout(None)?;
@@ -2050,9 +2057,9 @@ fn forward(mut client: std::net::TcpStream, endpoint: &Path, port: u16) -> anyho
                 let size = input.read(&mut bytes)?;
                 if size == 0 {
                     // An orderly half-close still allows the guest's reply.
-                    return write_frame(&mut writer, &control::StdinFrame::Eof {});
+                    return GuestFrameWrite::write_frame(&mut writer, &control::StdinFrame::Eof {});
                 }
-                write_frame(
+                GuestFrameWrite::write_frame(
                     &mut writer,
                     &control::StdinFrame::Data {
                         bytes: bytes[..size].to_vec(),
@@ -2069,7 +2076,7 @@ fn forward(mut client: std::net::TcpStream, endpoint: &Path, port: u16) -> anyho
     });
     let result = (|| -> anyhow::Result<()> {
         loop {
-            match read_frame::<Reply>(&mut stream)? {
+            match GuestFrameRead::read_frame::<Reply>(&mut stream)? {
                 Reply::Output { stream: 1, bytes } => client.write_all(&bytes)?,
                 Reply::Exit { .. } => return Ok(()),
                 _ => bail!("invalid guest TCP tunnel response"),
@@ -2242,24 +2249,24 @@ fn run_vm<Backing>(
             libc::_exit(137);
         }
     });
-    let mut guest = pvisor_guest::GuestConfig {
+    let mut guest = pvisor_guest::api::GuestConfig {
         argv: instance.argv,
         env: instance.env,
         cwd: instance.cwd,
         stdio_ports: Some([false, true, true]),
-        process: Some(pvisor_guest::ProcessConfig {
+        process: Some(pvisor_guest::api::ProcessConfig {
             user: Some(instance.user),
             // Docker's default bounding set is a host-side compatibility policy.
             capabilities: Some(vec![0, 1, 3, 4, 5, 6, 7, 8, 10, 13, 18, 27, 29, 31]),
             new_session: true,
             stdin: if instance.config.interactive {
-                pvisor_guest::StdinMode::Pipe
+                pvisor_guest::api::StdinMode::Pipe
             } else if instance.config.tty.is_some() {
                 // Keep fd 0 on the selected PTY without exposing an input
                 // attachment. Closed intentionally supplies /dev/null instead.
-                pvisor_guest::StdinMode::Inherit
+                pvisor_guest::api::StdinMode::Inherit
             } else {
-                pvisor_guest::StdinMode::Closed
+                pvisor_guest::api::StdinMode::Closed
             },
             tty: instance.config.tty,
             create_workdir: true,
@@ -2298,7 +2305,7 @@ fn run_vm<Backing>(
         } else {
             vm.filesystem(&tag, source, 0)?;
         }
-        guest.mounts.push(pvisor_guest::Mount {
+        guest.mounts.push(pvisor_guest::api::Mount {
             tag,
             target: mount.target.clone(),
             read_only: mount.read_only,
@@ -2349,7 +2356,7 @@ fn run_vm<Backing>(
             stream,
             pvisor_overlaynet::api::VmNetworkConfig::guest_mac(address),
         )?;
-        guest.network = Some(pvisor_guest::NetworkConfig {
+        guest.network = Some(pvisor_guest::api::NetworkConfig {
             address: address.octets(),
             gateway: gateway.octets(),
         });
@@ -2359,7 +2366,7 @@ fn run_vm<Backing>(
     };
     vm.virtual_file(
         "/dev/root",
-        pvisor_guest::CONFIG_PATH,
+        pvisor_guest::api::CONFIG_PATH,
         serde_json::to_vec(&guest)?,
         0o400,
         true,
@@ -2389,9 +2396,8 @@ fn run_vm<Backing>(_: &Store, _: Instance<Backing>, _: ImageRoot) -> anyhow::Res
 }
 
 /// Shared guest protocol for CLI stream adapters.
-pub use pvisor_guest::control::{
+pub use pvisor_guest::api::{
     Reply as GuestReply, Request as GuestRequest, StdinFrame as GuestStdin,
-    read_frame as read_guest_frame, write_frame as write_guest_frame,
 };
 
 #[cfg(test)]
@@ -2541,18 +2547,18 @@ mod tests {
                 .set_read_timeout(Some(Duration::from_secs(1)))
                 .unwrap();
             assert!(matches!(
-                read_frame::<Request>(&mut stream).unwrap(),
+                GuestFrameRead::read_frame::<Request>(&mut stream).unwrap(),
                 Request::Connect { port: 8080 }
             ));
-            write_frame(&mut stream, &Reply::Ready).unwrap();
+            GuestFrameWrite::write_frame(&mut stream, &Reply::Ready).unwrap();
             assert!(matches!(
-                read_frame::<control::StdinFrame>(&mut stream).unwrap(),
+                GuestFrameRead::read_frame::<control::StdinFrame>(&mut stream).unwrap(),
                 control::StdinFrame::Data { .. }
             ));
             sent.send(()).unwrap();
-            let error = read_frame::<control::StdinFrame>(&mut stream).unwrap_err();
+            let error = GuestFrameRead::read_frame::<control::StdinFrame>(&mut stream).unwrap_err();
             // Release a broken implementation's downstream reader before asserting.
-            let _ = write_frame(&mut stream, &Reply::Exit { code: 0 });
+            let _ = GuestFrameWrite::write_frame(&mut stream, &Reply::Exit { code: 0 });
             error.kind()
         });
         let forwarding = std::thread::spawn(move || forward(accepted, &path, 8080));

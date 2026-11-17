@@ -60,13 +60,14 @@ Source entry points: `pvisor/src/execution_context/lifecycle.rs`, `pvisor-overla
 
 ## API boundaries and migration status {#api-boundaries}
 
-`pvisor-vm`, `pvisor-overlayfs`, `pvisor-journal`, `pvisor-containers`, `pvisor-replay` and `pvisor-overlaynet` use a sole `api` entry point. Other crates retain their existing interfaces.
+`pvisor-vm`, `pvisor-overlayfs`, `pvisor-journal`, `pvisor-containers`, `pvisor-replay`, `pvisor-overlaynet` and `pvisor-guest` use a sole `api` entry point. Other crates retain their existing interfaces.
 
 | Crate | Current public boundary | Implementation and resource ownership |
 | --- | --- | --- |
 | `pvisor-vm` | `pvisor_vm::api`; trait-based use of `VmBuilder` and `VmmHandle` | Private backend, VMM, devices, RAM and platform dispatch |
 | `pvisor-overlayfs` | `pvisor_overlayfs::api`; configuration, mount, session and metrics contracts | Private `fs`, `mount` and `observation`; owns neither apply nor Run lifecycle |
 | `pvisor-journal` | `pvisor_journal::api`; `JournalStore`, `TraceProducer`, `DurableFiles` | Private `journal`, `trace`, `persistence`; Core owns Event/Receipt |
+| `pvisor-guest` | `pvisor_guest::api`; pure validation, frame I/O, signal parsing and exit encoding | Private command construction and Linux supervisor; message decoding grants no authority |
 | `pvisor-core` | Domain modules and root re-exports; not migrated | Shared identities, protocols, pure validation and policy definitions; no execution resources |
 | `pvisor-overlay-core` | Existing public modules and root interfaces; not migrated | File semantics and dual-entry file service |
 | `pvisor-overlaynet` | `pvisor_overlaynet::api`; proxy, egress, VM transport and observation traits | Private connectors, peer membership, counters and worker lifecycle; Core owns policy records |

@@ -1706,8 +1706,10 @@ impl<F: FileSystem + Sync> Server<F> {
             out_size,
         } = r.read_obj().map_err(Error::DecodeMessage)?;
 
-        use pvisor_guest::exit_status::{CLAIM_IOCTL, REPORT_BYTES, REPORT_IOCTL, TOKEN_BYTES};
-        if matches!(cmd, CLAIM_IOCTL | REPORT_IOCTL | 0x7602) {
+        use pvisor_guest::api::{
+            EXIT_CLAIM_IOCTL, EXIT_REPORT_BYTES, EXIT_REPORT_IOCTL, EXIT_TOKEN_BYTES,
+        };
+        if matches!(cmd, EXIT_CLAIM_IOCTL | EXIT_REPORT_IOCTL | 0x7602) {
             let outcome = (|| -> io::Result<Vec<u8>> {
                 if !self.guest_exit_enabled || in_header.nodeid != ROOT_ID || cmd == 0x7602 {
                     return Err(io::Error::from_raw_os_error(libc::ENOTTY));
@@ -1715,12 +1717,14 @@ impl<F: FileSystem + Sync> Server<F> {
                 // FUSE_IOCTL_DIR is valid on the root directory; compat,
                 // unrestricted/retry and unknown flags are never accepted.
                 if flags & !16 != 0
-                    || (cmd == CLAIM_IOCTL && (in_size != 0 || out_size != TOKEN_BYTES as u32))
-                    || (cmd == REPORT_IOCTL && (in_size != REPORT_BYTES as u32 || out_size != 0))
+                    || (cmd == EXIT_CLAIM_IOCTL
+                        && (in_size != 0 || out_size != EXIT_TOKEN_BYTES as u32))
+                    || (cmd == EXIT_REPORT_IOCTL
+                        && (in_size != EXIT_REPORT_BYTES as u32 || out_size != 0))
                 {
                     return Err(io::Error::from_raw_os_error(libc::EINVAL));
                 }
-                let mut bytes = [0; REPORT_BYTES];
+                let mut bytes = [0; EXIT_REPORT_BYTES];
                 r.read_exact(&mut bytes[..in_size as usize])?;
                 // Negotiated idmapped FUSE omits credentials after guest VFS
                 // authorization. PID is still kernel-provided and must be 1.
@@ -1743,7 +1747,10 @@ impl<F: FileSystem + Sync> Server<F> {
                 Ok(bytes) => reply_ok(Some(IoctlOut::default()), Some(&bytes), in_header.unique, w),
                 Err(error) => {
                     if in_header.pid == 1 {
-                        warn!("supervisor exit handshake rejected: cmd={cmd:#x} uid={} node={} root={} flags={flags:#x} in={in_size} out={out_size}: {error}", in_header.uid, in_header.nodeid, self.guest_exit_enabled);
+                        warn!(
+                            "supervisor exit handshake rejected: cmd={cmd:#x} uid={} node={} root={} flags={flags:#x} in={in_size} out={out_size}: {error}",
+                            in_header.uid, in_header.nodeid, self.guest_exit_enabled
+                        );
                     }
                     reply_error(error, in_header.unique, w)
                 }
@@ -2236,7 +2243,7 @@ mod guest_cache_tests {
     use super::super::null_fs::NullFs;
     use super::*;
     use crate::devices::virtio::descriptor_utils::{
-        create_descriptor_chain, DescriptorType, OwnedDescriptorChain,
+        DescriptorType, OwnedDescriptorChain, create_descriptor_chain,
     };
     use vm_memory::{Bytes, GuestAddress, GuestMemoryMmap};
 
@@ -2894,7 +2901,7 @@ mod guest_cache_tests {
 
     #[test]
     fn guest_exit_wire_binds_root_pid1_framing_and_snapshot() {
-        use pvisor_guest::exit_status::{CLAIM_IOCTL, REPORT_IOCTL};
+        use pvisor_guest::api::{EXIT_CLAIM_IOCTL, EXIT_REPORT_IOCTL};
         let mut root = Server::new(NullFs, false);
         root.configure_profile_scope("/dev/root");
         let status = Arc::new(AtomicI32::new(i32::MAX));
@@ -2913,7 +2920,7 @@ mod guest_cache_tests {
             .unwrap()
         };
         let claim = || IoctlIn {
-            cmd: CLAIM_IOCTL,
+            cmd: EXIT_CLAIM_IOCTL,
             out_size: 16,
             flags: 16,
             ..Default::default()
@@ -2957,9 +2964,9 @@ mod guest_cache_tests {
         let mut restored = Server::new(NullFs, false);
         restored.configure_profile_scope("/dev/root");
         restored.restore_state(&snapshot).unwrap();
-        let report = pvisor_guest::exit_status::report(&token, 23).unwrap();
+        let report = pvisor_guest::api::GuestExitReport::report(&token, 23).unwrap();
         let input = || IoctlIn {
-            cmd: REPORT_IOCTL,
+            cmd: EXIT_REPORT_IOCTL,
             in_size: 20,
             flags: 16,
             ..Default::default()
@@ -2985,7 +2992,7 @@ mod guest_cache_tests {
         root.configure_profile_scope("/dev/root");
         let status = Arc::new(AtomicI32::new(i32::MAX));
         let body = IoctlIn {
-            cmd: pvisor_guest::exit_status::CLAIM_IOCTL,
+            cmd: pvisor_guest::api::EXIT_CLAIM_IOCTL,
             out_size: 16,
             flags: 16,
             ..Default::default()

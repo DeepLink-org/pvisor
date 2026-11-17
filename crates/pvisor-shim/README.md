@@ -1,5 +1,9 @@
 # pvisor-shim
 
+Guest launch/control/exit contracts come from `pvisor_guest::api`. Host code
+uses `GuestValidation` for admission; executable command construction stays in
+the guest supervisor.
+
 Network data-plane callers use `pvisor_overlaynet::api` and its declared traits;
 policy records remain owned by `pvisor_core::network`.
 
@@ -238,7 +242,7 @@ without `/run`, e.g. rootless, it falls back to the temp directory):
 
 - one control connection per exec plus short-lived connections for
   signals and PTY resizes; frames are length-bounded JSON
-  (`pvisor_guest::control`)
+  (`pvisor_guest::api`)
 - the guest process starts at `Exec` time (containerd's `Start` reports
   the pid; there is no two-phase gate across the VM boundary)
 - killing an exec delivers the requested signal to the registered guest

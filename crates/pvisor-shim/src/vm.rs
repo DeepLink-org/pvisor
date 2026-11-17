@@ -13,7 +13,7 @@
 use crate::plan::{ContainerPlan, guest_config, vm_exec_enabled, vm_ram_dedup_enabled};
 use crate::sockets::{bridge_socket_path, control_socket_path};
 use anyhow::{Context, Result};
-use pvisor_guest::control::CONTROL_PORT;
+use pvisor_guest::api::CONTROL_PORT;
 use pvisor_overlaynet::api::VmNetworkConfiguration;
 use pvisor_vm::api::{RamDedupControl, VmConfiguration, VmRuntime};
 use std::os::unix::fs::PermissionsExt;
@@ -47,7 +47,7 @@ pub fn boot_vm(
         .injections
         .iter()
         .filter(|injection| injection.run)
-        .map(|injection| pvisor_guest::SidecarProcess {
+        .map(|injection| pvisor_guest::api::SidecarProcess {
             argv: injection.argv.clone(),
             env: injection.env.clone(),
             log: std::path::PathBuf::from(format!("/.pvisor-inject-{}.log", injection.name)),
@@ -57,7 +57,7 @@ pub fn boot_vm(
         .injections
         .iter()
         .filter_map(|injection| {
-            injection.bridge.map(|port| pvisor_guest::PortBridge {
+            injection.bridge.map(|port| pvisor_guest::api::PortBridge {
                 vsock_port: u32::from(port),
                 tcp_port: port,
             })
@@ -94,7 +94,7 @@ pub fn boot_vm(
         .iter()
         .enumerate()
         .map(
-            |(index, (_, destination, read_only))| pvisor_guest::GuestShare {
+            |(index, (_, destination, read_only))| pvisor_guest::api::GuestShare {
                 tag: format!("pvisor-vol-{index}"),
                 path: destination.clone(),
                 read_only: *read_only,
@@ -104,7 +104,7 @@ pub fn boot_vm(
     // Re-validate with the sidecars attached so an invalid launch contract
     // fails here (admission already checked the payload catalogue; this
     // guards the serialized handoff as a whole).
-    guest.command()?;
+    guest.validate()?;
     // Named console ports (krun-stdin/stdout/stderr) are how non-terminal
     // task IO reaches the runner's FIFOs; their names arrive asynchronously,
     // so PID 1 must wait for every stream that is not a tty. Terminal tasks
@@ -118,7 +118,7 @@ pub fn boot_vm(
         // terminated here on the host and re-originated only when the
         // task's policy authorizes it. The supervisor configures the
         // static address without DHCP.
-        guest.network = Some(pvisor_guest::NetworkConfig {
+        guest.network = Some(pvisor_guest::api::NetworkConfig {
             address: pvisor_overlaynet::api::GUEST_IPV4.octets(),
             gateway: pvisor_overlaynet::api::ROUTER_IPV4.octets(),
         });

@@ -402,9 +402,10 @@ mod tests {
         let cancel = server.clone();
         let (done, finished) = mpsc::channel();
         let worker = std::thread::spawn(move || {
-            let error =
-                pvisor_guest::control::read_frame::<pvisor_guest::control::Reply>(&mut server)
-                    .unwrap_err();
+            let error = pvisor_guest::api::GuestFrameRead::read_frame::<pvisor_guest::api::Reply>(
+                &mut server,
+            )
+            .unwrap_err();
             done.send(error.kind()).unwrap();
         });
         cancel.cancel();

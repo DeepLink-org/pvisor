@@ -26,7 +26,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             0o755,
             false,
         )?;
-        let config = pvisor_guest::GuestConfig {
+        let config = pvisor_guest::api::GuestConfig {
             argv: vec![
                 "/whp-probe".into(),
                 args[3].to_str().ok_or("exit code")?.into(),
@@ -34,7 +34,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             ],
             cwd: "/".into(),
             stdio_ports: Some([false; 3]),
-            shares: vec![pvisor_guest::GuestShare {
+            shares: vec![pvisor_guest::api::GuestShare {
                 tag: "readonly".into(),
                 path: "/readonly".into(),
                 read_only: true,
@@ -43,7 +43,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         };
         vm.virtual_file(
             "/dev/root",
-            pvisor_guest::CONFIG_PATH,
+            pvisor_guest::api::CONFIG_PATH,
             serde_json::to_vec(&config)?,
             0o400,
             true,

@@ -990,7 +990,7 @@ pub async fn run_native_supervisor(sandbox_dir: &Path) -> Result<()> {
     };
     let native_control = ports_dir.join("guest.sock");
     if identity.image.native_guest {
-        vsock_ports.insert(pvisor_guest::control::CONTROL_PORT, native_control.clone());
+        vsock_ports.insert(pvisor_guest::api::CONTROL_PORT, native_control.clone());
     }
     for port in ports {
         let path = ports_dir.join(format!("{port}.sock"));

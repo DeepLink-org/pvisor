@@ -94,7 +94,7 @@ jobs:
         run: mise run test -- pvisor-vm -- --no-default-features --lib --tests --profile windows-ci 2>&1 | tee "$NATIVE_EVIDENCE/vm-minimal.log"
       - name: API documentation
         if: ${{ !cancelled() }}
-        run: RUSTDOCFLAGS='-D warnings' mise exec -- cargo doc --locked -p pvisor-vm -p pvisor-containers -p pvisor-overlaynet --no-deps 2>&1 | tee "$NATIVE_EVIDENCE/rustdoc.log"
+        run: RUSTDOCFLAGS='-D warnings' mise exec -- cargo doc --locked -p pvisor-vm -p pvisor-containers -p pvisor-overlaynet -p pvisor-guest --no-deps 2>&1 | tee "$NATIVE_EVIDENCE/rustdoc.log"
       - name: Upload native contract logs
         if: always()
         uses: actions/upload-artifact@v4

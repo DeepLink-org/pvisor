@@ -358,7 +358,7 @@ impl Drop for ExecGuard<'_> {
                 let mut stream = UnixStream::connect(socket(self.instance)?)?;
                 stream.set_read_timeout(Some(Duration::from_secs(2)))?;
                 stream.set_write_timeout(Some(Duration::from_secs(2)))?;
-                write_frame(
+                GuestFrameWrite::write_frame(
                     &mut stream,
                     &Request::Signal {
                         pid,
@@ -367,7 +367,10 @@ impl Drop for ExecGuard<'_> {
                     },
                 )?;
                 ensure!(
-                    matches!(read_frame::<Reply>(&mut stream)?, Reply::Ready),
+                    matches!(
+                        GuestFrameRead::read_frame::<Reply>(&mut stream)?,
+                        Reply::Ready
+                    ),
                     "guest did not acknowledge healthcheck cancellation"
                 );
                 Ok(())
@@ -410,7 +413,7 @@ fn probe(
         }
     });
     let result = (|| {
-        write_frame(
+        GuestFrameWrite::write_frame(
             &mut stream,
             &Request::Start {
                 launch: control::ExecLaunch {
@@ -429,20 +432,20 @@ fn probe(
             child: None,
             cancellation_failed: cancellation_failed.clone(),
         };
-        match read_frame::<Reply>(&mut stream)? {
+        match GuestFrameRead::read_frame::<Reply>(&mut stream)? {
             Reply::Started { pid, generation } => guard.child = Some((pid, generation)),
             Reply::Error { message } => {
-                if let Reply::Exit { code } = read_frame::<Reply>(&mut stream)? {
+                if let Reply::Exit { code } = GuestFrameRead::read_frame::<Reply>(&mut stream)? {
                     return Ok((code, message));
                 }
                 bail!("{message}");
             }
             _ => bail!("invalid healthcheck start response"),
         }
-        write_frame(&mut stream, &control::StdinFrame::Eof {})?;
+        GuestFrameWrite::write_frame(&mut stream, &control::StdinFrame::Eof {})?;
         let mut output = Vec::new();
         loop {
-            match read_frame::<Reply>(&mut stream)? {
+            match GuestFrameRead::read_frame::<Reply>(&mut stream)? {
                 Reply::Output { bytes, .. } => {
                     output.extend_from_slice(&bytes[..bytes.len().min(4096 - output.len())]);
                 }

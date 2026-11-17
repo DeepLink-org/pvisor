@@ -1,6 +1,6 @@
 //! Guest filesystem setup shared by Sessions and controlled workloads.
 use super::{check, mount};
-use pvisor_guest::GuestConfig;
+use pvisor_guest::api::GuestConfig;
 use std::{
     fs, io,
     os::unix::fs::{MetadataExt, PermissionsExt},

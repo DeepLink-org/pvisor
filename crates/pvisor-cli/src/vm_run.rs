@@ -47,7 +47,7 @@ pub(crate) fn run(args: Args) -> anyhow::Result<()> {
         );
     }
     vm.filesystem("/dev/root", &root, 0)?;
-    let mut config = pvisor_guest::GuestConfig {
+    let mut config = pvisor_guest::api::GuestConfig {
         argv: args.command,
         cwd: "/".into(),
         stdio_ports: Some([false; 3]),
@@ -61,7 +61,7 @@ pub(crate) fn run(args: Args) -> anyhow::Result<()> {
             "readonly and rootfs must be disjoint directories"
         );
         vm.read_only_filesystem("readonly", &readonly)?;
-        config.shares.push(pvisor_guest::GuestShare {
+        config.shares.push(pvisor_guest::api::GuestShare {
             tag: "readonly".into(),
             path: "/readonly".into(),
             read_only: true,
@@ -69,7 +69,7 @@ pub(crate) fn run(args: Args) -> anyhow::Result<()> {
     }
     vm.virtual_file(
         "/dev/root",
-        pvisor_guest::CONFIG_PATH,
+        pvisor_guest::api::CONFIG_PATH,
         serde_json::to_vec(&config)?,
         0o400,
         true,

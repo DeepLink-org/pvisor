@@ -22,7 +22,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             0o755,
             false,
         )?;
-        let config = pvisor_guest::GuestConfig {
+        let config = pvisor_guest::api::GuestConfig {
             argv: vec![
                 "/exit-probe".into(),
                 args[3].to_str().ok_or("invalid code")?.into(),
@@ -33,7 +33,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         };
         vm.virtual_file(
             "/dev/root",
-            pvisor_guest::CONFIG_PATH,
+            pvisor_guest::api::CONFIG_PATH,
             serde_json::to_vec(&config)?,
             0o400,
             true,
