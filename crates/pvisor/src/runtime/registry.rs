@@ -82,9 +82,9 @@ pub struct RunRecord {
     #[serde(default)]
     pub overlaynet_listen: Option<String>,
     #[serde(default)]
-    pub network_interception: Option<pvisor_overlaynet::InterceptionProfile>,
+    pub network_interception: Option<pvisor_overlaynet::api::InterceptionProfile>,
     #[serde(default)]
-    pub network_interception_metrics: Option<pvisor_overlaynet::InterceptionSnapshot>,
+    pub network_interception_metrics: Option<pvisor_overlaynet::api::InterceptionSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub filesystem_observation: Option<pvisor_core::operation::FilesystemObservation>,
     pub gateway_listen: Option<String>,

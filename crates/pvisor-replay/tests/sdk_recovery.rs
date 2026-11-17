@@ -1,6 +1,8 @@
 #![cfg(unix)]
 
-use pvisor_replay::{AgentKind, PlaybackRequest, ReplayMode, execute};
+use pvisor_replay::api::ReplayRequest;
+
+use pvisor_replay::api::{AgentKind, PlaybackRequest, ReplayMode};
 use serde_json::{Value, json};
 use std::os::unix::fs::{PermissionsExt, symlink};
 use std::{
@@ -89,9 +91,9 @@ fn interrupted_sdk_replay_blocks_uncertain_effect_with_fresh_output_root() {
     let mut preparation = request.clone();
     preparation.mode = ReplayMode::PrepareOnly;
     preparation.run_id = Some("prepare-only".into());
-    assert_eq!(execute(preparation).unwrap().exit_code, 0);
+    assert_eq!(PlaybackRequest::execute(preparation).unwrap().exit_code, 0);
     assert!(!marker.exists());
-    let first = execute(request.clone()).unwrap();
+    let first = PlaybackRequest::execute(request.clone()).unwrap();
     assert_eq!(first.exit_code, 31);
     assert!(!first.result.retryable);
     assert_eq!(
@@ -106,10 +108,10 @@ fn interrupted_sdk_replay_blocks_uncertain_effect_with_fresh_output_root() {
     assert!(!first_journal.contains("tool_started"));
     request.output_dir = root.join("output-2");
     let rejected_output = request.output_dir.join("same-run");
-    let second = execute(request).unwrap_err();
+    let second = PlaybackRequest::execute(request).unwrap_err();
     assert_eq!(
         second.kind,
-        pvisor_replay::ReplayErrorKind::AmbiguousExecution
+        pvisor_replay::api::ReplayErrorKind::AmbiguousExecution
     );
     assert_eq!(fs::read_to_string(&marker).unwrap(), "effect\n");
     assert!(!rejected_output.exists());

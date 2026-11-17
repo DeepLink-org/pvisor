@@ -9,10 +9,9 @@ use axum::{
 };
 use futures_util::{StreamExt, poll, stream};
 use http_body_util::BodyExt;
-use pvisor_overlaynet::{
-    NetworkAccessRule, NetworkConfig, NetworkMode, NetworkPolicy, OverlayRequestContext,
-    OverlayServerState, OverlaySink, server::build_router,
-};
+use pvisor_core::network::{NetworkAccessRule, NetworkConfig, NetworkMode, NetworkPolicy};
+use pvisor_overlaynet::api::OverlayProxy;
+use pvisor_overlaynet::api::{OverlayRequestContext, OverlayServerState, OverlaySink};
 use std::{
     io,
     net::SocketAddr,
@@ -69,6 +68,20 @@ impl OverlaySink for LocalSink {
         };
         Ok(Response::new(body))
     }
+
+    fn download_wait(
+        &self,
+        _context: &pvisor_overlaynet::api::OverlayRequestContext<Self::RequestContext>,
+    ) -> anyhow::Result<Option<Box<dyn pvisor_overlaynet::api::DownloadWait>>> {
+        Ok(None)
+    }
+
+    fn observe(
+        &self,
+        _context: &pvisor_overlaynet::api::OverlayRequestContext<Self::RequestContext>,
+        _event: pvisor_overlaynet::api::ProxyEvent<'_>,
+    ) {
+    }
 }
 
 async fn request(router: &Router, path: &str) -> Response {
@@ -104,7 +117,7 @@ async fn recovery(real_time: bool) {
     })
     .unwrap();
     let active = Arc::new(AtomicUsize::new(0));
-    let router = build_router(OverlayServerState::new(
+    let router = OverlayProxy::into_router(OverlayServerState::new(
         Arc::new(pvisor_core::PolicyControlController),
         LocalSink(policy),
         active.clone(),

@@ -1,31 +1,16 @@
 //! Shared membership contract and Ethernet validation for host packet links.
-use crate::vm::guest_mac;
+
+use crate::api::PeerNetworkConfig;
+use crate::api::VmNetworkConfig;
+use crate::api::VmNetworkConfiguration;
 use smoltcp::wire::{
     ArpOperation, ArpPacket, EthernetFrame, EthernetProtocol, IpProtocol, Ipv4Packet,
 };
-use std::{net::Ipv4Addr, path::PathBuf};
+use std::net::Ipv4Addr;
 
 pub(crate) const FRAME_LIMIT: usize = 1514;
 pub(crate) const HEADER: usize = 36;
 pub(crate) const MAGIC: &[u8; 4] = b"PVN1";
-
-/// Explicit membership in a same-host IPv4 packet network.
-///
-/// Grants unicast IPv4 TCP/UDP/ICMP and targeted ARP between members, not
-/// arbitrary host access. The caller allocates addresses and hides the directory
-/// from guests. Unix directories must be owned and 0700; Windows directories
-/// must have a private caller/SYSTEM ACL inherited from the owning store.
-#[derive(Debug, Clone)]
-pub struct PeerNetworkConfig {
-    /// Existing canonical private host directory; different directories isolate networks.
-    pub directory: PathBuf,
-    /// Unique usable member address in the gateway's private IPv4 /24.
-    pub address: Ipv4Addr,
-    /// Router in the same /24, excluding network and broadcast addresses.
-    pub gateway: Ipv4Addr,
-    /// At most 16 network-local DNS names. Empty disables member-name DNS.
-    pub aliases: Vec<String>,
-}
 
 pub(crate) fn validate_config(config: &PeerNetworkConfig) -> anyhow::Result<()> {
     anyhow::ensure!(
@@ -100,7 +85,7 @@ pub(crate) fn valid_frame(frame: &[u8], source: Ipv4Addr, destination: Ipv4Addr)
     let Ok(ethernet) = EthernetFrame::new_checked(frame) else {
         return false;
     };
-    if ethernet.src_addr().0 != guest_mac(source) {
+    if ethernet.src_addr().0 != VmNetworkConfig::guest_mac(source) {
         return false;
     }
     match ethernet.ethertype() {
@@ -108,7 +93,7 @@ pub(crate) fn valid_frame(frame: &[u8], source: Ipv4Addr, destination: Ipv4Addr)
             let Ok(ip) = Ipv4Packet::new_checked(ethernet.payload()) else {
                 return false;
             };
-            ethernet.dst_addr().0 == guest_mac(destination)
+            ethernet.dst_addr().0 == VmNetworkConfig::guest_mac(destination)
                 && ip.verify_checksum()
                 && !ip.more_frags()
                 && ip.frag_offset() == 0
@@ -125,15 +110,15 @@ pub(crate) fn valid_frame(frame: &[u8], source: Ipv4Addr, destination: Ipv4Addr)
                 && arp.protocol_type() == EthernetProtocol::Ipv4
                 && arp.hardware_len() == 6
                 && arp.protocol_len() == 4
-                && arp.source_hardware_addr() == guest_mac(source)
+                && arp.source_hardware_addr() == VmNetworkConfig::guest_mac(source)
                 && match arp.operation() {
                     ArpOperation::Request => {
                         ethernet.dst_addr().is_broadcast()
-                            || ethernet.dst_addr().0 == guest_mac(destination)
+                            || ethernet.dst_addr().0 == VmNetworkConfig::guest_mac(destination)
                     }
                     ArpOperation::Reply => {
-                        ethernet.dst_addr().0 == guest_mac(destination)
-                            && arp.target_hardware_addr() == guest_mac(destination)
+                        ethernet.dst_addr().0 == VmNetworkConfig::guest_mac(destination)
+                            && arp.target_hardware_addr() == VmNetworkConfig::guest_mac(destination)
                     }
                     _ => false,
                 }

@@ -1,4 +1,5 @@
-use pvisor_replay::{AgentKind, AgentStatus, PlaybackRequest, ReplayMode, execute};
+use pvisor_replay::api::ReplayRequest;
+use pvisor_replay::api::{AgentKind, AgentStatus, PlaybackRequest, ReplayMode};
 use std::{
     fs,
     io::{Read, Write},
@@ -54,7 +55,7 @@ PY
                 + "\n",
         )
         .unwrap();
-        let report = execute(PlaybackRequest {
+        let report = PlaybackRequest::execute(PlaybackRequest {
             agent: AgentKind::Opencode,
             trajectory,
             after_step: 1,

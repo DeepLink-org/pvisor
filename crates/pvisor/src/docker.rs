@@ -8,6 +8,7 @@ use fs2::FileExt;
 use pvisor_guest::control::{
     self, Reply, Request, parse_signal as signal, read_frame, write_frame,
 };
+use pvisor_overlaynet::api::{EgressControl, VmNetworkConfiguration, VmNetworkRuntime};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
@@ -2200,7 +2201,7 @@ fn run_vm<Backing>(
                 .config
                 .peers
                 .as_ref()
-                .map_or(pvisor_overlaynet::vm::ROUTER_IPV4, |p| p.gateway),
+                .map_or(pvisor_overlaynet::api::ROUTER_IPV4, |p| p.gateway),
         )?;
         lowers.insert(0, resolver);
         // Opt-in only: this private generation is finished before VM entry and
@@ -2306,9 +2307,8 @@ fn run_vm<Backing>(
         });
     }
     let _network = if instance.config.network {
-        use pvisor_overlaynet::{
-            BandwidthRegistry, EgressContext, EgressRuntime,
-            vm::{VmNetwork, VmNetworkConfig},
+        use pvisor_overlaynet::api::{
+            BandwidthRegistry, EgressContext, EgressRuntime, VmNetwork, VmNetworkConfig,
         };
         let policy = pvisor_core::network::NetworkPolicy::compile(&Default::default())?;
         let egress = if instance.config.peers.is_some() {
@@ -2336,13 +2336,19 @@ fn run_vm<Backing>(
         let address = config
             .peer_network
             .as_ref()
-            .map_or(pvisor_overlaynet::vm::GUEST_IPV4, |peer| peer.address);
+            .map_or(pvisor_overlaynet::api::GUEST_IPV4, |peer| peer.address);
         let gateway = config
             .peer_network
             .as_ref()
-            .map_or(pvisor_overlaynet::vm::ROUTER_IPV4, |p| p.gateway);
-        let (network, stream) = VmNetwork::start(config)?;
-        vm.network(stream, pvisor_overlaynet::vm::guest_mac(address))?;
+            .map_or(pvisor_overlaynet::api::ROUTER_IPV4, |p| p.gateway);
+        let (transport, stream) = std::os::unix::net::UnixStream::pair()?;
+        transport.set_nonblocking(true)?;
+        let network =
+            VmNetwork::start_with_io(config, move || tokio::net::UnixStream::from_std(transport))?;
+        vm.network(
+            stream,
+            pvisor_overlaynet::api::VmNetworkConfig::guest_mac(address),
+        )?;
         guest.network = Some(pvisor_guest::NetworkConfig {
             address: address.octets(),
             gateway: gateway.octets(),
@@ -2598,7 +2604,7 @@ mod tests {
                 sys::set_xattr(&rootfs.join("etc"), key, b"234:567:040710", 0).unwrap();
             }
             let resolver = temporary.path().join(format!("resolver-{custom}"));
-            prepare_resolver(&rootfs, &resolver, pvisor_overlaynet::vm::ROUTER_IPV4).unwrap();
+            prepare_resolver(&rootfs, &resolver, pvisor_overlaynet::api::ROUTER_IPV4).unwrap();
             let root = UnixIdentity::parse(&sys::get_xattr(&resolver, key).unwrap()).unwrap();
             let etc =
                 UnixIdentity::parse(&sys::get_xattr(&resolver.join("etc"), key).unwrap()).unwrap();

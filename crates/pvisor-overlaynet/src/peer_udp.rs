@@ -1,11 +1,12 @@
 //! Private, generation-authenticated loopback datagrams for Windows peers.
 //! Packet rules are shared with Unix; neither host UDP endpoints nor membership
 //! nonces are exposed to guests. The caller owns the directory's private ACL.
+use crate::api::VmNetworkConfig;
+use crate::api::{PeerNetworkConfig, VmNetworkConfiguration};
 use crate::{
     interception::InterceptionMetrics,
     peer_protocol::{
-        FRAME_LIMIT, HEADER, MAGIC, PeerNetworkConfig, frame_addresses, member_address,
-        reserved_frame, valid_frame,
+        FRAME_LIMIT, HEADER, MAGIC, frame_addresses, member_address, reserved_frame, valid_frame,
     },
 };
 use anyhow::{Context, ensure};
@@ -312,7 +313,9 @@ mod tests {
     fn arp(source: Ipv4Addr, destination: Ipv4Addr) -> Vec<u8> {
         let mut bytes = vec![0; 42];
         let mut frame = EthernetFrame::new_unchecked(&mut bytes);
-        frame.set_src_addr(smoltcp::wire::EthernetAddress(crate::vm::guest_mac(source)));
+        frame.set_src_addr(smoltcp::wire::EthernetAddress(VmNetworkConfig::guest_mac(
+            source,
+        )));
         frame.set_dst_addr(smoltcp::wire::EthernetAddress::BROADCAST);
         frame.set_ethertype(EthernetProtocol::Arp);
         let mut arp = ArpPacket::new_unchecked(frame.payload_mut());
@@ -321,7 +324,7 @@ mod tests {
         arp.set_hardware_len(6);
         arp.set_protocol_len(4);
         arp.set_operation(ArpOperation::Request);
-        arp.set_source_hardware_addr(&crate::vm::guest_mac(source));
+        arp.set_source_hardware_addr(&VmNetworkConfig::guest_mac(source));
         arp.set_source_protocol_addr(&source.octets());
         arp.set_target_hardware_addr(&[0; 6]);
         arp.set_target_protocol_addr(&destination.octets());

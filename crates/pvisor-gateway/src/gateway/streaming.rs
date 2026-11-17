@@ -1,5 +1,6 @@
 //! SSE streaming upstream response: translate, forward, and capture the final response.
 
+use pvisor_overlaynet::api::ForwardingHeaders;
 use std::sync::Arc;
 
 use axum::body::Body;
@@ -16,7 +17,6 @@ use crate::conversion::{MAX_STREAM_CAPTURE_BYTES, ProtocolBridge, StreamTranslat
 use crate::engine::{CallContext, CancelEvent, CompleteEvent, Event, headers_to_vec};
 use crate::model_wait::ModelStreamEvent;
 use crate::runtime::debug;
-use pvisor_overlaynet::headers::skip_response_header_after_reframing;
 
 /// Bounded queue between upstream reader and client SSE writer (backpressure).
 const STREAM_CLIENT_QUEUE: usize = 256;
@@ -298,7 +298,11 @@ pub(super) async fn streaming_llm_response(
     // content length never cross that boundary; translated streams additionally
     // replace stale encoding and media type metadata.
     for (name, value) in resp_headers.iter() {
-        if skip_response_header_after_reframing(&resp_headers, name.as_str(), translate) {
+        if ForwardingHeaders::skip_response_header_after_reframing(
+            &resp_headers,
+            name.as_str(),
+            translate,
+        ) {
             continue;
         }
         builder = builder.header(name, value);

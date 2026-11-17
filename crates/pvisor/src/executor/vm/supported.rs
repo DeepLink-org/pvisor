@@ -19,6 +19,7 @@ use pvisor_core::{
     RunFailureKind, RunInvocation, RunState,
 };
 use pvisor_journal::api::{DurableFiles, Persistence};
+use pvisor_overlaynet::api::VmNetworkConfiguration;
 use pvisor_vm::api::{RamDedupControl, SnapshotControl, VmControl};
 use pvisor_vm::api::{RuntimeSupport, VmConfiguration, VmRuntime};
 use serde::{Deserialize, Serialize};
@@ -1265,7 +1266,7 @@ impl RunExecutor for VmExecutor {
         let vm_network_enabled = network_config.is_some();
         let router = network_config
             .as_ref()
-            .map_or(pvisor_overlaynet::vm::ROUTER_IPV4, |network| {
+            .map_or(pvisor_overlaynet::api::ROUTER_IPV4, |network| {
                 std::net::Ipv4Addr::from(network.gateway)
             });
         if let Err(error) = prepare_network_resolver(
@@ -2767,7 +2768,7 @@ fn run_linked_krun(
         }
         vm.network(
             unsafe { std::os::unix::net::UnixStream::from_raw_fd(fd) },
-            pvisor_overlaynet::vm::guest_mac(std::net::Ipv4Addr::from(
+            pvisor_overlaynet::api::VmNetworkConfig::guest_mac(std::net::Ipv4Addr::from(
                 guest
                     .network
                     .as_ref()
@@ -3341,8 +3342,8 @@ fn guest_config(
         workspace,
         limits: rlimits,
         network: network.then(|| pvisor_guest::NetworkConfig {
-            address: pvisor_overlaynet::vm::GUEST_IPV4.octets(),
-            gateway: pvisor_overlaynet::vm::ROUTER_IPV4.octets(),
+            address: pvisor_overlaynet::api::GUEST_IPV4.octets(),
+            gateway: pvisor_overlaynet::api::ROUTER_IPV4.octets(),
         }),
         agent: None,
         sidecars: Vec::new(),
@@ -3524,7 +3525,7 @@ mod tests {
                 &mut overlay,
                 temp.path(),
                 enabled,
-                pvisor_overlaynet::vm::ROUTER_IPV4,
+                pvisor_overlaynet::api::ROUTER_IPV4,
             )
             .unwrap();
             let mut after = VmBuilder::new(1, 128).unwrap();
@@ -3584,7 +3585,7 @@ mod tests {
                 &mut overlay,
                 temp.path(),
                 false,
-                pvisor_overlaynet::vm::ROUTER_IPV4,
+                pvisor_overlaynet::api::ROUTER_IPV4,
             )
             .unwrap();
             assert!(
@@ -3592,7 +3593,7 @@ mod tests {
                     &mut overlay,
                     temp.path(),
                     true,
-                    pvisor_overlaynet::vm::ROUTER_IPV4
+                    pvisor_overlaynet::api::ROUTER_IPV4
                 )
                 .is_err()
             );

@@ -12,14 +12,14 @@ use pvisor_core::NetworkAccessRequest;
 use tokio::net::lookup_host;
 use tokio::time::timeout;
 
-use crate::policy::{DenyReason, NetworkPolicy};
+use pvisor_core::network::{DenyReason, NetworkPolicy};
 
 const DNS_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Debug, Clone)]
 pub(crate) struct AuthorizedTarget {
-    pub host: String,
-    pub addresses: Vec<SocketAddr>,
+    pub(crate) host: String,
+    pub(crate) addresses: Vec<SocketAddr>,
 }
 
 #[derive(Debug)]
@@ -183,7 +183,8 @@ use pvisor_core::is_host_connector_alias;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::policy::{NetworkConfig, NetworkMode};
+    use pvisor_core::network::{NetworkConfig, NetworkMode};
+
     use proptest::prelude::*;
     use pvisor_core::{ControlReason, ControlRequest, ControlTransition, PolicyControlController};
     use pvisor_core::{NetworkAccessRule, NetworkTransport};

@@ -615,7 +615,7 @@ impl PVisor {
         let mut network = self.runtime.resolve_network_config(&spec);
         spec.capabilities.network = spec
             .policies
-            .network(pvisor_overlaynet::policy::network_capability(&network));
+            .network(pvisor_core::network::network_capability(&network));
         network.capability = Some(spec.capabilities.network.clone());
         let network_policy =
             pvisor_core::NetworkPolicy::compile(&network).map_err(PVisorError::Prepare)?;
@@ -1210,8 +1210,8 @@ mod tests {
             .storage(storage.path())
             .network(NetworkDriverConfig::new(
                 crate::OverlayNetMode::Proxy,
-                pvisor_overlaynet::NetworkConfig {
-                    mode: pvisor_overlaynet::NetworkMode::NoNetwork,
+                pvisor_core::network::NetworkConfig {
+                    mode: pvisor_core::network::NetworkMode::NoNetwork,
                     ..Default::default()
                 },
             ))

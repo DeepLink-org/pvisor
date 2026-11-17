@@ -72,13 +72,15 @@ use std::sync::Arc;
 use anyhow::{Context, bail};
 use clap::{Args, ValueEnum};
 use pvisor_core::gateway::{CaptureLevel, ModelRoute};
+use pvisor_core::network::{NetworkAccessRule, NetworkBandwidthLimit};
 use pvisor_core::{
     FilesystemAccess, FilesystemCapability, PolicyMode, RunInvocation, RunSpec, RunState, StdioMode,
 };
 #[cfg(feature = "gateway")]
 use pvisor_gateway::config::{OverlayConfig, ProxyConfig};
-use pvisor_overlaynet::{NetworkAccessRule, NetworkBandwidthLimit};
-use pvisor_overlaynet::{NetworkConfig, NetworkMode};
+
+use pvisor_core::network::{NetworkConfig, NetworkMode};
+
 use serde::Deserialize;
 
 use pvisor::{

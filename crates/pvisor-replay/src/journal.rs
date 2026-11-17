@@ -1,5 +1,6 @@
 //! Replay safety observations use the shared fact journal.
-use crate::error::{ReplayError, ReplayErrorKind, ResultExt};
+use crate::api::{ReplayError, ReplayErrorKind};
+use crate::error::ResultExt;
 use fs2::FileExt;
 use pvisor_core::event::Fact;
 use pvisor_journal::api::{JournalStore, Trace, TraceProducer};
@@ -9,14 +10,14 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 
-pub struct Journal {
+pub(crate) struct Journal {
     _lock: File,
     trace: Trace,
     cause: Option<String>,
-    pub path: PathBuf,
+    pub(crate) path: PathBuf,
 }
 impl Journal {
-    pub fn open(state_dir: &Path) -> Result<Self, ReplayError> {
+    pub(crate) fn open(state_dir: &Path) -> Result<Self, ReplayError> {
         fs::create_dir_all(state_dir)
             .replay_context(ReplayErrorKind::Executor, "create replay state")?;
         let lock = OpenOptions::new()
@@ -57,7 +58,7 @@ impl Journal {
             path,
         })
     }
-    pub fn append(
+    pub(crate) fn append(
         &mut self,
         name: &str,
         fields: impl IntoIterator<Item = (String, Value)>,

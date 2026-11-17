@@ -1,3 +1,4 @@
+use crate::api::AgentProfile;
 use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::fs;
@@ -6,16 +7,17 @@ use std::process::Command;
 
 use serde::Deserialize;
 
-use crate::error::{ReplayError, ReplayErrorKind, ResultExt};
+use crate::api::{AgentKind, PlaybackRequest, ReplayMode};
+use crate::api::{ReplayError, ReplayErrorKind};
+use crate::error::ResultExt;
 use crate::io::{canonicalize, read_regular_file};
-use crate::model::{AgentKind, PlaybackRequest, ReplayMode};
 
 #[derive(Debug, Clone)]
 pub(crate) struct LaunchSpec {
-    pub entrypoint: PathBuf,
-    pub version: String,
-    pub source: String,
-    pub runtime_root: Option<PathBuf>,
+    pub(crate) entrypoint: PathBuf,
+    pub(crate) version: String,
+    pub(crate) source: String,
+    pub(crate) runtime_root: Option<PathBuf>,
 }
 
 pub(crate) fn resolve_launch_spec(
@@ -281,8 +283,8 @@ fn parse_version(agent: AgentKind, rendered: &str) -> Option<&'static str> {
 
 #[derive(Debug)]
 pub(super) struct PiNodeRuntime {
-    pub node: PathBuf,
-    pub package_json: PathBuf,
+    pub(crate) node: PathBuf,
+    pub(crate) package_json: PathBuf,
 }
 
 pub(super) fn pi_node_runtime(entrypoint: &Path) -> Result<PiNodeRuntime, ReplayError> {
@@ -310,10 +312,10 @@ pub(super) fn pi_node_runtime(entrypoint: &Path) -> Result<PiNodeRuntime, Replay
 
 #[derive(Debug)]
 pub(super) struct MiniPythonRuntime {
-    pub python: PathBuf,
-    pub loader: Option<PathBuf>,
-    pub python_home: Option<PathBuf>,
-    pub virtual_env: Option<PathBuf>,
+    pub(crate) python: PathBuf,
+    pub(crate) loader: Option<PathBuf>,
+    pub(crate) python_home: Option<PathBuf>,
+    pub(crate) virtual_env: Option<PathBuf>,
     library_paths: Vec<PathBuf>,
 }
 
@@ -457,7 +459,7 @@ mod tests {
     use super::{
         configure_mini_python_environment, mini_python_runtime, parse_version, resolve_launch_spec,
     };
-    use crate::model::{AgentKind, PlaybackRequest, ReplayMode};
+    use crate::api::{AgentKind, PlaybackRequest, ReplayMode};
 
     #[test]
     fn mini_version_probe_accepts_exact_banner_before_config_noise() {

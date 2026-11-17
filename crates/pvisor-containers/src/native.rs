@@ -5,6 +5,7 @@ use crate::{
 };
 use anyhow::{Context, bail, ensure};
 use pvisor_guest::control::{self, Reply, Request, read_frame, write_frame};
+use pvisor_overlaynet::api::{EgressControl, VmNetworkConfiguration, VmNetworkRuntime};
 use pvisor_vm::api::{VmBuilder, VmConfiguration, VmRuntime};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -1117,9 +1118,9 @@ fn runner(store: Store, id: &str, generation: &str) -> anyhow::Result<()> {
     }
     let mut vm = VmBuilder::new(r.request.cpus, r.request.memory_mib)?;
     let _network = if r.info.network == Network::Bridge {
-        use pvisor_overlaynet::{
-            BandwidthRegistry, EgressContext, EgressRuntime, PeerNetworkConfig,
-            vm::{VmNetwork, VmNetworkConfig},
+        use pvisor_overlaynet::api::{
+            BandwidthRegistry, EgressContext, EgressRuntime, PeerNetworkConfig, VmNetwork,
+            VmNetworkConfig,
         };
         use std::os::windows::io::IntoRawHandle;
         let address = r.info.ipv4.context("bridge instance has no address")?;
@@ -1127,7 +1128,7 @@ fn runner(store: Store, id: &str, generation: &str) -> anyhow::Result<()> {
         ipc::private_directory(&networks)?;
         let authority = networks.join("bridge");
         ipc::private_directory(&authority)?;
-        let policy = pvisor_overlaynet::NetworkPolicy::compile(&Default::default())?;
+        let policy = pvisor_core::network::NetworkPolicy::compile(&Default::default())?;
         let egress = EgressRuntime::for_peer_network(policy, BandwidthRegistry::default())?;
         let mut config = VmNetworkConfig::new(
             egress,
@@ -1148,7 +1149,10 @@ fn runner(store: Store, id: &str, generation: &str) -> anyhow::Result<()> {
                 backend.into_raw_handle(),
             )
         })?;
-        vm.network(guest, pvisor_overlaynet::vm::guest_mac(address))?;
+        vm.network(
+            guest,
+            pvisor_overlaynet::api::VmNetworkConfig::guest_mac(address),
+        )?;
         Some(network)
     } else {
         None

@@ -131,9 +131,52 @@ HTTP transport, upstream read timeout or network reconnect.
 - [`pvisor-gateway`](../pvisor-gateway/README.md)
 - [`pvisor-core`](../pvisor-core/README.md)
 
+## Public API boundary
+
+Callers import only `pvisor_overlaynet::api`. That file owns configuration,
+coverage and request records, plus the method declarations for proxy, egress,
+VM transport and header safety. Opaque owners keep policy cells, counters,
+admission slots, sockets and worker state private. Core network policy records
+come directly from `pvisor_core::network`; OverlayNet does not re-export them.
+
+Use `OverlayProxy` to construct `OverlayServerState` and consume it with
+`into_router`. `OverlaySink` explicitly implements forwarding selection,
+download hooks and one `observe(ProxyEvent)` callback. `EgressControl` constructs and updates
+egress owners; `InterceptionCoverage` and `InterceptionObservation` describe
+coverage and sample shared counters. Read enforcement strength from the profile;
+derive every guest MAC through `VmNetworkConfiguration::guest_mac`.
+`ForwardingHeaders` operates on `HeaderMap`.
+
+`VmNetworkConfiguration` constructs configuration and derives guest MACs.
+`VmNetworkRuntime::start_with_io` adopts an exclusively owned asynchronous
+transport on the worker runtime. Unix callers create their socket pair and retain
+the guest endpoint; Windows callers retain their named-pipe peer. Explicit
+`shutdown` cancels and joins the worker and reports its result; drop joins without
+reporting failures. Public declarations are identical on supported platforms.
+
+`tests/api_contract.rs` exercises construction, validation, transport ownership,
+failure cleanup, shutdown and header filtering through this entry point.
+`tests/api_boundary.rs` rejects extra exports, public implementation state,
+inherent public methods, API bodies, conditional API declarations and undeclared
+imports in platform-specific callers. Existing
+proxy, DNS and peer tests use the same public contracts.
+
+Validation: `mise run test -- pvisor-overlaynet`,
+`mise run test-doc -- pvisor-overlaynet`, and
+`RUSTDOCFLAGS='-D warnings' cargo doc --locked -p pvisor-overlaynet --no-deps`.
+
+| Contract | External API coverage |
+| --- | --- |
+| Configuration/records | `api_contract`: defaults, old serialized records, addressing, peer authority and zero-capacity rejection before adoption |
+| Resource ownership | `api_contract`: failed transport adoption, endpoint release, explicit/drop shutdown and malformed-frame worker failure |
+| Proxy observations | `proxy_observation`: denial, dispatch, response and failure contents/order through the single observer |
+| Forwarding/lifecycle | `stream_recovery`, `bandwidth_lifecycle`: admission permits, cancellation, body errors and shared budgets; Gateway integration tests cover protocol dispatch/download hooks |
+| Peer/DNS isolation | `peer_network`, `vm_dns`: unsafe membership, live policy replacement, framing, restart generations, process isolation and bounded failure recovery |
+| Exposure | `api_boundary`: exact behavior inventory, private state, no API bodies/conditionals, and declared imports across platform-specific callers |
+
 ## Optional Host download waits
 
-`OverlaySink::download_wait` defaults to no hook. After destination authorization,
+`OverlaySink::download_wait` explicitly returns `None` when no hook is needed. After destination authorization,
 GET forwarding and established CONNECT downstream reads may report `waiting`
 and must await `ready` before delivering data, EOF or errors. The owning lifecycle
 must fence and confirm native resume; transport silence alone is not guest idle.
@@ -147,8 +190,8 @@ not TLS termination or guest download execution. Disabled hooks retain forwardin
 caller-owned asynchronous duplex stream. Its factory runs inside the network
 runtime, so Windows can adopt an IOCP byte pipe without a second packet engine.
 Adoption errors are returned before startup succeeds; drop cancels and joins
-the driver. Unix `start` retains its socket-pair convenience API and delegates
-to the same implementation.
+the driver. Unix callers create a socket pair and adopt the backend endpoint
+through the same `start_with_io` contract.
 
 Windows peers use loopback UDP rather than Unix datagrams. The caller must
 supply a canonical, guest-excluded caller/SYSTEM-only directory with inherited
@@ -211,7 +254,7 @@ reported separately from proxy TCP flows and host-egress byte counters.
 `InterceptionProfile.peer_ipv4` reports runtime-installed peer coverage; `udp`
 still describes general host egress, which remains unsupported.
 
-`VmNetwork::start` requires `EgressRuntime::for_peer_network`, which constructs
+Peer membership with `VmNetwork::start_with_io` requires `EgressRuntime::for_peer_network`, which constructs
 default-controller egress and rejects a restrictive policy or bandwidth budget.
 The ordinary caller-supplied-controller constructor cannot admit peer membership. Live policy replacement closes both peer directions while
 restricted, with already-admitted frames retaining ordinary in-flight effects.

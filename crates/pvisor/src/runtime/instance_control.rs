@@ -21,6 +21,7 @@ use pvisor_core::host_protocol::{
 #[cfg(test)]
 use pvisor_core::operation::OperationKind;
 use pvisor_overlayfs::api::FilesystemMetrics;
+use pvisor_overlaynet::api::InterceptionObservation;
 use std::collections::HashMap;
 use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
@@ -54,7 +55,7 @@ pub(crate) struct Owner {
     record: Option<super::RunRecord>,
     endpoint: Option<super::host_transport::LiveControlRecord>,
     filesystem: Option<pvisor_overlayfs::api::FsMetrics>,
-    network: Option<pvisor_overlaynet::InterceptionMetrics>,
+    network: Option<pvisor_overlaynet::api::InterceptionMetrics>,
     mounts: Mutex<HashMap<String, InspectionMount>>,
     inspections_open: AtomicBool,
     capture_admission: Arc<tokio::sync::Semaphore>,
@@ -148,7 +149,7 @@ pub(crate) fn register(
     record: Option<super::RunRecord>,
     endpoint: Option<super::host_transport::LiveControlRecord>,
     filesystem: Option<pvisor_overlayfs::api::FsMetrics>,
-    network: Option<pvisor_overlaynet::InterceptionMetrics>,
+    network: Option<pvisor_overlaynet::api::InterceptionMetrics>,
 ) -> anyhow::Result<Registration> {
     let status = execution.status();
     let key = (

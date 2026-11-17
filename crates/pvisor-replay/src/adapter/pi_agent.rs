@@ -3,12 +3,12 @@ use std::collections::BTreeSet;
 use serde_json::{Value, json};
 
 use super::{RunContext, check_boundary, prepared_outcome, run_sdk_bridge};
-use crate::error::{ReplayError, ReplayErrorKind, ResultExt};
+use crate::api::{AgentKind, PlaybackRequest, ReplayMode};
+use crate::api::{ReplayError, ReplayErrorKind};
+use crate::error::ResultExt;
 use crate::io::{atomic_write, canonicalize, read_regular_file, sha256};
 use crate::journal::Journal;
-use crate::model::{
-    AgentKind, PlaybackRequest, ReplayMode, ReplayOutcome, ReplayPlan, ToolBatch, ToolCall,
-};
+use crate::model::{ReplayOutcome, ReplayPlan, ToolBatch, ToolCall};
 
 const SUPPORTED_TOOLS: &[&str] = &["read", "bash", "edit", "write"];
 

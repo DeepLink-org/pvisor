@@ -1,8 +1,15 @@
 # pVisor application frontends
 
+Network data-plane callers use `pvisor_overlaynet::api` and its declared traits;
+policy records remain owned by `pvisor_core::network`.
+
 `pvisor-cli` owns two executables: `pvisor` and
 `pvisor-replay`, with their argument parsing, terminal adapters, rendering and
 companion lookup.
+
+The replay frontend imports only `pvisor_replay::api` and its declared traits;
+one `ReplayRequest` trait owns JSON loading and execution. Error classification
+uses `ReplayErrorKind`; message and locations are read from the error record.
 
 ## Inspect VM availability
 

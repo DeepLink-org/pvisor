@@ -1,6 +1,6 @@
 //! Adapt capture configuration to overlaynet's egress policy.
 
-pub use pvisor_overlaynet::policy::*;
+use pvisor_core::network::PolicyConfig;
 
 use crate::config::ProxyConfig;
 

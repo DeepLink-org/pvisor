@@ -83,7 +83,7 @@ pub trait ModelWaitLifecycle: Send + Sync + Debug {
     /// Disabled by default. No client header enables it; CONNECT remains opaque.
     fn reserve_download(
         &self,
-    ) -> anyhow::Result<Option<Box<dyn pvisor_overlaynet::server::DownloadWait>>> {
+    ) -> anyhow::Result<Option<Box<dyn pvisor_overlaynet::api::DownloadWait>>> {
         Ok(None)
     }
 }

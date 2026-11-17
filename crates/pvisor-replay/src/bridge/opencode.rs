@@ -16,7 +16,8 @@
 use std::sync::{Arc, Mutex};
 
 use super::host::{self, BridgeHost, Cancellation, WorkerRuntime, merged_no_proxy_environment};
-use crate::error::{ReplayError, ReplayErrorKind, ResultExt};
+use crate::api::{ReplayError, ReplayErrorKind};
+use crate::error::ResultExt;
 use anyhow::Context;
 use axum::Router;
 use axum::body::{Body, Bytes};
@@ -29,8 +30,8 @@ use serde_json::Value;
 const BRIDGE_VERSION: &str = "sandbox-replay-opencode-responses-bridge/1";
 const MAX_BODY_BYTES: usize = 64 * 1024 * 1024;
 
-pub struct OpencodeBridgeHandle {
-    pub base_url: String,
+pub(crate) struct OpencodeBridgeHandle {
+    pub(crate) base_url: String,
     api_key: String,
     shared: Arc<BridgeShared>,
     host: BridgeHost,
@@ -71,7 +72,7 @@ impl OpencodeBridgeHandle {
     /// Start the bridge.  `strip_prompt` is the transport nonce to remove
     /// from every request; `None` keeps an explicit `boundary_user_prompt`
     /// in the model input on purpose.
-    pub fn start(
+    pub(crate) fn start(
         routing_session_id: &str,
         strip_prompt: Option<String>,
         temperature: Option<f64>,
@@ -126,7 +127,7 @@ impl OpencodeBridgeHandle {
     }
 
     /// Environment for the OpenCode child so it talks only to this bridge.
-    pub fn child_environment(&self) -> Vec<(String, String)> {
+    pub(crate) fn child_environment(&self) -> Vec<(String, String)> {
         let no_proxy = merged_no_proxy_environment();
         vec![
             ("OPENAI_BASE_URL".to_owned(), self.base_url.clone()),
@@ -137,7 +138,7 @@ impl OpencodeBridgeHandle {
         ]
     }
 
-    pub fn finish(mut self) -> Result<usize, ReplayError> {
+    pub(crate) fn finish(mut self) -> Result<usize, ReplayError> {
         self.host.stop()?;
         let state = self
             .shared

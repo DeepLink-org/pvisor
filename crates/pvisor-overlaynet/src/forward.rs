@@ -19,9 +19,9 @@ use crate::resolver::AuthorizedTarget;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ConnectTarget {
-    pub host: String,
-    pub port: u16,
-    pub authority: String,
+    pub(crate) host: String,
+    pub(crate) port: u16,
+    pub(crate) authority: String,
 }
 
 pub(crate) async fn handle_connect_authorized(
@@ -135,7 +135,7 @@ pub(crate) fn parse_connect_target(authority: &str) -> anyhow::Result<ConnectTar
     })
 }
 
-pub fn is_forward_proxy_request(method: &Method, uri: &Uri) -> bool {
+pub(crate) fn is_forward_proxy_request(method: &Method, uri: &Uri) -> bool {
     method == Method::CONNECT || uri.scheme().is_some()
 }
 
@@ -279,8 +279,8 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bandwidth::BandwidthRegistry;
-    use crate::policy::NetworkBandwidthLimit;
+    use crate::api::BandwidthRegistry;
+    use pvisor_core::network::NetworkBandwidthLimit;
 
     #[test]
     fn detects_explicit_proxy_requests() {
@@ -403,7 +403,8 @@ mod tests {
 #[cfg(test)]
 mod download_wait_tests {
     use super::*;
-    use crate::server::{DownloadGuard, DownloadWait};
+    use crate::api::DownloadWait;
+    use crate::server::DownloadGuard;
     use http_body_util::BodyExt;
     use std::sync::{
         Arc,

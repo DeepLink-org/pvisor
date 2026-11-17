@@ -7,10 +7,11 @@
 use std::path::{Path, PathBuf};
 
 use pvisor_core::gateway::{CaptureLevel, ModelRoute};
+use pvisor_core::network::{NetworkAccessRule, NetworkBandwidthLimit};
 use pvisor_core::{FilesystemCapability, ResourceLimits};
 #[cfg(feature = "gateway")]
 use pvisor_gateway::config::ProxyConfig;
-use pvisor_overlaynet::{NetworkAccessRule, NetworkBandwidthLimit};
+
 use serde::{Deserialize, Serialize};
 
 use crate::runtime::OverlayHint;
@@ -607,7 +608,7 @@ pub struct PeerNetworkSettings {
 }
 
 fn default_peer_gateway() -> std::net::Ipv4Addr {
-    pvisor_overlaynet::vm::ROUTER_IPV4
+    pvisor_overlaynet::api::ROUTER_IPV4
 }
 
 impl PeerNetworkSettings {
@@ -645,9 +646,9 @@ impl PeerNetworkSettings {
         Ok(())
     }
 
-    pub(crate) fn resolve(&self) -> anyhow::Result<pvisor_overlaynet::PeerNetworkConfig> {
+    pub(crate) fn resolve(&self) -> anyhow::Result<pvisor_overlaynet::api::PeerNetworkConfig> {
         self.validate()?;
-        Ok(pvisor_overlaynet::PeerNetworkConfig {
+        Ok(pvisor_overlaynet::api::PeerNetworkConfig {
             directory: crate::runtime::host_transport::peer_network_directory(&self.network)?,
             address: self.address,
             gateway: self.gateway,
@@ -872,7 +873,7 @@ pub struct NetworkDriverConfig {
     /// Explicit same-host VM network membership; disabled by default.
     pub peers: Option<PeerNetworkSettings>,
     pub mode: OverlayNetMode,
-    pub network: pvisor_overlaynet::NetworkConfig,
+    pub network: pvisor_core::network::NetworkConfig,
     pub listen: String,
 }
 
@@ -880,7 +881,7 @@ impl Default for NetworkDriverConfig {
     fn default() -> Self {
         Self {
             mode: OverlayNetMode::Auto,
-            network: pvisor_overlaynet::NetworkConfig::default(),
+            network: pvisor_core::network::NetworkConfig::default(),
             listen: "127.0.0.1:0".into(),
             peers: None,
         }
@@ -900,7 +901,7 @@ impl NetworkDriverConfig {
         self
     }
 
-    pub fn new(mode: OverlayNetMode, network: pvisor_overlaynet::NetworkConfig) -> Self {
+    pub fn new(mode: OverlayNetMode, network: pvisor_core::network::NetworkConfig) -> Self {
         Self {
             mode,
             network,
@@ -1414,7 +1415,7 @@ address = "192.0.2.11"
                 PeerNetworkSettings {
                     network: network.into(),
                     address: peer.address,
-                    gateway: pvisor_overlaynet::vm::ROUTER_IPV4,
+                    gateway: pvisor_overlaynet::api::ROUTER_IPV4,
                     aliases: vec![],
                 }
                 .validate()
@@ -1426,7 +1427,7 @@ address = "192.0.2.11"
                 PeerNetworkSettings {
                     network: "dev".into(),
                     address: address.parse().unwrap(),
-                    gateway: pvisor_overlaynet::vm::ROUTER_IPV4,
+                    gateway: pvisor_overlaynet::api::ROUTER_IPV4,
                     aliases: vec![],
                 }
                 .validate()

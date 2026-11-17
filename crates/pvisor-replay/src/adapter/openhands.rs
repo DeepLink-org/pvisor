@@ -10,12 +10,12 @@ use super::{
     LaunchSpec, MAX_TOOL_OUTPUT_BYTES, RunContext, agent_command, check_boundary, prepared_outcome,
     with_boundary_user_prompt_metadata,
 };
-use crate::error::{ReplayError, ReplayErrorKind, ResultExt};
+use crate::api::{PlaybackRequest, ReplayMode};
+use crate::api::{ReplayError, ReplayErrorKind};
+use crate::error::ResultExt;
 use crate::io::{atomic_write_json, canonicalize, read_regular_file, sha256};
 use crate::journal::Journal;
-use crate::model::{
-    FreshObservation, PlaybackRequest, ReplayMode, ReplayOutcome, ReplayPlan, ToolBatch, ToolCall,
-};
+use crate::model::{FreshObservation, ReplayOutcome, ReplayPlan, ToolBatch, ToolCall};
 use crate::process::{ProcessSpec, run_process};
 
 pub(super) fn execute(

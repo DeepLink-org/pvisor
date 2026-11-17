@@ -5,6 +5,36 @@ Replay preparation, tool execution and agent continuation for the
 workspace boundaries before continuation; protocol-specific adapters remain
 responsible for agent versions, history and resume semantics.
 
+## Public API
+
+Import contracts exclusively from `pvisor_replay::api`. `ReplayConfiguration`
+loads TOML and converts it into an owned `PlaybackRequest`; `ReplayRequest`
+loads versioned JSON and consumes the request with `execute`, returning
+an `ExecutionReport` or `ReplayError`. Import the traits to call their methods.
+`AgentProfile` provides adapter identity; `ReplayErrorClassification` classifies
+`ReplayErrorKind`. Read the error message and retained locations directly from
+`ReplayError`; no second accessor or classification path is exported. Public records and method declarations live
+in `api.rs`; adapters, validation, process supervision and journal ownership
+remain private. Root-level exports have been removed.
+
+Loading performs no workload execution. Replay execution requires caller-provided
+isolation, holds an exclusive state lock and refuses an existing output child.
+Errors can retain partial effects; unresolved start receipts block retry.
+The API declarations are uniform; native process supervision currently targets
+Unix hosts. Agent versions and external model acceptance require separate tests.
+
+`tests/api_boundary.rs` recursively rejects public implementation exports,
+undeclared inherent methods, conditional API declarations and API method bodies.
+External contracts exercise defaults, loading, validation, errors and execution
+through `api`; existing lifecycle and recovery tests use the same entry point.
+
+| Contract | External API coverage |
+| --- | --- |
+| Loading/defaults | `api_contract`: TOML unknown fields, absent files, JSON schema/agent/mode matrix; no workload or state publication |
+| Errors/adapters | `api_contract`: every error category, exit code and retry classification; all adapter names and versions; owned diagnostic locations |
+| Execution/lifecycle | `replay_contract`, `continuation_failures`, `sdk_recovery`: preparation, replay, continuation, durable admission, ambiguous effects, publication failures and cleanup |
+| Exposure | `api_boundary`: sole entry, private implementations, declaration-only API, uniform declarations and the exact public behavior inventory |
+
 ## Interrupted tool execution
 
 Replay admission holds an exclusive run lock and recovers incomplete journal
@@ -71,6 +101,7 @@ protocol-specific finish checks still decide continuation validity.
 
 ```sh
 mise run test -- pvisor-replay
+RUSTDOCFLAGS='-D warnings' mise exec -- cargo doc --locked -p pvisor-replay --no-deps
 ```
 
 Local fixtures cover protocol rewriting, credentials, stalled upstreams,

@@ -14,8 +14,8 @@ use serde_json::{Map, Value, json};
 use tokio::sync::Notify;
 
 use super::host::{self, BridgeHost, Cancellation, WorkerRuntime, merged_no_proxy_environment};
+use crate::api::{ReplayError, ReplayErrorKind};
 use crate::bridge::claude_resume::{ResumeTransportManifest, clean_resume_transport_envelope};
-use crate::error::{ReplayError, ReplayErrorKind};
 
 const BRIDGE_VERSION: &str = "sandbox-replay-anthropic-openai-bridge/1";
 const DEFAULT_MAX_OUTPUT_TOKENS: usize = 8192;
@@ -25,9 +25,9 @@ const DEFAULT_UPSTREAM_TIMEOUT_SECONDS: f64 = 300.0;
 const DEFAULT_RETRY_DELAYS_SECONDS: &[f64] = &[15.0, 30.0, 60.0];
 const RETRYABLE_UPSTREAM_STATUSES: &[u16] = &[408, 429, 500, 502, 503, 504];
 
-pub struct ClaudeBridgeHandle {
-    pub base_url: String,
-    pub api_key: String,
+pub(crate) struct ClaudeBridgeHandle {
+    pub(crate) base_url: String,
+    pub(crate) api_key: String,
     shared: Arc<BridgeShared>,
     host: BridgeHost,
 }
@@ -110,7 +110,7 @@ impl ResumeState {
 }
 
 impl ClaudeBridgeHandle {
-    pub fn start(
+    pub(crate) fn start(
         manifest: ResumeTransportManifest,
         routing_session_id: &str,
         disable_thinking: bool,
@@ -201,7 +201,7 @@ impl ClaudeBridgeHandle {
         })
     }
 
-    pub fn child_environment(&self) -> BTreeMap<String, String> {
+    pub(crate) fn child_environment(&self) -> BTreeMap<String, String> {
         let no_proxy = merged_no_proxy_environment();
         let mut environment = BTreeMap::from([
             ("ANTHROPIC_BASE_URL".into(), self.base_url.clone()),
@@ -219,7 +219,7 @@ impl ClaudeBridgeHandle {
         environment
     }
 
-    pub fn finish(mut self) -> Result<usize, ReplayError> {
+    pub(crate) fn finish(mut self) -> Result<usize, ReplayError> {
         self.host.stop()?;
         let state = self
             .shared

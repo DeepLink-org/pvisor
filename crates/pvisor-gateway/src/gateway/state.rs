@@ -7,7 +7,7 @@ use std::sync::atomic::AtomicUsize;
 use anyhow::Context;
 use axum::serve::ListenerExt;
 use pvisor_core::{ControlController, PolicyControlController};
-use pvisor_overlaynet::{BandwidthRegistry, InterceptionMetrics};
+use pvisor_overlaynet::api::{BandwidthRegistry, InterceptionMetrics};
 use tokio::task::JoinHandle;
 
 use super::admin::{AdminState, admin_router};

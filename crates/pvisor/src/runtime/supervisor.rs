@@ -68,21 +68,21 @@ fn vm_network_supported() -> bool {
 
 fn network_config_from_capability(
     capability: &NetworkCapability,
-) -> pvisor_overlaynet::NetworkConfig {
+) -> pvisor_core::network::NetworkConfig {
     use pvisor_core::NetworkDefaultAction;
-    use pvisor_overlaynet::NetworkMode;
+    use pvisor_core::network::NetworkMode;
 
     match capability {
         NetworkCapability::Scoped { .. } => pvisor_core::NetworkConfig {
             capability: Some(capability.clone()),
             ..Default::default()
         },
-        NetworkCapability::Ambient => pvisor_overlaynet::NetworkConfig::default(),
-        NetworkCapability::Deny => pvisor_overlaynet::NetworkConfig {
+        NetworkCapability::Ambient => pvisor_core::network::NetworkConfig::default(),
+        NetworkCapability::Deny => pvisor_core::network::NetworkConfig {
             mode: NetworkMode::NoNetwork,
             ..Default::default()
         },
-        NetworkCapability::AllowList { hosts, rules } => pvisor_overlaynet::NetworkConfig {
+        NetworkCapability::AllowList { hosts, rules } => pvisor_core::network::NetworkConfig {
             mode: NetworkMode::Allowlist,
             allowed_hosts: hosts.clone(),
             rules: rules.clone(),
@@ -93,7 +93,7 @@ fn network_config_from_capability(
             allow,
             deny,
             limits,
-        } => pvisor_overlaynet::NetworkConfig {
+        } => pvisor_core::network::NetworkConfig {
             capability: None,
             mode: match default_action {
                 NetworkDefaultAction::Allow => NetworkMode::Public,
@@ -444,7 +444,7 @@ impl RuntimeSupervisor {
 
     fn vm_network_options(
         &self,
-        mut network: pvisor_overlaynet::NetworkConfig,
+        mut network: pvisor_core::network::NetworkConfig,
         supervisor_limits: &[pvisor_core::NetworkBandwidthLimit],
         execution_id: &ExecutionId,
     ) -> super::drivers::VmNetworkPrepareOpts {
@@ -545,7 +545,7 @@ impl RuntimeSupervisor {
             );
             anyhow::ensure!(
                 supervisor_limits.is_empty()
-                    && pvisor_overlaynet::NetworkPolicy::compile(network)?
+                    && pvisor_core::network::NetworkPolicy::compile(network)?
                         .allows_unrestricted_packets(),
                 "peer networking requires unrestricted network policy without bandwidth limits"
             );
@@ -978,13 +978,13 @@ models = []
     #[cfg(feature = "gateway")]
     fn explicit_network_config_is_the_execution_policy_source() {
         let mut proxy = test_proxy();
-        proxy.network.mode = pvisor_overlaynet::NetworkMode::Public;
+        proxy.network.mode = pvisor_core::network::NetworkMode::Public;
         let supervisor = RuntimeSupervisorBuilder::new()
             .gateway(GatewayDriverConfig::new(proxy))
             .network(NetworkDriverConfig::new(
                 OverlayNetMode::Proxy,
-                pvisor_overlaynet::NetworkConfig {
-                    mode: pvisor_overlaynet::NetworkMode::NoNetwork,
+                pvisor_core::network::NetworkConfig {
+                    mode: pvisor_core::network::NetworkMode::NoNetwork,
                     ..Default::default()
                 },
             ))
@@ -994,7 +994,7 @@ models = []
         let network = supervisor.resolve_network_config(&spec);
 
         assert_eq!(
-            pvisor_overlaynet::policy::network_capability(&network),
+            pvisor_core::network::network_capability(&network),
             NetworkCapability::Deny
         );
     }
@@ -1008,7 +1008,7 @@ models = []
         let network = supervisor.resolve_network_config(&spec);
 
         assert_eq!(
-            pvisor_overlaynet::policy::network_capability(&network),
+            pvisor_core::network::network_capability(&network),
             NetworkCapability::Deny
         );
     }
@@ -1046,7 +1046,7 @@ models = []
             spec.capabilities.network = capability.clone();
             let config = supervisor.resolve_network_config(&spec);
             assert_eq!(
-                pvisor_overlaynet::policy::network_capability(&config),
+                pvisor_core::network::network_capability(&config),
                 capability
             );
         }
@@ -1158,7 +1158,7 @@ mod peer_admission_tests {
         NetworkDriverConfig::default().peer_network(Some(crate::PeerNetworkSettings {
             network: "test".into(),
             address: "192.0.2.11".parse().unwrap(),
-            gateway: pvisor_overlaynet::vm::ROUTER_IPV4,
+            gateway: pvisor_overlaynet::api::ROUTER_IPV4,
             aliases: vec![],
         }))
     }

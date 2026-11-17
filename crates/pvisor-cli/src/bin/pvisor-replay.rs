@@ -1,14 +1,14 @@
+use pvisor_replay::api::{ReplayConfiguration, ReplayErrorClassification, ReplayRequest};
 use std::io::Write;
 use std::path::PathBuf;
 use std::process::Command;
 use std::str::FromStr;
 
 use clap::Args;
-use pvisor_replay::{
+use pvisor_replay::api::{
     AgentKind, OverlayFsConfig as ReplayOverlayFsConfig,
     OverlayNetConfig as ReplayOverlayNetConfig, PlaybackRequest, RESULT_SCHEMA_VERSION,
-    ReplayConfig, ReplayError, ReplayMode, ReplayToml, RunConfig as ReplayRunConfig, execute,
-    request_from_json,
+    ReplayConfig, ReplayError, ReplayMode, ReplayToml, RunConfig as ReplayRunConfig,
 };
 use serde_json::json;
 
@@ -157,7 +157,7 @@ pub fn run(args: ReplayArgs) -> i32 {
             Ok(None) => {}
             Err(error) => {
                 print_error(&error);
-                return error.exit_code();
+                return error.kind.exit_code();
             }
         }
     }
@@ -166,11 +166,11 @@ pub fn run(args: ReplayArgs) -> i32 {
             Ok(code) => return code,
             Err(error) => {
                 print_error(&error);
-                return error.exit_code();
+                return error.kind.exit_code();
             }
         }
     }
-    match normalize(args).and_then(execute) {
+    match normalize(args).and_then(PlaybackRequest::execute) {
         Ok(report) => {
             println!(
                 "{}",
@@ -180,7 +180,7 @@ pub fn run(args: ReplayArgs) -> i32 {
         }
         Err(error) => {
             print_error(&error);
-            error.exit_code()
+            error.kind.exit_code()
         }
     }
 }
@@ -194,9 +194,8 @@ fn managed_if_requested(
     if !needs_managed_run(&config) {
         return Ok(None);
     }
-    let cwd = std::env::current_dir().map_err(|error| {
-        ReplayError::configuration(format!("cannot read current directory: {error}"))
-    })?;
+    let cwd = std::env::current_dir()
+        .map_err(|error| configuration_error(format!("cannot read current directory: {error}")))?;
     // Validate the inner replay contract before creating an outer Run.
     let _ = config.clone().into_request(&cwd)?;
     run_managed(&config).map(Some)
@@ -234,14 +233,14 @@ fn direct_managed_config(args: &ReplayArgs) -> Result<ReplayToml, ReplayError> {
     let agent = args
         .agent
         .clone()
-        .ok_or_else(|| ReplayError::configuration("direct CLI mode requires --agent"))?;
+        .ok_or_else(|| configuration_error("direct CLI mode requires --agent"))?;
     let trajectory = args
         .trajectory
         .clone()
-        .ok_or_else(|| ReplayError::configuration("direct CLI mode requires --trajectory"))?;
+        .ok_or_else(|| configuration_error("direct CLI mode requires --trajectory"))?;
     let after_step = args
         .after_step
-        .ok_or_else(|| ReplayError::configuration("direct CLI mode requires --after-step"))?;
+        .ok_or_else(|| configuration_error("direct CLI mode requires --after-step"))?;
     Ok(ReplayToml {
         replay: ReplayConfig {
             agent,
@@ -285,7 +284,7 @@ fn direct_managed_config(args: &ReplayArgs) -> Result<ReplayToml, ReplayError> {
 
 fn run_managed(config: &ReplayToml) -> Result<i32, ReplayError> {
     let executable = pvisor_cli::companions::core_executable().map_err(|error| {
-        ReplayError::configuration(format!("cannot resolve the pVisor executable: {error}"))
+        configuration_error(format!("cannot resolve the pVisor executable: {error}"))
     })?;
     let mut outer = PVisorRunConfig::default();
     if config.run.safe {
@@ -297,7 +296,7 @@ fn run_managed(config: &ReplayToml) -> Result<i32, ReplayError> {
         "container" => RunExecutorKind::Container,
         "vm" | "kvm" => RunExecutorKind::Vm,
         other => {
-            return Err(ReplayError::configuration(format!(
+            return Err(configuration_error(format!(
                 "unsupported run.executor {other:?}"
             )));
         }
@@ -307,7 +306,7 @@ fn run_managed(config: &ReplayToml) -> Result<i32, ReplayError> {
         "observe" => RunPolicy::Observe,
         "enforce" => RunPolicy::Enforce,
         other => {
-            return Err(ReplayError::configuration(format!(
+            return Err(configuration_error(format!(
                 "unsupported run.policy {other:?}"
             )));
         }
@@ -330,7 +329,7 @@ fn run_managed(config: &ReplayToml) -> Result<i32, ReplayError> {
             "apply" => PVisorOverlayFsCommit::Apply,
             "drop" => PVisorOverlayFsCommit::Drop,
             other => {
-                return Err(ReplayError::configuration(format!(
+                return Err(configuration_error(format!(
                     "unsupported overlayfs.commit {other:?}"
                 )));
             }
@@ -343,7 +342,7 @@ fn run_managed(config: &ReplayToml) -> Result<i32, ReplayError> {
             "off" => PVisorOverlayNetMode::Off,
             "proxy" => PVisorOverlayNetMode::Proxy,
             other => {
-                return Err(ReplayError::configuration(format!(
+                return Err(configuration_error(format!(
                     "unsupported overlaynet.mode {other:?}"
                 )));
             }
@@ -355,28 +354,24 @@ fn run_managed(config: &ReplayToml) -> Result<i32, ReplayError> {
             "deny" => PVisorOverlayNetPolicy::Deny,
             "allowlist" => PVisorOverlayNetPolicy::Allowlist,
             other => {
-                return Err(ReplayError::configuration(format!(
+                return Err(configuration_error(format!(
                     "unsupported overlaynet.policy {other:?}"
                 )));
             }
         };
     }
     let rendered = toml::to_string_pretty(&outer).map_err(|error| {
-        ReplayError::configuration(format!("serialize managed pVisor run config: {error}"))
+        configuration_error(format!("serialize managed pVisor run config: {error}"))
     })?;
     let mut file = tempfile::Builder::new()
         .prefix("pvisor-replay-managed-")
         .suffix(".toml")
         .tempfile()
-        .map_err(|error| {
-            ReplayError::configuration(format!("create managed run config: {error}"))
-        })?;
-    file.write_all(rendered.as_bytes()).map_err(|error| {
-        ReplayError::configuration(format!("write managed run config: {error}"))
-    })?;
-    file.flush().map_err(|error| {
-        ReplayError::configuration(format!("flush managed run config: {error}"))
-    })?;
+        .map_err(|error| configuration_error(format!("create managed run config: {error}")))?;
+    file.write_all(rendered.as_bytes())
+        .map_err(|error| configuration_error(format!("write managed run config: {error}")))?;
+    file.flush()
+        .map_err(|error| configuration_error(format!("flush managed run config: {error}")))?;
 
     let working_dir = config
         .replay
@@ -385,7 +380,7 @@ fn run_managed(config: &ReplayToml) -> Result<i32, ReplayError> {
         .map(Ok)
         .unwrap_or_else(std::env::current_dir)
         .map_err(|error| {
-            ReplayError::configuration(format!("resolve managed replay workspace: {error}"))
+            configuration_error(format!("resolve managed replay workspace: {error}"))
         })?;
     let mut command = Command::new(&executable);
     command.args(["spawn", "--config"]).arg(file.path());
@@ -393,9 +388,9 @@ fn run_managed(config: &ReplayToml) -> Result<i32, ReplayError> {
         command.arg("--safe");
     }
     command.current_dir(&working_dir);
-    let status = command.status().map_err(|error| {
-        ReplayError::configuration(format!("start managed pVisor replay: {error}"))
-    })?;
+    let status = command
+        .status()
+        .map_err(|error| configuration_error(format!("start managed pVisor replay: {error}")))?;
     Ok(status.code().unwrap_or(50))
 }
 
@@ -472,33 +467,32 @@ fn inner_replay_command(
 fn path_string(path: &std::path::Path) -> Result<String, ReplayError> {
     path.to_str()
         .map(str::to_owned)
-        .ok_or_else(|| ReplayError::configuration(format!("path is not UTF-8: {}", path.display())))
+        .ok_or_else(|| configuration_error(format!("path is not UTF-8: {}", path.display())))
 }
 
 fn normalize(args: ReplayArgs) -> Result<PlaybackRequest, ReplayError> {
-    let cwd = std::env::current_dir().map_err(|error| {
-        ReplayError::configuration(format!("cannot read current directory: {error}"))
-    })?;
+    let cwd = std::env::current_dir()
+        .map_err(|error| configuration_error(format!("cannot read current directory: {error}")))?;
     if let Some(config) = &args.config {
         reject_direct(&args)?;
         return ReplayToml::from_file(config)?.into_request(&cwd);
     }
     if let Some(request) = &args.request {
         reject_direct(&args)?;
-        return request_from_json(request);
+        return PlaybackRequest::from_json(request);
     }
     let agent = args
         .agent
         .as_deref()
-        .ok_or_else(|| ReplayError::configuration("direct CLI mode requires --agent"))?;
+        .ok_or_else(|| configuration_error("direct CLI mode requires --agent"))?;
     let trajectory = args
         .trajectory
-        .ok_or_else(|| ReplayError::configuration("direct CLI mode requires --trajectory"))?;
+        .ok_or_else(|| configuration_error("direct CLI mode requires --trajectory"))?;
     let after_step = args
         .after_step
-        .ok_or_else(|| ReplayError::configuration("direct CLI mode requires --after-step"))?;
+        .ok_or_else(|| configuration_error("direct CLI mode requires --after-step"))?;
     Ok(PlaybackRequest {
-        agent: AgentKind::from_str(agent).map_err(ReplayError::configuration)?,
+        agent: AgentKind::from_str(agent).map_err(configuration_error)?,
         trajectory,
         after_step,
         workspace: args.workspace.unwrap_or(cwd),
@@ -559,11 +553,19 @@ fn reject_direct(args: &ReplayArgs) -> Result<(), ReplayError> {
         || args.overlaynet.is_some()
         || args.overlaynet_policy.is_some();
     if direct {
-        return Err(ReplayError::configuration(
+        return Err(configuration_error(
             "--config/--request cannot be combined with direct replay options",
         ));
     }
     Ok(())
+}
+
+fn configuration_error(message: impl Into<String>) -> ReplayError {
+    ReplayError {
+        kind: pvisor_replay::api::ReplayErrorKind::Configuration,
+        message: message.into(),
+        locations: None,
+    }
 }
 
 fn print_error(error: &ReplayError) {
@@ -572,8 +574,15 @@ fn print_error(error: &ReplayError) {
 
 fn failure_json(error: &ReplayError) -> serde_json::Value {
     let (run_id, state_dir, output_dir) = error
-        .locations()
-        .map(|(run_id, state_dir, output_dir)| (json!(run_id), json!(state_dir), json!(output_dir)))
+        .locations
+        .as_ref()
+        .map(|locations| {
+            (
+                json!(locations.run_id),
+                json!(locations.state_dir),
+                json!(locations.output_dir),
+            )
+        })
         .unwrap_or((
             serde_json::Value::Null,
             serde_json::Value::Null,
@@ -732,11 +741,12 @@ allow_stale_observations = true
 
     #[test]
     fn failure_json_keeps_run_locations() {
-        let error = ReplayError::configuration("invalid request").with_locations(
-            "replay-1",
-            PathBuf::from("/state/replay-1"),
-            PathBuf::from("/output/replay-1"),
-        );
+        let mut error = configuration_error("invalid request");
+        error.locations = Some(pvisor_replay::api::ReplayLocations {
+            run_id: "replay-1".into(),
+            state_dir: PathBuf::from("/state/replay-1"),
+            output_dir: PathBuf::from("/output/replay-1"),
+        });
 
         let value = failure_json(&error);
 

@@ -1,5 +1,6 @@
 //! In-process Gateway for one pVisor Execution (no forked daemon).
 
+use pvisor_overlaynet::api::InterceptionObservation;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::thread::JoinHandle;
@@ -10,7 +11,7 @@ use anyhow::{Context, Result};
 use crate::config::ProxyConfig;
 use crate::sink::CaptureEventObserver;
 use pvisor_core::{ControlController, PolicyControlController};
-use pvisor_overlaynet::{BandwidthRegistry, InterceptionMetrics, InterceptionSnapshot};
+use pvisor_overlaynet::api::{BandwidthRegistry, InterceptionMetrics, InterceptionSnapshot};
 use tokio::sync::oneshot;
 
 pub struct InProcessCapture {

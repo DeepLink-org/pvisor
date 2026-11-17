@@ -1,3 +1,6 @@
+use pvisor_replay::api::AgentProfile;
+use pvisor_replay::api::ReplayErrorClassification;
+use pvisor_replay::api::ReplayRequest;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -5,7 +8,7 @@ use std::process::Command;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 
-use pvisor_replay::{AgentKind, AgentStatus, PlaybackRequest, ReplayMode, ReplayPhase, execute};
+use pvisor_replay::api::{AgentKind, AgentStatus, PlaybackRequest, ReplayMode, ReplayPhase};
 use serde_json::{Value, json};
 
 fn crate_path(relative: &str) -> PathBuf {
@@ -357,7 +360,7 @@ fn swe_max_steps_caps_total_actions() {
 #[test]
 fn openhands_replay_only_stops_at_boundary() {
     let temporary = tempfile::tempdir().unwrap();
-    let report = execute(openhands_request(
+    let report = PlaybackRequest::execute(openhands_request(
         temporary.path(),
         ReplayMode::ReplayOnly,
         1,
@@ -385,7 +388,7 @@ fn openhands_boundary_prompt_is_queued_after_the_replay_prefix() {
     let mut request = openhands_request(temporary.path(), ReplayMode::ReplayAndContinue, 2);
     request.boundary_user_prompt = Some("review O-prime N".into());
 
-    let report = execute(request).unwrap();
+    let report = PlaybackRequest::execute(request).unwrap();
 
     assert_eq!(report.exit_code, 0);
     let prepared: Value = serde_json::from_slice(
@@ -422,7 +425,7 @@ fn openhands_zero_exit_fatal_status_is_a_failed_result_with_trajectory() {
     let workspace = temporary.path().join("workspace");
     fs::create_dir_all(&workspace).unwrap();
     fs::write(workspace.join("fatal-mode"), "1\n").unwrap();
-    let report = execute(openhands_request(
+    let report = PlaybackRequest::execute(openhands_request(
         temporary.path(),
         ReplayMode::ReplayAndContinue,
         2,
@@ -522,8 +525,8 @@ fn corrupt_native_jsonl_rejects_without_consuming_a_run_then_repairs_cleanly() {
             damaged[observation_index] = corrupt.into();
             let damaged = damaged.join("\n") + "\n";
             fs::write(&trajectory, &damaged).unwrap();
-            let error = execute(request.clone()).unwrap_err();
-            assert_eq!(error.kind, pvisor_replay::ReplayErrorKind::Trajectory);
+            let error = PlaybackRequest::execute(request.clone()).unwrap_err();
+            assert_eq!(error.kind, pvisor_replay::api::ReplayErrorKind::Trajectory);
             assert!(
                 error
                     .message
@@ -542,7 +545,7 @@ fn corrupt_native_jsonl_rejects_without_consuming_a_run_then_repairs_cleanly() {
         // Repair only the input and explicitly retry the identical request.
         // Admission failures did not allocate a run or consume its output.
         fs::write(&trajectory, &original).unwrap();
-        let report = execute(request).unwrap();
+        let report = PlaybackRequest::execute(request).unwrap();
         assert_eq!(report.exit_code, 0, "{agent:?}: {:?}", report.result);
         assert_eq!(report.result.phase, ReplayPhase::Prepared);
         assert_eq!(report.result.agent_status, AgentStatus::NotStarted);
@@ -690,7 +693,7 @@ fn pi_replay_only_executes_native_tool_prefix_without_a_model_request() {
         boundary_user_prompt: None,
     };
 
-    let report = execute(request).unwrap();
+    let report = PlaybackRequest::execute(request).unwrap();
 
     assert_eq!(report.exit_code, 0, "{:#?}", report.result);
     assert_eq!(report.result.phase, ReplayPhase::Replayed);
@@ -739,7 +742,7 @@ fn native_jsonl_prepare_only_never_executes_tools_or_replaces_observations() {
                 + "\n",
         )
         .unwrap();
-        let report = execute(PlaybackRequest {
+        let report = PlaybackRequest::execute(PlaybackRequest {
             agent,
             trajectory,
             after_step: 1,
@@ -837,7 +840,7 @@ fn native_jsonl_replay_records_effects_and_preserves_uncertain_failures() {
                     + "\n",
             )
             .unwrap();
-            let report = execute(PlaybackRequest {
+            let report = PlaybackRequest::execute(PlaybackRequest {
                 agent,
                 trajectory,
                 after_step: 1,
@@ -939,7 +942,7 @@ fn reused_native_call_id_does_not_resolve_a_later_failed_operation() {
         disable_thinking: false,
         boundary_user_prompt: None,
     };
-    let report = execute(request.clone()).unwrap();
+    let report = PlaybackRequest::execute(request.clone()).unwrap();
     assert_eq!(
         fs::read_to_string(workspace.join("effect")).unwrap(),
         "effect"
@@ -966,10 +969,10 @@ fn reused_native_call_id_does_not_resolve_a_later_failed_operation() {
         .unwrap();
     request.output_dir = temporary.path().join("retry-output");
     for _ in 0..2 {
-        let error = execute(request.clone()).unwrap_err();
+        let error = PlaybackRequest::execute(request.clone()).unwrap_err();
         assert_eq!(
             error.kind,
-            pvisor_replay::ReplayErrorKind::AmbiguousExecution
+            pvisor_replay::api::ReplayErrorKind::AmbiguousExecution
         );
         assert!(error.message.contains("reused"));
         assert!(!request.output_dir.join("reused-call").exists());
@@ -1039,7 +1042,7 @@ fn publication_failure_preserves_completed_operation_counts_and_admission() {
             disable_thinking: false,
             boundary_user_prompt: None,
         };
-        let result = execute(request.clone());
+        let result = PlaybackRequest::execute(request.clone());
         assert_eq!(fs::read(workspace.join("effect")).unwrap(), b"xx");
         let journal =
             fs::read_to_string(request.state_dir.join("publication/replay-events.jsonl")).unwrap();
@@ -1047,10 +1050,10 @@ fn publication_failure_preserves_completed_operation_counts_and_admission() {
         assert!(journal.contains("\"name\":\"run_finished\""));
         if blocked == Some("result.json") {
             let error = result.unwrap_err();
-            assert_eq!(error.kind, pvisor_replay::ReplayErrorKind::Executor);
+            assert_eq!(error.kind, pvisor_replay::api::ReplayErrorKind::Executor);
             assert!(!error.kind.retryable());
             assert!(error.message.contains("result.json"));
-            assert_eq!(error.locations().unwrap().2, output);
+            assert_eq!(error.locations.as_ref().unwrap().output_dir, output);
             assert!(!output.join("result.json").is_file());
         } else {
             let report = result.unwrap();
@@ -1071,12 +1074,12 @@ fn publication_failure_preserves_completed_operation_counts_and_admission() {
             blocked.is_some()
         );
         // Reusing an allocated output never re-executes tools.
-        assert!(execute(request.clone()).is_err());
+        assert!(PlaybackRequest::execute(request.clone()).is_err());
         assert_eq!(fs::read(workspace.join("effect")).unwrap(), b"xx");
         // All tool receipts and the terminal run are durable: an explicit
         // rerun into a fresh output root is allowed, not an exactly-once API.
         request.output_dir = temporary.path().join("fresh-output");
-        let rerun = execute(request).unwrap();
+        let rerun = PlaybackRequest::execute(request).unwrap();
         assert_eq!(rerun.exit_code, 0);
         assert_eq!(rerun.result.replayed_tool_calls, 2);
         assert_eq!(fs::read(workspace.join("effect")).unwrap(), b"xxxx");
@@ -1135,7 +1138,7 @@ fn native_json_prepare_only_preserves_complete_batch_observations() {
         let trajectory = temporary.path().join("trajectory.json");
         let original = serde_json::to_vec(&source).unwrap();
         fs::write(&trajectory, &original).unwrap();
-        let report = execute(PlaybackRequest {
+        let report = PlaybackRequest::execute(PlaybackRequest {
             agent,
             trajectory: trajectory.clone(),
             after_step: 1,

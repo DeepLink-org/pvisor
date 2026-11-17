@@ -1,5 +1,6 @@
 //! Gateway admin HTTP API: status + session list.
 
+use pvisor_overlaynet::api::{InterceptionCoverage, InterceptionObservation};
 use std::sync::Arc;
 
 use axum::extract::State;
@@ -8,7 +9,7 @@ use axum::{Json, Router};
 use serde::Serialize;
 
 use crate::session::index::{SessionIndex, SessionIndexHandle};
-use pvisor_overlaynet::{InterceptionMetrics, InterceptionProfile, InterceptionSnapshot};
+use pvisor_overlaynet::api::{InterceptionMetrics, InterceptionProfile, InterceptionSnapshot};
 
 #[derive(Clone)]
 pub struct AdminState {
@@ -81,7 +82,10 @@ mod tests {
         assert_eq!(response.0.listen, "127.0.0.1:9875");
         assert_eq!(response.0.admin, "127.0.0.1:9876");
         assert_eq!(response.0.active_requests, 3);
-        assert!(!response.0.interception.is_enforcing());
+        assert!(
+            response.0.interception.strength
+                != pvisor_overlaynet::api::InterceptionStrength::NonBypassable
+        );
         assert_eq!(
             response.0.interception_metrics,
             InterceptionSnapshot::default()
