@@ -13,7 +13,7 @@ use chrono::Utc;
 use {
     super::models::{ClaimRecord, ClaimView},
     super::{CreateRequest, Daemon},
-    crate::runtime::RuntimeSpec,
+    crate::api::RuntimeSpec,
     chrono::Duration,
     sha2::{Digest, Sha256},
     std::sync::Arc,
@@ -125,7 +125,7 @@ fn view(record: &Record) -> ClaimView {
 pub(super) enum QueuedCreate {
     E2b {
         e2b_request: super::e2b::Create,
-        profile: crate::runtime::E2bTemplate,
+        profile: crate::api::E2bTemplate,
     },
     Open(CreateRequest),
 }
@@ -295,8 +295,8 @@ impl Daemon {
                     record.claim.as_mut().unwrap().error = Some(failure.clone());
                     record.sandbox.status.state = "Failed".into();
                     if error
-                        .downcast_ref::<crate::runtime::CreateError>()
-                        .is_some_and(|e| !e.requires_reconciliation())
+                        .downcast_ref::<crate::api::CreateError>()
+                        .is_some_and(|e| !e.requires_reconciliation)
                     {
                         record.claim.as_mut().unwrap().creation_result = Some(Err(failure.clone()));
                         tombstone(&mut record);

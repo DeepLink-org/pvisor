@@ -1,20 +1,19 @@
 //! Single-node ownership: durable sandbox intentions, bounded admission and
 //! runtime reconciliation. No Worker placement, DAG or distributed lease.
-pub mod api;
 mod claims;
 mod e2b;
+pub(crate) mod http;
 mod models;
 mod store;
 #[cfg(test)]
 mod tests;
 
-use crate::runtime::{Runtime, RuntimeSpec, RuntimeState};
+use crate::api::{Config, DaemonService, Runtime, RuntimeSpec, RuntimeState};
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
-pub use models::{ApiError, CreateRequest, EndpointResponse, RenewRequest, Sandbox, SandboxStatus};
+use models::{ApiError, CreateRequest, EndpointResponse, RenewRequest, Sandbox, SandboxStatus};
 use models::{Record, Registry};
 use std::{
     collections::BTreeMap,
-    path::PathBuf,
     sync::{Arc, Weak},
     time::Duration,
 };
@@ -23,20 +22,7 @@ use tokio::sync::{Mutex, RwLock, Semaphore};
 const MAX_PROXY_STREAMS: usize = 128;
 const BACKGROUND_CONCURRENCY: usize = 8;
 
-pub const OPENSANDBOX_VERSION: &str = "1.1.0";
-pub const OPENSANDBOX_COMMIT: &str = "b1a29cf93a823a95913f7943010febb3f29de05c";
-
-pub struct Config {
-    pub state_dir: PathBuf,
-    pub api_key: String,
-    /// Externally reachable authority (host:port), without a scheme or path.
-    pub public_endpoint: String,
-    pub max_sandboxes: usize,
-    pub cpu_millis: u64,
-    pub memory_bytes: u64,
-    pub max_timeout_seconds: u64,
-}
-
+/// Opaque node registry owner; native sandboxes survive its shutdown.
 pub struct Daemon {
     config: Config,
     store: Arc<store::Store>,
@@ -52,112 +38,7 @@ pub struct Daemon {
 }
 
 impl Daemon {
-    /// Factory receives the durable node owner. Native runtimes must fence every
-    /// operation against this owner, including after a daemon restart.
-    pub async fn open(
-        config: Config,
-        factory: impl FnOnce(String) -> anyhow::Result<Arc<dyn Runtime>>,
-    ) -> anyhow::Result<Arc<Self>> {
-        anyhow::ensure!(
-            config.api_key.len() >= 32,
-            "API key must contain at least 32 bytes"
-        );
-        anyhow::ensure!(
-            config.max_sandboxes > 0
-                && config.cpu_millis > 0
-                && config.memory_bytes > 0
-                && (60..=365 * 24 * 60 * 60).contains(&config.max_timeout_seconds),
-            "invalid node capacity or timeout limit"
-        );
-        let authority = url::Url::parse(&format!("http://{}", config.public_endpoint))?;
-        anyhow::ensure!(
-            authority.host_str().is_some()
-                && authority.username().is_empty()
-                && authority.password().is_none()
-                && authority.path() == "/"
-                && authority.query().is_none()
-                && authority.fragment().is_none(),
-            "public endpoint must be a host[:port] authority"
-        );
-        let (store, mut registry) = store::Store::open(&config.state_dir)?;
-        let runtime = factory(registry.owner.clone())?;
-        // The native factory must accept the legacy owner before migration can
-        // replace its occupied snapshot with an incremental-store header.
-        store.initialize(&mut registry)?;
-        runtime.preflight().await?;
-        let daemon = Arc::new(Self {
-            config,
-            store: Arc::new(store),
-            registry: Mutex::new(registry),
-            commits: Mutex::new(()),
-            operations: Mutex::new(BTreeMap::new()),
-            storage_failed: std::sync::atomic::AtomicBool::new(false),
-            #[cfg(test)]
-            reconciled: std::sync::atomic::AtomicBool::new(false),
-            runtime,
-            proxy_slots: Arc::new(Semaphore::new(MAX_PROXY_STREAMS)),
-            proxy: reqwest::Client::builder()
-                .no_proxy()
-                .no_gzip()
-                .no_brotli()
-                .no_deflate()
-                .no_zstd()
-                .redirect(reqwest::redirect::Policy::none())
-                .connect_timeout(Duration::from_secs(10))
-                // A recycled loopback port must not inherit another sandbox's connection.
-                .pool_max_idle_per_host(0)
-                .build()?,
-        });
-        let ids = daemon
-            .registry
-            .lock()
-            .await
-            .sandboxes
-            .keys()
-            .cloned()
-            .collect::<Vec<_>>();
-        let weak = Arc::downgrade(&daemon);
-        tokio::spawn(async move {
-            let mut ids = ids.into_iter();
-            let mut sessions = tokio::task::JoinSet::new();
-            loop {
-                while sessions.len() < BACKGROUND_CONCURRENCY {
-                    let Some(id) = ids.next() else {
-                        break;
-                    };
-                    let Some(this) = weak.upgrade() else {
-                        return;
-                    };
-                    sessions.spawn(async move {
-                        // Public lifecycle entry points detach accepted work: cancelling
-                        // this coordinator must not interrupt a disk commit.
-                        let outcome = match this.record(&id).await {
-                            Ok(record) if !record.publicly_visible() => Ok(()),
-                            Ok(record) if record.sandbox.status.state == "Stopping" => {
-                                this.delete(&id).await
-                            }
-                            Ok(_) => this.get(&id).await.map(|_| ()),
-                            Err(error) => Err(error),
-                        };
-                        if let Err(error) = outcome {
-                            eprintln!("sandbox {id} reconciliation deferred: {}", error.message);
-                        }
-                    });
-                }
-                if sessions.join_next().await.is_none() {
-                    break;
-                }
-            }
-            #[cfg(test)]
-            if let Some(this) = weak.upgrade() {
-                this.reconciled
-                    .store(true, std::sync::atomic::Ordering::Release);
-            }
-        });
-        Ok(daemon)
-    }
-
-    pub fn authorize(&self, headers: &axum::http::HeaderMap) -> bool {
+    pub(crate) fn authorize(&self, headers: &axum::http::HeaderMap) -> bool {
         if headers.get_all("OPEN-SANDBOX-API-KEY").iter().count() != 1 {
             return false;
         }
@@ -166,7 +47,7 @@ impl Daemon {
             .is_some_and(|key| secret_eq(key.as_bytes(), self.config.api_key.as_bytes()))
     }
 
-    pub async fn authorize_proxy(&self, id: &str, headers: &axum::http::HeaderMap) -> bool {
+    pub(crate) async fn authorize_proxy(&self, id: &str, headers: &axum::http::HeaderMap) -> bool {
         if headers.get_all("OPEN-SANDBOX-API-KEY").iter().count() > 1
             || headers.get_all("X-PVISOR-SANDBOX-TOKEN").iter().count() > 1
         {
@@ -183,7 +64,7 @@ impl Daemon {
         })
     }
 
-    pub fn proxy_client(&self) -> &reqwest::Client {
+    pub(crate) fn proxy_client(&self) -> &reqwest::Client {
         &self.proxy
     }
 
@@ -249,7 +130,7 @@ impl Daemon {
         Ok(lock)
     }
 
-    pub async fn proxy_guard(
+    pub(crate) async fn proxy_guard(
         &self,
         id: &str,
     ) -> Result<tokio::sync::OwnedRwLockReadGuard<()>, ApiError> {
@@ -319,7 +200,10 @@ impl Daemon {
     }
 
     /// A disconnected HTTP client must not cancel an accepted native operation.
-    pub async fn create(self: &Arc<Self>, request: CreateRequest) -> Result<Sandbox, ApiError> {
+    pub(crate) async fn create(
+        self: &Arc<Self>,
+        request: CreateRequest,
+    ) -> Result<Sandbox, ApiError> {
         let this = self.clone();
         tokio::spawn(async move { this.create_owned(request).await })
             .await
@@ -469,8 +353,8 @@ impl Daemon {
         }
         if let Err(error) = self.runtime.create(&spec).await {
             if error
-                .downcast_ref::<crate::runtime::CreateError>()
-                .is_some_and(|error| !error.requires_reconciliation())
+                .downcast_ref::<crate::api::CreateError>()
+                .is_some_and(|error| !error.requires_reconciliation)
             {
                 self.update(&id, |_| Ok((None, ()))).await?;
                 return Err(ApiError::new(
@@ -497,7 +381,7 @@ impl Daemon {
         self.transition(&id, "Running", None).await
     }
 
-    pub async fn list(&self) -> Result<Vec<Sandbox>, ApiError> {
+    pub(crate) async fn list(&self) -> Result<Vec<Sandbox>, ApiError> {
         self.ensure_storage()?;
         Ok(self
             .registry
@@ -510,7 +394,7 @@ impl Daemon {
             .collect())
     }
 
-    pub async fn get(self: &Arc<Self>, id: &str) -> Result<Sandbox, ApiError> {
+    pub(crate) async fn get(self: &Arc<Self>, id: &str) -> Result<Sandbox, ApiError> {
         let this = self.clone();
         let id = id.to_owned();
         tokio::spawn(async move { this.get_owned(&id).await })
@@ -566,10 +450,10 @@ impl Daemon {
         }
     }
 
-    pub async fn pause(self: &Arc<Self>, id: &str) -> Result<(), ApiError> {
+    pub(crate) async fn pause(self: &Arc<Self>, id: &str) -> Result<(), ApiError> {
         self.control(id, true).await
     }
-    pub async fn resume(self: &Arc<Self>, id: &str) -> Result<(), ApiError> {
+    pub(crate) async fn resume(self: &Arc<Self>, id: &str) -> Result<(), ApiError> {
         self.control(id, false).await
     }
 
@@ -651,7 +535,7 @@ impl Daemon {
         Ok(())
     }
 
-    pub async fn delete(self: &Arc<Self>, id: &str) -> Result<(), ApiError> {
+    pub(crate) async fn delete(self: &Arc<Self>, id: &str) -> Result<(), ApiError> {
         self.delete_conditionally(id, false).await
     }
 
@@ -718,7 +602,7 @@ impl Daemon {
         Ok(())
     }
 
-    pub async fn renew(
+    pub(crate) async fn renew(
         self: &Arc<Self>,
         id: &str,
         request: RenewRequest,
@@ -774,7 +658,7 @@ impl Daemon {
         .await
     }
 
-    pub async fn endpoint(
+    pub(crate) async fn endpoint(
         &self,
         id: &str,
         port: u16,
@@ -800,7 +684,7 @@ impl Daemon {
         })
     }
 
-    pub async fn upstream(&self, id: &str, port: u16) -> Result<String, ApiError> {
+    pub(crate) async fn upstream(&self, id: &str, port: u16) -> Result<String, ApiError> {
         let record = self.record(id).await?;
         let supported = if record.e2b.is_some() {
             port == crate::runtime::ENVD_PORT
@@ -830,9 +714,133 @@ impl Daemon {
             .await
             .map_err(|e| ApiError::new(503, "ENDPOINT_UNAVAILABLE", e.to_string()))
     }
+}
 
-    /// Bounded node inventory, not a distributed scheduling or lease loop.
-    pub fn start_maintenance(self: &Arc<Self>) -> tokio::task::JoinHandle<()> {
+fn check_expiration(deadline: Option<DateTime<Utc>>) -> Result<(), ApiError> {
+    if deadline.is_some_and(|deadline| deadline <= Utc::now()) {
+        Err(ApiError::new(409, "SANDBOX_EXPIRED", "sandbox has expired"))
+    } else {
+        Ok(())
+    }
+}
+
+fn secret_eq(left: &[u8], right: &[u8]) -> bool {
+    if left.len() != right.len() {
+        return false;
+    }
+    left.iter()
+        .zip(right)
+        .fold(0u8, |difference, (a, b)| difference | (a ^ b))
+        == 0
+}
+
+impl DaemonService for Daemon {
+    async fn open(
+        config: Config,
+        factory: impl FnOnce(String) -> anyhow::Result<Arc<dyn Runtime>>,
+    ) -> anyhow::Result<Arc<Self>> {
+        anyhow::ensure!(
+            config.api_key.len() >= 32,
+            "API key must contain at least 32 bytes"
+        );
+        anyhow::ensure!(
+            config.max_sandboxes > 0
+                && config.cpu_millis > 0
+                && config.memory_bytes > 0
+                && (60..=365 * 24 * 60 * 60).contains(&config.max_timeout_seconds),
+            "invalid node capacity or timeout limit"
+        );
+        let authority = url::Url::parse(&format!("http://{}", config.public_endpoint))?;
+        anyhow::ensure!(
+            authority.host_str().is_some()
+                && authority.username().is_empty()
+                && authority.password().is_none()
+                && authority.path() == "/"
+                && authority.query().is_none()
+                && authority.fragment().is_none(),
+            "public endpoint must be a host[:port] authority"
+        );
+        let (store, mut registry) = store::Store::open(&config.state_dir)?;
+        let runtime = factory(registry.owner.clone())?;
+        // The native factory must accept the legacy owner before migration can
+        // replace its occupied snapshot with an incremental-store header.
+        store.initialize(&mut registry)?;
+        runtime.preflight().await?;
+        let daemon = Arc::new(Self {
+            config,
+            store: Arc::new(store),
+            registry: Mutex::new(registry),
+            commits: Mutex::new(()),
+            operations: Mutex::new(BTreeMap::new()),
+            storage_failed: std::sync::atomic::AtomicBool::new(false),
+            #[cfg(test)]
+            reconciled: std::sync::atomic::AtomicBool::new(false),
+            runtime,
+            proxy_slots: Arc::new(Semaphore::new(MAX_PROXY_STREAMS)),
+            proxy: reqwest::Client::builder()
+                .no_proxy()
+                .no_gzip()
+                .no_brotli()
+                .no_deflate()
+                .no_zstd()
+                .redirect(reqwest::redirect::Policy::none())
+                .connect_timeout(Duration::from_secs(10))
+                // A recycled loopback port must not inherit another sandbox's connection.
+                .pool_max_idle_per_host(0)
+                .build()?,
+        });
+        let ids = daemon
+            .registry
+            .lock()
+            .await
+            .sandboxes
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+        let weak = Arc::downgrade(&daemon);
+        tokio::spawn(async move {
+            let mut ids = ids.into_iter();
+            let mut sessions = tokio::task::JoinSet::new();
+            loop {
+                while sessions.len() < BACKGROUND_CONCURRENCY {
+                    let Some(id) = ids.next() else {
+                        break;
+                    };
+                    let Some(this) = weak.upgrade() else {
+                        return;
+                    };
+                    sessions.spawn(async move {
+                        // Public lifecycle entry points detach accepted work: cancelling
+                        // this coordinator must not interrupt a disk commit.
+                        let outcome = match this.record(&id).await {
+                            Ok(record) if !record.publicly_visible() => Ok(()),
+                            Ok(record) if record.sandbox.status.state == "Stopping" => {
+                                this.delete(&id).await
+                            }
+                            Ok(_) => this.get(&id).await.map(|_| ()),
+                            Err(error) => Err(error),
+                        };
+                        if let Err(error) = outcome {
+                            eprintln!("sandbox {id} reconciliation deferred: {}", error.message);
+                        }
+                    });
+                }
+                if sessions.join_next().await.is_none() {
+                    break;
+                }
+            }
+            #[cfg(test)]
+            if let Some(this) = weak.upgrade() {
+                this.reconciled
+                    .store(true, std::sync::atomic::Ordering::Release);
+            }
+        });
+        Ok(daemon)
+    }
+    fn router(self: Arc<Self>) -> axum::Router {
+        http::router(self)
+    }
+    fn start_maintenance(self: &Arc<Self>) -> tokio::task::JoinHandle<()> {
         let weak = Arc::downgrade(self);
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_secs(1));
@@ -876,22 +884,4 @@ impl Daemon {
             }
         })
     }
-}
-
-fn check_expiration(deadline: Option<DateTime<Utc>>) -> Result<(), ApiError> {
-    if deadline.is_some_and(|deadline| deadline <= Utc::now()) {
-        Err(ApiError::new(409, "SANDBOX_EXPIRED", "sandbox has expired"))
-    } else {
-        Ok(())
-    }
-}
-
-fn secret_eq(left: &[u8], right: &[u8]) -> bool {
-    if left.len() != right.len() {
-        return false;
-    }
-    left.iter()
-        .zip(right)
-        .fold(0u8, |difference, (a, b)| difference | (a ^ b))
-        == 0
 }

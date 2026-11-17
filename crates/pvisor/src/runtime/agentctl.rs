@@ -14,14 +14,14 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs;
 use std::io::{BufRead, Read, Write};
 use std::net::Shutdown;
-use std::os::fd::AsRawFd;
+use std::os::fd::{AsRawFd, RawFd};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// Maximum live runtime Sessions accepted by one Run.
 pub const AGENTCTL_MAX_SESSIONS: usize = 64;
@@ -390,7 +390,7 @@ impl AgentCtlServer {
                                 };
                                 *active = Some(cancel);
                             }
-                            serve_connection(stream, &thread_state);
+                            serve_connection(stream, &thread_state, &thread_wake);
                             thread_active
                                 .lock()
                                 .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -471,6 +471,15 @@ impl Drop for AgentCtlServer {
 }
 
 fn wait_for_connection(listener: &UnixListener, wake: &UnixStream) -> std::io::Result<bool> {
+    wait_for_io(listener.as_raw_fd(), wake, libc::POLLIN, None)
+}
+
+fn wait_for_io(
+    fd: RawFd,
+    wake: &UnixStream,
+    events: i16,
+    deadline: Option<Instant>,
+) -> std::io::Result<bool> {
     let mut descriptors = [
         libc::pollfd {
             fd: wake.as_raw_fd(),
@@ -478,15 +487,24 @@ fn wait_for_connection(listener: &UnixListener, wake: &UnixStream) -> std::io::R
             revents: 0,
         },
         libc::pollfd {
-            fd: listener.as_raw_fd(),
-            events: libc::POLLIN,
+            fd,
+            events,
             revents: 0,
         },
     ];
     loop {
-        // Both descriptors remain owned by this thread throughout the blocking
-        // wait. No timeout: idle Executions generate no periodic wakeups.
-        let result = unsafe { libc::poll(descriptors.as_mut_ptr(), 2, -1) };
+        let timeout = match deadline {
+            Some(deadline) => {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                if remaining.is_zero() {
+                    return Err(std::io::ErrorKind::TimedOut.into());
+                }
+                remaining.as_millis().max(1).min(i32::MAX as u128) as i32
+            }
+            None => -1,
+        };
+        // Both descriptors remain owned throughout poll; idle listeners have no timer.
+        let result = unsafe { libc::poll(descriptors.as_mut_ptr(), 2, timeout) };
         if result < 0 {
             let error = std::io::Error::last_os_error();
             if error.kind() == std::io::ErrorKind::Interrupted {
@@ -494,8 +512,11 @@ fn wait_for_connection(listener: &UnixListener, wake: &UnixStream) -> std::io::R
             }
             return Err(error);
         }
-        // Stop wins over simultaneous listener readiness, including wake EOF.
-        return Ok(descriptors[0].revents == 0 && descriptors[1].revents & libc::POLLIN != 0);
+        if result == 0 {
+            continue;
+        }
+        // Stop wins over socket readiness, including wake EOF.
+        return Ok(descriptors[0].revents == 0 && descriptors[1].revents != 0);
     }
 }
 
@@ -514,21 +535,70 @@ impl ProtocolFailure {
     }
 }
 
-fn serve_connection(mut stream: std::os::unix::net::UnixStream, state: &Arc<Mutex<AgentCtlState>>) {
-    let _ = stream.set_nonblocking(false);
-    let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
-    let _ = stream.set_write_timeout(Some(Duration::from_secs(2)));
-    let response = read_request(&stream)
+struct AgentIo<'a> {
+    stream: &'a UnixStream,
+    wake: &'a UnixStream,
+}
+
+impl AgentIo<'_> {
+    fn transfer(
+        &self,
+        events: i16,
+        mut operation: impl FnMut(&UnixStream) -> std::io::Result<usize>,
+    ) -> std::io::Result<usize> {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            if !wait_for_io(self.stream.as_raw_fd(), self.wake, events, Some(deadline))? {
+                return Err(std::io::ErrorKind::ConnectionAborted.into());
+            }
+            match operation(self.stream) {
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted
+                    ) =>
+                {
+                    continue;
+                }
+                result => return result,
+            }
+        }
+    }
+}
+impl Read for AgentIo<'_> {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        self.transfer(libc::POLLIN, |mut stream| stream.read(buffer))
+    }
+}
+impl Write for AgentIo<'_> {
+    fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
+        self.transfer(libc::POLLOUT, |mut stream| stream.write(buffer))
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+fn serve_connection(stream: UnixStream, state: &Arc<Mutex<AgentCtlState>>, wake: &UnixStream) {
+    if stream.set_nonblocking(true).is_err() {
+        return;
+    }
+    // Cancellation must participate in each wait, including before the first read.
+    let mut io = AgentIo {
+        stream: &stream,
+        wake,
+    };
+    let response = read_request(&mut io)
         .map_err(|error| ProtocolFailure::new(AgentErrorCode::InvalidRequest, error.to_string()))
         .and_then(|request| dispatch_request(request, state))
         .unwrap_or_else(error_response);
     if let Ok(mut body) = serde_json::to_vec(&response) {
         body.push(b'\n');
-        let _ = stream.write_all(&body);
+        let _ = io.write_all(&body);
     }
 }
 
-fn read_request(stream: &std::os::unix::net::UnixStream) -> anyhow::Result<AgentRequest> {
+fn read_request(stream: impl Read) -> anyhow::Result<AgentRequest> {
     let mut frame = Vec::new();
     let mut reader = std::io::BufReader::new(stream);
     reader
@@ -888,6 +958,49 @@ mod tests {
         let _client = UnixStream::connect(directory.path().join("control.sock")).unwrap();
         wake.shutdown(Shutdown::Both).unwrap();
         assert!(!wait_for_connection(&listener, &receiver).unwrap());
+    }
+
+    #[test]
+    fn cancellation_wins_before_ready_connection_reads_and_writes() {
+        let (stream, mut peer) = UnixStream::pair().unwrap();
+        stream.set_nonblocking(true).unwrap();
+        let (wake, receiver) = UnixStream::pair().unwrap();
+        peer.write_all(b"queued request\n").unwrap();
+        wake.shutdown(Shutdown::Both).unwrap();
+        let mut io = AgentIo {
+            stream: &stream,
+            wake: &receiver,
+        };
+        assert_eq!(
+            io.read(&mut [0; 32]).unwrap_err().kind(),
+            std::io::ErrorKind::ConnectionAborted
+        );
+        assert_eq!(
+            io.write(b"response").unwrap_err().kind(),
+            std::io::ErrorKind::ConnectionAborted
+        );
+        let mut bytes = [0; 15];
+        (&stream).read_exact(&mut bytes).unwrap();
+        assert_eq!(&bytes, b"queued request\n");
+        peer.set_nonblocking(true).unwrap();
+        assert_eq!(
+            peer.read(&mut [0; 32]).unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock
+        );
+    }
+
+    #[test]
+    fn connection_wait_preserves_its_deadline() {
+        let (stream, _peer) = UnixStream::pair().unwrap();
+        let (_wake, receiver) = UnixStream::pair().unwrap();
+        let error = wait_for_io(
+            stream.as_raw_fd(),
+            &receiver,
+            libc::POLLIN,
+            Some(Instant::now()),
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
     }
 
     #[test]

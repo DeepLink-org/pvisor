@@ -34,13 +34,13 @@ mod opensandbox;
 
 #[derive(Clone)]
 pub(crate) struct Service {
-    pub path: PathBuf,
-    pub token: String,
-    pub sandbox_id: String,
-    pub generation: String,
-    pub generation_number: u64,
-    pub env: BTreeMap<String, String>,
-    pub e2b: bool,
+    pub(crate) path: PathBuf,
+    pub(crate) token: String,
+    pub(crate) sandbox_id: String,
+    pub(crate) generation: String,
+    pub(crate) generation_number: u64,
+    pub(crate) env: BTreeMap<String, String>,
+    pub(crate) e2b: bool,
     processes: Arc<Mutex<VecDeque<Arc<CommandProcess>>>>,
     slots: Arc<tokio::sync::Semaphore>,
     http_slots: Arc<tokio::sync::Semaphore>,

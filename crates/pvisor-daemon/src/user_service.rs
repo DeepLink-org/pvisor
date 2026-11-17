@@ -3,7 +3,7 @@
 use anyhow::{Context, Result, ensure};
 use fs2::FileExt;
 use pvisor::host_transport::{authorize_host_peer, read_host_frame, write_host_frame};
-use pvisor_daemon::memory_pool::{self, PoolConfig, PoolMode};
+use pvisor_daemon::api::{MemoryPoolService, PoolConfig, PoolMode};
 use serde::{Deserialize, Serialize};
 use std::{
     fs::{self, File, OpenOptions},
@@ -436,10 +436,9 @@ pub(super) async fn serve(options: StartOptions) -> Result<()> {
         let directory = state.clone();
         let executable = std::env::current_exe()?.canonicalize()?;
         let selected = config.clone();
-        let socket = tokio::task::spawn_blocking(move || {
-            memory_pool::ensure_service(&directory, &executable, selected)
-        })
-        .await??;
+        let socket =
+            tokio::task::spawn_blocking(move || (selected).ensure_service(&directory, &executable))
+                .await??;
         Some(PoolCapability { socket, config })
     } else {
         None

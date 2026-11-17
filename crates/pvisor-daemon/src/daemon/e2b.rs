@@ -4,7 +4,10 @@ use super::{
     ApiError, Daemon,
     models::{self, Record, Validated},
 };
-use crate::runtime::{ENVD_PORT, RuntimeSpec};
+#[cfg(test)]
+use crate::api::DaemonService;
+use crate::api::{RuntimeSpec, RuntimeValidation};
+use crate::runtime::ENVD_PORT;
 use axum::{
     Extension, Json, Router,
     body::Body,
@@ -84,7 +87,7 @@ pub(super) fn one<'a>(headers: &'a HeaderMap, name: &'static str) -> Option<&'a 
 }
 async fn policy(
     State(daemon): State<Arc<Daemon>>,
-    Extension(bodies): Extension<super::api::ControlBodies>,
+    Extension(bodies): Extension<super::http::ControlBodies>,
     request: Request,
     next: Next,
 ) -> Response {
@@ -222,7 +225,7 @@ impl Create {
     }
     pub(super) fn translate(
         self,
-        profile: crate::runtime::E2bTemplate,
+        profile: crate::api::E2bTemplate,
         maximum: u64,
     ) -> Result<Validated> {
         let request = self.validate(maximum)?;
@@ -525,7 +528,7 @@ async fn proxy(State(daemon): State<Arc<Daemon>>, request: Request) -> Result<Re
         guest_path
     };
     let guest_path = guest_path.to_owned();
-    match super::api::forward(&daemon, &id, ENVD_PORT, request, guest_path).await {
+    match super::http::forward(&daemon, &id, ENVD_PORT, request, guest_path).await {
         Ok(response) => Ok(response),
         Err(error) if error.status == 409 || error.code == "ENDPOINT_UNAVAILABLE" => {
             Err(ApiError::new(502, "SANDBOX_UNAVAILABLE", "Sandbox is unavailable").into())
@@ -559,7 +562,7 @@ fn decode_component(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::runtime::{E2bTemplate, Runtime, RuntimeState};
+    use crate::api::{E2bTemplate, Runtime, RuntimeState};
     use axum::body::to_bytes;
     use std::sync::{
         Mutex,
@@ -767,7 +770,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let runtime = Arc::new(Fake::default());
         let daemon = open(&dir, &runtime).await;
-        let app = super::super::api::router(daemon);
+        let app = super::super::http::router(daemon);
         let sandbox = create_one(&app).await;
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("http://{}", listener.local_addr().unwrap());
@@ -809,7 +812,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let runtime = Arc::new(Fake::default());
         let daemon = open(&dir, &runtime).await;
-        let app = super::super::api::router(daemon.clone());
+        let app = super::super::http::router(daemon.clone());
         let first = create_one(&app).await;
         let second = create_one(&app).await;
         let id = first["sandboxID"].as_str().unwrap();
@@ -869,7 +872,7 @@ mod tests {
         drop(app);
         drop(daemon);
         let daemon = open(&dir, &runtime).await;
-        let app = super::super::api::router(daemon.clone());
+        let app = super::super::http::router(daemon.clone());
         let (status, _, connected) = call(
             &app,
             "POST",
@@ -910,7 +913,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let runtime = Arc::new(Fake::default());
         let daemon = open(&dir, &runtime).await;
-        let app = super::super::api::router(daemon);
+        let app = super::super::http::router(daemon);
         for (field, value, status) in [
             ("autoPause", json!(true), 501),
             ("autoResume", json!({}), 501),
@@ -948,7 +951,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let runtime = Arc::new(Fake::default());
         let daemon = open(&dir, &runtime).await;
-        let app = super::super::api::router(daemon);
+        let app = super::super::http::router(daemon);
         for auth in [
             vec![],
             vec![("open-sandbox-api-key", KEY)],
@@ -1033,7 +1036,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let runtime = Arc::new(Fake::default());
         let daemon = open(&dir, &runtime).await;
-        let app = super::super::api::router(daemon.clone());
+        let app = super::super::http::router(daemon.clone());
         let a = create_one(&app).await;
         let id = a["sandboxID"].as_str().unwrap();
         daemon

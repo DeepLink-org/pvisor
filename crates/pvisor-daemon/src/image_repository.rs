@@ -2,7 +2,7 @@
 use anyhow::{Context, ensure};
 use clap::Args;
 use fs2::FileExt;
-use pvisor_daemon::runtime::PreparedImage;
+use pvisor_daemon::api::PreparedImage;
 use serde::{Deserialize, Serialize};
 use std::{
     fs::{self, File, OpenOptions},

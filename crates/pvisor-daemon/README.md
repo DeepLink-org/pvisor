@@ -1186,7 +1186,32 @@ or production density.
 ## Package and evidence scope
 
 The Cargo package/directory/library are `pvisor-daemon` / `pvisor_daemon`.
-The library exports `daemon` and `runtime` for single-node sandbox management.
+The library exposes only `pvisor_daemon::api`. HTTP is the sandbox lifecycle
+entry point; registry state, HTTP DTOs, authentication and proxy helpers stay
+private. There are no root or implementation-module compatibility exports.
+
+| Public contract | Responsibility |
+| --- | --- |
+| `DaemonService` / `Daemon` | Locked open with an owner-bound runtime factory, authenticated router, bounded maintenance |
+| `Runtime` | Explicit preflight, create/inspect/control/delete, live endpoints and E2B template lookup; no default implementations |
+| `NativeRuntimeService` / `NativeRuntime` | Trusted native construction, optional pool selection before sharing, hidden supervisor reentry |
+| `RuntimeValidation` | Side-effect-free `RuntimeSpec` / `E2bTemplate` input validation |
+| `MemoryPoolService` / `PoolConfig` | Configuration-bound detached startup and foreground component reentry |
+
+Public data records live in `api.rs`; opaque owners retain private state.
+`CreateError.requires_reconciliation` is false only after verified cleanup;
+unknown errors retain capacity. Runtime `Missing` requires confirmed absence,
+not failed IPC. Native methods return explicit errors outside Linux x86-64;
+pool/cache services retain Linux/macOS support with platform dispatch private.
+
+`Daemon::open` holds the registry lock before invoking the factory and running
+migration/preflight. Failed open releases the lock but may retain durable owner
+or migration records. The router keeps its daemon owner alive. Start maintenance
+once, abort and await its task at shutdown; dropping its handle alone does not
+stop it. Dropping the router does not delete native VMs or the detached pool.
+
+
+
 Cross-node scheduling and recovery belong to external orchestrators.
 
 Cluster/controller measurements are not evidence for this node-local daemon's
@@ -1259,6 +1284,14 @@ whole-host memory; per-process footprint is only a proxy and pool/metadata/cache
 cost is additional. Startup and write peaks, scan CPU and density are not measured.
 The separate `macos_four_512m_containers_share_resident_kernel_pages` gate checks
 common cold-boot baselines without the dynamic pool.
+
+`tests/api_contract.rs` exercises the public API only: validation boundaries,
+serialization/defaults, configuration rejection before side effects, factory and
+preflight failures, exclusive owner/router/task lifetimes, HTTP authorization,
+admission and confirmed-cleanup behavior. Existing process/pool/image integration
+suites also import only `api`. AST boundary guards reject extra public paths,
+owner state exposure, public inherent methods, API bodies/default methods and
+conditional declarations; caller guards include platform-specific source.
 
 Conventional tests include fake-runtime lifecycle/admission/restart/TTL regressions,
 HTTP auth/schema/filter/endpoint tests and pure native identity/IPC/manifest,
@@ -1351,10 +1384,11 @@ density require their own validation.
 | `daemon/models.rs` | Fixed wire models, resource quantities, unsupported feature rejection |
 | `daemon/store.rs` | Private per-record registry, atomic publication/unlink, logical budget and v1 activation |
 | `daemon/mod.rs` | Admission/commit serialization, lifecycle, restart reconciliation, TTL and endpoint access |
-| `daemon/api.rs` | OpenSandbox HTTP adapter, filters, shared streaming data-plane proxy |
+| `daemon/http.rs` | OpenSandbox HTTP adapter, filters, shared streaming data-plane proxy |
 | `daemon/e2b.rs` | Pinned E2B lifecycle schemas, shared request validation/translation, SDK routes, TTL/connect and envd authentication |
 | `daemon/claims.rs` | Retained executor claim validation, replay fences and confirmed-cleanup tombstones |
-| `runtime.rs` | Runtime trait, VM-only NativeRuntime, detached supervisor, IPC/cgroup identity and vsock bridges |
+| `api.rs` | Public data and method declarations; explicit opaque owner exports |
+| `runtime.rs` | VM-only NativeRuntime, detached supervisor, IPC/cgroup identity and vsock bridges |
 | `memory_pool.rs` | Daemon-owned bounded cold-page pool, private socket and restart reuse |
 | `main.rs` | Daemon CLI/configuration, listener and maintenance lifecycle |
 | `prepared_image.rs` | Operator-side static execd/envd checks, pool template preparation and atomic manifest publication |

@@ -5,9 +5,9 @@ mod registries;
 mod user_service;
 use axum::serve::ListenerExt;
 use clap::{Parser, Subcommand};
-use pvisor_daemon::{
-    daemon::{self, Config, Daemon},
-    runtime::{NativeRuntime, NativeRuntimeConfig, run_native_supervisor},
+use pvisor_daemon::api::{
+    self, Config, Daemon, DaemonService, MemoryPoolService, NativeRuntime, NativeRuntimeConfig,
+    NativeRuntimeService,
 };
 use std::{net::SocketAddr, path::PathBuf, sync::Arc};
 
@@ -112,7 +112,7 @@ enum Command {
         memory_pool: bool,
         /// Linux physical sharing, or compression/deduplication (also macOS HVF).
         #[arg(long, value_enum, requires = "memory_pool")]
-        memory_pool_mode: Option<pvisor_daemon::memory_pool::PoolMode>,
+        memory_pool_mode: Option<pvisor_daemon::api::PoolMode>,
     },
     /// Print the fixed protocol baseline, not a claim of full API support.
     Protocol,
@@ -171,13 +171,13 @@ fn main() -> anyhow::Result<()> {
         return cache_component::worker(listen, image_store);
     }
     if let Command::MemoryPool { directory } = &args.command {
-        return pvisor_daemon::memory_pool::run(directory);
+        return pvisor_daemon::api::PoolConfig::run(directory);
     }
     if matches!(args.command, Command::Protocol) {
         println!(
             "OpenSandbox {} ({})",
-            daemon::OPENSANDBOX_VERSION,
-            daemon::OPENSANDBOX_COMMIT
+            api::OPENSANDBOX_VERSION,
+            api::OPENSANDBOX_COMMIT
         );
         return Ok(());
     }
@@ -215,7 +215,7 @@ async fn run(command: Command) -> anyhow::Result<()> {
             unreachable!()
         }
         Command::NativeSupervisor { sandbox_dir } => {
-            run_native_supervisor(&sandbox_dir).await?;
+            NativeRuntime::run_supervisor(&sandbox_dir).await?;
         }
         Command::Serve {
             ipfs,
@@ -246,7 +246,7 @@ async fn run(command: Command) -> anyhow::Result<()> {
             tokio::pin!(stop);
             #[cfg(target_os = "macos")]
             anyhow::ensure!(
-                memory_pool_mode != Some(pvisor_daemon::memory_pool::PoolMode::Physical),
+                memory_pool_mode != Some(pvisor_daemon::api::PoolMode::Physical),
                 "use --memory-pool-mode physical-pages for macOS physical sharing or compressed for cold compression"
             );
             let standalone_pool = if memory_pool && !sandbox {
@@ -255,15 +255,12 @@ async fn run(command: Command) -> anyhow::Result<()> {
                     .recursive(true)
                     .mode(0o700)
                     .create(&state)?;
-                let socket = pvisor_daemon::memory_pool::ensure_service(
-                    &state,
-                    &std::env::current_exe()?.canonicalize()?,
-                    pvisor_daemon::memory_pool::PoolConfig {
-                        mode: memory_pool_mode
-                            .unwrap_or(pvisor_daemon::memory_pool::PoolConfig::default().mode),
-                        ..Default::default()
-                    },
-                )?;
+                let socket = (pvisor_daemon::api::PoolConfig {
+                    mode: memory_pool_mode
+                        .unwrap_or(pvisor_daemon::api::PoolConfig::default().mode),
+                    ..Default::default()
+                })
+                .ensure_service(&state, &std::env::current_exe()?.canonicalize()?)?;
                 println!(
                     "{}",
                     serde_json::json!({"ready": true, "memory_pool": socket,
@@ -330,21 +327,19 @@ async fn run(command: Command) -> anyhow::Result<()> {
                         executable: executable.clone(),
                     })?;
                     let pool = if memory_pool {
-                        Some(pvisor_daemon::memory_pool::ensure_service(
-                            &runtime_state.canonicalize()?,
-                            &executable,
-                            pvisor_daemon::memory_pool::PoolConfig {
-                                mode: memory_pool_mode.unwrap_or(
-                                    pvisor_daemon::memory_pool::PoolConfig::default().mode,
-                                ),
+                        Some(
+                            (pvisor_daemon::api::PoolConfig {
+                                mode: memory_pool_mode
+                                    .unwrap_or(pvisor_daemon::api::PoolConfig::default().mode),
                                 ..Default::default()
-                            },
-                        )?)
+                            })
+                            .ensure_service(&runtime_state.canonicalize()?, &executable)?,
+                        )
                     } else {
                         None
                     };
                     Ok(Arc::new(runtime.with_memory_pool(pool))
-                        as Arc<dyn pvisor_daemon::runtime::Runtime>)
+                        as Arc<dyn pvisor_daemon::api::Runtime>)
                 })
                 .await?;
                 Some((daemon, listener))
@@ -372,7 +367,7 @@ async fn run(command: Command) -> anyhow::Result<()> {
                         "pVisor sandbox service listening on {}",
                         listener.local_addr()?
                     );
-                    let router = daemon::api::router(daemon);
+                    let router = daemon.router();
                     axum::serve(
                         listener.tap_io(|stream| {
                             let _ = stream.set_nodelay(true);
@@ -485,7 +480,7 @@ fn shutdown() -> std::io::Result<impl std::future::Future<Output = ()>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pvisor_daemon::memory_pool::PoolMode;
+    use pvisor_daemon::api::PoolMode;
 
     #[test]
     fn cluster_credentials_are_not_accepted_in_argv() {

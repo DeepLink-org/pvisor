@@ -1,7 +1,8 @@
-//! Node-local sandbox ownership, admission and OpenSandbox compatibility.
-pub mod daemon;
-pub mod runtime;
+//! Node-local sandbox and memory-pool services.
+#![deny(missing_docs)]
 
-pub mod memory_pool;
-
+pub mod api;
+mod daemon;
+mod memory_pool;
 mod native;
+mod runtime;
