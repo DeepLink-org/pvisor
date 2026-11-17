@@ -584,8 +584,11 @@ mod tests {
         }
     }
 
-    #[test]
-    fn complete_corruption_is_rejected_without_truncating_the_log() {
+    #[rstest::rstest]
+    #[case::frame_magic(MAGIC.len())]
+    #[case::length_complement(MAGIC.len() + 8)]
+    #[case::payload(MAGIC.len() + HEADER + 5)]
+    fn complete_corruption_is_rejected_without_truncating_the_log(#[case] offset: usize) {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("log");
         let mut log = PreimageLog::open(&path).unwrap();
@@ -595,13 +598,11 @@ mod tests {
         }
         drop(log);
         let original = fs::read(&path).unwrap();
-        for offset in [MAGIC.len(), MAGIC.len() + 8, MAGIC.len() + HEADER + 5] {
-            let mut corrupt = original.clone();
-            corrupt[offset] ^= 1;
-            fs::write(&path, &corrupt).unwrap();
-            assert!(PreimageLog::open(&path).is_err(), "offset {offset}");
-            assert_eq!(fs::read(&path).unwrap(), corrupt);
-        }
+        let mut corrupt = original;
+        corrupt[offset] ^= 1;
+        fs::write(&path, &corrupt).unwrap();
+        assert!(PreimageLog::open(&path).is_err(), "offset {offset}");
+        assert_eq!(fs::read(&path).unwrap(), corrupt);
     }
 
     #[test]

@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 3f7d89ca11df4110b53e05304e6e940ab55e078c9889d2ddec52d2e73f9eae53 # shrinks to operations = [Rename("dir/inside", "dir")]

@@ -621,11 +621,11 @@ fi
 '''
 
 [tasks.test-doc]
-description = "已迁移 API 的 doctest；可传 Cargo 包名选择范围"
+description = "公开接口 doctest；可传 Cargo 包名选择范围"
 run = '''
 #!/usr/bin/env bash
 set -euo pipefail
-if [[ $# -eq 0 ]]; then set -- pvisor-vm pvisor-overlayfs pvisor-journal pvisor-containers pvisor-replay pvisor-overlaynet pvisor-guest pvisor-daemon pvisor-shim; fi
+if [[ $# -eq 0 ]]; then set -- pvisor-vm pvisor-overlay-core pvisor-overlayfs pvisor-journal pvisor-containers pvisor-replay pvisor-overlaynet pvisor-guest pvisor-daemon pvisor-shim; fi
 args=()
 for package in "$@"; do args+=(-p "$package"); done
 cargo test --locked --doc "${args[@]}"

@@ -742,6 +742,20 @@ const GUEST_FUSEOVERLAYFS_PREFIX: &str = "user.fuseoverlayfs.";
 /// same stored name; a guest kernel uses only one class per mount. Returns
 /// `None` for names outside the three known guest prefixes and for a bare
 /// prefix with no remainder.
+///
+/// ```
+/// use std::ffi::OsStr;
+/// use pvisor_overlay_core::{guest_overlay_xattr_name, stored_overlay_xattr_name};
+///
+/// let stored = stored_overlay_xattr_name(OsStr::new("user.overlay.opaque")).unwrap();
+/// assert_eq!(stored, OsStr::new("user.pvisor.overlay.opaque"));
+/// assert_eq!(
+///     guest_overlay_xattr_name(&stored).as_deref(),
+///     Some(OsStr::new("trusted.overlay.opaque")),
+/// );
+/// assert!(stored_overlay_xattr_name(OsStr::new("user.overlay.")).is_none());
+/// assert!(stored_overlay_xattr_name(OsStr::new("user.application")).is_none());
+/// ```
 pub fn stored_overlay_xattr_name(guest: &OsStr) -> Option<OsString> {
     let bytes = guest.as_bytes();
     for prefix in [GUEST_TRUSTED_OVERLAY_PREFIX, GUEST_USER_OVERLAY_PREFIX] {
@@ -2042,6 +2056,22 @@ impl OverlayCore {
         Ok(())
     }
 
+    /// Join a relative parent and one non-reserved child name without filesystem I/O.
+    ///
+    /// ```
+    /// use std::{ffi::OsStr, path::{Path, PathBuf}};
+    /// use pvisor_overlay_core::OverlayCore;
+    ///
+    /// assert_eq!(
+    ///     OverlayCore::child(Path::new("src"), OsStr::new("lib.rs"))?,
+    ///     PathBuf::from("src/lib.rs"),
+    /// );
+    /// assert!(OverlayCore::child(Path::new("../outside"), OsStr::new("file")).is_err());
+    /// for name in ["", ".", "..", "a/b", ".wh.hidden", "a\0b"] {
+    ///     assert!(OverlayCore::child(Path::new(""), OsStr::new(name)).is_err());
+    /// }
+    /// # Ok::<(), std::io::Error>(())
+    /// ```
     pub fn child(parent: &Path, name: &OsStr) -> io::Result<PathBuf> {
         Self::validate_rel(parent)?;
         Self::validate_name(name)?;
@@ -3960,47 +3990,87 @@ fn whiteout_publication_fault() -> io::Result<()> {
 
 #[cfg(test)]
 mod tests {
-
-    #[test]
-    fn directory_initialization_failure_keeps_whiteout_and_allows_retry() {
+    #[rstest::rstest]
+    #[case::ordinary(b"file")]
+    #[case::hidden(b".hidden")]
+    #[case::similar_to_whiteout(b".whx.file")]
+    #[case::raw_byte(b"\xff")]
+    fn child_joins_valid_single_component_names(
+        #[case] name: &[u8],
+        #[values("", "dir", "dir/nested")] parent: &str,
+    ) {
         use super::*;
-        for errno in [libc::EIO, libc::ENOSPC] {
-            let root = tempfile::tempdir().unwrap();
-            let core = upper_absence_fixture(root.path());
-            fs::create_dir(root.path().join("lower/dir")).unwrap();
-            fs::write(root.path().join("lower/dir/old"), b"unchanged").unwrap();
-            core.remove(Path::new("dir/old"), false).unwrap();
-            core.remove(Path::new("dir"), true).unwrap();
-            let rel = Path::new("dir");
-            let failure = core
-                .create_dir_with(rel, || {
-                    fs::create_dir(core.upper_path(rel))?;
-                    // Native mkdir succeeded, but mandatory adapter metadata did not.
-                    Err(io::Error::from_raw_os_error(errno))
-                })
-                .unwrap_err();
-            assert_eq!(failure.raw_os_error(), Some(errno));
-            assert!(!core.upper_path(rel).exists());
-            assert!(core.resolve_checked(rel).unwrap().is_none());
-            let reopened = upper_absence_fixture(root.path());
-            assert!(reopened.resolve_checked(rel).unwrap().is_none());
-            reopened.create_dir(rel, 0o500).unwrap();
-            assert!(is_opaque_directory(&reopened.upper_path(rel)));
-            assert!(
-                reopened
-                    .resolve_checked(Path::new("dir/old"))
-                    .unwrap()
-                    .is_none()
-            );
-            assert_eq!(
-                fs::metadata(reopened.upper_path(rel)).unwrap().mode() & 0o777,
-                0o500
-            );
-            assert_eq!(
-                fs::read(root.path().join("lower/dir/old")).unwrap(),
-                b"unchanged"
-            );
-        }
+        use std::os::unix::ffi::OsStrExt;
+        let name = OsStr::from_bytes(name);
+        assert_eq!(
+            OverlayCore::child(Path::new(parent), name).unwrap(),
+            Path::new(parent).join(name)
+        );
+    }
+
+    #[rstest::rstest]
+    #[case::empty(b"")]
+    #[case::current(b".")]
+    #[case::parent(b"..")]
+    #[case::separator(b"dir/file")]
+    #[case::nul(b"file\0suffix")]
+    #[case::whiteout(b".wh.file")]
+    fn child_rejects_invalid_names_before_joining(#[case] name: &[u8]) {
+        use super::*;
+        use std::os::unix::ffi::OsStrExt;
+        let error = OverlayCore::child(Path::new("dir"), OsStr::from_bytes(name)).unwrap_err();
+        assert_eq!(error.raw_os_error(), Some(libc::EINVAL));
+    }
+
+    #[rstest::rstest]
+    fn child_rejects_invalid_parents(
+        #[values("/outside", "..", "../outside", "dir/../outside")] parent: &str,
+    ) {
+        use super::*;
+        let error = OverlayCore::child(Path::new(parent), OsStr::new("file")).unwrap_err();
+        assert_eq!(error.raw_os_error(), Some(libc::EINVAL));
+    }
+
+    #[rstest::rstest]
+    #[case::io(libc::EIO)]
+    #[case::no_space(libc::ENOSPC)]
+    fn directory_initialization_failure_keeps_whiteout_and_allows_retry(#[case] errno: i32) {
+        use super::*;
+        let root = tempfile::tempdir().unwrap();
+        let core = upper_absence_fixture(root.path());
+        fs::create_dir(root.path().join("lower/dir")).unwrap();
+        fs::write(root.path().join("lower/dir/old"), b"unchanged").unwrap();
+        core.remove(Path::new("dir/old"), false).unwrap();
+        core.remove(Path::new("dir"), true).unwrap();
+        let rel = Path::new("dir");
+        let failure = core
+            .create_dir_with(rel, || {
+                fs::create_dir(core.upper_path(rel))?;
+                // Native mkdir succeeded, but mandatory adapter metadata did not.
+                Err(io::Error::from_raw_os_error(errno))
+            })
+            .unwrap_err();
+        assert_eq!(failure.raw_os_error(), Some(errno));
+        assert!(!core.upper_path(rel).exists());
+        assert!(core.resolve_checked(rel).unwrap().is_none());
+        let reopened = upper_absence_fixture(root.path());
+        assert!(reopened.resolve_checked(rel).unwrap().is_none());
+        reopened.create_dir(rel, 0o500).unwrap();
+        assert!(is_opaque_directory(&reopened.upper_path(rel)));
+        assert!(
+            reopened
+                .resolve_checked(Path::new("dir/old"))
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            fs::metadata(reopened.upper_path(rel)).unwrap().mode() & 0o777,
+            0o500
+        );
+        assert_eq!(
+            fs::read(root.path().join("lower/dir/old")).unwrap(),
+            b"unchanged"
+        );
     }
     #[test]
     fn whiteout_creation_publication_failure_preserves_hidden_lower() {
@@ -4044,97 +4114,85 @@ mod tests {
         assert_eq!(fs::read(root.path().join("lower/node")).unwrap(), b"hidden");
     }
 
-    #[test]
-    fn whiteout_publication_failure_restores_both_names_and_retries() {
+    #[rstest::rstest]
+    fn whiteout_publication_failure_restores_both_names_and_retries(
+        #[values(false, true)] source_upper: bool,
+        #[values("missing", "lower", "upper", "hidden")] destination: &str,
+    ) {
         use super::*;
-        for source_upper in [false, true] {
-            for destination in ["missing", "lower", "upper", "hidden"] {
-                let root = tempfile::tempdir().unwrap();
-                let core = upper_absence_fixture(root.path());
-                let lower = root.path().join("lower");
-                fs::write(lower.join("old"), b"source").unwrap();
-                if source_upper {
-                    core.copy_up(Path::new("old")).unwrap();
-                }
-                if destination != "missing" {
-                    fs::write(lower.join("new"), b"destination").unwrap();
-                    if destination == "upper" {
-                        core.copy_up(Path::new("new")).unwrap();
-                    }
-                    if destination == "hidden" {
-                        core.remove(Path::new("new"), false).unwrap();
-                    }
-                }
-                let prepared = tempfile::Builder::new()
-                    .prefix(".wh..pvisor-node-")
-                    .tempfile_in(core.upper())
-                    .unwrap();
-                sys::set_xattr(prepared.path(), OsStr::new(VIRTUAL_NODE_XATTR), b"c:0:0", 0)
-                    .unwrap();
-                WHITEOUT_PUBLICATION_FAULT.set(true);
-                assert_eq!(
-                    core.rename_with_whiteout(
-                        Path::new("old"),
-                        Path::new("new"),
-                        false,
-                        prepared.path()
-                    )
-                    .unwrap_err()
-                    .raw_os_error(),
-                    Some(libc::EIO)
-                );
-                assert!(!WHITEOUT_PUBLICATION_FAULT.get());
-                let assert_original = |core: &OverlayCore| {
-                    assert_eq!(
-                        fs::read(
-                            core.resolve_checked(Path::new("old"))
-                                .unwrap()
-                                .unwrap()
-                                .path
-                        )
-                        .unwrap(),
-                        b"source"
-                    );
-                    let new = core.resolve_checked(Path::new("new")).unwrap();
-                    if matches!(destination, "missing" | "hidden") {
-                        assert!(new.is_none());
-                    } else {
-                        assert_eq!(fs::read(new.unwrap().path).unwrap(), b"destination");
-                    }
-                    assert!(!fs::read_dir(core.upper()).unwrap().any(|entry| {
-                        entry
-                            .unwrap()
-                            .file_name()
-                            .to_string_lossy()
-                            .starts_with(TEMP_PREFIX)
-                    }));
-                };
-                assert_original(&core);
-                let reopened = upper_absence_fixture(root.path());
-                assert_original(&reopened);
-                reopened
-                    .rename_with_whiteout(
-                        Path::new("old"),
-                        Path::new("new"),
-                        false,
-                        prepared.path(),
-                    )
-                    .unwrap();
-                assert_eq!(
-                    fs::read(reopened.upper_path(Path::new("new"))).unwrap(),
-                    b"source"
-                );
-                assert_eq!(
-                    sys::get_xattr(
-                        &reopened.upper_path(Path::new("old")),
-                        OsStr::new(VIRTUAL_NODE_XATTR)
-                    )
-                    .unwrap(),
-                    b"c:0:0"
-                );
-                assert_eq!(fs::read(lower.join("old")).unwrap(), b"source");
+        let root = tempfile::tempdir().unwrap();
+        let core = upper_absence_fixture(root.path());
+        let lower = root.path().join("lower");
+        fs::write(lower.join("old"), b"source").unwrap();
+        if source_upper {
+            core.copy_up(Path::new("old")).unwrap();
+        }
+        if destination != "missing" {
+            fs::write(lower.join("new"), b"destination").unwrap();
+            if destination == "upper" {
+                core.copy_up(Path::new("new")).unwrap();
+            }
+            if destination == "hidden" {
+                core.remove(Path::new("new"), false).unwrap();
             }
         }
+        let prepared = tempfile::Builder::new()
+            .prefix(".wh..pvisor-node-")
+            .tempfile_in(core.upper())
+            .unwrap();
+        sys::set_xattr(prepared.path(), OsStr::new(VIRTUAL_NODE_XATTR), b"c:0:0", 0).unwrap();
+        WHITEOUT_PUBLICATION_FAULT.set(true);
+        assert_eq!(
+            core.rename_with_whiteout(Path::new("old"), Path::new("new"), false, prepared.path())
+                .unwrap_err()
+                .raw_os_error(),
+            Some(libc::EIO)
+        );
+        assert!(!WHITEOUT_PUBLICATION_FAULT.get());
+        let assert_original = |core: &OverlayCore| {
+            assert_eq!(
+                fs::read(
+                    core.resolve_checked(Path::new("old"))
+                        .unwrap()
+                        .unwrap()
+                        .path
+                )
+                .unwrap(),
+                b"source"
+            );
+            let new = core.resolve_checked(Path::new("new")).unwrap();
+            if matches!(destination, "missing" | "hidden") {
+                assert!(new.is_none());
+            } else {
+                assert_eq!(fs::read(new.unwrap().path).unwrap(), b"destination");
+            }
+            assert!(!fs::read_dir(core.upper()).unwrap().any(|entry| {
+                entry
+                    .unwrap()
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(TEMP_PREFIX)
+            }));
+        };
+        assert_original(&core);
+        let reopened = upper_absence_fixture(root.path());
+        assert_original(&reopened);
+        reopened
+            .rename_with_whiteout(Path::new("old"), Path::new("new"), false, prepared.path())
+            .unwrap();
+        assert_eq!(
+            fs::read(reopened.upper_path(Path::new("new"))).unwrap(),
+            b"source"
+        );
+        assert_eq!(
+            sys::get_xattr(
+                &reopened.upper_path(Path::new("old")),
+                OsStr::new(VIRTUAL_NODE_XATTR)
+            )
+            .unwrap(),
+            b"c:0:0"
+        );
+        assert_eq!(fs::read(lower.join("old")).unwrap(), b"source");
     }
 
     #[test]

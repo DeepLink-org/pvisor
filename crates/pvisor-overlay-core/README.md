@@ -16,7 +16,30 @@ they must reject view mutations themselves and do not promise fresh observations
 
 ```sh
 mise run test -- pvisor-overlay-core
+mise run test-doc -- pvisor-overlay-core
+mise run lint-rust -- -p pvisor-overlay-core
 ```
+
+### Test layers
+
+Internal tests use `rstest` fixtures and parameterized cases for input boundaries,
+publication failures, journal formats and stage/open combinations. Fault injection
+and private-state assertions stay beside their implementations. Public interface
+examples are executable doctests on the existing exports; this crate has not
+migrated to an `api.rs` boundary.
+
+The [contract test map](tests/README.md) identifies owners, oracles and targeted
+commands. Crate-level `proptest` tests cover namespace transitions, selective
+apply and content receipts. They use the runner's default case budget (256), shrinking
+and source-local `*.proptest-regressions` seeds. `PROPTEST_CASES` and
+`PROPTEST_RNG_SEED` control the budget and reproducibility, for example:
+
+```sh
+PROPTEST_CASES=1024 PROPTEST_RNG_SEED=42 mise run test -- pvisor-overlay-core -- \
+  --test namespace_recovery --test selective_lifecycle --test content_receipts
+```
+
+### Namespace and first-touch observations
 
 `resolve_checked` is the optional namespace-selection query; it preserves policy,
 traversal and I/O errors and does not record an absence. The lossy `resolve`
@@ -40,6 +63,24 @@ POSIX/macOS EPERM or Linux/LSB EISDIR while requiring Core's EISDIR and unchange
 trees. All other error comparisons remain exact. It does not mount FUSE, apply
 changes or claim arbitrary POSIX coverage.
 
+The additional generated namespace test varies sequences of create, mkdir,
+rename, remove and truncating writes, including binary payloads and Unicode
+names. Every sequence runs without a journal and with both journal formats;
+each step checks visible state, lower contents and reopen. Failed calls must
+leave the visible tree unchanged. Generated sequences compare success/refusal,
+not native errno precedence when multiple rejection conditions overlap: for
+example, renaming `dir/inside` onto `dir` returns Core's `EISDIR` but can return
+native `ENOTEMPTY`. The fixed trace retains its exact errno checks.
+
+A separate generated positive control executes an entirely successful lifecycle:
+create, rewrite, rename, remove, recreate as a directory, move its child tree and
+recreate a lower file hidden by a whiteout. Binary payloads vary independently;
+all three journal modes must complete without a refused operation. At every
+reopen, every journal entry must retain its original lower fingerprint or
+original absence. Entries cannot duplicate or disappear between checkpoints.
+
+### Selective apply lifecycle
+
 `tests/selective_lifecycle.rs` exercises a generated, mount-free acceptance
 lifecycle in private temporary directories with legacy/compact journals and
 checkpoint/strict durability. A host content edit between successful preview and
@@ -56,6 +97,25 @@ macOS uses Unicode names because APFS rejects invalid UTF-8 names. Failed fixtur
 are retained. This does not inject process death, mount FUSE, promise automatic
 rename-selection closure or claim transactionality against writers running during
 publication.
+
+The additional lifecycle property samples arbitrary u64 seeds and both journal
+and durability modes through the same independent tree oracle. Seeds vary binary
+payloads, destination names, directory depth and healthy apply order; failures
+shrink to a replayable seed/configuration. The fixed seed interval and all its
+four journal/durability combinations remain a separate regression.
+
+Zero and maximum-u64 seeds also run as explicit `rstest` cases across all four
+persistent configurations, independent of random sampling.
+
+### Content receipts
+
+`tests/content_receipts.rs` checks order-independent encoding, duplicate-path
+rejection for arbitrary digests, verified receipt consumption and corrupted
+receipt refusal. Generated file bytes are hashed independently, then checked
+against native first-touch fingerprints and copied contents. A changed receipt
+must fail before publishing the file observation or upper entry, without changing
+the lower. These tests use public exports; private parsing faults remain in
+`content_index.rs` tests.
 
 ## Prepared guest whiteout publication
 

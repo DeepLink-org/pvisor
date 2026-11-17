@@ -203,6 +203,30 @@ impl Drop for Span<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rstest::rstest;
+
+    #[rstest]
+    #[case::zero(0, 0)]
+    #[case::one_ms(1_000_000, 0)]
+    #[case::above_one_ms(1_000_001, 1)]
+    #[case::ten_ms(10_000_000, 1)]
+    #[case::above_ten_ms(10_000_001, 2)]
+    #[case::hundred_ms(100_000_000, 2)]
+    #[case::above_hundred_ms(100_000_001, 3)]
+    #[case::one_second(1_000_000_000, 3)]
+    #[case::above_one_second(1_000_000_001, 4)]
+    #[case::outlier(u64::MAX, 4)]
+    fn latency_bucket_selects_exactly_one_interval(#[case] elapsed: u64, #[case] bucket: usize) {
+        let mut measurement = Measurement::default();
+        measurement.observe_ns(elapsed);
+        assert_eq!(measurement.calls, 1);
+        assert_eq!(measurement.total_ns, elapsed);
+        assert_eq!(measurement.max_ns, elapsed);
+        let mut expected = [0; 5];
+        expected[bucket] = 1;
+        assert_eq!(measurement.latency_buckets, expected);
+    }
+
     #[test]
     fn latency_buckets_preserve_boundaries_and_large_outliers() {
         let durations = [
