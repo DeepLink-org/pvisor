@@ -450,7 +450,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          lifecycle_firmware="$(mise run fw -- build --target x86_64-unknown-linux-gnu)"
+          lifecycle_firmware="$(mise run fw -- build --target x86_64-unknown-linux-musl)"
           export PVISOR_CASE_VM_FIRMWARE_PATH="$lifecycle_firmware"
           mise run test-vm-lifecycle 2>&1 | tee "$RUNNER_TEMP/vm-lifecycle.log"
       - uses: actions/upload-artifact@v4
