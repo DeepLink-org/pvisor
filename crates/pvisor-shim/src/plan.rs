@@ -352,6 +352,11 @@ pub(crate) struct ContainerPlan {
     /// throwaway microVM it would boot buys nothing.
     #[serde(default)]
     pub(crate) synthetic: bool,
+    /// VM tier: guest shape resolved at plan time (see [`plan_vm_shape`]);
+    /// the default for every non-VM plan.
+    #[cfg(any(feature = "vm", test))]
+    #[serde(default)]
+    pub(crate) vm_shape: VmConfig,
     /// Non-fatal gaps recorded while planning (surfaced in shim logs).
     pub(crate) warnings: Vec<String>,
 }
@@ -691,13 +696,130 @@ pub(crate) fn build_sandbox_plan(
     }
 }
 
-/// Resource shape for the libkrun microVM executor, derived from
-/// `io.pvisor.vm.*` annotations.
+/// Resource shape for the libkrun microVM executor, resolved from
+/// `io.pvisor.vm.*` annotations or the workload's OCI resource limits.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg(any(feature = "vm", test))]
 pub(crate) struct VmConfig {
     pub(crate) cpus: u8,
     pub(crate) ram_mib: u32,
+}
+
+/// Hypervisor overhead kept out of guest RAM when the container memory limit
+/// sizes the guest; also the floor so a tiny limit still boots a VM.
+#[cfg(any(feature = "vm", test))]
+const VM_RAM_RESERVE_MIB: u32 = 256;
+#[cfg(any(feature = "vm", test))]
+const MIB: i64 = 1024 * 1024;
+
+/// The workload's own OCI limits, as VM-shape inputs.
+#[cfg(any(feature = "vm", test))]
+struct VmResourceLimits {
+    memory_limit_mib: Option<u32>,
+    cpu_cores: Option<u8>,
+}
+
+#[cfg(any(feature = "vm", test))]
+fn vm_resource_limits(spec: &Spec) -> VmResourceLimits {
+    let Some(resources) = spec.linux().as_ref().and_then(|l| l.resources().as_ref()) else {
+        return VmResourceLimits {
+            memory_limit_mib: None,
+            cpu_cores: None,
+        };
+    };
+    let memory_limit_mib = resources
+        .memory()
+        .as_ref()
+        .and_then(|memory| memory.limit())
+        .filter(|bytes| *bytes > 0)
+        .map(|bytes| (bytes / MIB).min(u32::MAX as i64) as u32);
+    let cpu_cores = resources
+        .cpu()
+        .as_ref()
+        .and_then(|cpu| cpu.quota())
+        .filter(|quota| *quota > 0)
+        .map(|quota| {
+            let period = resources
+                .cpu()
+                .as_ref()
+                .and_then(|cpu| cpu.period())
+                .filter(|period| *period > 0)
+                .unwrap_or(100_000) as i64;
+            ((quota + period - 1) / period).clamp(1, u8::MAX as i64) as u8
+        });
+    VmResourceLimits {
+        memory_limit_mib,
+        cpu_cores,
+    }
+}
+
+/// Resolve the guest shape for a VM-tier workload.
+///
+/// Explicit `io.pvisor.vm.cpus` / `io.pvisor.vm.memory-mib` annotations win;
+/// an invalid value fails the task instead of silently resizing the guest.
+/// Without an annotation the workload container's own OCI limit sizes the
+/// guest: RAM is the memory limit minus [`VM_RAM_RESERVE_MIB`] (floored at
+/// the same value), vCPU count rounds the cpu quota up. An annotation that
+/// pins the guest below the container limits beyond the reserve records a
+/// warning: the guest cannot use the difference.
+#[cfg(any(feature = "vm", test))]
+fn plan_vm_shape(
+    spec: &Spec,
+    annotations: &HashMap<String, String>,
+    warnings: &mut Vec<String>,
+) -> Result<VmConfig, PlanError> {
+    let limits = vm_resource_limits(spec);
+    let mut config = VmConfig::default();
+    match annotations.get(format!("{ANNOTATION_PREFIX}vm.cpus").as_str()) {
+        Some(raw) => match raw.trim().parse::<u8>() {
+            Ok(cpus) if cpus > 0 => {
+                if limits.cpu_cores.is_some_and(|cores| cpus < cores) {
+                    warnings.push(format!(
+                        "io.pvisor.vm.cpus pins the guest to {cpus} vCPU below the container cpu quota ({} vCPU); the guest cannot use the difference",
+                        limits.cpu_cores.unwrap(),
+                    ));
+                }
+                config.cpus = cpus;
+            }
+            _ => {
+                return Err(PlanError::UnsupportedConstraint(format!(
+                    "io.pvisor.vm.cpus: invalid value `{raw}` (expected 1-255)"
+                )))
+            }
+        },
+        None => {
+            if let Some(cores) = limits.cpu_cores {
+                config.cpus = cores;
+            }
+        }
+    }
+    match annotations.get(format!("{ANNOTATION_PREFIX}vm.memory-mib").as_str()) {
+        Some(raw) => match raw.trim().parse::<u32>() {
+            Ok(ram) if ram > 0 => {
+                if limits
+                    .memory_limit_mib
+                    .is_some_and(|limit| limit > ram + VM_RAM_RESERVE_MIB)
+                {
+                    warnings.push(format!(
+                        "io.pvisor.vm.memory-mib pins the guest to {ram} MiB more than the {VM_RAM_RESERVE_MIB} MiB reserve below the container memory limit ({} MiB); the guest cannot use the difference",
+                        limits.memory_limit_mib.unwrap(),
+                    ));
+                }
+                config.ram_mib = ram;
+            }
+            _ => {
+                return Err(PlanError::UnsupportedConstraint(format!(
+                    "io.pvisor.vm.memory-mib: invalid value `{raw}` (expected a positive MiB count)"
+                )))
+            }
+        },
+        None => {
+            if let Some(limit) = limits.memory_limit_mib {
+                config.ram_mib = limit.saturating_sub(VM_RAM_RESERVE_MIB).max(VM_RAM_RESERVE_MIB);
+            }
+        }
+    }
+    Ok(config)
 }
 
 #[cfg(any(feature = "vm", test))]
@@ -727,27 +849,11 @@ impl ContainerPlan {
             .is_some_and(crate::spec::ExecutorTier::is_vm)
     }
 
-    /// VM shape from `io.pvisor.vm.cpus` / `io.pvisor.vm.memory-mib`.
+    /// Guest shape resolved at plan time from `io.pvisor.vm.*` annotations
+    /// or the workload's OCI resource limits (see [`plan_vm_shape`]).
     #[cfg(any(feature = "vm", test))]
     pub(crate) fn vm_config(&self) -> VmConfig {
-        let mut config = VmConfig::default();
-        if let Some(cpus) = self
-            .annotations
-            .get(format!("{ANNOTATION_PREFIX}vm.cpus").as_str())
-            .and_then(|value| value.parse::<u8>().ok())
-            .filter(|cpus| *cpus > 0)
-        {
-            config.cpus = cpus;
-        }
-        if let Some(ram) = self
-            .annotations
-            .get(format!("{ANNOTATION_PREFIX}vm.memory-mib").as_str())
-            .and_then(|value| value.parse::<u32>().ok())
-            .filter(|ram| *ram > 0)
-        {
-            config.ram_mib = ram;
-        }
-        config
+        self.vm_shape
     }
 
     /// VM egress posture from the single `io.pvisor.vm.network` annotation:
@@ -1394,7 +1500,9 @@ pub(crate) fn build_plan(
     }
     let process_plan = process_plan_from(process, disposition.has_guest_contract())?;
 
-    let warnings = Vec::new();
+    // `plan_vm_shape` (the only mutator) is vm-gated.
+    #[cfg_attr(not(any(feature = "vm", test)), allow(unused_mut))]
+    let mut warnings = Vec::new();
     let namespaces = plan_namespaces(spec)?;
 
     let map_mappings = |mappings: Option<&Vec<oci_spec::runtime::LinuxIdMapping>>| {
@@ -1495,6 +1603,13 @@ pub(crate) fn build_plan(
         annotations.remove(format!("{ANNOTATION_PREFIX}executor").as_str());
     }
 
+    #[cfg(any(feature = "vm", test))]
+    let vm_shape = if disposition == ExecutionDisposition::Vm {
+        plan_vm_shape(spec, &annotations, &mut warnings)?
+    } else {
+        VmConfig::default()
+    };
+
     Ok(ContainerPlan {
         id: id.to_string(),
         bundle: bundle.to_path_buf(),
@@ -1528,6 +1643,8 @@ pub(crate) fn build_plan(
         injections: Vec::new(),
         egress_gate: None,
         synthetic,
+        #[cfg(any(feature = "vm", test))]
+        vm_shape,
         warnings,
     })
 }
@@ -2284,6 +2401,124 @@ mod tests {
                 ram_mib: 1024
             }
         );
+    }
+
+    fn vm_spec_with(linux_resources: serde_json::Value, annotations: serde_json::Value) -> Spec {
+        let mut spec = serde_json::to_value(minimal_spec()).unwrap();
+        spec["annotations"] = annotations;
+        spec["linux"] = linux_resources;
+        serde_json::from_value(spec).unwrap()
+    }
+
+    #[test]
+    fn vm_shape_derives_from_container_limits_when_annotations_absent() {
+        let spec = vm_spec_with(
+            serde_json::json!({
+                "resources": {
+                    "memory": {"limit": 5368709120i64},
+                    "cpu": {"quota": 400000, "period": 100000}
+                }
+            }),
+            serde_json::json!({"io.pvisor.executor": "vm"}),
+        );
+        let plan =
+            build_plan(&spec, "c1", Path::new("/b"), vec![], IoPlan::default()).expect("plan");
+        assert_eq!(
+            plan.vm_config(),
+            VmConfig {
+                cpus: 4,
+                ram_mib: 4864
+            }
+        );
+        assert!(plan.warnings.is_empty());
+    }
+
+    #[test]
+    fn vm_shape_annotations_override_limits_and_warn() {
+        let spec = vm_spec_with(
+            serde_json::json!({
+                "resources": {
+                    "memory": {"limit": 5368709120i64},
+                    "cpu": {"quota": 400000, "period": 100000}
+                }
+            }),
+            serde_json::json!({
+                "io.pvisor.executor": "vm",
+                "io.pvisor.vm.cpus": "2",
+                "io.pvisor.vm.memory-mib": "1024"
+            }),
+        );
+        let plan =
+            build_plan(&spec, "c1", Path::new("/b"), vec![], IoPlan::default()).expect("plan");
+        assert_eq!(plan.vm_config(), VmConfig { cpus: 2, ram_mib: 1024 });
+        assert_eq!(plan.warnings.len(), 2);
+        assert!(
+            plan.warnings
+                .iter()
+                .any(|warning| warning.contains("io.pvisor.vm.cpus"))
+        );
+        assert!(
+            plan.warnings
+                .iter()
+                .any(|warning| warning.contains("io.pvisor.vm.memory-mib"))
+        );
+    }
+
+    #[test]
+    fn vm_shape_rejects_invalid_annotations() {
+        for (key, value) in [
+            ("io.pvisor.vm.cpus", "four"),
+            ("io.pvisor.vm.cpus", "0"),
+            ("io.pvisor.vm.memory-mib", "1Gi"),
+            ("io.pvisor.vm.memory-mib", "0"),
+        ] {
+            let mut annotations = HashMap::new();
+            annotations.insert("io.pvisor.executor".to_string(), "vm".to_string());
+            annotations.insert(key.to_string(), value.to_string());
+            let spec = vm_spec_with(
+                serde_json::json!({}),
+                serde_json::to_value(annotations).unwrap(),
+            );
+            let error = build_plan(&spec, "c1", Path::new("/b"), vec![], IoPlan::default())
+                .expect_err("invalid annotation must fail the task")
+                .to_string();
+            assert!(error.contains(key), "{key}: {error}");
+        }
+    }
+
+    #[test]
+    fn vm_shape_floors_tiny_memory_limits() {
+        let spec = vm_spec_with(
+            serde_json::json!({"resources": {"memory": {"limit": 128 * 1024 * 1024}}}),
+            serde_json::json!({"io.pvisor.executor": "vm"}),
+        );
+        let plan =
+            build_plan(&spec, "c1", Path::new("/b"), vec![], IoPlan::default()).expect("plan");
+        assert_eq!(
+            plan.vm_config(),
+            VmConfig {
+                cpus: 2,
+                ram_mib: 256
+            }
+        );
+    }
+
+    #[test]
+    fn host_tier_keeps_default_vm_shape_with_limits() {
+        let spec = vm_spec_with(
+            serde_json::json!({
+                "resources": {
+                    "memory": {"limit": 5368709120i64},
+                    "cpu": {"quota": 400000, "period": 100000}
+                }
+            }),
+            serde_json::json!({}),
+        );
+        let plan =
+            build_plan(&spec, "c1", Path::new("/b"), vec![], IoPlan::default()).expect("plan");
+        assert!(!plan.wants_vm());
+        assert_eq!(plan.vm_config(), VmConfig::default());
+        assert!(plan.warnings.is_empty());
     }
 
     #[test]
