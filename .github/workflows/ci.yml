@@ -118,9 +118,13 @@ jobs:
           test -s "$RUNNER_TEMP/feature-runtime/libkrunfw.so.5"
           # These Linux contracts deliberately use host rootfs, not macOS.
           echo 'PVISOR_CASE_ROOTFS=/' >> "$GITHUB_ENV"
+      - name: Install guest Rust target for SDK fixtures
+        if: matrix.vm_sdk || matrix.feature == 'lazy-image'
+        run: mise exec -- rustup target add x86_64-unknown-linux-musl
       - name: Prepare VM SDK inputs
         if: matrix.vm_sdk
         run: |
+          # J02 uses a local agent to check launch metadata and trajectories.
           test -x /usr/bin/python3
           {
             echo 'PVISOR_CASE_VM_PYTHON=/usr/bin/python3'
@@ -128,8 +132,6 @@ jobs:
             echo 'PVISOR_CASE_AGENT=/usr/bin/true'
             echo "PVISOR_CASE_VM_LIBRARY_DIR=$RUNNER_TEMP/feature-runtime"
           } >> "$GITHUB_ENV"
-          # J02 checks launch metadata/trajectory, not model conversations.
-          mise exec -- rustup target add x86_64-unknown-linux-musl
       - name: Require replay companion
         if: matrix.feature == 'replay'
         run: test -x "$RUNNER_TEMP/feature-runtime/pvisor-replay"
