@@ -64,9 +64,11 @@ trees. All other error comparisons remain exact. It does not mount FUSE, apply
 changes or claim arbitrary POSIX coverage.
 
 The additional generated namespace test varies sequences of create, mkdir,
-rename, remove and truncating writes, including binary payloads and Unicode
-names. Every sequence runs without a journal and with both journal formats;
-each step checks visible state, lower contents and reopen. Failed calls must
+hardlink, rename, remove and truncating writes, including binary payloads and
+Unicode names. Every sequence runs without a journal and with both journal formats;
+each step checks visible state, hardlink inode-equivalence groups, lower contents
+and reopen. A fixed successful trace also rewrites aliases, renames names of the
+same inode, moves an alias's parent and removes aliases across reopens. Failed calls must
 leave the visible tree unchanged. Generated sequences compare success/refusal,
 not native errno precedence when multiple rejection conditions overlap: for
 example, renaming `dir/inside` onto `dir` returns Core's `EISDIR` but can return

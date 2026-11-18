@@ -165,6 +165,15 @@ mise run test -- pvisor-overlaynet -- --test stream_recovery --run-ignored only 
 This checks router/body ownership and delayed local sink errors, not a real
 HTTP transport, upstream read timeout or network reconnect.
 
+The same target's generated ownership test retains one proxy across a finite
+seed interval, mixing pending bodies, delayed errors, healthy requests, overload
+and out-of-order body drops. An independent held-response inventory checks
+active ownership; every 32 operations it also fills all 128 slots, checks
+overload and releases a seeded subset. Default coverage is 16 seeds × 256
+operations, selected with `PVISOR_CHAOS_FIRST_SEED` and
+`PVISOR_CHAOS_SEED_COUNT` (1–4096). Tokio time is paused; this is not additional
+real-timer or network-transport coverage.
+
 ## Links
 
 - [OverlayNet architecture](../../docs/src/zh/design/overlaynet.md)

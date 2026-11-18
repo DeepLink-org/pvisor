@@ -44,6 +44,27 @@ fn namespace_type_errors_retries_and_reopens_match_native_without_changing_lower
     }
 }
 
+#[test]
+fn hard_link_rewrites_alias_renames_and_removal_preserve_native_groups() {
+    use Operation::*;
+    let operations = [
+        HardLink("a", "alias"),
+        Write("alias", vec![0, 255, b'a']),
+        Rename("a", "alias"),
+        HardLink("alias", "dir/alias"),
+        Remove("a", false),
+        Rename("dir", "moved"),
+        Write("moved/alias", vec![b'z'; 257]),
+        Remove("alias", false),
+        HardLink("moved/alias", "a"),
+        Remove("moved/alias", false),
+        Write("a", Vec::new()),
+    ];
+    for mode in JournalMode::ALL {
+        assert_eq!(run_trace(mode, &operations, ErrorComparison::Exact), 0);
+    }
+}
+
 fn operation() -> impl Strategy<Value = Operation> {
     let path = prop::sample::select(vec![
         "a",
@@ -60,6 +81,7 @@ fn operation() -> impl Strategy<Value = Operation> {
     ]);
     prop_oneof![
         (path.clone(), path.clone()).prop_map(|(old, new)| Operation::Rename(old, new)),
+        (path.clone(), path.clone()).prop_map(|(old, new)| Operation::HardLink(old, new)),
         (path.clone(), any::<bool>())
             .prop_map(|(path, directory)| Operation::Remove(path, directory)),
         path.clone().prop_map(Operation::Create),
