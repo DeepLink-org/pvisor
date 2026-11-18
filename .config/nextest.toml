@@ -62,6 +62,12 @@ threads-required = "num-test-threads"
 filter = 'package(=pvisor-replay) & (test(=adapter::claude_code::tests::bash_timeout_kills_the_historical_process_group) | test(=process::tests::times_out_and_reaps_the_foreground_process_group))'
 threads-required = "num-test-threads"
 
+# The continuation fixture's upstream deadline includes child and Python startup.
+# Concurrent cold launches on macOS can exhaust it before the first request.
+[[profile.default.overrides]]
+filter = 'package(=pvisor-replay) & binary(=continuation_failures) & test(=opencode_continuation_preserves_failure_and_step_budget)'
+threads-required = "num-test-threads"
+
 # This fixture mounts FUSE beneath the checkout. Reserve all slots so concurrent
 # Sessions staging HOME do not inherit it as an unsupported nested mount.
 [[profile.default.overrides]]

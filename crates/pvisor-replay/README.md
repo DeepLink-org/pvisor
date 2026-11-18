@@ -132,6 +132,11 @@ deadlines and total completion bounds remain enforced, with retries disabled.
 The Bash fixture prints its PID and execs native `/bin/sleep`, then checks timeout
 classification, readiness, reaping and absence of the original process group.
 
+The OpenCode continuation failure/step-budget fixture also reserves all nextest
+slots: its 15-second upstream readiness deadline includes the child harness,
+shell probes and Python HTTP client startup. Its request deadline, failure-event
+assertions and step-budget checks remain unchanged; retries remain disabled.
+
 Stdin backpressure and early-close fixtures re-execute the native test binary,
 with an independent alarm to bound a broken supervisor. They do not launch a
 Python interpreter or PATH shim inside the short supervision deadlines. Readiness,
