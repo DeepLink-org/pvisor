@@ -1,5 +1,9 @@
 # pvisor-overlayfs
 
+Implementation guards scan every Rust source recursively and exempt only the
+crate-root `api.rs` and `lib.rs`. Negative fixtures verify that nested files
+with those names and newly added adapters cannot add public inherent methods.
+
 **Cross-platform FUSE overlay for pVisor staging (macFUSE / libfuse).**
 
 Owns the unprivileged, in-process FUSE overlay: ordered multi-`lowerdir` merge,

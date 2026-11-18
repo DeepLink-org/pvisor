@@ -206,6 +206,7 @@ impl ImageStore {
         fs::create_dir_all(root.join("metadata/sha256"))?;
         fs::create_dir_all(root.join("locks"))?;
         let mut client = Client::builder()
+            .https_only(true)
             .connect_timeout(Duration::from_secs(10))
             // Blocking reqwest bounds response-body reads as well as requests;
             // retries restart a failed blob with a fresh file and hasher.
@@ -751,22 +752,7 @@ impl<'a> RegistryClient<'a> {
     }
 
     fn fetch_token(&self, challenge: &str) -> anyhow::Result<String> {
-        let fields = parse_bearer_challenge(challenge)?;
-        let realm = fields
-            .get("realm")
-            .context("Bearer challenge has no realm")?;
-        let mut request = self.client.get(realm);
-        if let Some(credentials) = self.credentials {
-            request = request.basic_auth(&credentials.username, Some(&credentials.password));
-        }
-        if let Some(service) = fields.get("service") {
-            request = request.query(&[("service", service)]);
-        }
-        let scope = fields
-            .get("scope")
-            .cloned()
-            .unwrap_or_else(|| format!("repository:{}:pull", self.image.repository));
-        request = request.query(&[("scope", &scope)]);
+        let request = self.token_request(challenge)?;
         let response = retry_throttled_registry_get(
             || {
                 Ok(request
@@ -787,6 +773,34 @@ impl<'a> RegistryClient<'a> {
             "registry token response contained no token"
         );
         Ok(token)
+    }
+
+    fn token_request(&self, challenge: &str) -> anyhow::Result<reqwest::blocking::RequestBuilder> {
+        let fields = parse_bearer_challenge(challenge)?;
+        let realm = fields
+            .get("realm")
+            .context("Bearer challenge has no realm")?;
+        let realm = reqwest::Url::parse(realm).context("invalid registry token realm")?;
+        anyhow::ensure!(
+            realm.scheme() == "https"
+                && realm.host_str().is_some()
+                && realm.username().is_empty()
+                && realm.password().is_none()
+                && realm.fragment().is_none(),
+            "registry token realm must be HTTPS without credentials or fragment"
+        );
+        let mut request = self.client.get(realm);
+        if let Some(credentials) = self.credentials {
+            request = request.basic_auth(&credentials.username, Some(&credentials.password));
+        }
+        if let Some(service) = fields.get("service") {
+            request = request.query(&[("service", service)]);
+        }
+        let scope = fields
+            .get("scope")
+            .cloned()
+            .unwrap_or_else(|| format!("repository:{}:pull", self.image.repository));
+        Ok(request.query(&[("scope", &scope)]))
     }
 }
 
@@ -1892,6 +1906,94 @@ mod tests {
         .unwrap();
         assert_eq!(fields["service"], "registry.example");
         assert_eq!(fields["scope"], "repository:acme/app:pull");
+    }
+
+    #[test]
+    fn registry_token_requests_reject_unsafe_realms_before_dispatch() {
+        let root = tempfile::tempdir().unwrap();
+        let store = ImageStore::new(Some(root.path().into())).unwrap();
+        let credentials = RegistryCredentials {
+            username: "reader".into(),
+            password: "secret".into(),
+        };
+        let registry = RegistryClient::new(
+            &store.client,
+            ImageReference::parse("example.com/team/app:tag").unwrap(),
+            Some(&credentials),
+        );
+        for realm in [
+            "http://127.0.0.1:9/token",
+            "file:///token",
+            "https://user:password@example.com/token",
+            "https://example.com/token#secret",
+        ] {
+            let error = registry
+                .token_request(&format!("Bearer realm=\"{realm}\""))
+                .err()
+                .unwrap();
+            assert!(
+                error.to_string().contains("must be HTTPS"),
+                "{realm}: {error:#}"
+            );
+        }
+        let request = registry
+            .token_request(
+                "Bearer realm=\"https://auth.example.com/token\",service=\"registry.example.com\"",
+            )
+            .unwrap()
+            .build()
+            .unwrap();
+        assert_eq!(request.url().scheme(), "https");
+        assert_eq!(
+            request.headers()[AUTHORIZATION],
+            "Basic cmVhZGVyOnNlY3JldA=="
+        );
+        let query: BTreeMap<_, _> = request.url().query_pairs().into_owned().collect();
+        assert_eq!(query["scope"], "repository:team/app:pull");
+        assert_eq!(query["service"], "registry.example.com");
+        let anonymous = RegistryClient::new(&store.client, registry.image.clone(), None);
+        assert!(
+            !anonymous
+                .token_request("Bearer realm=\"https://auth.example.com/token\"")
+                .unwrap()
+                .build()
+                .unwrap()
+                .headers()
+                .contains_key(AUTHORIZATION)
+        );
+    }
+
+    #[test]
+    fn registry_client_never_connects_to_plaintext_endpoints() {
+        let root = tempfile::tempdir().unwrap();
+        let store = ImageStore::new(Some(root.path().into())).unwrap();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let address = format!("http://{}/token", listener.local_addr().unwrap());
+        assert!(
+            store
+                .client
+                .get(&address)
+                .basic_auth("reader", Some("secret"))
+                .send()
+                .unwrap_err()
+                .is_builder()
+        );
+        assert_eq!(
+            listener.accept().unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock
+        );
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn generated_plaintext_token_realms_are_rejected(host in "[a-z]{1,16}", port in 1u16..=u16::MAX) {
+            static CLIENT: std::sync::LazyLock<Client> = std::sync::LazyLock::new(|| Client::builder().https_only(true).build().unwrap());
+            let credentials = RegistryCredentials { username: "reader".into(), password: "secret".into() };
+            let registry = RegistryClient::new(&CLIENT, ImageReference::parse("example.com/app").unwrap(), Some(&credentials));
+            let result = registry.token_request(&format!("Bearer realm=\"http://{host}.example:{port}/token\""));
+            proptest::prop_assert!(result.is_err());
+        }
     }
 
     #[test]

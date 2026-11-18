@@ -71,14 +71,34 @@ fn private_adapters_do_not_add_public_inherent_methods_or_modules() {
             visit::visit_item_mod(self, item);
         }
     }
-    for source in [
-        include_str!("../src/fs.rs"),
-        include_str!("../src/mount.rs"),
-        include_str!("../src/observation.rs"),
-        include_str!("../src/cache.rs"),
-        include_str!("../src/dispatch.rs"),
-    ] {
-        Guard.visit_file(&syn::parse_file(source).unwrap());
+    fn scan(directory: &Path, root: &Path) {
+        for entry in std::fs::read_dir(directory).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                scan(&path, root);
+            } else if path.extension().is_some_and(|extension| extension == "rs")
+                && path != root.join("api.rs")
+                && path != root.join("lib.rs")
+            {
+                Guard
+                    .visit_file(&syn::parse_file(&std::fs::read_to_string(path).unwrap()).unwrap());
+            }
+        }
+    }
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    scan(&root, &root);
+    let fixture = tempfile::tempdir().unwrap();
+    let nested = fixture.path().join("nested");
+    std::fs::create_dir(&nested).unwrap();
+    for name in ["api.rs", "lib.rs", "new_adapter.rs"] {
+        let path = nested.join(name);
+        std::fs::write(&path, "impl Owner { pub fn bypass() {} }").unwrap();
+        assert!(
+            std::panic::catch_unwind(|| scan(fixture.path(), fixture.path())).is_err(),
+            "guard missed {}",
+            path.display()
+        );
+        std::fs::remove_file(path).unwrap();
     }
 }
 

@@ -127,20 +127,37 @@ fn implementations_cannot_introduce_public_methods_or_exports() {
             visit::visit_item_use(self, item);
         }
     }
-    fn scan(path: &Path) {
+    fn scan(path: &Path, root: &Path) {
         for entry in fs::read_dir(path).unwrap() {
             let path = entry.unwrap().path();
             if path.is_dir() {
-                scan(&path);
+                scan(&path, root);
             } else if path.extension().is_some_and(|ext| ext == "rs")
-                && path.file_name().unwrap() != "api.rs"
-                && path.file_name().unwrap() != "lib.rs"
+                && path != root.join("api.rs")
+                && path != root.join("lib.rs")
             {
                 Private.visit_file(&syn::parse_file(&fs::read_to_string(path).unwrap()).unwrap());
             }
         }
     }
-    scan(&Path::new(env!("CARGO_MANIFEST_DIR")).join("src"));
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    scan(&root, &root);
+    let fixture = tempfile::tempdir().unwrap();
+    fs::write(fixture.path().join("api.rs"), "pub struct Contract;").unwrap();
+    fs::write(fixture.path().join("lib.rs"), "pub mod api;").unwrap();
+    scan(fixture.path(), fixture.path());
+    let nested = fixture.path().join("nested");
+    fs::create_dir(&nested).unwrap();
+    for name in ["api.rs", "lib.rs", "new_adapter.rs"] {
+        let path = nested.join(name);
+        fs::write(&path, "impl Owner { pub fn bypass() {} }").unwrap();
+        assert!(
+            std::panic::catch_unwind(|| scan(fixture.path(), fixture.path())).is_err(),
+            "guard missed {}",
+            path.display()
+        );
+        fs::remove_file(path).unwrap();
+    }
 }
 
 #[test]

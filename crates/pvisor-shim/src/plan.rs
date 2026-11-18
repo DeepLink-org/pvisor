@@ -744,8 +744,8 @@ fn vm_resource_limits(spec: &Spec) -> VmResourceLimits {
                 .as_ref()
                 .and_then(|cpu| cpu.period())
                 .filter(|period| *period > 0)
-                .unwrap_or(100_000) as i64;
-            ((quota + period - 1) / period).clamp(1, u8::MAX as i64) as u8
+                .unwrap_or(100_000);
+            (quota as u64).div_ceil(period).clamp(1, u8::MAX as u64) as u8
         });
     VmResourceLimits {
         memory_limit_mib,
@@ -796,10 +796,9 @@ fn plan_vm_shape(
     match annotations.get(format!("{ANNOTATION_PREFIX}vm.memory-mib").as_str()) {
         Some(raw) => match raw.trim().parse::<u32>() {
             Ok(ram) if ram > 0 => {
-                if limits
-                    .memory_limit_mib
-                    .is_some_and(|limit| limit > ram + VM_RAM_RESERVE_MIB)
-                {
+                if limits.memory_limit_mib.is_some_and(|limit| {
+                    u64::from(limit) > u64::from(ram) + u64::from(VM_RAM_RESERVE_MIB)
+                }) {
                     warnings.push(format!(
                         "io.pvisor.vm.memory-mib pins the guest to {ram} MiB more than the {VM_RAM_RESERVE_MIB} MiB reserve below the container memory limit ({} MiB); the guest cannot use the difference",
                         limits.memory_limit_mib.unwrap(),
@@ -2479,6 +2478,7 @@ mod tests {
             ("io.pvisor.vm.cpus", "0"),
             ("io.pvisor.vm.memory-mib", "1Gi"),
             ("io.pvisor.vm.memory-mib", "0"),
+            ("io.pvisor.vm.memory-mib", "4294967296"),
         ] {
             let mut annotations = HashMap::new();
             annotations.insert("io.pvisor.executor".to_string(), "vm".to_string());
@@ -2509,6 +2509,49 @@ mod tests {
                 ram_mib: 256
             }
         );
+    }
+
+    #[test]
+    fn vm_shape_handles_maximum_annotation_and_cpu_limits_without_overflow() {
+        for ram in [u32::MAX - 256, u32::MAX - 255, u32::MAX] {
+            for (quota, period, cpus) in [
+                (i64::MAX, u64::MAX, 1),
+                (i64::MAX, 100_000, 255),
+                (1, u64::MAX, 1),
+            ] {
+                let spec = vm_spec_with(
+                    serde_json::json!({"resources": {
+                        "memory": {"limit": 5368709120i64},
+                        "cpu": {"quota": quota, "period": period}
+                    }}),
+                    serde_json::json!({"io.pvisor.executor": "vm", "io.pvisor.vm.memory-mib": ram.to_string()}),
+                );
+                let plan =
+                    build_plan(&spec, "c1", Path::new("/b"), vec![], IoPlan::default()).unwrap();
+                assert_eq!(plan.vm_config().ram_mib, ram);
+                assert_eq!(plan.vm_config().cpus, cpus);
+                assert!(plan.warnings.is_empty());
+            }
+        }
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn vm_shape_uses_overflow_free_resource_arithmetic(
+            ram in 1u32..=u32::MAX, quota in 1i64..=i64::MAX, period in 1u64..=u64::MAX,
+        ) {
+            let spec = vm_spec_with(
+                serde_json::json!({"resources": {
+                    "memory": {"limit": 5368709120i64}, "cpu": {"quota": quota, "period": period}
+                }}),
+                serde_json::json!({"io.pvisor.executor": "vm", "io.pvisor.vm.memory-mib": ram.to_string()}),
+            );
+            let plan = build_plan(&spec, "c1", Path::new("/b"), vec![], IoPlan::default()).unwrap();
+            let expected_cpu = (quota as u128).div_ceil(period as u128).clamp(1, 255) as u8;
+            proptest::prop_assert_eq!(plan.vm_config().cpus, expected_cpu);
+            proptest::prop_assert_eq!(plan.vm_config().ram_mib, ram);
+            proptest::prop_assert_eq!(plan.warnings.is_empty(), 5120u64 <= u64::from(ram) + 256);
+        }
     }
 
     #[test]
