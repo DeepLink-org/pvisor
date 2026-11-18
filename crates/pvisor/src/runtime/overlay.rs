@@ -12,6 +12,7 @@
 //! ```
 //!
 use super::implant::OverlayHint;
+use super::registry::LEASE_FILENAME;
 use pvisor_core::overlay::OverlayConfig;
 pub use pvisor_core::overlay::{OverlayRecord, OverlayState, OverlayUpper};
 use pvisor_journal::api::{DurableFiles, Persistence};
@@ -294,24 +295,65 @@ pub fn lower_stack_from_config(
     Ok(lowers)
 }
 
+/// A run storage claims its directory with a lease before any other state.
+/// Sibling stages inside a workspace are pVisor-internal trees that mutate
+/// during concurrent prepares; they never belong in a workspace snapshot.
+/// A directory between creation and its lease is empty, so copying it is
+/// harmless.
+fn is_managed_stage(dir: &Path) -> bool {
+    dir.join(LEASE_FILENAME)
+        .symlink_metadata()
+        .map(|metadata| metadata.is_file())
+        .unwrap_or(false)
+}
+
 fn copy_tree(source: &Path, destination: &Path, excluded: &Path) -> std::io::Result<()> {
+    let entries = match std::fs::read_dir(source) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+    };
     std::fs::create_dir_all(destination)?;
-    for entry in std::fs::read_dir(source)? {
-        let entry = entry?;
+    for entry in entries {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error),
+        };
         let from = entry.path();
-        if from.starts_with(excluded) {
+        if from.starts_with(excluded) || is_managed_stage(&from) {
             continue;
         }
         let to = destination.join(entry.file_name());
-        let kind = std::fs::symlink_metadata(&from)?.file_type();
+        let kind = match std::fs::symlink_metadata(&from) {
+            Ok(metadata) => metadata.file_type(),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error),
+        };
         if kind.is_symlink() {
-            std::os::unix::fs::symlink(std::fs::read_link(&from)?, &to)?;
-            copy_host_metadata(&from, &to)?;
+            match std::fs::read_link(&from)
+                .and_then(|target| std::os::unix::fs::symlink(&target, &to))
+            {
+                Ok(()) => match copy_host_metadata(&from, &to) {
+                    Ok(()) => {}
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+                    Err(error) => return Err(error),
+                },
+                Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+                Err(error) => return Err(error),
+            }
         } else if kind.is_dir() {
             copy_tree(&from, &to, excluded)?;
         } else if kind.is_file() {
-            std::fs::copy(&from, &to)?;
-            copy_host_metadata(&from, &to)?;
+            match std::fs::copy(&from, &to) {
+                Ok(_) => match copy_host_metadata(&from, &to) {
+                    Ok(()) => {}
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+                    Err(error) => return Err(error),
+                },
+                Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+                Err(error) => return Err(error),
+            }
         }
     }
     copy_host_metadata(source, destination)?;
@@ -709,6 +751,45 @@ mod tests {
     #[cfg(target_os = "macos")]
     use std::os::unix::fs::MetadataExt;
     use tempfile::tempdir;
+
+    #[test]
+    fn workspace_snapshot_excludes_managed_stages_and_own_storage() {
+        let workspace = tempdir().unwrap();
+        std::fs::write(workspace.path().join("user.txt"), b"data").unwrap();
+        let sibling = workspace.path().join("sibling");
+        std::fs::create_dir_all(&sibling).unwrap();
+        std::fs::write(sibling.join(LEASE_FILENAME), b"").unwrap();
+        std::fs::write(sibling.join("payload"), b"internal").unwrap();
+        let own = workspace.path().join("own");
+        std::fs::create_dir_all(&own).unwrap();
+        std::fs::write(own.join("run.json"), b"{}").unwrap();
+        // A lone lock file is ordinary user content; only directories that
+        // carry a lease inside are managed stages.
+        std::fs::write(workspace.path().join(LEASE_FILENAME), b"user lock file").unwrap();
+        let destination = tempdir().unwrap().path().join("snapshot");
+        copy_tree(workspace.path(), &destination, &own).unwrap();
+        assert!(destination.join("user.txt").is_file());
+        assert!(destination.join(LEASE_FILENAME).is_file());
+        assert!(!destination.join("sibling").exists());
+        assert!(!destination.join("own").exists());
+    }
+
+    #[test]
+    fn workspace_snapshot_skips_concurrently_deleted_entries() {
+        let workspace = tempdir().unwrap();
+        let outside = tempdir().unwrap();
+        std::fs::write(workspace.path().join("file"), b"x").unwrap();
+        let gone = workspace.path().join("gone");
+        std::fs::create_dir_all(&gone).unwrap();
+        std::fs::write(gone.join("inner"), b"y").unwrap();
+        let destination = outside.path().join("snapshot");
+        std::fs::remove_dir_all(&gone).unwrap();
+        let unexcluded = outside.path().join("no-storage");
+        copy_tree(&gone, &destination.join("gone"), &unexcluded).unwrap();
+        copy_tree(workspace.path(), &destination, &unexcluded).unwrap();
+        assert!(destination.join("file").is_file());
+        assert!(!destination.join("gone").exists());
+    }
 
     #[test]
     fn readonly_inspect_uses_ordered_declarations_and_mutable_legacy_fallback() {
