@@ -1,6 +1,8 @@
 //! Bounded hostile DNS trace through the public length-prefixed guest link.
 mod support;
-use pvisor_overlaynet::api::{EgressControl, VmNetworkConfiguration, VmNetworkRuntime};
+use pvisor_overlaynet::api::{
+    EgressControl, InterceptionObservation, VmNetworkConfiguration, VmNetworkRuntime,
+};
 use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
 use std::sync::Arc;
@@ -172,6 +174,7 @@ fn rejected_syn_headers_do_not_consume_the_only_flow_slot() {
     );
     let mut config = VmNetworkConfig::new(egress, EgressContext::default());
     config.max_flows = 1;
+    let observations = config.metrics.clone();
     let (network, mut stream) = support::start(config).unwrap();
     stream
         .set_read_timeout(Some(Duration::from_secs(2)))
@@ -246,7 +249,8 @@ fn rejected_syn_headers_do_not_consume_the_only_flow_slot() {
     let mut foreign_destination = bad_base.clone();
     foreign_destination[..6].copy_from_slice(&[2, 0x50, 0x56, 0, 0, 99]);
     rejected.push(foreign_destination);
-    assert_eq!(rejected.len(), 16);
+    rejected.push(syn([2, 4, 5, 180], 40000, std::net::Ipv4Addr::UNSPECIFIED));
+    assert_eq!(rejected.len(), 17);
     let query = query(&[4, 7]);
     let stable = exchange(&mut stream, &query, 0, 1);
     for frame in &rejected {
@@ -254,6 +258,7 @@ fn rejected_syn_headers_do_not_consume_the_only_flow_slot() {
         // Ordered UDP request/reply is a backend progress barrier, and confirms
         // recovery of an unrelated flow without sleeps or waiting for silence.
         assert_eq!(exchange(&mut stream, &query, 0, 1), stable);
+        assert_eq!(observations.snapshot().tcp_flows_opened, 0);
     }
     send(&mut stream, &good);
     let reply = receive(&mut stream);
@@ -263,8 +268,8 @@ fn rejected_syn_headers_do_not_consume_the_only_flow_slot() {
     assert!(tcp.syn() && tcp.ack() && !tcp.rst());
     assert!(tcp.verify_checksum(&ROUTER_IPV4.into(), &GUEST_IPV4.into()));
     let metrics = network.shutdown().unwrap();
-    assert_eq!(metrics.dns_queries, 17);
-    assert_eq!(metrics.dns_answers, 17);
+    assert_eq!(metrics.dns_queries, 18);
+    assert_eq!(metrics.dns_answers, 18);
     assert_eq!(metrics.tcp_flows_opened, 1);
     assert_eq!(metrics.tcp_flows_denied, 0);
     assert_eq!(metrics.tcp_connect_failures, 0);

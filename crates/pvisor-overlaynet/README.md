@@ -86,12 +86,14 @@ answers and no synthetic-address allocation after each refusal.
 TCP SYN admission matches the stack's Ethernet destination filter and validates
 IPv4 and TCP headers with its semantic parsers before allocating a flow slot,
 including TCP options, nonzero ports and flag combinations.
-Unsupported fragments and invalid IP versions cannot
-reserve listeners. The same test fixture sends 16 deterministic malformed,
-truncated or foreign-unicast-destination SYN frames through a one-slot backend,
-checks uninterrupted UDP DNS, and then requires an unrelated valid TCP DNS SYN
-to receive SYN-ACK. This
-guards against rejected packets pinning the table and resetting healthy flows.
+Unsupported fragments, unspecified TCP destinations and invalid IP versions cannot
+reserve listeners. The same test fixture sends 17 deterministic malformed,
+truncated, unspecified-destination or foreign-unicast-destination SYN frames
+through a one-slot backend, checks uninterrupted UDP DNS, and then requires an
+unrelated valid TCP DNS SYN to receive SYN-ACK. Each rejected frame must leave
+the opened-flow counter at zero, so a wildcard listener cannot hide an unintended
+allocation. This guards against rejected packets pinning the table and resetting
+healthy flows.
 
 Does not own LLM protocol adaptation, upstream selection, session correlation,
 capture events, or Journal writes.

@@ -1188,6 +1188,7 @@ fn initial_tcp_syn(frame: &[u8], guest_address: Ipv4Addr) -> Option<FlowKey> {
     let checksum_caps = ChecksumCapabilities::default();
     Ipv4Repr::parse(&ipv4, &checksum_caps).ok()?;
     if ipv4.src_addr() != guest_address
+        || ipv4.dst_addr().is_unspecified()
         || ipv4.next_header() != IpProtocol::Tcp
         || ipv4.more_frags()
         || ipv4.frag_offset() != 0
