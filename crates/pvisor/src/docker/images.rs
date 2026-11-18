@@ -46,7 +46,8 @@ impl Store {
 
     /// Import an ordinary image from a fixed S3/HTTP(S) publication, fetching only
     /// its descriptor, OCI configuration and V2 root metadata. Host paths are
-    /// rebound to this store. Existing names require `refresh`; failures leave
+    /// rebound to this store. A digest-qualified name must match the published
+    /// manifest. Existing names require `refresh`; failures leave
     /// the catalog unchanged, though verified metadata may remain cached.
     /// The publisher is trusted for launch defaults. No mutable name resolution,
     /// OCI fallback, image data download or remote writes occur.
@@ -56,7 +57,7 @@ impl Store {
         source: &str,
         refresh: bool,
     ) -> anyhow::Result<Image> {
-        let key = image_reference_key(reference)?;
+        let (key, pinned) = crate::image::oci::cache_reference(reference)?;
         let _pull = self.image_pull_lock(reference, "repository")?;
         {
             let _guard = self.lock()?;
@@ -67,6 +68,14 @@ impl Store {
         }
         let mut image: Image = serde_json::from_slice(&Self::read_image_repository(source)?)
             .context("publication is not an ordinary image")?;
+        if pinned {
+            let (_, expected) = key.rsplit_once('@').context("missing manifest digest")?;
+            ensure!(
+                image.digest == expected,
+                "publication manifest digest mismatch: expected {expected}, got {}",
+                image.digest
+            );
+        }
         image.reference = reference.into();
         image.cache.location = self.images.pool();
         image.cache.repository = Some(source.trim_end_matches('/').into());
@@ -132,8 +141,8 @@ impl Store {
         cache::resolve_repository(name, registries)
     }
 
-    /// Publish a complete immutable bundle, then conditionally update
-    /// `refs/NAME.json`. Concurrent different updates fail rather than overwrite
+    /// Observe `refs/NAME.json` before publishing a complete immutable bundle,
+    /// then update the reference conditionally. Conflicting updates fail rather than overwrite
     /// an unobserved winner; uncertain acknowledgements are read back. Failure
     /// can leave an unreferenced bundle. Returns its immutable repository root.
     pub fn publish_registry_image(
@@ -143,9 +152,9 @@ impl Store {
         destination: &str,
         template: &[u8],
     ) -> anyhow::Result<String> {
-        Self::validate_image_key(name)?;
+        let reference = cache::PublicationReference::observe(destination, name)?;
         let location = self.publish_image_repository(image, destination, template)?;
-        cache::publish_reference(destination, name, &location)?;
+        reference.commit(&location)?;
         Ok(location)
     }
 

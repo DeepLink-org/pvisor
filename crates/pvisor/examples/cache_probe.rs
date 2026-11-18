@@ -17,6 +17,15 @@ fn main() -> anyhow::Result<()> {
                 writeln!(stdout)?;
             }
         }
+        [operation, image, architecture, blobs] if operation == "prepare-with-blobs" => {
+            let response = CacheClient::from_env()?.prepare_with_blobs(
+                image,
+                architecture,
+                std::path::Path::new(blobs),
+            )?;
+            serde_json::to_writer(&mut stdout, &response)?;
+            writeln!(stdout)?;
+        }
         [operation, handle, path] if operation == "read-file" => {
             let client = CacheClient::from_env()?;
             let mut offset = 0;
@@ -34,7 +43,9 @@ fn main() -> anyhow::Result<()> {
                 offset += u64::from(MAX_READ);
             }
         }
-        _ => bail!("usage: cache_probe REQUEST_JSON | cache_probe read-file HANDLE PATH"),
+        _ => bail!(
+            "usage: cache_probe REQUEST_JSON | cache_probe read-file HANDLE PATH | cache_probe prepare-with-blobs IMAGE ARCH BLOB_DIR"
+        ),
     }
     Ok(())
 }

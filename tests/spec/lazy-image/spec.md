@@ -86,8 +86,9 @@ Without `--from`, prepared-catalog resolution is selected only by explicit
 Import authenticates the descriptor/template and root metadata, then installs
 the local reference atomically without fetching data objects. An existing name
 requires `--refresh` in this explicit import mode; failed refresh leaves its
-old record and pinned revision unchanged. Later reads stay on that publication
-and cannot re-resolve a mutable tag to another version.
+old record and pinned revision unchanged. An ordinary digest-qualified import
+name must match the published manifest digest. Later reads stay on that
+publication and cannot re-resolve a mutable tag to another version.
 
 Ordinary descriptors use the existing `Image` record; prepared descriptors keep
 `PreparedImage`. Catalog selection determines the descriptor contract. Bundles
@@ -98,8 +99,8 @@ prepared publications without the asset remain importable for daemon runtime;
 full OCI metadata queries then fail explicitly. Ordinary import requires it.
 
 Prepared templates preserve engine/profile flags, entrypoint, cmd, environment,
-E2B resource/version settings and the pinned V2 image. Rebind only host-local
-paths. `pvisor-daemon prepare-image` and `registry` remain available until a
+E2B resource/version settings and the pinned V2 image. Reject invalid launch
+profiles before updating the record. Rebind only host-local paths. `pvisor-daemon prepare-image` and `registry` remain available until a
 separate equivalent migration is specified; this request retires only `image`.
 The image commands access the prepared catalog in-process through the daemon
 crate's Rust API. Daemon serve consumes the same prepared records.
@@ -114,8 +115,9 @@ retain the existing reachable-pack export checks so removed private contents
 cannot leak through unused pack slots.
 
 Complete and verify content/index dependencies before making the descriptor
-and name reference visible. Conditional-write conflicts fail instead of
-overwriting an unobserved publisher; reconcile lost acknowledgements using
+and name reference visible. Prepared publication observes the name reference
+before uploading the bundle. Conditional-write conflicts fail instead of
+overwriting an intervening publisher; reconcile lost acknowledgements using
 exact bytes/publication identity. Partial failures can leave unreferenced remote
 objects but cannot replace an old visible publication or alter the source
 catalog. Missing objects, corruption and authorization failures remain errors,

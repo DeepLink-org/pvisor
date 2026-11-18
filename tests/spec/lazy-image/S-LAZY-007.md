@@ -5,7 +5,9 @@
 **Contract**: Existing filesystem publication remains readable by independent
 read-only filesystem and HTTP clients after OCI shutdown and staging removal.
 File bytes match the independent source fixture. Read-only prepare/refresh
-refusals do not mutate the pool; corrupt remote data fails without emitting
+refusals do not mutate the pool. Seeded preparation works when blob downloads
+are denied and rejects missing or corrupt local input. Corrupt remote data fails
+without emitting
 unverified file bytes or repairing shared objects in place.
 
 **Prerequisites**: The Rust cache client example, Python 3, Bash, OpenSSL and
@@ -22,6 +24,31 @@ $ python3 "$TESTDIR/../fixture.py" use S-LAZY-007 --timeout 180 <<'CASE'
 > lazy_cache_prepare "$LAZY_OCI" > prepared.json
 > json_expect prepared.json /digest "\"$LAZY_DIGEST\""
 > handle=$(journey_json prepared.json /image_handle)
+> test -z "$(find "$PVISOR_IMAGE_STORE/staging" -mindepth 1 -print)"
+> seeds="$CASE_ROOT/registry/blobs"
+> snapshot seeds "$seeds"
+> touch "$CASE_ROOT/registry/deny-blobs"
+> PVISOR_CACHE_LOCATION="$CASE_ROOT/seeded" "$PVISOR_CASE_CACHE_PROBE" prepare-with-blobs "$LAZY_OCI" "${LAZY_PLATFORM#linux/}" "$seeds" > seeded.json
+> json_expect seeded.json /digest "\"$LAZY_DIGEST\""
+> assert_unchanged seeds "$seeds"
+> rm "$CASE_ROOT/registry/deny-blobs"
+> mkdir "$CASE_ROOT/empty-blobs"
+> expect_refused env PVISOR_CACHE_LOCATION="$CASE_ROOT/incomplete" "$PVISOR_CASE_CACHE_PROBE" prepare-with-blobs "$LAZY_OCI" "${LAZY_PLATFORM#linux/}" "$CASE_ROOT/empty-blobs" > incomplete.stdout 2> incomplete.stderr
+> grep -F 'read seeded OCI blob' incomplete.stderr
+> test ! -s incomplete.stdout
+> test -z "$(find "$CASE_ROOT/incomplete" -name HEAD.json -print)"
+> cp -R "$seeds" "$CASE_ROOT/corrupt-blobs"
+> python3 - "$CASE_ROOT/corrupt-blobs" <<'PY'
+> import sys
+> from pathlib import Path
+> for blob in Path(sys.argv[1]).iterdir():
+>     data = blob.read_bytes()
+>     blob.write_bytes(bytes([data[0] ^ 1]) + data[1:])
+> PY
+> expect_refused env PVISOR_CACHE_LOCATION="$CASE_ROOT/incomplete" "$PVISOR_CASE_CACHE_PROBE" prepare-with-blobs "$LAZY_OCI" "${LAZY_PLATFORM#linux/}" "$CASE_ROOT/corrupt-blobs" > incomplete.stdout 2> incomplete.stderr
+> grep -F 'is corrupt' incomplete.stderr
+> test ! -s incomplete.stdout
+> test -z "$(find "$CASE_ROOT/incomplete" -name HEAD.json -print)"
 > test -z "$(find "$PVISOR_IMAGE_STORE/staging" -mindepth 1 -print)"
 > lazy_stop_registry
 > rm -rf -- "$PVISOR_IMAGE_STORE"

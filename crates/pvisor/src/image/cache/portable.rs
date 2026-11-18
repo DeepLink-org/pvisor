@@ -7,7 +7,7 @@ use pvisor_journal::api::{DurableFiles, Persistence};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
 use std::num::NonZeroUsize;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 mod binary;
@@ -337,7 +337,7 @@ impl PortableCache {
                 image,
                 architecture,
                 refresh,
-            } => self.prepare(&image, &architecture, refresh),
+            } => self.prepare(&image, &architecture, refresh, None),
             Request::Metadata {
                 handle,
                 object_name,
@@ -486,12 +486,18 @@ impl PortableCache {
         ))
     }
 
-    fn prepare(
+    pub(super) fn prepare(
         &self,
         image: &str,
         architecture: &str,
         refresh: bool,
+        seeded_blobs: Option<&Path>,
     ) -> anyhow::Result<(Response, Vec<u8>)> {
+        ensure!(
+            seeded_blobs.is_none()
+                || (matches!(self.storage, Storage::Filesystem(_)) && !self.read_only),
+            "seeded OCI preparation requires a writable filesystem cache"
+        );
         let platform = platform(architecture)?;
         let local = if matches!(&self.storage, Storage::Pool(_)) && !self.read_only {
             Some(crate::image::store::LocalStore::open(
@@ -533,7 +539,8 @@ impl PortableCache {
             None => crate::image::store::LocalStore::discover(self.local_store.clone())?,
         };
         let staging = import_store.staging()?;
-        let store = crate::image::oci::ImageStore::new(Some(staging.path().to_owned()))?;
+        let store = crate::image::oci::ImageStore::new(Some(staging.path().to_owned()))?
+            .with_seeded_blobs(seeded_blobs);
         let prepared =
             store.prepare_with_refresh(image, architecture, refresh || observed.is_some())?;
         if let Some(local) = local {

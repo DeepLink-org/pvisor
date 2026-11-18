@@ -28,9 +28,20 @@ class RepositoryFixtureTests(unittest.TestCase):
         errors = (self.root / "stderr").open("wb")
         self.addCleanup(errors.close)
         self.process = subprocess.Popen(
-            [sys.executable, str(Path(__file__).with_name("repository.py")), str(self.objects),
-             "--ready", str(self.ready), "--requests", str(self.requests), "--deny", str(self.deny)],
-            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=errors,
+            [
+                sys.executable,
+                str(Path(__file__).with_name("repository.py")),
+                str(self.objects),
+                "--ready",
+                str(self.ready),
+                "--requests",
+                str(self.requests),
+                "--deny",
+                str(self.deny),
+            ],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=errors,
         )
         self.addCleanup(self.stop)
         deadline = time.monotonic() + 5

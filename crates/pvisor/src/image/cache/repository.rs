@@ -1,7 +1,7 @@
 //! Self-contained immutable V2 publications for object storage and static mirrors.
 use super::{
     portable::MAX_CONTROL,
-    storage::{MAX_OBJECT, Storage},
+    storage::{MAX_OBJECT, Storage, StoredObject},
 };
 use anyhow::{Context, ensure};
 use serde::{Deserialize, Serialize};
@@ -125,47 +125,76 @@ fn is_publication(value: &str) -> bool {
             .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
-pub(crate) fn publish_reference(
-    destination: &str,
-    name: &str,
-    location: &str,
-) -> anyhow::Result<()> {
-    validate_name(name)?;
-    validate_destination(destination)?;
-    let publication = location
-        .strip_prefix(&format!("{}/", destination.trim_end_matches('/')))
-        .context("publication belongs to a different registry")?;
-    ensure!(is_publication(publication), "invalid registry publication");
-    let storage = if let Some(path) = destination.strip_prefix("file://") {
-        Storage::filesystem(path.into(), true)?
-    } else {
-        Storage::s3(destination)?
-    };
-    let key = format!("refs/{name}.json");
-    let bytes = serde_json::to_vec(&Reference {
-        version: 1,
-        publication: publication.into(),
-    })?;
-    let previous = storage.read(&key, None, 4096)?;
-    if previous.as_ref().is_some_and(|v| v.bytes == bytes) {
-        return Ok(());
+pub(crate) struct PublicationReference<'a> {
+    destination: &'a str,
+    storage: Storage,
+    key: String,
+    previous: Option<StoredObject>,
+}
+
+impl<'a> PublicationReference<'a> {
+    pub(crate) fn observe(destination: &'a str, name: &str) -> anyhow::Result<Self> {
+        validate_name(name)?;
+        validate_destination(destination)?;
+        let storage = if let Some(path) = destination.strip_prefix("file://") {
+            Storage::filesystem(path.into(), true)?
+        } else {
+            Storage::s3(destination)?
+        };
+        let key = format!("refs/{name}.json");
+        let previous = storage.read(&key, None, 4096)?;
+        if let Some(previous) = &previous {
+            ensure!(
+                previous.version.e_tag.is_some() || previous.version.version.is_some(),
+                "registry backend lacks a conditional-write token"
+            );
+        }
+        Ok(Self {
+            destination,
+            storage,
+            key,
+            previous,
+        })
     }
-    if let Some(previous) = &previous {
-        ensure!(
-            previous.version.e_tag.is_some() || previous.version.version.is_some(),
-            "registry backend lacks a conditional-write token"
-        );
+
+    pub(crate) fn commit(self, location: &str) -> anyhow::Result<()> {
+        let publication = location
+            .strip_prefix(&format!("{}/", self.destination.trim_end_matches('/')))
+            .context("publication belongs to a different registry")?;
+        ensure!(is_publication(publication), "invalid registry publication");
+        let bytes = serde_json::to_vec(&Reference {
+            version: 1,
+            publication: publication.into(),
+        })?;
+        let matches_publication = || -> anyhow::Result<bool> {
+            Ok(self
+                .storage
+                .read(&self.key, None, 4096)?
+                .is_some_and(|value| value.bytes == bytes))
+        };
+        if self
+            .previous
+            .as_ref()
+            .is_some_and(|value| value.bytes == bytes)
+        {
+            ensure!(
+                matches_publication()?,
+                "registry reference changed during publication"
+            );
+            return Ok(());
+        }
+        let expected = self.previous.map(|value| value.version);
+        if let Err(error) = self
+            .storage
+            .compare_and_swap(&self.key, bytes.clone(), expected)
+        {
+            ensure!(
+                matches_publication()?,
+                "registry reference commit failed: {error:#}"
+            );
+        }
+        Ok(())
     }
-    let expected = previous.map(|v| v.version);
-    if let Err(error) = storage.compare_and_swap(&key, bytes.clone(), expected) {
-        ensure!(
-            storage
-                .read(&key, None, 4096)?
-                .is_some_and(|v| v.bytes == bytes),
-            "registry reference commit failed: {error:#}"
-        );
-    }
-    Ok(())
 }
 
 pub(crate) fn read_repository_template(location: &str) -> anyhow::Result<Vec<u8>> {

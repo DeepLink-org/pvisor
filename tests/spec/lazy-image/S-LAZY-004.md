@@ -5,7 +5,8 @@
 **Contract**: A locally built image is published, then imported into an
 independent image catalog without fetching data objects. Ordinary image inspect
 keeps its array/Id contract and exposes the pinned source in its Pvisor extension.
-Duplicate import and failed refresh preserve the old binding. Later diagnostic
+Duplicate import and failed refresh preserve the old binding. A digest-qualified
+name accepts only the matching manifest. Later diagnostic
 reads verify independent exact bytes without a registry or publisher process.
 
 **Prerequisites**: Executable `SUBJECT_BIN`, the Rust cache client example,
@@ -27,6 +28,12 @@ $ python3 "$TESTDIR/../fixture.py" use S-LAZY-004 --timeout 180 <<'CASE'
 > pvisor image push lazy:producer --to "file://$CASE_ROOT/releases" > publication.json
 > source_uri=$(journey_json publication.json /source)
 > handle=$(journey_json publication.json /image_handle)
+> printf 'different revision\n' > context/small
+> pvisor build -t lazy:replacement context
+> pvisor push lazy:replacement --to "file://$CASE_ROOT/releases" > replacement.json
+> replacement_uri=$(journey_json replacement.json /source)
+> manifest_digest=$(journey_json publication.json /digest)
+> test "$(journey_json replacement.json /digest)" != "$manifest_digest"
 > snapshot publication "$CASE_ROOT/releases"
 > lazy_start_repository "$CASE_ROOT/releases"
 > remote="$LAZY_REPOSITORY/${source_uri##*/}"
@@ -54,6 +61,14 @@ $ python3 "$TESTDIR/../fixture.py" use S-LAZY-004 --timeout 180 <<'CASE'
 > pvisor image inspect lazy:reader > after-failure.json
 > cmp installed.json after-failure.json
 > rm "$CASE_ROOT/repository-deny"
+> pinned="lazy-pinned@$manifest_digest"
+> pvisor image pull "$pinned" --from "$remote"
+> pvisor image inspect "$pinned" > pinned-before.json
+> expect_refused pvisor image pull "$pinned" --from "$LAZY_REPOSITORY/${replacement_uri##*/}" --refresh > mismatch.stdout 2> mismatch.stderr
+> test ! -s mismatch.stdout
+> grep -F 'publication manifest digest mismatch' mismatch.stderr
+> pvisor image inspect "$pinned" > pinned-after.json
+> cmp pinned-before.json pinned-after.json
 > export PVISOR_CACHE_BACKEND=http PVISOR_CACHE_LOCATION="$remote" PVISOR_CACHE_READ_ONLY=true
 > "$PVISOR_CASE_CACHE_PROBE" read-file "$handle" small > small
 > "$PVISOR_CASE_CACHE_PROBE" read-file "$handle" large > large

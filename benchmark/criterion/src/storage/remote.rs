@@ -245,26 +245,26 @@ impl Remote {
                 }
             }
             let start = Instant::now();
-            let receipt: Value = serde_json::from_str(
-                &e.command(
-                    args(&[
-                        &s(&probe),
-                        &json!({"op":"prepare", "image":image["pinned"], "architecture":"amd64"})
-                            .to_string(),
-                    ]),
-                    &Env::from([
-                        ("PVISOR_CACHE_BACKEND".into(), "filesystem".into()),
-                        (
-                            "PVISOR_CACHE_LOCATION".into(),
-                            s(&e.root.join("service/cache-v2")),
-                        ),
-                        ("PVISOR_IMAGE_STORE".into(), s(&e.root.join("staging"))),
-                        ("PVISOR_CACHE_READ_ONLY".into(), "false".into()),
-                    ]),
-                    600,
-                    false,
-                )?,
-            )?;
+            let receipt: Value = serde_json::from_str(&e.command(
+                args(&[
+                    &s(&probe),
+                    "prepare-with-blobs",
+                    image["pinned"].as_str().context("pinned OCI reference")?,
+                    "amd64",
+                    &s(&source),
+                ]),
+                &Env::from([
+                    ("PVISOR_CACHE_BACKEND".into(), "filesystem".into()),
+                    (
+                        "PVISOR_CACHE_LOCATION".into(),
+                        s(&e.root.join("service/cache-v2")),
+                    ),
+                    ("PVISOR_IMAGE_STORE".into(), s(&e.root.join("staging"))),
+                    ("PVISOR_CACHE_READ_ONLY".into(), "false".into()),
+                ]),
+                600,
+                false,
+            )?)?;
             ensure!(
                 receipt["digest"] == image["digest"],
                 "server publication identity mismatch"

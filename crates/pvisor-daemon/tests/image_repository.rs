@@ -227,11 +227,17 @@ enum Fault {
     LostWriteAck,
 }
 
+struct PublicationPause {
+    reached: std::sync::mpsc::Sender<()>,
+    resume: tokio::sync::oneshot::Receiver<()>,
+}
+
 #[derive(Default)]
 struct Data {
     objects: BTreeMap<String, Vec<u8>>,
     requests: Vec<(String, String, bool)>,
     fault: Option<(Fault, &'static str)>,
+    pause_publication: Option<PublicationPause>,
     injected: usize,
     order: Option<(String, Arc<Mutex<Vec<String>>>)>,
 }
@@ -297,6 +303,18 @@ async fn serve(State(state): State<Arc<Mutex<Data>>>, request: Request) -> Respo
     let body = to_bytes(request.into_body(), 2 * 1024 * 1024)
         .await
         .unwrap();
+    if method == "PUT" && key.ends_with("/image.json") {
+        let pause = state.lock().unwrap().pause_publication.take();
+        if let Some(pause) = pause {
+            let _ = pause.reached.send(());
+            if !matches!(
+                tokio::time::timeout(Duration::from_secs(20), pause.resume).await,
+                Ok(Ok(()))
+            ) {
+                return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+            }
+        }
+    }
     let mut data = state.lock().unwrap();
     if let Some((name, order)) = &data.order {
         order.lock().unwrap().push(format!("{name}:{method}:{key}"));
@@ -680,6 +698,30 @@ fn prepared_image_commands_retain_template_metadata_and_ignore_retired_policy() 
 }
 
 #[test]
+fn invalid_template_refresh_leaves_the_installed_record_unchanged() {
+    let fixture = Fixture::new();
+    let server = Server::new();
+    let good = success(fixture.publish(&server));
+    let receiver = fixture._root.path().join("receiver");
+    success(fixture.pull(&server, &receiver, good["source"].as_str(), false));
+    let installed = receiver.join("tiny.json");
+    let before = std::fs::read(&installed).unwrap();
+
+    let path = fixture.images.join("tiny.json");
+    let mut template: PreparedImage =
+        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    assert!(template.native_guest);
+    template.native_opensandbox = true;
+    std::fs::write(path, serde_json::to_vec(&template).unwrap()).unwrap();
+    let invalid = success(fixture.publish(&server));
+    assert_ne!(invalid["source"], good["source"]);
+    let rejected = fixture.pull(&server, &receiver, invalid["source"].as_str(), true);
+    assert!(!rejected.status.success());
+    assert!(String::from_utf8_lossy(&rejected.stderr).contains("exclusive pooled engine profile"));
+    assert_eq!(std::fs::read(installed).unwrap(), before);
+}
+
+#[test]
 fn older_prepared_publications_without_oci_config_remain_importable() {
     let fixture = Fixture::new();
     let server = Server::new();
@@ -1056,6 +1098,55 @@ fn registry_reference_commit_failure_keeps_old_name_and_lost_ack_is_reconciled()
     assert_eq!(
         reference["publication"].as_str().unwrap(),
         next["source"].as_str().unwrap().rsplit('/').next().unwrap()
+    );
+}
+
+#[test]
+fn slower_publisher_cannot_overwrite_a_concurrent_reference_winner() {
+    let initial = Fixture::new();
+    let first = Fixture::new();
+    let second = Fixture::new();
+    let origin = Server::new();
+    let prior = success(initial.publish(&origin));
+    for (fixture, command) in [(&first, "first"), (&second, "second")] {
+        let path = fixture.images.join("tiny.json");
+        let mut image: PreparedImage =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        image.cmd = vec![command.into()];
+        std::fs::write(path, serde_json::to_vec(&image).unwrap()).unwrap();
+    }
+    let winner = std::thread::scope(|scope| {
+        let (reached, waiting) = std::sync::mpsc::channel();
+        let (resume, paused) = tokio::sync::oneshot::channel();
+        origin.data.lock().unwrap().pause_publication = Some(PublicationPause {
+            reached,
+            resume: paused,
+        });
+        let slow = scope.spawn(|| first.publish(&origin));
+        waiting.recv_timeout(Duration::from_secs(15)).unwrap();
+        let fast = second.publish(&origin);
+        resume.send(()).unwrap();
+        let output = slow.join().unwrap();
+        let winner = success(fast);
+        assert!(!output.status.success());
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("registry reference commit failed")
+        );
+        winner
+    });
+    assert_ne!(winner["source"], prior["source"]);
+    let reference: serde_json::Value = serde_json::from_slice(
+        &origin.data.lock().unwrap().objects["images/releases/refs/tiny.json"],
+    )
+    .unwrap();
+    assert_eq!(
+        reference["publication"],
+        winner["source"]
+            .as_str()
+            .unwrap()
+            .rsplit('/')
+            .next()
+            .unwrap()
     );
 }
 

@@ -50,7 +50,7 @@ pub(crate) use network::run_internal_if_requested as run_image_access_internal;
 pub(crate) use pool::{open_local_image, publish_local_image, published_local_image};
 pub(crate) use portable::export_pool;
 pub(crate) use repository::{
-    publish_reference, resolve_repository, validate_name as validate_registry_name,
+    PublicationReference, resolve_repository, validate_name as validate_registry_name,
     validate_registries,
 };
 pub(crate) use repository::{

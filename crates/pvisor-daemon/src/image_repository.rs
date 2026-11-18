@@ -107,6 +107,7 @@ impl PreparedCatalogService for PreparedCatalog {
             (resolved.template, resolved.repositories)
         };
         let mut image: PreparedImage = serde_json::from_slice(&bytes)?;
+        crate::runtime::validate_image_profile(&image)?;
         image.rootfs = images.join("store");
         let store = Store::open(image.rootfs.clone())?;
         image.pooled_image.cache.location = image.rootfs.join("images/pool-v2");

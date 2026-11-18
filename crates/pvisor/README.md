@@ -1446,6 +1446,9 @@ Writable filesystem/S3 cache preparation imports OCI sources under a scoped
 finishes. They retain no raw OCI layers, extracted roots or prepared records.
 Read-only preparation needs no local import directory. Registry TLS can add a
 PEM CA bundle through the host-only `SSL_CERT_FILE`; invalid bundles fail closed.
+For writable filesystem caches, `CacheClient::prepare_with_blobs` resolves the
+manifest through OCI and reads the config and layers from a supplied, immutable
+SHA-256 directory. Missing or corrupt seed blobs fail preparation.
 
 Pool, filesystem and S3 stores use one V2 physical format. All filesystem
 metadata is inline in independently compressed directory radix frames, routed by
