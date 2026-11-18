@@ -10,6 +10,10 @@ processes. The shared scenario fixture cleans their process group on every exit.
 The TLS OCI input is copied from the existing CLI registry fixture rather than
 reimplemented. All endpoints use ephemeral loopback ports and bounded readiness.
 
+S-LAZY-004 and S-LAZY-007 send file and preparation requests through the Rust
+`cache_probe` example. The cases task builds it separately from the installed
+CLI. Set `PVISOR_CASE_CACHE_PROBE` to a matching executable for a prebuilt run.
+
 `repository.py` serves a private publication directory with exact single-range
 GET responses and records requested object paths. It can reject all reads for a
 controlled failure. Its unit tests independently check response bytes, ranges,

@@ -88,9 +88,8 @@ reads and validates the recorded Bundle; this is not an O(1) history index.
 owns Session lifecycle, scheduling, policy adaptation and execution. The
 `pvisor-cli` application owns Session lifecycle commands, the per-Session owner
 bootstrap, terminal/rendering code and companion discovery.
-Cache storage and the optional node resource client remain runtime components; cache
-argument parsing lives under `pvisor cache` in the app; `pvisor-daemon serve --cache`
-owns the server entry point.
+Cache storage, CacheClient and the optional node resource client remain runtime
+components. `pvisor-daemon serve --cache` owns the server entry point.
 Dockerfile builds have a separate, user-private RUN checkpoint cache under
 `PVISOR_DOCKER_HOME/build-cache-v1`. Its identity includes the native base digest,
 instruction prefix, in-scope arguments, selected COPY inputs, execution settings,
@@ -98,7 +97,7 @@ and preceding RUN output digests. Successful checkpoints are sealed OCI layers;
 metadata-only publication reuses the sealed filesystem. Build-wide shared leases
 and per-key exclusive locks coordinate concurrent builds with `builder prune`.
 Pruning takes an exclusive lease, waits for builds, and never removes published
-image pool data. This is not the distributed `pvisor cache` service. See the
+image pool data. This is not the shared image cache service. See the
 [build command profile](../pvisor-cli/README.md#vm-isolated-image-builds-experimental)
 for invalidation, cleanup controls and compatibility limits.
 Native Sessions and Docker-style VM launches authenticate and negotiate a selected
@@ -1148,7 +1147,7 @@ Python script/rootfs, conflicts with `--libraries` and does not attach a DAX
 window. This exercises the physical pager's successful-file-READ hints through
 the normal rootfs path, with full payload and private-write validation.
 
-`pvisor cache` provides `prepare`, `publish`, `list`, `stat` and `read`;
+The Rust `pvisor::cache::CacheClient` exposes the cache protocol, and
 `pvisor-daemon serve --cache` serves the cache. The optional `vm.node_socket`
 connects to a caller-provided same-host resource service; the runtime retains its
 client protocol and connection pins for restored RAM. No node server, owner

@@ -73,7 +73,7 @@ pvisor fork last --state workspace --stage ./stage/branch -- codex
 
 ## 核心命令与服务边界
 
-顶层按对象组织：容器命令管理独立 VM，Session 生命周期与工作区命令保持扁平。Sandbox 生命周期及可选池所有权使用独立 `pvisor-daemon` 程序；OCI 缓存命令使用 `pvisor cache`，服务由 `pvisor-daemon serve --cache` 提供。`replay` 从轨迹创建 Session。根帮助分成三组：Commands 提供兼容 Docker 的容器操作，Agent Commands 提供 Session 执行、审查和检查点操作，Tools 提供缓存、回放和特性查询工具。完整命令见 [CLI 参考](../reference/cli.md)，参数用 `pvisor help COMMAND` 查看。
+顶层按对象组织：容器命令管理独立 VM，Session 生命周期与工作区命令保持扁平。Sandbox 生命周期及可选池所有权使用独立 `pvisor-daemon` 程序；镜像通过 `pvisor push` 发布，缓存服务通过 `pvisor-daemon serve --cache` 提供。`replay` 从轨迹创建 Session。根帮助分成三组：Commands 提供兼容 Docker 的容器操作，Agent Commands 提供 Session 执行、审查和检查点操作，Tools 提供 daemon 服务、回放和特性查询工具。完整命令见 [CLI 参考](../reference/cli.md)，参数用 `pvisor help COMMAND` 查看。
 
 | 职责 | 入口 |
 |---|---|
@@ -82,7 +82,7 @@ pvisor fork last --state workspace --stage ./stage/branch -- codex
 | Session 不可变检查点 | `checkpoint` |
 | 轨迹回放 | `replay` |
 | 本机 sandbox 生命周期 | `pvisor-daemon prepare-image` / `serve --sandbox` 与 OpenSandbox/E2B 部分协议 API |
-| 不可变镜像缓存 | `pvisor cache prepare/publish/list/stat/read`; `pvisor-daemon serve --cache` |
+| 不可变镜像缓存 | Rust CacheClient; `pvisor-daemon serve --cache` |
 | 可选 daemon 自有共享页 | `pvisor-daemon serve --sandbox --memory-pool`；独立 `memory-pool --directory DIR` 组件 |
 
 `status --review` 是快捷形式；`review` 是详细审查入口。Session 操作直接使用顶层命令，没有 `session` 命令层。
@@ -92,7 +92,7 @@ pvisor fork last --state workspace --stage ./stage/branch -- codex
 ```bash
 pvisor-daemon serve --help
 pvisor-daemon protocol
-pvisor cache --help
+pvisor push --help
 pvisor-daemon memory-pool --help
 ```
 

@@ -955,8 +955,7 @@ behavior. The sandbox option does not change portable cache endpoint rules.
 `pvisor-daemon protocol` prints the pinned baseline. Connect SDK version 1.1.0
 with the chosen domain and protocol, and use a prepared image satisfying the
 contract above. Invoke the separately built `pvisor-daemon` executable directly.
-`pvisor cache` provides `prepare`, `publish`, `list`, `stat` and `read`.
-The daemon owns cache serving
+The Rust `pvisor::cache::CacheClient` exposes the cache protocol. The daemon owns cache serving
 through `pvisor-daemon serve --cache --cache-listen ENDPOINT --cache-image-store DIRECTORY`.
 Cache serving supports Linux and macOS and does not require KVM or cgroups.
 It preserves `PVISOR_CACHE_LOCATION` / `PVISOR_CACHE_SERVER`, `PVISOR_IMAGE_STORE`

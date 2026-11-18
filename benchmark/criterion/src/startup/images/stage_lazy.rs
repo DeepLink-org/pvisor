@@ -217,6 +217,10 @@ impl Stage {
         for name in ["pvisor", "pvisor-daemon"] {
             fs::copy(binary_dir.join(name), batch.join("tools").join(name))?;
         }
+        fs::copy(
+            binary_dir.join("examples/cache_probe"),
+            batch.join("tools/cache_probe"),
+        )?;
         fs::write(
             batch.join("harness/stage_lazy.rs"),
             include_str!("stage_lazy.rs"),
@@ -347,10 +351,8 @@ impl Stage {
         }
         let proxy = Proxy::start_unix(&batch.join("proxy.sock"), &upstream, &token)?;
         let mut prepare = process::clean_command(&[
-            batch.join("tools/pvisor").display().to_string(),
-            "cache".into(),
-            "prepare".into(),
-            format!("docker.io/library/ubuntu@{SOURCE}"),
+            batch.join("tools/cache_probe").display().to_string(),
+            json!({"op":"prepare", "image":format!("docker.io/library/ubuntu@{SOURCE}"), "architecture":"amd64"}).to_string(),
         ])?;
         prepare
             .env("PVISOR_CACHE_SERVER", &upstream)

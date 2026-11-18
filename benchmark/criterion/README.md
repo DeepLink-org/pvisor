@@ -40,3 +40,8 @@ without that option the tool chooses a new `.data/` directory. Product artifacts
 must already be built and provisioned. The tool never publishes documentation.
 Existing Python scripts that read historical evidence or draw figures are a
 display/archive layer, not this measurement path.
+
+For lazy VM, stage and remote storage experiments, build the cache client probe
+with the product toolchain and profile (`cargo build --locked --release -p pvisor
+--example cache_probe`). Leave it under `examples/` beside the product binaries.
+The harness freezes it for setup outside the measured interval.

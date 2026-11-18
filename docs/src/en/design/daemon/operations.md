@@ -1,6 +1,6 @@
 # Daemon operations
 
-Run a single-node sandbox service with the native VM runtime, private state and explicit resource capacity. Invoke `pvisor-daemon` directly. It owns sandbox services and its optional detached pool; `pvisor cache` provides cache client commands, and `pvisor-daemon serve --cache` serves the cache.
+Run a single-node sandbox service with the native VM runtime, private state and explicit resource capacity. Invoke `pvisor-daemon` directly. It owns sandbox services and its optional detached pool; Rust CacheClient provides programmatic access, and `pvisor-daemon serve --cache` serves the cache.
 
 ## Deployment {#deployment}
 

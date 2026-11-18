@@ -1,6 +1,6 @@
 # Shared image cache and storage backends
 
-`pvisor cache` reuses OCI image content through server, filesystem, or S3 backends. In server mode, `pvisor-daemon serve --cache` prepares OCI images and generates paged indexes and content objects under `<image-store>/pool-v2/`. All three backends share immutable revisions, the object format and image reader. Clients query by `image_handle`, receive no host paths, and never access registries during file queries.
+Use `pvisor push` to distribute a local image, and use the Rust cache client to inspect immutable image contents. `pvisor-daemon serve --cache` prepares OCI images for VM clients and stores their indexes and content in the local V2 pool. File queries select a pinned `image_handle` and do not contact an OCI registry.
 
 ## Local image directory {#local-image-store}
 
@@ -41,62 +41,25 @@ Server, filesystem, and S3 caches share the same prepare/list/stat/read interfac
 | `filesystem` | PVISOR_CACHE_BACKEND=filesystem and PVISOR_CACHE_LOCATION=/absolute/directory | Multiple local processes or a shared disk/NFS cache |
 | `s3` | PVISOR_CACHE_BACKEND=s3 and PVISOR_CACHE_LOCATION=s3://BUCKET/PREFIX | Share images across machines through object storage without a cache service |
 
-CLI --backend, --location, and --image-store override environment values and work before or after a subcommand. --read-only or PVISOR_CACHE_READ_ONLY=true makes the shared backend read-only: preparing an unpublished image or requesting --refresh fails explicitly without registry access or backend writes. Readers may still write their own local acceleration cache.
+Set `PVISOR_CACHE_READ_ONLY=true` to make an embedded client read-only. A read-only client cannot refresh or populate a missing shared-pool name, and may still keep a private acceleration cache.
 
-### Filesystem: publish once, read from independent processes
+### Publish a local image
 
-```sh
-pvisor cache --backend filesystem --location /mnt/pvisor-cache \
-  --image-store /tmp/pvisor-publish publish alpine:latest
-pvisor cache --backend filesystem --location /mnt/pvisor-cache \
-  --read-only prepare alpine:latest
-pvisor cache --backend filesystem --location /mnt/pvisor-cache \
-  --read-only read pvisor-v2:YOUR_IMAGE_KEY:linux-amd64:YOUR_REVISION etc/os-release
-```
-
-`--location` selects shared storage; `--image-store` or `PVISOR_IMAGE_STORE` selects the local parent for scoped `staging/.import-*` imports. Downloaded layers, extracted roots and temporary prepared records are removed on success or error. Process crashes can leave residual directories. Reads do not depend on imports after publication. Shared objects are private by default; administrators must grant read permissions for cross-UID shared disks. Read-only mode does not create a missing shared directory.
-
-### S3: a writable publisher and read-only consumers
+On the publisher, configure AWS credentials and region and use an existing bucket. Copy the receipt's `source` to the receiving machine. The example uses `jq` to extract that value.
 
 ```sh
-export AWS_DEFAULT_REGION=ap-southeast-1
-# Supply AWS credentials through environment variables or workload roles.
-export PVISOR_CACHE_BACKEND=s3
-export PVISOR_CACHE_LOCATION=s3://your-bucket/pvisor-cache
-pvisor cache --image-store /tmp/pvisor-publish publish alpine:latest
-
-# Native cache consumers only need GetObject access to this prefix.
-export PVISOR_CACHE_READ_ONLY=true
-pvisor cache prepare alpine:latest
-pvisor cache read pvisor-v2:YOUR_IMAGE_KEY:linux-amd64:YOUR_REVISION etc/os-release
-pvisor spawn --executor vm --rootfs image=alpine:latest -- /bin/sh
+pvisor pull alpine:3.20
+SOURCE=$(pvisor push alpine:3.20 --to s3://your-bucket/releases | jq -er .source)
+pvisor image pull alpine:published --from "$SOURCE"
 ```
 
-Create the bucket first; pVisor does not create buckets. Both publish and writable prepare need s3:GetObject and s3:PutObject to observe HEAD CAS tokens and verify existing immutable objects. Readers need only `s3:GetObject`. Normal operations require neither `ListBucket` nor `DeleteObject`. Storage connections remain on the host. New cache configuration and implicit AWS_* storage credentials are not projected into the guest; explicitly supplied workload environment remains the caller's decision.
+Use `--to file:///ABSOLUTE/PATH` to stage the same bundle for a static HTTP(S) mirror. The receiver imports the descriptor, OCI configuration and root metadata. File contents are read on demand. Push uses the platform recorded by the local build or pull.
 
-S3 uses SigV4 and HTTPS by default. Credentials support AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, optional AWS_SESSION_TOKEN, and EC2, ECS, and Web Identity workload roles; the [object_store S3 provider](https://docs.rs/object_store/0.13.2/object_store/aws/struct.AmazonS3Builder.html) handles fetching and renewal. Shared ~/.aws profile/SSO files are not read directly; supply exported environment credentials or use workload roles. Set AWS_DEFAULT_REGION or AWS_REGION. S3-compatible services can use AWS_ENDPOINT (or AWS_ENDPOINT_URL_S3); the HTTP example below is for a local test service.
+S3 uses SigV4 over HTTPS. Publishers need `s3:GetObject` and `s3:PutObject`; readers need `s3:GetObject`. Host environment credentials or workload roles supply authentication. For an S3-compatible service, set `AWS_ENDPOINT` and the region.
 
-```sh
-export AWS_ENDPOINT=http://127.0.0.1:9000
-export AWS_ALLOW_HTTP=true
-export AWS_ACCESS_KEY_ID=YOUR_ACCESS_KEY
-export AWS_SECRET_ACCESS_KEY=YOUR_SECRET_KEY
-export PVISOR_CACHE_BACKEND=s3
-export PVISOR_CACHE_LOCATION=s3://your-bucket/pvisor-cache
-pvisor cache prepare alpine:latest
-```
+### Shared-pool layout
 
-### Image splitting and upload tool
-
-`pvisor cache publish IMAGE` is the explicit publishing command. It pulls the selected platform's OCI manifest and layers from a registry, applies layers and whiteouts locally, walks the merged image filesystem, and uploads the file index and content blocks. Each invocation owns a temporary import below `--image-store` or `PVISOR_IMAGE_STORE` through the end of publication. It removes raw OCI data on success and failure. Host registry TLS accepts an additional PEM CA bundle through `SSL_CERT_FILE`; unreadable or invalid bundles fail explicitly.
-
-```sh
-PVISOR_CACHE_READ_ONLY=false pvisor cache publish alpine:latest \
-  --backend s3 --location s3://your-bucket/pvisor-cache \
-  --architecture amd64 --image-store /tmp/pvisor-publish
-```
-
-`--architecture` accepts `amd64` and `arm64`, defaulting to the host architecture. `publish` resolves the registry on every invocation, including without `--refresh`; temporary import records are not reused between calls. Writable `prepare` reuses shared HEAD for five minutes for mutable tags, until explicit refresh for immutable digests. `publish` always performs splitting and upload, without skipping based on a remote tag record. Conditional creation reuses existing immutable content objects and uploads missing blocks again. Read-only mode and the server backend reject publication. On success, JSON output includes the manifest digest, architecture, COMMIT digest in `metadata_generation`, and file count/logical-byte totals in `totals`. Output also includes image_handle=pvisor-v2:<image-key>:<platform>:<revision-hex>, which list/stat/read uses for queries; digest records manifest provenance.
+An existing shared-pool prefix remains usable by VM cache clients and the Rust SDK. Its mutable HEAD records serve shared-pool name resolution. A push produces an independent bundle with an `image.json` descriptor, so import it by its returned source.
 
 ```text
 s3://your-bucket/pvisor-cache/
@@ -138,7 +101,7 @@ Actual S3 traffic includes control objects, metadata pages, and complete data ch
 
 Implementation lives in `crates/pvisor/src/image/cache/`:
 
-Cache command parsing lives in `crates/pvisor-cli/src/cli/cache.rs`. `pvisor-daemon serve --cache` owns the server entry point; storage and protocol implementations remain in the runtime.
+`pvisor-daemon serve --cache` owns the server entry point. The runtime exports the Rust client.
 
 ```text
 cache/
@@ -167,18 +130,14 @@ cache/
 
 ## Usage
 
+Start the cache server, then send a Prepare request through the Rust client. The source example `cache_probe` takes a request as JSON, or reads a whole file by handle and path. Its process uses `CacheClient::from_env()`. Use `Request::List`, `Request::Stat` and `Request::Read` for file-level diagnosis in your own tools.
+
 ```sh
-# 终端 1：前台服务端，使用默认的按用户 Unix socket 与 OCI 存储
 pvisor-daemon serve --cache
 
-# 终端 2：使用同一个默认 socket
-pvisor cache prepare alpine:latest
-# Explicitly refresh a locally published tag from the registry:
-pvisor cache prepare alpine:latest --refresh
-# 从 JSON 结果复制 image_handle：
-pvisor cache list pvisor-v2:YOUR_IMAGE_KEY:linux-amd64:YOUR_REVISION
-pvisor cache stat pvisor-v2:YOUR_IMAGE_KEY:linux-amd64:YOUR_REVISION etc/os-release
-pvisor cache read pvisor-v2:YOUR_IMAGE_KEY:linux-amd64:YOUR_REVISION etc/os-release
+# From a checkout, in a separate terminal on an amd64 host:
+cargo run --locked -p pvisor --example cache_probe -- \
+  '{"op":"prepare","image":"alpine:3.20","architecture":"amd64"}'
 ```
 
 `PVISOR_CACHE_SERVER` selects the endpoint for client/server; `pvisor-daemon serve --cache --cache-listen` overrides it on the server. The default is `unix://<dirs::cache_dir()>/pvisor/cache.sock`:
@@ -204,7 +163,7 @@ Direct backends stay attached until VM completion, then release their private pr
 
 Before responding to `prepare`, the server fully prepares an uncached image and generates indexes/content objects in a temporary import directory, removed after success or an ordinary error. This is client-side lazy loading, not lazy OCI layer extraction on the server. FUSE adapters and existing virtio-fs workers handle requests synchronously, so a miss can delay unrelated filesystem requests. There is no explicit vCPU pause. Disk quotas/eviction, original OCI xattrs and asynchronous virtio-fs completion are outside this implementation.
 
-The public blocking Rust client is `pvisor::cache::CacheClient::from_env()`. Explicit `pvisor cache prepare/list/stat/read` commands do not use the VM's local fallback policy.
+The blocking Rust client uses its selected backend directly. Automatic local fallback belongs to VM source selection.
 
 Unix sockets use 0600 permissions and require the same effective user at both ends. A lock prevents duplicate servers. Restart reclaims stale sockets, never ordinary files, symlinks or active listeners. Place the socket in a server-owned directory. Ctrl-C may leave a stale socket; manual cleanup is unnecessary.
 
@@ -221,7 +180,8 @@ ssh -N -L 7447:127.0.0.1:7447 your-server
 # 客户端 shell，使用同一密钥：
 export PVISOR_CACHE_TOKEN='YOUR_RANDOM_SECRET'
 export PVISOR_CACHE_SERVER=tcp://127.0.0.1:7447
-pvisor cache prepare alpine:latest
+cargo run --locked -p pvisor --example cache_probe -- \
+  '{"op":"prepare","image":"alpine:3.20","architecture":"amd64"}'
 ```
 
 TCP requires a nonempty token and literal loopback IP endpoints. There is no built-in TLS; use SSH encryption. Tokens grant all cache operations, including preparing new images. This is a trusted shared service rather than a public multitenant API. Unix clients must also supply tokens when configured on the server.
@@ -248,7 +208,7 @@ Paths/names use JSON arrays of Unix filename bytes, preserving non-UTF-8 names. 
 | `open` | `handle`, `architecture` | `prepared` |
 | `metadata` | `handle`, `object_name`, `offset`, `length` | `data` + bytes |
 
-`prepare` requests a Linux image for the client's architecture, independent of server architecture. The published V2 HEAD contains the platform digest and launch configuration; no persistent raw prepared-image record is required. Local pool tags remain available offline until explicit refresh or replacement. Writable filesystem/S3 backends reuse mutable HEAD for five minutes and immutable digest HEAD until refresh. `--refresh` (`refresh: true`) forces registry resolution. Failed imports preserve the previous HEAD and remove their temporary directories. Registry connections have a 10-second connect timeout; blocking requests and body reads have a 30-second timeout. A transient blob transfer retries once with a fresh temporary file; 429/503 responses allow one retry honoring Retry-After up to ten seconds; expired tags never silently fall back to stale data. Local reference/platform locks serialize local imports; remote HEAD publication uses conditional updates. `read`, `stat` and `list` require a published immutable handle and never pull implicitly.
+`prepare` requests a Linux image for the client's architecture, independent of server architecture. The published V2 HEAD contains the platform digest and launch configuration; no persistent raw prepared-image record is required. Local pool tags remain available offline until explicit refresh or replacement. Writable filesystem/S3 backends reuse mutable HEAD for five minutes and immutable digest HEAD until refresh. Set `refresh: true` to force registry resolution. Failed imports preserve the previous HEAD and remove their temporary directories. Registry connections have a 10-second connect timeout; blocking requests and body reads have a 30-second timeout. A transient blob transfer retries once with a fresh temporary file; 429/503 responses allow one retry honoring Retry-After up to ten seconds; expired tags never silently fall back to stale data. Local reference/platform locks serialize local imports; remote HEAD publication uses conditional updates. `read`, `stat` and `list` require a published immutable handle and never pull implicitly.
 
 Reference/architecture locks cover resolution/preparation; concurrent callers recheck/reuse the first successful result. Preparation may populate uncached images and retains existing digest extraction locks. `read`/`stat`/`list` require published immutable image handles and never pull images implicitly.
 
@@ -272,12 +232,13 @@ There are no vCPU pause/resume messages. VM file requests run in the isolated ru
 
 ## Backend validation
 
-`mise run test -- pvisor pvisor-cli` includes server compatibility, independent filesystem/S3 CLI processes, read-only access, corruption refusal, and configuration precedence. The local S3 fixture independently verifies SigV4, including temporary session tokens, without real accounts, public requests, or an external daemon.
+`mise run test -- pvisor pvisor-cli` includes server compatibility, filesystem/S3 access from independent Rust cache clients, read-only access, corruption refusal, and configuration precedence. The local S3 fixture independently verifies SigV4, including temporary session tokens, without real accounts, public requests, or an external daemon.
 
 On Linux x86_64 with KVM and the static musl guest target, run the real VM acceptance check:
 
 ```sh
-cargo nextest run --locked -p pvisor-cli --test cache_backends --run-ignored only
+cargo nextest run --locked -p pvisor-cli --test cache_backends --run-ignored only \
+  -E 'test(vm_reads_daemonless_filesystem_and_s3_images_without_projecting_storage_credentials)'
 ```
 
 This starts VMs from both backends, validates guest file contents after deleting publisher staging, and verifies that inheriting the host environment does not leak storage credentials.

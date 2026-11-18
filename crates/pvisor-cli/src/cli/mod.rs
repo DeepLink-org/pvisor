@@ -1,7 +1,6 @@
 //! Session lifecycle commands and dispatch to first-party companions.
 mod agent;
 mod apply;
-mod cache;
 mod checkpoint;
 mod daemon;
 mod diff;
@@ -68,8 +67,6 @@ enum Command {
     Container(docker::DockerCommand),
     /// List runtime experiments.
     Feature(crate::cli::features::FeatureArgs),
-    /// Prepare, publish and query shared image caches.
-    Cache(cache::CacheArgs),
     #[command(about = run::RUN_COMMAND_ABOUT, long_about = run::RUN_COMMAND_LONG_ABOUT)]
     Spawn(Box<run::RunArgs>),
     /// Run a command with all host-root filesystem changes staged for review (Linux only).
@@ -161,10 +158,7 @@ fn grouped_commands(command: &clap::Command) -> String {
                 "fork",
             ],
         ),
-        (
-            "Tools",
-            &["daemon", "cache", "replay", "feature", "vm-run", "help"],
-        ),
+        ("Tools", &["daemon", "replay", "feature", "vm-run", "help"]),
     ];
     let width = command
         .get_subcommands()
@@ -465,7 +459,6 @@ pub(crate) fn main() -> anyhow::Result<()> {
         Command::Stage(_) => {
             unreachable!("stage converts to spawn before feature and owner dispatch")
         }
-        Command::Cache(args) => cache::run(args)?,
         Command::Spawn(run) => {
             finish(host_service::call(host::SessionCommand::Run(run))?);
         }

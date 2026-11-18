@@ -27,8 +27,8 @@ $ python3 "$TESTDIR/../fixture.py" use S-LAZY-002 --timeout 30 <<'CASE'
 > grep -F -- '--images-dir' inspect-help
 > pvisor image ls --help > list-help
 > grep -F -- '--images-dir' list-help
-> pvisor cache --help > cache-help
-> ! grep -Eq '^[[:space:]]+(pull|inspect|registry)[[:space:]]' cache-help
+> ! grep -Eq '^[[:space:]]+cache[[:space:]]' root-help
+> for operation in prepare publish list stat read pull inspect registry; do expect_refused pvisor cache "$operation" --help; done
 > for path in "$PVISOR_IMAGE_STORE" "$PVISOR_DOCKER_HOME" "$PVISOR_DAEMON_HOME" "$WS/.pvisor"; do assert_absent "$path"; done
 > test -z "$(find "$PVISOR_RUN_HOME" -mindepth 1 -print)"
 > CASE

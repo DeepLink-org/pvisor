@@ -70,7 +70,7 @@ workload-aware-memory-offloading = true
 | `--max-timeout-seconds N` | 86400; maximum creation TTL, configurable from 60 seconds to one year |
 | `--memory-pool` | Off by default; enable daemon-owned detached pool; reserve host memory outside sandbox admission |
 
-Old `[controller]`, `[[workers]]`, Worker profiles and Cluster task JSON are not daemon inputs. `pvisor cache` remains independent; node runtime protocols have no daemon acquire/release adapter. NativeRuntime is VM-only; checkpoint/fork, stage/apply, global DAG and distributed lease APIs are absent.
+Old `[controller]`, `[[workers]]`, Worker profiles and Cluster task JSON are not daemon inputs. The Rust cache client remains independent; node runtime protocols have no daemon acquire/release adapter. NativeRuntime is VM-only; checkpoint/fork, stage/apply, global DAG and distributed lease APIs are absent.
 
 `serve` constructs NativeRuntime with the required `--images-dir` and `--cgroup-root` options. Cargo links `pvisor`/`pvisor-core`, and synchronous internal VM dispatch runs before argument parsing or Tokio. The hidden supervisor command is implemented. Images/cgroup paths are canonicalized; relative state resolves against the startup working directory and runtime state is canonicalized. Use short absolute paths in deployments and keep them unchanged on restart.
 

@@ -24,8 +24,9 @@ $ python3 "$TESTDIR/../fixture.py" use S-LAZY-001 --timeout 30 <<'CASE'
 > grep -F -- '--cache' service-help
 > pvisor daemon serve --help > forwarded-help
 > cmp service-help forwarded-help
-> pvisor cache --help > cache-help
-> ! grep -Eq '^[[:space:]]+prepare-(rootfs|workspace)[[:space:]]' cache-help
+> pvisor --help > root-help
+> ! grep -Eq '^[[:space:]]+cache[[:space:]]' root-help
+> expect_refused pvisor cache --help
 > mkdir input
 > printf 'untouched\n' > input/value
 > snapshot input input

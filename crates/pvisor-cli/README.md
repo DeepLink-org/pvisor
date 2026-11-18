@@ -86,8 +86,8 @@ references remain protected. Workspace checkpoint deletion still requires a
 stopped source and its Execution lease.
 
 The separate `pvisor-daemon` owns shared services, including the cache server and memory pool.
-Use `pvisor cache` to build, publish and query caches; invoke `pvisor-daemon serve --cache`
-to serve them. `pvisor daemon start/status/stop` dispatch to the same-installation
+Use `pvisor push` to publish images and the Rust cache client to query files.
+`pvisor-daemon serve --cache` serves the shared pool. `pvisor daemon start/status/stop` dispatch to the same-installation
 daemon companion. Replay is also a root companion. Use `pvisor -- COMMAND`
 for explicit workload execution.
 
@@ -1239,8 +1239,6 @@ semantics. These interface changes do not establish a performance result.
   safe Agent presets, terminal adapters and output rendering.
 - `src/cli/features.rs`: runtime feature listing frontend; registry/settings
   remain in `pvisor::features`.
-- `src/cli/cache.rs`: cache command parsing and rendering; cache storage,
-  image preparation and authenticated server implementation remain in `pvisor`.
 - `src/companions.rs`: trusted same-installation companion discovery/dispatch.
 - `src/api.rs`: uniform process-entry contracts; implementations live in
   `src/application.rs`.
@@ -1440,7 +1438,7 @@ at most the target (integer bytes or decimal KB/MB/GB); protected or age-filtere
 records can leave usage above it. The report counts logical file bytes, not
 guaranteed filesystem free space. Repeated prune is safe. This command does not
 prune containers, volumes, image pool content, abandoned build workspaces, or
-the separate `pvisor cache` service.
+the shared image cache service.
 
 Tags are published after the shared content and immutable index are committed. A failed
 step leaves existing tags unchanged. OCI output must name a new file and contains

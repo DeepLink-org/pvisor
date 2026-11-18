@@ -1,4 +1,6 @@
-//! Real CLI backend contracts against owned filesystem and SigV4 S3 fixtures.
+//! Image CLI and Rust cache client contracts against filesystem and SigV4 S3 fixtures.
+use pvisor::cache::{CacheClient, CacheConfig, MAX_READ, Request, Response};
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
     fs,
@@ -79,15 +81,106 @@ fn clean_imports(root: &Path) {
 fn digest_bytes(bytes: &[u8]) -> String {
     digest(bytes)
 }
-fn cli(root: &Path, backend: &str, location: &str, s3: Option<&MockS3>, args: &[&str]) -> Output {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_pvisor"));
-    command.arg("cache");
+#[derive(Serialize, Deserialize)]
+enum Operation {
+    Request(Request),
+    ReadFile { digest: String, path: Vec<u8> },
+    Publish { image: String, architecture: String },
+}
+
+fn prepare(image: &str, refresh: bool) -> Operation {
+    Operation::Request(Request::Prepare {
+        image: image.into(),
+        architecture: architecture().into(),
+        refresh,
+    })
+}
+
+fn publish(image: &str, architecture: &str) -> Operation {
+    Operation::Publish {
+        image: image.into(),
+        architecture: architecture.into(),
+    }
+}
+
+fn read_file(digest: &str, path: &str) -> Operation {
+    Operation::ReadFile {
+        digest: digest.into(),
+        path: path.as_bytes().to_vec(),
+    }
+}
+
+#[test]
+#[ignore = "invoked by the cache fixtures with an isolated environment"]
+fn cache_client_child() -> anyhow::Result<()> {
+    let output = std::env::var_os("PVISOR_TEST_CACHE_OUTPUT").expect("fixture output");
+    let (backend, location, read_only, image_store, operation): (_, _, _, _, Operation) =
+        serde_json::from_str::<(String, String, bool, Option<std::path::PathBuf>, Operation)>(
+            &std::env::var("PVISOR_TEST_CACHE_REQUEST")?,
+        )?;
+    let client = CacheClient::from_config(CacheConfig::from_options(
+        Some(
+            backend
+                .parse::<pvisor::cache::CacheBackend>()
+                .map_err(anyhow::Error::msg)?,
+        ),
+        Some(location),
+        Some(read_only),
+        image_store,
+    )?)?;
+    let data = match operation {
+        Operation::Request(request) => serde_json::to_vec(&client.request(request)?.0)?,
+        Operation::Publish {
+            image,
+            architecture,
+        } => serde_json::to_vec(&client.publish(&image, &architecture, false)?)?,
+        Operation::ReadFile { digest, path } => {
+            let mut data = Vec::new();
+            loop {
+                let (response, bytes) = client.request(Request::Read {
+                    digest: digest.clone(),
+                    path: path.clone(),
+                    offset: data.len() as u64,
+                    length: MAX_READ,
+                })?;
+                assert!(matches!(response, Response::Data { .. }));
+                let done = bytes.len() < MAX_READ as usize;
+                data.extend(bytes);
+                if done {
+                    break;
+                }
+                assert!(data.len() <= 4 * 1024 * 1024, "bounded fixture file");
+            }
+            data
+        }
+    };
+    fs::write(output, data)?;
+    Ok(())
+}
+
+fn cache_client(
+    root: &Path,
+    backend: &str,
+    location: &str,
+    s3: Option<&MockS3>,
+    read_only: bool,
+    image_store: Option<&Path>,
+    operation: Operation,
+) -> Output {
+    let capture = tempfile::NamedTempFile::new().unwrap();
+    let mut command = Command::new(std::env::current_exe().unwrap());
     command
         .env_clear()
         .env("HOME", root.join("home"))
         .env("XDG_CACHE_HOME", root.join("client-cache"))
-        .args(["--backend", backend, "--location", location])
-        .args(args);
+        .env("PVISOR_CACHE_BACKEND", "s3")
+        .env("PVISOR_CACHE_LOCATION", "s3://unused-bucket")
+        .env("PVISOR_TEST_CACHE_OUTPUT", capture.path())
+        .env(
+            "PVISOR_TEST_CACHE_REQUEST",
+            serde_json::to_string(&(backend, location, read_only, image_store, operation)).unwrap(),
+        )
+        .args(["--exact", "cache_client_child", "--ignored"]);
     if let Some(s3) = s3 {
         command
             .env("AWS_ACCESS_KEY_ID", "AKIATEST")
@@ -101,7 +194,12 @@ fn cli(root: &Path, backend: &str, location: &str, s3: Option<&MockS3>, args: &[
     if ca.exists() {
         command.env("SSL_CERT_FILE", ca);
     }
-    command.output().unwrap()
+    let mut output = command.output().unwrap();
+    if !output.status.success() {
+        output.stderr.extend(&output.stdout);
+    }
+    output.stdout = fs::read(capture.path()).unwrap();
+    output
 }
 fn successful(output: Output) -> Vec<u8> {
     assert!(
@@ -277,23 +375,20 @@ fn image_push_aliases_and_s3_import_preserve_config_builds_and_failed_refresh() 
 }
 
 #[test]
-fn s3_cli_publishes_once_then_independent_read_only_clients_need_no_registry_or_daemon() {
+fn s3_pool_is_readable_without_registry_or_daemon_after_preparation() {
     let tmp = tempfile::tempdir().unwrap();
     let source = tmp.path().join("source");
     let mut registry = source_fixture(&source);
     let digest = registry.digest.clone();
     let s3 = MockS3::start();
-    let prepared = successful(cli(
+    let prepared = successful(cache_client(
         tmp.path(),
         "s3",
         "s3://cache-bucket/team",
         Some(&s3),
-        &[
-            "--image-store",
-            source.to_str().unwrap(),
-            "prepare",
-            &registry.reference,
-        ],
+        false,
+        Some(&source),
+        prepare(&registry.reference, false),
     ));
     let prepared: serde_json::Value = serde_json::from_slice(&prepared).unwrap();
     assert_eq!(prepared["digest"], digest);
@@ -309,23 +404,27 @@ fn s3_cli_publishes_once_then_independent_read_only_clients_need_no_registry_or_
     fs::remove_dir_all(&source).unwrap();
     s3.read_only.store(true, Ordering::Relaxed);
     let before_puts = s3.puts.load(Ordering::Relaxed);
-    let prepared = successful(cli(
+    let prepared = successful(cache_client(
         tmp.path(),
         "s3",
         "s3://cache-bucket/team",
         Some(&s3),
-        &["--read-only", "prepare", &registry.reference],
+        true,
+        None,
+        prepare(&registry.reference, false),
     ));
     let prepared: serde_json::Value = serde_json::from_slice(&prepared).unwrap();
     assert_eq!(prepared["digest"], digest);
     let handle = prepared["image_handle"].as_str().unwrap();
     let before_gets = s3.gets.load(Ordering::Relaxed);
-    let contents = successful(cli(
+    let contents = successful(cache_client(
         tmp.path(),
         "s3",
         "s3://cache-bucket/team",
         Some(&s3),
-        &["--read-only", "read", handle, "large"],
+        true,
+        None,
+        read_file(handle, "large"),
     ));
     assert_eq!(contents, vec![42; 2 * 1024 * 1024 + 13]);
     assert!(
@@ -337,21 +436,25 @@ fn s3_cli_publishes_once_then_independent_read_only_clients_need_no_registry_or_
         before_puts,
         "readers must never execution PutObject"
     );
-    let missing = cli(
+    let missing = cache_client(
         tmp.path(),
         "s3",
         "s3://cache-bucket/team",
         Some(&s3),
-        &["--read-only", "prepare", "example:missing"],
+        true,
+        None,
+        prepare("example:missing", false),
     );
     assert!(!missing.status.success());
     assert!(String::from_utf8_lossy(&missing.stderr).contains("read-only"));
-    let alias = cli(
+    let alias = cache_client(
         tmp.path(),
         "s3",
         "s3://cache-bucket/team",
         Some(&s3),
-        &["--read-only", "read", handle, "alias"],
+        true,
+        None,
+        read_file(handle, "alias"),
     );
     assert!(!alias.status.success());
     let blob = s3
@@ -366,28 +469,27 @@ fn s3_cli_publishes_once_then_independent_read_only_clients_need_no_registry_or_
         .lock()
         .unwrap()
         .insert(blob, b"corrupted".to_vec());
-    let corrupt = cli(
+    let corrupt = cache_client(
         &tmp.path().join("cold-reader"),
         "s3",
         "s3://cache-bucket/team",
         Some(&s3),
-        &["--read-only", "read", handle, "large"],
+        true,
+        None,
+        read_file(handle, "large"),
     );
     assert!(!corrupt.status.success());
     assert!(String::from_utf8_lossy(&corrupt.stderr).contains("digest mismatch"));
     s3.deny_reads.store(true, Ordering::Relaxed);
     let blocked_staging = tmp.path().join("blocked-staging");
-    let denied = cli(
+    let denied = cache_client(
         tmp.path(),
         "s3",
         "s3://cache-bucket/team",
         Some(&s3),
-        &[
-            "--image-store",
-            blocked_staging.to_str().unwrap(),
-            "prepare",
-            &registry.reference,
-        ],
+        false,
+        Some(&blocked_staging),
+        prepare(&registry.reference, false),
     );
     assert!(!denied.status.success());
     assert!(
@@ -407,20 +509,15 @@ fn explicit_s3_publisher_rebuilds_missing_objects_and_conditionally_updates_its_
     let mut registry = source_fixture_for_architecture(&source, target);
     let image_digest = registry.digest.clone();
     let s3 = MockS3::start();
-    let publish = || {
-        let output = cli(
+    let publish_revision = || {
+        let output = cache_client(
             tmp.path(),
             "s3",
             "s3://cache-bucket/team",
             Some(&s3),
-            &[
-                "publish",
-                &registry.reference,
-                "--architecture",
-                target,
-                "--image-store",
-                source.to_str().unwrap(),
-            ],
+            false,
+            Some(&source),
+            publish(&registry.reference, target),
         );
         let response: serde_json::Value = serde_json::from_slice(&successful(output)).unwrap();
         assert_eq!(response["digest"], image_digest);
@@ -428,7 +525,7 @@ fn explicit_s3_publisher_rebuilds_missing_objects_and_conditionally_updates_its_
         assert!(response["totals"]["files"].as_u64().unwrap() > 100);
         response
     };
-    let first = publish();
+    let first = publish_revision();
     let original = s3.objects.lock().unwrap().clone();
     for part in ["/meta/", "/revisions/", "/data/sha256/", "/uploads/"] {
         assert!(
@@ -441,7 +538,7 @@ fn explicit_s3_publisher_rebuilds_missing_objects_and_conditionally_updates_its_
         .find(|key| key.contains("/data/sha256/"))
         .unwrap();
     s3.objects.lock().unwrap().remove(missing_blob);
-    let second = publish();
+    let second = publish_revision();
     assert_eq!(first["metadata_generation"], second["metadata_generation"]);
     let restored = s3.objects.lock().unwrap();
     assert_eq!(
@@ -472,19 +569,14 @@ fn explicit_s3_publisher_rebuilds_missing_objects_and_conditionally_updates_its_
     clean_imports(&source);
     let old_head = s3.objects.lock().unwrap()[head_key].clone();
     s3.read_only.store(true, Ordering::Relaxed);
-    let failed = cli(
+    let failed = cache_client(
         tmp.path(),
         "s3",
         "s3://cache-bucket/team",
         Some(&s3),
-        &[
-            "--image-store",
-            source.to_str().unwrap(),
-            "publish",
-            &registry.reference,
-            "--architecture",
-            target,
-        ],
+        false,
+        Some(&source),
+        publish(&registry.reference, target),
     );
     assert!(!failed.status.success(), "injected upload refusal");
     clean_imports(&source);
@@ -495,34 +587,27 @@ fn explicit_s3_publisher_rebuilds_missing_objects_and_conditionally_updates_its_
     s3.read_only.store(true, Ordering::Relaxed);
     let reader = tmp.path().join("independent-reader");
     assert_eq!(
-        successful(cli(
+        successful(cache_client(
             &reader,
             "s3",
             "s3://cache-bucket/team",
             Some(&s3),
-            &[
-                "--read-only",
-                "read",
-                second["image_handle"].as_str().unwrap(),
-                "small-003"
-            ],
+            true,
+            None,
+            read_file(second["image_handle"].as_str().unwrap(), "small-003")
         )),
         b"value-3"
     );
     let before = s3.puts.load(Ordering::Relaxed);
     let staging = tmp.path().join("forbidden-staging");
-    let rejected = cli(
+    let rejected = cache_client(
         tmp.path(),
         "s3",
         "s3://cache-bucket/team",
         Some(&s3),
-        &[
-            "--read-only",
-            "--image-store",
-            staging.to_str().unwrap(),
-            "publish",
-            &registry.reference,
-        ],
+        true,
+        Some(&staging),
+        publish(&registry.reference, architecture()),
     );
     assert!(!rejected.status.success());
     assert!(String::from_utf8_lossy(&rejected.stderr).contains("read-only"));
@@ -534,17 +619,14 @@ fn explicit_s3_publisher_rebuilds_missing_objects_and_conditionally_updates_its_
 fn publisher_rejects_server_backend_before_connecting() {
     let tmp = tempfile::tempdir().unwrap();
     let staging = tmp.path().join("unused-staging");
-    let output = cli(
+    let output = cache_client(
         tmp.path(),
         "server",
         "unix:///nonexistent/pvisor-publish.sock",
         None,
-        &[
-            "--image-store",
-            staging.to_str().unwrap(),
-            "publish",
-            "example:test",
-        ],
+        false,
+        Some(&staging),
+        publish("example:test", architecture()),
     );
     assert!(!output.status.success());
     assert!(
@@ -554,22 +636,19 @@ fn publisher_rejects_server_backend_before_connecting() {
 }
 
 #[test]
-fn filesystem_cli_and_explicit_options_use_the_same_daemonless_contract() {
+fn filesystem_client_and_explicit_options_use_the_same_daemonless_contract() {
     let tmp = tempfile::tempdir().unwrap();
     let source = tmp.path().join("source");
     let mut registry = source_fixture(&source);
     let shared = tmp.path().join("shared");
-    let prepared = successful(cli(
+    let prepared = successful(cache_client(
         tmp.path(),
         "filesystem",
         shared.to_str().unwrap(),
         None,
-        &[
-            "--image-store",
-            source.to_str().unwrap(),
-            "publish",
-            &registry.reference,
-        ],
+        false,
+        Some(&source),
+        publish(&registry.reference, architecture()),
     ));
     let prepared: serde_json::Value = serde_json::from_slice(&prepared).unwrap();
     let handle = prepared["image_handle"].as_str().unwrap();
@@ -577,31 +656,29 @@ fn filesystem_cli_and_explicit_options_use_the_same_daemonless_contract() {
     // Fail after the config and manifest have been downloaded, so cleanup must
     // remove a partially populated import rather than just an empty directory.
     fs::write(tmp.path().join("registry/fail"), b"layer").unwrap();
-    for operation in ["publish", "prepare"] {
-        let mut args = vec![
-            "--image-store",
-            source.to_str().unwrap(),
-            operation,
-            &registry.reference,
-        ];
-        if operation == "prepare" {
-            args.push("--refresh");
-        }
-        let failed = cli(
+    for operation in [
+        publish(&registry.reference, architecture()),
+        prepare(&registry.reference, true),
+    ] {
+        let failed = cache_client(
             tmp.path(),
             "filesystem",
             shared.to_str().unwrap(),
             None,
-            &args,
+            false,
+            Some(&source),
+            operation,
         );
         assert!(!failed.status.success(), "injected registry failure");
         clean_imports(&source);
-        let previous = successful(cli(
+        let previous = successful(cache_client(
             tmp.path(),
             "filesystem",
             shared.to_str().unwrap(),
             None,
-            &["--read-only", "prepare", &registry.reference],
+            true,
+            None,
+            prepare(&registry.reference, false),
         ));
         let previous: serde_json::Value = serde_json::from_slice(&previous).unwrap();
         assert_eq!(
@@ -610,57 +687,53 @@ fn filesystem_cli_and_explicit_options_use_the_same_daemonless_contract() {
         );
     }
     fs::write(tmp.path().join("registry/ca.pem"), b"invalid CA bundle").unwrap();
-    let failed = cli(
+    let failed = cache_client(
         tmp.path(),
         "filesystem",
         shared.to_str().unwrap(),
         None,
-        &[
-            "--image-store",
-            source.to_str().unwrap(),
-            "publish",
-            &registry.reference,
-        ],
+        false,
+        Some(&source),
+        publish(&registry.reference, architecture()),
     );
     assert!(!failed.status.success());
     assert!(String::from_utf8_lossy(&failed.stderr).contains("SSL_CERT_FILE"));
     clean_imports(&source);
     registry.stop();
     fs::remove_dir_all(source).unwrap();
-    let contents = successful(cli(
+    let contents = successful(cache_client(
         tmp.path(),
         "filesystem",
         shared.to_str().unwrap(),
         None,
-        &["--read-only", "read", handle, "small-003"],
+        true,
+        None,
+        read_file(handle, "small-003"),
     ));
     assert_eq!(contents, b"value-3");
-    let output = Command::new(env!("CARGO_BIN_EXE_pvisor"))
-        .arg("cache")
-        .env_clear()
-        .env("PVISOR_CACHE_BACKEND", "s3")
-        .env("PVISOR_CACHE_LOCATION", "s3://unused-bucket")
-        .args([
-            "--backend",
-            "filesystem",
-            "--location",
-            shared.to_str().unwrap(),
-            "--read-only",
-            "stat",
-            handle,
-            "small-003",
-        ])
-        .output()
-        .unwrap();
+    let output = cache_client(
+        tmp.path(),
+        "filesystem",
+        shared.to_str().unwrap(),
+        None,
+        true,
+        None,
+        Operation::Request(Request::Stat {
+            digest: handle.into(),
+            path: b"small-003".to_vec(),
+        }),
+    );
     let value: serde_json::Value = serde_json::from_slice(&successful(output)).unwrap();
     assert_eq!(value["kind"], "file");
     let absent = tmp.path().join("absent-shared");
-    let output = cli(
+    let output = cache_client(
         tmp.path(),
         "filesystem",
         absent.to_str().unwrap(),
         None,
-        &["--read-only", "prepare", &registry.reference],
+        true,
+        None,
+        prepare(&registry.reference, false),
     );
     assert!(!output.status.success());
     assert!(
@@ -744,17 +817,14 @@ fn main() {
         } else {
             shared.to_str().unwrap()
         };
-        successful(cli(
+        successful(cache_client(
             tmp.path(),
             backend,
             location,
             (backend == "s3").then_some(&s3),
-            &[
-                "--image-store",
-                source.to_str().unwrap(),
-                "prepare",
-                &registry.reference,
-            ],
+            false,
+            Some(&source),
+            prepare(&registry.reference, false),
         ));
         clean_imports(&source);
         registry.stop();
@@ -847,17 +917,14 @@ fn a_lost_head_acknowledgement_is_reconciled_after_sdk_conditional_retry() {
     let mut previous = None;
     for generation in 1..=2 {
         s3.lost_head_ack.store(true, Ordering::Relaxed);
-        let response = successful(cli(
+        let response = successful(cache_client(
             tmp.path(),
             "s3",
             "s3://cache-bucket/team",
             Some(&s3),
-            &[
-                "publish",
-                &registry.reference,
-                "--image-store",
-                source.to_str().unwrap(),
-            ],
+            false,
+            Some(&source),
+            publish(&registry.reference, architecture()),
         ));
         let response: serde_json::Value = serde_json::from_slice(&response).unwrap();
         let objects = s3.objects.lock().unwrap();

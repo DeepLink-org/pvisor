@@ -30,8 +30,7 @@ request. Retain `build --output type=oci,dest=PATH`, quiet output and iidfile
 semantics. Do not add `cache pull/inspect/registry` or another mirror of image
 management commands. Current `cache list/stat/read` inspect files *inside* an
 image, while image ls/inspect inspect catalog objects; they are not aliases.
-Keep file diagnostics as compatibility/internal tooling and do not promote
-them as an additional user workflow or turn image ls into a directory listing.
+File-level diagnostics use the Rust cache client.
 
 `image push` provides explicit S3/file
 publication mode. It does not claim that ordinary OCI-registry push is already
@@ -129,10 +128,10 @@ creation, ACL/public-policy mutation, automatic GC, new format version, xattr
 expansion or implied WAN performance claim.
 
 Existing V2 shared-pool prefixes, immutable handles and self-contained S3/HTTP
-publications remain readable. Existing `cache prepare/publish/list/stat/read`
-remain legacy/diagnostic contracts while their user-facing workflow moves to
-image commands. Their removal needs explicit migration of their consumers;
-do not silently rewrite old shared-pool locations into bundle layouts.
+publications remain readable. The `pvisor cache` command group is retired.
+Use `pvisor push` for publication and the Rust cache client for protocol
+preparation and file diagnostics. VM cache selection and `serve --cache`
+continue to use the shared-pool protocol.
 
 The CLI no longer prepares local VM baselines through `cache prepare-rootfs`
 or `cache prepare-workspace`. The Rust SDK can prepare either base, and VM

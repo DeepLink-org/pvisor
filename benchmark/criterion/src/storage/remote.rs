@@ -195,6 +195,17 @@ impl Remote {
         fs::copy(&e.binary, frozen.join("pvisor"))?;
         fs::copy(&config.daemon, frozen.join("pvisor-daemon"))?;
         e.manifest["daemon_sha256"] = json!(sha(&frozen.join("pvisor-daemon"))?);
+        let probe = frozen.join("cache_probe");
+        fs::copy(
+            config
+                .binary
+                .parent()
+                .context("binary directory")?
+                .join("examples/cache_probe"),
+            &probe,
+        )
+        .context("freeze the prebuilt Rust cache probe")?;
+        e.manifest["cache_probe_sha256"] = json!(sha(&probe)?);
         e.command(
             args(&[
                 "openssl",
@@ -234,23 +245,26 @@ impl Remote {
                 }
             }
             let start = Instant::now();
-            let receipt: Value = serde_json::from_str(&e.command(
-                args(&[
-                    &s(&e.binary),
-                    "cache",
-                    "publish",
-                    "--backend",
-                    "filesystem",
-                    "--location",
-                    &s(&e.root.join("service/cache-v2")),
-                    "--image-store",
-                    &s(&e.root.join("staging")),
-                    image["pinned"].as_str().unwrap(),
-                ]),
-                &Env::new(),
-                600,
-                false,
-            )?)?;
+            let receipt: Value = serde_json::from_str(
+                &e.command(
+                    args(&[
+                        &s(&probe),
+                        &json!({"op":"prepare", "image":image["pinned"], "architecture":"amd64"})
+                            .to_string(),
+                    ]),
+                    &Env::from([
+                        ("PVISOR_CACHE_BACKEND".into(), "filesystem".into()),
+                        (
+                            "PVISOR_CACHE_LOCATION".into(),
+                            s(&e.root.join("service/cache-v2")),
+                        ),
+                        ("PVISOR_IMAGE_STORE".into(), s(&e.root.join("staging"))),
+                        ("PVISOR_CACHE_READ_ONLY".into(), "false".into()),
+                    ]),
+                    600,
+                    false,
+                )?,
+            )?;
             ensure!(
                 receipt["digest"] == image["digest"],
                 "server publication identity mismatch"

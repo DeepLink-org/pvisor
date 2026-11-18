@@ -8,12 +8,14 @@ keeps its array/Id contract and exposes the pinned source in its Pvisor extensio
 Duplicate import and failed refresh preserve the old binding. Later diagnostic
 reads verify independent exact bytes without a registry or publisher process.
 
-**Prerequisites**: Executable `SUBJECT_BIN`, Python 3, Bash and loopback sockets.
+**Prerequisites**: Executable `SUBJECT_BIN`, the Rust cache client example,
+Python 3, Bash and loopback sockets.
 No RUN instruction, S3, OCI service, VM or guest execution is needed.
 
 ```scrut {output_stream: combined, timeout: 190s}
 $ python3 "$TESTDIR/../fixture.py" use S-LAZY-004 --timeout 180 <<'CASE'
 > source "$PVISOR_PROJECT_ROOT/tests/spec/lazy-image/regression/fixtures.bash"
+> lazy_require_cache_client
 > mkdir context
 > python3 - <<'PY'
 > from pathlib import Path
@@ -53,8 +55,8 @@ $ python3 "$TESTDIR/../fixture.py" use S-LAZY-004 --timeout 180 <<'CASE'
 > cmp installed.json after-failure.json
 > rm "$CASE_ROOT/repository-deny"
 > export PVISOR_CACHE_BACKEND=http PVISOR_CACHE_LOCATION="$remote" PVISOR_CACHE_READ_ONLY=true
-> pvisor cache read "$handle" small > small
-> pvisor cache read "$handle" large > large
+> "$PVISOR_CASE_CACHE_PROBE" read-file "$handle" small > small
+> "$PVISOR_CASE_CACHE_PROBE" read-file "$handle" large > large
 > python3 - "$CASE_ROOT/requests.jsonl" <<'PY'
 > import json, sys
 > from pathlib import Path

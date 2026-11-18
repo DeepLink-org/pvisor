@@ -62,7 +62,7 @@ The public workflow is simple: start a Session, inspect evidence, then decide wh
 
 ## Core commands and service boundaries
 
-Top-level commands follow their objects: container commands manage independent VMs, while Session/workspace operations remain flat. Sandbox lifecycle and optional pool ownership use the separate `pvisor-daemon` executable; OCI cache commands use `pvisor cache`, with serving owned by `pvisor-daemon serve --cache`. `replay` creates Sessions from trajectories. Root help has three groups: Commands for Docker-compatible container operations, Agent Commands for Session execution, review and checkpoints, and Tools for cache, replay and feature queries. See the [CLI reference](../reference/cli.md) for the command list and `pvisor help COMMAND` for options.
+Top-level commands follow their objects: container commands manage independent VMs, while Session/workspace operations remain flat. Sandbox lifecycle and optional pool ownership use the separate `pvisor-daemon` executable; Image publication uses `pvisor push`. Cache serving uses `pvisor-daemon serve --cache`. `replay` creates Sessions from trajectories. Root help has three groups: Commands for Docker-compatible container operations, Agent Commands for Session execution, review and checkpoints, and Tools for daemon services, replay and feature queries. See the [CLI reference](../reference/cli.md) for the command list and `pvisor help COMMAND` for options.
 
 | Responsibility | Entry |
 |---|---|
@@ -71,7 +71,7 @@ Top-level commands follow their objects: container commands manage independent V
 | Immutable Session checkpoints | `checkpoint` |
 | Trajectory replay | `replay` |
 | Local sandbox lifecycle | `pvisor-daemon prepare-image` / `serve --sandbox` and partial OpenSandbox/E2B APIs |
-| Immutable image cache | `pvisor cache prepare/publish/list/stat/read`; `pvisor-daemon serve --cache` |
+| Immutable image cache | Rust CacheClient; `pvisor-daemon serve --cache` |
 | Optional daemon-owned shared pages | `pvisor-daemon serve --sandbox --memory-pool`; detached `memory-pool --directory DIR` component |
 
 `status --review` is a shortcut; `review` is the detailed review entry. Session operations are top-level commands, without a `session` command layer.
@@ -81,7 +81,7 @@ Resource tools use their own executables. Native execution capture, restoration 
 ```bash
 pvisor-daemon serve --help
 pvisor-daemon protocol
-pvisor cache --help
+pvisor push --help
 pvisor-daemon memory-pool --help
 ```
 

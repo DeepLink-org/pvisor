@@ -15,6 +15,16 @@ lazy_require_daemon() {
   test -x "$LAZY_DAEMON_BIN" || { echo 'missing sibling pvisor-daemon' >&2; exit 77; }
 }
 
+lazy_require_cache_client() {
+  test -x "${PVISOR_CASE_CACHE_PROBE:-}" || { echo 'missing Rust cache client fixture' >&2; exit 77; }
+}
+
+lazy_cache_prepare() {
+  local request
+  request=$(python3 -c 'import json, sys; print(json.dumps(dict(op="prepare", image=sys.argv[1], architecture=sys.argv[2], refresh=sys.argv[3] == "true")))' "$1" "${LAZY_PLATFORM#linux/}" "${2:-false}")
+  "$PVISOR_CASE_CACHE_PROBE" "$request"
+}
+
 lazy_wait_ready() {
   local file=$1 pid=$2
   for ((attempt=0; attempt<400; attempt++)); do

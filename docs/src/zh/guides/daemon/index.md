@@ -194,7 +194,7 @@ OpenSandbox 不支持签名端点过期、任意应用端口、WebSocket 或 CON
 
 daemon sandbox ID 不是 Session ID，不要传给 `pvisor checkpoint`、`fork`、`apply` 或 `drop`。daemon pause 是同一 live Execution 上已确认的 vCPU pause，不是封存 RAM/CPU/设备/文件系统快照。原生 Session 的文件审查、检查点与模型捕获继续走 `pvisor spawn` 路径：执行步骤见 [VM 指南](../executors/vm.md)，本机 Session 文件检查点见[检查点与分叉](../fork-checkpoint.md)，模型请求路由和捕获见 [Gateway 指南](../capture.md)。兼容的独立 rootfs、无网络 VM Session 可以使用 execution checkpoint；通过 `pvisor status --json` 检查 capability 与 blockers。
 
-`pvisor cache prepare/publish/list/stat/read` 保持为独立命令，不是 daemon 子命令；发布、后端、认证和访问见[共享镜像缓存参考](../../reference/shared-image-cache.md)。Daemon 状态与原生 Session 和缓存存储分开保存；Daemon API key 不授权独立缓存或 node 运行时 IPC。
+镜像用 `pvisor push` 发布，缓存诊断使用 Rust 客户端。发布、后端、认证和访问见[共享镜像缓存参考](../../reference/shared-image-cache.md)。Daemon 状态与原生 Session 和缓存存储分开保存；Daemon API key 不授权独立缓存或 node 运行时 IPC。
 
 旧 Cluster 任务/客户端 SDK、Controller/Worker 注册、放置、DAG、lease 续期、完成 outbox 和 artifact 退役命令都不是 daemon 接口。不要把旧 task JSON、`worker.toml`、Controller 凭据或 journal 作为 daemon 输入；分布式任务历史没有自动转成沙箱状态的路径。退役部署前保留旧结果，为 OpenSandbox profile 使用新状态。
 
