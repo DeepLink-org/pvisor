@@ -9,7 +9,7 @@ use crate::devices::{
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "kind", content = "state", deny_unknown_fields)]
 pub enum BusDeviceSnapshot {
-    Virtio(MmioSnapshot),
+    Virtio(Box<MmioSnapshot>),
     Cmos(CmosSnapshot),
     I8042(I8042Snapshot),
     Serial(SerialSnapshot),
@@ -106,7 +106,7 @@ impl Bus {
                     .map_err(|_| format!("busy/poisoned device at {base:#x}"))?;
                 let any = device.as_mut_any();
                 let device = if let Some(device) = any.downcast_mut::<MmioTransport>() {
-                    BusDeviceSnapshot::Virtio(device.capture_state()?)
+                    BusDeviceSnapshot::Virtio(Box::new(device.capture_state()?))
                 } else if let Some(device) = any.downcast_mut::<Cmos>() {
                     BusDeviceSnapshot::Cmos(device.capture_state()?)
                 } else if let Some(device) = any.downcast_mut::<I8042Device>() {

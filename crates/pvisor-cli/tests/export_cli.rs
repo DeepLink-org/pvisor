@@ -128,8 +128,8 @@ fn run_and_spawn_help_match_their_pinned_baselines() {
     for (command, digest) in [
         (
             "run",
-            // Docker profile flags, including owner restart/health controls.
-            "2f58375a02136fd5dae21990b74f99172e6aa8975347bd29332cd46a20633d0c",
+            // Docker profile flags, including owner restart/health controls and live fork.
+            "4803366f6570a8027b52ad2257a7e74e5af92d096eefd796f9d21f7a825875a3",
         ),
         (
             "spawn",

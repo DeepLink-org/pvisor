@@ -400,7 +400,7 @@ impl FsSnapshot {
             )?;
             if capture
                 && cfg!(target_os = "linux")
-                && super::live_fork_scope()
+                && crate::devices::virtio::live_fork_scope()
                 && saved.digest.is_some()
             {
                 if let Some((object_id, size)) = backend::immutable_file_object(root, &path)? {

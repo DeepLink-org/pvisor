@@ -83,21 +83,3 @@ pub enum FsError {
 }
 
 type Result<T> = std::result::Result<T, FsError>;
-
-thread_local! { static LIVE_FORK: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
-
-pub(super) fn live_fork_scope() -> bool {
-    LIVE_FORK.get()
-}
-
-#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-pub(crate) fn within_live_fork<T>(f: impl FnOnce() -> T) -> T {
-    struct Reset(bool);
-    impl Drop for Reset {
-        fn drop(&mut self) {
-            LIVE_FORK.set(self.0);
-        }
-    }
-    let _reset = Reset(LIVE_FORK.replace(true));
-    f()
-}

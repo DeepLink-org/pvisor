@@ -413,7 +413,7 @@ struct ForkPathIdentity {
 }
 
 fn fork_path_index_enabled() -> bool {
-    super::live_fork_scope()
+    crate::devices::virtio::live_fork_scope()
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]

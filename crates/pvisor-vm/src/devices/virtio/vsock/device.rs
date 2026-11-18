@@ -213,7 +213,7 @@ impl VirtioDevice for Vsock {
     }
 
     fn capture_state(&self) -> Result<super::super::DeviceSnapshot, String> {
-        let state = super::super::DeviceSnapshotState::Vsock(self.muxer.capture_state()?);
+        let state = super::super::DeviceSnapshotState::Vsock(self.muxer.capture_state(crate::devices::virtio::live_fork_scope())?);
         let queues = if self.is_activated() {
             if !self.frozen {
                 return Err("vsock must be frozen before capture".into());

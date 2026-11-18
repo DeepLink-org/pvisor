@@ -462,15 +462,22 @@ impl VsockMuxer {
         Ok(None)
     }
 
-    pub fn capture_state(&self) -> Result<VsockSnapshot, String> {
+    pub fn capture_state(&self, live_fork: bool) -> Result<VsockSnapshot, String> {
         if let Some(fault) = self.worker_fault {
             return Err(fault.into());
         }
         if self.mem.is_some() && (!self.stop.load(Ordering::Acquire) || !self.workers_stopped()) {
             return Err("vsock workers must be frozen".into());
         }
-        if let Some(blocker) = self.snapshot_blocker()? {
-            return Err(format!("vsock snapshot not quiescent: {blocker}"));
+        if live_fork {
+            if let Some(blocker) = self.snapshot_blocker()? {
+                return Err(format!("vsock snapshot not quiescent: {blocker}"));
+            }
+        } else if !self.proxy_map.try_read().map_err(|_| "vsock proxies busy")?.is_empty()
+            || !self.rxq.try_lock().map_err(|_| "vsock responses busy")?.is_empty()
+            || self.parked_reaper.as_ref().is_some_and(|r| r.pending() != (0, 0))
+        {
+            return Err("vsock snapshot requires no connections, listeners or pending responses".into());
         }
         Ok(VsockSnapshot {
             cid: self.cid,
@@ -1116,7 +1123,8 @@ mod snapshot_channel_tests {
     fn snapshot_channel_keeps_only_bound_idle_listener_and_rebinds_child() {
         let (mux, _dir, path) = listener();
         assert!(mux.snapshot_blocker().unwrap().is_none());
-        let mut state = mux.capture_state().unwrap();
+        assert!(mux.capture_state(false).unwrap_err().contains("listeners"));
+        let mut state = mux.capture_state(true).unwrap();
         let child = path.with_file_name("child.sock");
         assert!(state.rebind_listener(1025, &path, &child).unwrap());
         let mut fresh = VsockMuxer::new(
@@ -1141,7 +1149,7 @@ mod snapshot_channel_tests {
         let _peer = UnixStream::connect(path).unwrap();
         for _ in 0..2 {
             assert!(mux
-                .capture_state()
+                .capture_state(true)
                 .unwrap_err()
                 .contains("pending_accepts=1"));
         }
@@ -1158,7 +1166,7 @@ mod snapshot_channel_tests {
             .unwrap()
             .1 = false;
         assert!(mux
-            .capture_state()
+            .capture_state(true)
             .unwrap_err()
             .contains("unbound_listeners=1"));
         mux.unix_ipc_port_map
@@ -1173,7 +1181,7 @@ mod snapshot_channel_tests {
         proxies.insert(id + 1, proxy);
         drop(proxies);
         assert!(mux
-            .capture_state()
+            .capture_state(true)
             .unwrap_err()
             .contains("unbound_listeners=1"));
     }
@@ -1183,7 +1191,7 @@ mod snapshot_channel_tests {
         let (mut mux, _dir, path) = listener();
         mux.tsi_flags = TsiFlags::HIJACK_INET;
         assert!(mux
-            .capture_state()
+            .capture_state(true)
             .unwrap_err()
             .contains("unbound_listeners=1"));
         mux.tsi_flags = TsiFlags::empty();
@@ -1194,7 +1202,7 @@ mod snapshot_channel_tests {
             .unwrap()
             .0 = path.with_file_name("different.sock");
         assert!(mux
-            .capture_state()
+            .capture_state(true)
             .unwrap_err()
             .contains("unbound_listeners=1"));
     }
@@ -1206,7 +1214,7 @@ mod snapshot_channel_tests {
             local_port: 1,
             peer_port: 2,
         });
-        assert!(mux.capture_state().unwrap_err().contains("responses=1"));
+        assert!(mux.capture_state(true).unwrap_err().contains("responses=1"));
         assert_eq!(mux.rxq.lock().unwrap().len(), 1);
         mux.rxq.lock().unwrap().pop();
         let (tx, rx) = unbounded();
@@ -1216,7 +1224,7 @@ mod snapshot_channel_tests {
             mux.proxy_map.clone(),
             mux.stop.clone(),
         ));
-        assert!(mux.capture_state().unwrap_err().contains("release_queue=1"));
+        assert!(mux.capture_state(true).unwrap_err().contains("release_queue=1"));
     }
 
     #[test]
@@ -1248,7 +1256,7 @@ mod snapshot_channel_tests {
         reaper.reserve(id + 1, Duration::from_secs(4));
         source.parked_reaper = Some(reaper);
         assert!(
-            source.capture_state().is_err(),
+            source.capture_state(true).is_err(),
             "reaper must own the same port"
         );
         let mut reaper =
@@ -1256,7 +1264,7 @@ mod snapshot_channel_tests {
         reaper.reserve(id, Duration::from_secs(4));
         source.parked_reaper = Some(reaper);
 
-        let mut saved = source.capture_state().unwrap();
+        let mut saved = source.capture_state(true).unwrap();
         assert_eq!(saved.closed_reverse_ports.len(), 1);
         let (saved_id, remaining) = saved.closed_reverse_ports[0];
         assert_eq!(saved_id, id);
@@ -1322,7 +1330,7 @@ mod snapshot_channel_tests {
         assert_eq!(proxy.as_raw_fd(), -1);
         drop(proxy);
         drop(map);
-        let restored = child.capture_state().unwrap();
+        let restored = child.capture_state(true).unwrap();
         assert_eq!(restored.closed_reverse_ports[0].0, id);
         assert!(restored.closed_reverse_ports[0].1 <= remaining);
     }
@@ -1342,12 +1350,12 @@ mod snapshot_channel_tests {
             .write()
             .unwrap()
             .insert(77, Mutex::new(Box::new(proxy)));
-        assert!(mux.capture_state().unwrap_err().contains("active=1"));
+        assert!(mux.capture_state(true).unwrap_err().contains("active=1"));
         mux.proxy_map.read().unwrap()[&77].lock().unwrap().release();
-        assert!(mux.capture_state().unwrap_err().contains("closed=1"));
+        assert!(mux.capture_state(true).unwrap_err().contains("closed=1"));
         // Simulate only the reaper's normal removal, not capture deleting it.
         mux.proxy_map.write().unwrap().remove(&77);
-        assert!(mux.capture_state().is_ok());
+        assert!(mux.capture_state(true).is_ok());
     }
 
     #[test]
@@ -1361,7 +1369,7 @@ mod snapshot_channel_tests {
         drop(guard);
         mux.mem = Some(GuestMemoryMmap::from_ranges(&[(GuestAddress(0), 65536)]).unwrap());
         assert_eq!(
-            mux.capture_state().unwrap_err(),
+            mux.capture_state(true).unwrap_err(),
             "vsock workers must be frozen"
         );
         mux.mem = None;

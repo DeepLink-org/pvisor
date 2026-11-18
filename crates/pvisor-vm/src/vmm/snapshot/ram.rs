@@ -98,8 +98,8 @@ pub(super) fn capture_branch_ram(
             if !supported
                 || extents.len() >= 8190
                 || page <= 0
-                || at % page as u64 != 0
-                || size % page as u64 != 0
+                || !at.is_multiple_of(page as u64)
+                || !size.is_multiple_of(page as u64)
             {
                 supported = false;
                 return Ok(());

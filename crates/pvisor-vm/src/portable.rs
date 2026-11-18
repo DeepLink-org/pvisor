@@ -489,7 +489,7 @@ impl VmRuntime for VmBuilder {
     fn run_live_fork(self, on_ready: impl FnOnce(VmmHandle) -> io::Result<()>) -> io::Result<()> {
         #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
         {
-            crate::devices::virtio::fs::within_live_fork(|| self.run(on_ready))
+            crate::devices::virtio::within_live_fork(|| self.run(on_ready))
         }
         #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
         {
@@ -641,7 +641,7 @@ impl SnapshotCapture for FrozenMachine<'_> {
         }
         #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
         {
-            let (state, extents) = crate::devices::virtio::fs::within_live_fork(|| {
+            let (state, extents) = crate::devices::virtio::within_live_fork(|| {
                 self.inner.capture_branch_state(file)
             })?;
             Ok((

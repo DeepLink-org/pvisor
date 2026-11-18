@@ -377,9 +377,7 @@ impl Proxy for UnixProxy {
     }
 
     fn confirm_connect(&mut self, pkt: &VsockPacket) -> Option<ProxyUpdate> {
-        if self.fd.is_none() {
-            return None;
-        }
+        self.fd.as_ref()?;
         debug!(
             "confirm_connect: local_port={} peer_port={}, src_port={}, dst_port={}",
             pkt.dst_port(),
