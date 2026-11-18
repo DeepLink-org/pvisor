@@ -6183,14 +6183,10 @@ mod tests {
         assert!(tmp.path().join(META_FILENAME).is_file());
     }
 
-    #[test]
-    fn selective_apply_retains_pending_changes_and_can_repeat() {
-        for compact in [false, true] {
-            selective_apply_with_format(compact);
-        }
-    }
-
-    fn selective_apply_with_format(compact: bool) {
+    #[rstest::rstest]
+    fn selective_apply_retains_pending_changes_and_can_repeat(
+        #[values(false, true)] compact: bool,
+    ) {
         let tmp = tempdir().unwrap();
         let target = tmp.path().join("target");
         let stage = tmp.path().join("stage");

@@ -34,6 +34,20 @@ fn decode(hex: &str) -> io::Result<[u8; 32]> {
 }
 /// Encode all regular files from a verified import inventory. SHA-256 here
 /// hashes relative path bytes, not file contents. Duplicate paths are rejected.
+///
+/// ```
+/// use std::path::Path;
+/// use pvisor_overlay_core::encode_content_index;
+///
+/// let digest = "ab".repeat(32);
+/// let files = [(Path::new("src/main.rs"), digest.as_str())];
+/// let receipt = encode_content_index(files)?;
+/// assert_eq!(receipt, encode_content_index(files)?);
+/// assert!(encode_content_index([files[0], files[0]]).is_err());
+/// assert!(encode_content_index([(Path::new("../escape"), digest.as_str())]).is_err());
+/// assert!(encode_content_index([(Path::new("file"), "not-a-sha256")]).is_err());
+/// # Ok::<(), std::io::Error>(())
+/// ```
 pub fn encode_content_index<'a>(
     files: impl IntoIterator<Item = (&'a Path, &'a str)>,
 ) -> io::Result<Vec<u8>> {
@@ -165,9 +179,15 @@ impl ContentIndex {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn receipts_validate_digest_ordering_paths_and_missing_entries() {
-        let temp = tempfile::tempdir().unwrap();
+    use rstest::{fixture, rstest};
+
+    #[fixture]
+    fn temp() -> tempfile::TempDir {
+        tempfile::tempdir().unwrap()
+    }
+
+    #[rstest]
+    fn receipts_validate_digest_ordering_paths_and_missing_entries(temp: tempfile::TempDir) {
         let path = temp.path().join("index");
         let hash = "ab".repeat(32);
         let bytes = encode_content_index([(Path::new("file"), hash.as_str())]).unwrap();
@@ -176,14 +196,6 @@ mod tests {
         let index = ContentIndex::new(path.clone(), &digest).unwrap();
         assert_eq!(index.lookup(Path::new("file")).unwrap(), hash);
         assert!(index.lookup(Path::new("absent")).is_err());
-        assert!(encode_content_index([(Path::new("../file"), hash.as_str())]).is_err());
-        assert!(
-            encode_content_index([
-                (Path::new("file"), hash.as_str()),
-                (Path::new("file"), hash.as_str())
-            ])
-            .is_err()
-        );
         std::fs::write(&path, b"corrupt").unwrap();
         assert!(
             ContentIndex::new(path, &digest)
@@ -192,9 +204,46 @@ mod tests {
                 .is_err()
         );
     }
-    #[test]
-    fn digest_matching_but_unsorted_and_symlink_indexes_are_rejected() {
-        let temp = tempfile::tempdir().unwrap();
+
+    #[rstest]
+    #[case::parent("../file")]
+    #[case::absolute("/file")]
+    fn receipts_reject_invalid_paths(#[case] path: &str) {
+        let hash = "ab".repeat(32);
+        assert!(encode_content_index([(Path::new(path), hash.as_str())]).is_err());
+    }
+
+    #[rstest]
+    #[case::empty("")]
+    #[case::short("ab")]
+    #[case::long(&"ab".repeat(33))]
+    #[case::uppercase(&"AB".repeat(32))]
+    #[case::non_hex(&"gg".repeat(32))]
+    fn receipts_reject_invalid_digests(#[case] hash: &str) {
+        assert!(encode_content_index([(Path::new("file"), hash)]).is_err());
+    }
+
+    #[rstest]
+    fn receipts_reject_duplicate_paths_even_with_different_digests(
+        #[values(false, true)] different_digest: bool,
+    ) {
+        let hash = "ab".repeat(32);
+        let other = if different_digest {
+            "cd".repeat(32)
+        } else {
+            hash.clone()
+        };
+        assert!(
+            encode_content_index([
+                (Path::new("file"), hash.as_str()),
+                (Path::new("file"), other.as_str()),
+            ])
+            .is_err()
+        );
+    }
+
+    #[rstest]
+    fn digest_matching_but_unsorted_and_symlink_indexes_are_rejected(temp: tempfile::TempDir) {
         let path = temp.path().join("index");
         let hash = "ab".repeat(32);
         let mut bytes = encode_content_index([
@@ -223,9 +272,8 @@ mod tests {
                 .is_err()
         );
     }
-    #[test]
-    fn oversized_and_fifo_receipts_fail_without_reading_or_blocking() {
-        let temp = tempfile::tempdir().unwrap();
+    #[rstest]
+    fn oversized_and_fifo_receipts_fail_without_reading_or_blocking(temp: tempfile::TempDir) {
         let path = temp.path().join("oversized");
         std::fs::File::create(&path)
             .unwrap()

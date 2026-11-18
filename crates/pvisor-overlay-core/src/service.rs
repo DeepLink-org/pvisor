@@ -20,6 +20,34 @@ pub enum OpenBacking {
 /// Shared policy and overlay semantics. Adapters own protocol identifiers,
 /// descriptors, permission translation and operation serialization. The core
 /// remains private: adding a core method does not expand this service's API.
+///
+/// Copy-up changes the owned upper, not the lower. Release the writer before
+/// reopening the same backing:
+///
+/// ```
+/// use std::{fs, path::Path};
+/// use pvisor_overlay_core::{OverlayCore, service::FilesystemService};
+///
+/// let root = tempfile::tempdir()?;
+/// let lower = root.path().join("lower");
+/// let upper = root.path().join("upper");
+/// let work = root.path().join("work");
+/// fs::create_dir(&lower)?;
+/// fs::write(lower.join("file"), b"original")?;
+/// let service = FilesystemService::new(OverlayCore::new(
+///     vec![lower.clone()], upper.clone(), Some(work.clone()),
+/// )?);
+/// fs::write(service.copy_up(Path::new("file"))?, b"staged")?;
+/// assert_eq!(fs::read(lower.join("file"))?, b"original");
+/// drop(service);
+///
+/// let reopened = FilesystemService::new(OverlayCore::open_existing(
+///     vec![lower], upper, Some(work), vec![], None,
+/// )?);
+/// let backing = reopened.prepare_open(Path::new("file"), libc::O_RDONLY)?;
+/// assert_eq!(fs::read(backing)?, b"staged");
+/// # Ok::<(), std::io::Error>(())
+/// ```
 pub struct FilesystemService {
     core: OverlayCore,
 }
@@ -494,122 +522,123 @@ mod tests {
         );
     }
 
-    #[test]
-    fn fresh_truncate_skips_copy_but_preserves_preimage_and_hardlinks() {
-        for compact in [false, true] {
-            for native in [false, true] {
-                let temp = tempfile::tempdir().unwrap();
-                let lower = temp.path().join("lower");
-                let upper = temp.path().join("upper");
-                let journal = temp.path().join("preimages");
-                std::fs::create_dir(&lower).unwrap();
-                std::fs::write(lower.join("file"), vec![42; 131_073]).unwrap();
-                std::fs::write(lower.join("linked"), b"shared").unwrap();
-                std::fs::hard_link(lower.join("linked"), lower.join("alias")).unwrap();
-                let before = crate::fingerprint_at(&lower, Path::new("file")).unwrap();
-                let profile = crate::profile::Profile::enabled("truncate-test");
-                let mut core = OverlayCore::new_with_exclusions_and_preimages(
-                    vec![lower.clone()],
-                    upper.clone(),
-                    None,
-                    vec![],
-                    Some(journal.clone()),
-                )
-                .unwrap();
-                if compact {
-                    core = core.with_compact_preimages().unwrap();
-                }
-                let service = FilesystemService::new(core).with_profile(profile.clone());
-                let prepare = |name: &str| {
-                    let flags = libc::O_WRONLY | libc::O_TRUNC;
-                    if native {
-                        match service
-                            .prepare_open_for_backing_lookup(Path::new(name), flags)
-                            .unwrap()
-                        {
-                            OpenBacking::Writable(path) => path,
-                            _ => panic!("expected writable backing"),
-                        }
-                    } else {
-                        service.prepare_open(Path::new(name), flags).unwrap()
-                    }
-                };
-                let copied = prepare("file");
-                assert!(std::fs::read(copied).unwrap().is_empty());
-                assert_eq!(crate::load_preimages(&journal).unwrap()[0].state, before);
-                let report = profile.report().unwrap();
-                assert_eq!(
-                    report.measurements["copy_up_truncate_skipped_bytes"].units,
-                    131_073
-                );
-                assert!(!report.measurements.contains_key("copy_up_bytes"));
-                // Hardlinks stay on the normal path; the adapter truncates the
-                // shared upper inode only after alias rebinding is complete.
-                assert_eq!(std::fs::read(prepare("linked")).unwrap(), b"shared");
-                service.copy_up(Path::new("alias")).unwrap();
-                std::fs::write(upper.join("linked"), b"edited").unwrap();
-                assert_eq!(std::fs::read(upper.join("alias")).unwrap(), b"edited");
-                assert_eq!(std::fs::read(lower.join("alias")).unwrap(), b"shared");
-            }
+    #[rstest::rstest]
+    fn fresh_truncate_skips_copy_but_preserves_preimage_and_hardlinks(
+        #[values(false, true)] compact: bool,
+        #[values(false, true)] native: bool,
+    ) {
+        let temp = tempfile::tempdir().unwrap();
+        let lower = temp.path().join("lower");
+        let upper = temp.path().join("upper");
+        let journal = temp.path().join("preimages");
+        std::fs::create_dir(&lower).unwrap();
+        std::fs::write(lower.join("file"), vec![42; 131_073]).unwrap();
+        std::fs::write(lower.join("linked"), b"shared").unwrap();
+        std::fs::hard_link(lower.join("linked"), lower.join("alias")).unwrap();
+        let before = crate::fingerprint_at(&lower, Path::new("file")).unwrap();
+        let profile = crate::profile::Profile::enabled("truncate-test");
+        let mut core = OverlayCore::new_with_exclusions_and_preimages(
+            vec![lower.clone()],
+            upper.clone(),
+            None,
+            vec![],
+            Some(journal.clone()),
+        )
+        .unwrap();
+        if compact {
+            core = core.with_compact_preimages().unwrap();
         }
+        let service = FilesystemService::new(core).with_profile(profile.clone());
+        let prepare = |name: &str| {
+            let flags = libc::O_WRONLY | libc::O_TRUNC;
+            if native {
+                match service
+                    .prepare_open_for_backing_lookup(Path::new(name), flags)
+                    .unwrap()
+                {
+                    OpenBacking::Writable(path) => path,
+                    _ => panic!("expected writable backing"),
+                }
+            } else {
+                service.prepare_open(Path::new(name), flags).unwrap()
+            }
+        };
+        let copied = prepare("file");
+        assert!(std::fs::read(copied).unwrap().is_empty());
+        assert_eq!(crate::load_preimages(&journal).unwrap()[0].state, before);
+        let report = profile.report().unwrap();
+        assert_eq!(
+            report.measurements["copy_up_truncate_skipped_bytes"].units,
+            131_073
+        );
+        assert!(!report.measurements.contains_key("copy_up_bytes"));
+        // Hardlinks stay on the normal path; the adapter truncates the
+        // shared upper inode only after alias rebinding is complete.
+        assert_eq!(std::fs::read(prepare("linked")).unwrap(), b"shared");
+        service.copy_up(Path::new("alias")).unwrap();
+        std::fs::write(upper.join("linked"), b"edited").unwrap();
+        assert_eq!(std::fs::read(upper.join("alias")).unwrap(), b"edited");
+        assert_eq!(std::fs::read(lower.join("alias")).unwrap(), b"shared");
     }
 
-    #[test]
-    fn host_and_native_open_share_read_copy_up_and_no_follow_semantics() {
-        for native in [false, true] {
-            let temp = tempfile::tempdir().unwrap();
-            let lower = temp.path().join("lower");
-            let upper = temp.path().join("upper");
-            std::fs::create_dir(&lower).unwrap();
-            std::fs::write(lower.join("file"), b"original").unwrap();
-            symlink("file", lower.join("alias")).unwrap();
-            let service = FilesystemService::new(
-                OverlayCore::new(vec![lower.clone()], upper.clone(), None).unwrap(),
-            );
-            let open = |path: &Path, flags| {
-                if native {
-                    service
-                        .prepare_open_for_backing_lookup(path, flags)
-                        .map(|b| match b {
-                            OpenBacking::Writable(path) => path,
-                            OpenBacking::ReadOnly(backing) => backing.entry.resolved.path,
-                        })
-                } else {
-                    service.prepare_open(path, flags)
-                }
-            };
-            assert_eq!(
-                open(Path::new("file"), libc::O_RDONLY).unwrap(),
-                lower.join("file")
-            );
-            assert!(!upper.join("file").exists());
-            assert_eq!(
-                open(Path::new("file"), libc::O_RDWR).unwrap(),
-                upper.join("file")
-            );
-            std::fs::write(upper.join("file"), b"changed").unwrap();
-            assert_eq!(std::fs::read(lower.join("file")).unwrap(), b"original");
-            assert_eq!(
-                open(Path::new("file"), libc::O_RDONLY).unwrap(),
-                upper.join("file")
-            );
-            for flags in [
-                libc::O_RDONLY,
-                libc::O_WRONLY,
-                libc::O_RDONLY | libc::O_APPEND,
-                libc::O_RDONLY | libc::O_TRUNC,
-            ] {
-                assert_eq!(
-                    open(Path::new("alias"), flags).unwrap_err().raw_os_error(),
-                    Some(libc::ELOOP)
-                );
+    #[rstest::rstest]
+    fn host_and_native_open_share_read_copy_up_and_no_follow_semantics(
+        #[values(false, true)] native: bool,
+    ) {
+        let temp = tempfile::tempdir().unwrap();
+        let lower = temp.path().join("lower");
+        let upper = temp.path().join("upper");
+        std::fs::create_dir(&lower).unwrap();
+        std::fs::write(lower.join("file"), b"original").unwrap();
+        symlink("file", lower.join("alias")).unwrap();
+        let service = FilesystemService::new(
+            OverlayCore::new(vec![lower.clone()], upper.clone(), None).unwrap(),
+        );
+        let open = |path: &Path, flags| {
+            if native {
+                service
+                    .prepare_open_for_backing_lookup(path, flags)
+                    .map(|b| match b {
+                        OpenBacking::Writable(path) => path,
+                        OpenBacking::ReadOnly(backing) => backing.entry.resolved.path,
+                    })
+            } else {
+                service.prepare_open(path, flags)
             }
-            assert!(!upper.join("alias").exists());
+        };
+        assert_eq!(
+            open(Path::new("file"), libc::O_RDONLY).unwrap(),
+            lower.join("file")
+        );
+        assert!(!upper.join("file").exists());
+        assert_eq!(
+            open(Path::new("file"), libc::O_RDWR).unwrap(),
+            upper.join("file")
+        );
+        std::fs::write(upper.join("file"), b"changed").unwrap();
+        assert_eq!(std::fs::read(lower.join("file")).unwrap(), b"original");
+        assert_eq!(
+            open(Path::new("file"), libc::O_RDONLY).unwrap(),
+            upper.join("file")
+        );
+        for flags in [
+            libc::O_RDONLY,
+            libc::O_WRONLY,
+            libc::O_RDONLY | libc::O_APPEND,
+            libc::O_RDONLY | libc::O_TRUNC,
+        ] {
+            assert_eq!(
+                open(Path::new("alias"), flags).unwrap_err().raw_os_error(),
+                Some(libc::ELOOP)
+            );
         }
+        assert!(!upper.join("alias").exists());
     }
 
-    #[test]
-    fn both_open_interfaces_enforce_path_policy_before_copy_up() {
+    #[rstest::rstest]
+    #[case::read(libc::O_RDONLY)]
+    #[case::write(libc::O_RDWR)]
+    fn both_open_interfaces_enforce_path_policy_before_copy_up(#[case] flags: i32) {
         let temp = tempfile::tempdir().unwrap();
         let lower = temp.path().join("lower");
         let upper = temp.path().join("upper");
@@ -619,14 +648,12 @@ mod tests {
         let service =
             FilesystemService::new(OverlayCore::new(vec![lower], upper.clone(), None).unwrap())
                 .with_access_policy(&policy);
-        for flags in [libc::O_RDONLY, libc::O_RDWR] {
-            assert!(service.prepare_open(Path::new("private"), flags).is_err());
-            assert!(
-                service
-                    .prepare_open_for_backing_lookup(Path::new("private"), flags)
-                    .is_err()
-            );
-        }
+        assert!(service.prepare_open(Path::new("private"), flags).is_err());
+        assert!(
+            service
+                .prepare_open_for_backing_lookup(Path::new("private"), flags)
+                .is_err()
+        );
         assert!(!upper.join("private").exists());
     }
 }

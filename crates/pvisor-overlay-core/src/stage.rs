@@ -88,6 +88,31 @@ fn managed(journal: &Path) -> io::Result<bool> {
 /// Admit a new owned stage, or a verified checkpoint copy. Existing managed
 /// stages must be sealed before reuse: an interrupted upper cannot be promoted
 /// to a trusted result simply by reopening and syncing whatever survived.
+///
+/// ```
+/// use std::{fs, path::Path};
+/// use pvisor_overlay_core::{OverlayCore, stage::{self, StageDurability}};
+///
+/// let root = tempfile::tempdir()?;
+/// let journal = root.path().join("journal");
+/// let upper = root.path().join("upper");
+/// let lower = root.path().join("lower");
+/// fs::create_dir(&lower)?;
+/// fs::write(lower.join("file"), b"original")?;
+/// stage::begin(&journal, StageDurability::Ephemeral)?;
+/// let core = OverlayCore::new_with_exclusions_and_preimages(
+///     vec![lower], upper.clone(), None, vec![], Some(journal.clone()),
+/// )?;
+/// fs::write(core.copy_up(Path::new("file"))?, b"staged")?;
+/// drop(core);
+/// assert!(stage::require_sealed(&journal).is_err());
+/// stage::complete(&upper, &journal)?;
+/// assert_eq!(fs::read(upper.join("file"))?, b"staged");
+/// assert!(stage::require_persistent(&journal).is_err());
+/// assert!(stage::require_sealed(&journal).is_err());
+/// assert!(stage::begin(&journal, StageDurability::Strict).is_err());
+/// # Ok::<(), std::io::Error>(())
+/// ```
 pub fn begin(journal: &Path, durability: StageDurability) -> io::Result<()> {
     begin_with_recording(journal, durability, StageRecording::On)
 }
@@ -481,73 +506,73 @@ mod tests {
     use crate::{OverlayCore, OverlayLayout, apply::apply_overlay, fingerprint_at};
     use pvisor_core::overlay::{OverlayRecord, OverlayState, OverlayUpper};
 
-    #[test]
-    fn ephemeral_completion_retains_bytes_but_cannot_seal_apply_or_reuse() {
-        for recording in [StageRecording::On, StageRecording::Off] {
-            let temp = tempfile::tempdir().unwrap();
-            let (core, mut record) =
-                fixture_with_recording(temp.path(), StageDurability::Ephemeral, recording);
-            fs::write(core.copy_up(Path::new("value")).unwrap(), b"staged").unwrap();
-            // Explicit workload journal synchronization still works in this mode.
-            core.sync_preimages().unwrap();
-            drop(core);
-            let journal = temp.path().join("preimages");
-            assert!(admits_writes(&journal).unwrap());
-            assert!(require_sealed(&journal).is_err());
-            // A durable seal must fail before invoking the upper sync callback.
-            let error = seal_with_upper(record.upper.path(), &journal, |_| {
-                panic!("ephemeral stage must not enter durable sealing")
-            })
-            .unwrap_err();
-            assert_eq!(error.kind(), io::ErrorKind::Unsupported);
-            complete(record.upper.path(), &journal).unwrap();
-            assert_eq!(
-                fs::read(record.upper.path().join("value")).unwrap(),
-                b"staged"
-            );
-            assert_eq!(fs::read(record.target.join("value")).unwrap(), b"original");
-            assert_eq!(
-                load_preimages(&journal).unwrap().len(),
-                usize::from(recording == StageRecording::On)
-            );
-            assert!(!journal.join(SEAL).exists());
-            assert_eq!(
-                fs::read(journal.join(VOLATILE)).unwrap(),
-                COMPLETED_VOLATILE
-            );
-            assert!(!admits_writes(&journal).unwrap());
-            assert!(
-                apply_overlay(&mut record)
-                    .unwrap_err()
-                    .to_string()
-                    .contains("EPHEMERAL_STAGE")
-            );
-            for mode in [
-                StageDurability::Ephemeral,
-                StageDurability::Checkpoint,
-                StageDurability::Strict,
-            ] {
-                assert!(begin(&journal, mode).is_err());
-            }
-            // Neither a forged/stale seal nor a clean process reopen upgrades it.
-            fs::write(journal.join(SEAL), SEALED).unwrap();
-            assert!(require_sealed(&journal).is_err());
-            let reopened = OverlayCore::open_existing(
-                vec![record.target.clone()],
-                record.upper.upper_dir.clone(),
-                Some(record.upper.work_dir.clone()),
-                vec![],
-                Some(journal),
-            )
-            .unwrap();
-            assert_eq!(
-                reopened
-                    .copy_up(Path::new("value"))
-                    .unwrap_err()
-                    .raw_os_error(),
-                Some(libc::EROFS)
-            );
+    #[rstest::rstest]
+    fn ephemeral_completion_retains_bytes_but_cannot_seal_apply_or_reuse(
+        #[values(StageRecording::On, StageRecording::Off)] recording: StageRecording,
+    ) {
+        let temp = tempfile::tempdir().unwrap();
+        let (core, mut record) =
+            fixture_with_recording(temp.path(), StageDurability::Ephemeral, recording);
+        fs::write(core.copy_up(Path::new("value")).unwrap(), b"staged").unwrap();
+        // Explicit workload journal synchronization still works in this mode.
+        core.sync_preimages().unwrap();
+        drop(core);
+        let journal = temp.path().join("preimages");
+        assert!(admits_writes(&journal).unwrap());
+        assert!(require_sealed(&journal).is_err());
+        // A durable seal must fail before invoking the upper sync callback.
+        let error = seal_with_upper(record.upper.path(), &journal, |_| {
+            panic!("ephemeral stage must not enter durable sealing")
+        })
+        .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::Unsupported);
+        complete(record.upper.path(), &journal).unwrap();
+        assert_eq!(
+            fs::read(record.upper.path().join("value")).unwrap(),
+            b"staged"
+        );
+        assert_eq!(fs::read(record.target.join("value")).unwrap(), b"original");
+        assert_eq!(
+            load_preimages(&journal).unwrap().len(),
+            usize::from(recording == StageRecording::On)
+        );
+        assert!(!journal.join(SEAL).exists());
+        assert_eq!(
+            fs::read(journal.join(VOLATILE)).unwrap(),
+            COMPLETED_VOLATILE
+        );
+        assert!(!admits_writes(&journal).unwrap());
+        assert!(
+            apply_overlay(&mut record)
+                .unwrap_err()
+                .to_string()
+                .contains("EPHEMERAL_STAGE")
+        );
+        for mode in [
+            StageDurability::Ephemeral,
+            StageDurability::Checkpoint,
+            StageDurability::Strict,
+        ] {
+            assert!(begin(&journal, mode).is_err());
         }
+        // Neither a forged/stale seal nor a clean process reopen upgrades it.
+        fs::write(journal.join(SEAL), SEALED).unwrap();
+        assert!(require_sealed(&journal).is_err());
+        let reopened = OverlayCore::open_existing(
+            vec![record.target.clone()],
+            record.upper.upper_dir.clone(),
+            Some(record.upper.work_dir.clone()),
+            vec![],
+            Some(journal),
+        )
+        .unwrap();
+        assert_eq!(
+            reopened
+                .copy_up(Path::new("value"))
+                .unwrap_err()
+                .raw_os_error(),
+            Some(libc::EROFS)
+        );
     }
 
     #[test]
@@ -602,15 +627,24 @@ mod tests {
         assert_eq!(policy(temp.path()).unwrap(), StageDurability::Strict);
     }
 
-    #[test]
-    fn worker_configuration_is_bounded_and_explicit() {
-        assert_eq!(sync_workers(None).unwrap(), 1);
-        for value in [1, 2, 4, 8] {
-            assert_eq!(sync_workers(Some(value.to_string().into())).unwrap(), value);
-        }
-        for value in ["", "0", "3", "9", "-1", "unlimited"] {
-            assert!(sync_workers(Some(value.into())).is_err());
-        }
+    #[rstest::rstest]
+    #[case::default(None, 1)]
+    #[case::serial(Some("1"), 1)]
+    #[case::two(Some("2"), 2)]
+    #[case::four(Some("4"), 4)]
+    #[case::eight(Some("8"), 8)]
+    fn worker_configuration_accepts_bounded_counts(
+        #[case] input: Option<&str>,
+        #[case] expected: usize,
+    ) {
+        assert_eq!(sync_workers(input.map(Into::into)).unwrap(), expected);
+    }
+
+    #[rstest::rstest]
+    fn worker_configuration_rejects_invalid_counts(
+        #[values("", "0", "3", "9", "-1", "unlimited")] input: &str,
+    ) {
+        assert!(sync_workers(Some(input.into())).is_err());
     }
 
     #[test]
@@ -697,48 +731,47 @@ mod tests {
         assert!(require_sealed(&journal).is_err());
     }
 
-    #[test]
-    fn parallel_directory_failure_or_worker_panic_never_publishes_seal() {
-        for panic_worker in [false, true] {
-            let temp = tempfile::tempdir().unwrap();
-            let (core, record) = fixture(temp.path(), StageDurability::Checkpoint);
-            fs::write(record.upper.path().join("payload"), b"data").unwrap();
-            drop(core);
-            let journal = temp.path().join("preimages");
-            let result = seal_with_upper(record.upper.path(), &journal, |upper| {
-                sync_upper_parallel(upper, 2, &|file, _, directory| {
-                    assert!(!panic_worker, "injected worker panic");
-                    if directory {
-                        Err(io::Error::from_raw_os_error(libc::EIO))
-                    } else {
-                        file.sync_all()
-                    }
-                })
-            });
-            assert!(result.is_err());
-            assert!(!journal.join(SEAL).exists());
-            assert!(begin(&journal, StageDurability::Checkpoint).is_err());
-        }
+    #[rstest::rstest]
+    fn parallel_directory_failure_or_worker_panic_never_publishes_seal(
+        #[values(false, true)] panic_worker: bool,
+    ) {
+        let temp = tempfile::tempdir().unwrap();
+        let (core, record) = fixture(temp.path(), StageDurability::Checkpoint);
+        fs::write(record.upper.path().join("payload"), b"data").unwrap();
+        drop(core);
+        let journal = temp.path().join("preimages");
+        let result = seal_with_upper(record.upper.path(), &journal, |upper| {
+            sync_upper_parallel(upper, 2, &|file, _, directory| {
+                assert!(!panic_worker, "injected worker panic");
+                if directory {
+                    Err(io::Error::from_raw_os_error(libc::EIO))
+                } else {
+                    file.sync_all()
+                }
+            })
+        });
+        assert!(result.is_err());
+        assert!(!journal.join(SEAL).exists());
+        assert!(begin(&journal, StageDurability::Checkpoint).is_err());
     }
 
-    #[test]
-    fn parallel_seal_supports_empty_uppers_and_both_durability_modes() {
-        for durability in [StageDurability::Strict, StageDurability::Checkpoint] {
-            for populated in [false, true] {
-                let temp = tempfile::tempdir().unwrap();
-                let (core, record) = fixture(temp.path(), durability);
-                if populated {
-                    fs::write(core.copy_up(Path::new("value")).unwrap(), b"staged").unwrap();
-                }
-                drop(core);
-                let journal = temp.path().join("preimages");
-                seal_with_upper(record.upper.path(), &journal, |upper| {
-                    sync_upper_parallel(upper, 4, &|file, _, _| file.sync_all())
-                })
-                .unwrap();
-                require_sealed(&journal).unwrap();
-            }
+    #[rstest::rstest]
+    fn parallel_seal_supports_empty_uppers_and_both_durability_modes(
+        #[values(StageDurability::Strict, StageDurability::Checkpoint)] durability: StageDurability,
+        #[values(false, true)] populated: bool,
+    ) {
+        let temp = tempfile::tempdir().unwrap();
+        let (core, record) = fixture(temp.path(), durability);
+        if populated {
+            fs::write(core.copy_up(Path::new("value")).unwrap(), b"staged").unwrap();
         }
+        drop(core);
+        let journal = temp.path().join("preimages");
+        seal_with_upper(record.upper.path(), &journal, |upper| {
+            sync_upper_parallel(upper, 4, &|file, _, _| file.sync_all())
+        })
+        .unwrap();
+        require_sealed(&journal).unwrap();
     }
 
     #[test]
@@ -799,38 +832,37 @@ mod tests {
         (core, record)
     }
 
-    #[test]
-    fn apply_requires_a_seal_and_preserves_exact_content_conflicts_in_both_modes() {
-        for durability in [StageDurability::Checkpoint, StageDurability::Strict] {
-            for external_edit in [false, true] {
-                let temp = tempfile::tempdir().unwrap();
-                let (core, mut record) = fixture(temp.path(), durability);
-                let original = fingerprint_at(&record.target, Path::new("value")).unwrap();
-                core.observe_read(Path::new("value")).unwrap();
-                if external_edit {
-                    fs::write(record.target.join("value"), b"external").unwrap();
-                }
-                fs::write(core.copy_up(Path::new("value")).unwrap(), b"staged").unwrap();
-                drop(core);
-                let journal = temp.path().join("preimages");
-                assert_eq!(load_preimages(&journal).unwrap()[0].state, original);
-                assert!(
-                    apply_overlay(&mut record)
-                        .unwrap_err()
-                        .to_string()
-                        .contains("STAGE_INCOMPLETE")
-                );
-                seal(record.upper.path(), &journal).unwrap();
-                require_sealed(&journal).unwrap();
-                if external_edit {
-                    assert!(apply_overlay(&mut record).is_err());
-                    assert_eq!(fs::read(record.target.join("value")).unwrap(), b"external");
-                } else {
-                    apply_overlay(&mut record).unwrap();
-                    assert_eq!(fs::read(record.target.join("value")).unwrap(), b"staged");
-                    apply_overlay(&mut record).unwrap();
-                }
-            }
+    #[rstest::rstest]
+    fn apply_requires_a_seal_and_preserves_exact_content_conflicts_in_both_modes(
+        #[values(StageDurability::Checkpoint, StageDurability::Strict)] durability: StageDurability,
+        #[values(false, true)] external_edit: bool,
+    ) {
+        let temp = tempfile::tempdir().unwrap();
+        let (core, mut record) = fixture(temp.path(), durability);
+        let original = fingerprint_at(&record.target, Path::new("value")).unwrap();
+        core.observe_read(Path::new("value")).unwrap();
+        if external_edit {
+            fs::write(record.target.join("value"), b"external").unwrap();
+        }
+        fs::write(core.copy_up(Path::new("value")).unwrap(), b"staged").unwrap();
+        drop(core);
+        let journal = temp.path().join("preimages");
+        assert_eq!(load_preimages(&journal).unwrap()[0].state, original);
+        assert!(
+            apply_overlay(&mut record)
+                .unwrap_err()
+                .to_string()
+                .contains("STAGE_INCOMPLETE")
+        );
+        seal(record.upper.path(), &journal).unwrap();
+        require_sealed(&journal).unwrap();
+        if external_edit {
+            assert!(apply_overlay(&mut record).is_err());
+            assert_eq!(fs::read(record.target.join("value")).unwrap(), b"external");
+        } else {
+            apply_overlay(&mut record).unwrap();
+            assert_eq!(fs::read(record.target.join("value")).unwrap(), b"staged");
+            apply_overlay(&mut record).unwrap();
         }
     }
 

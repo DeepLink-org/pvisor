@@ -580,33 +580,39 @@ mod tests {
     }
 
     use super::*;
-    #[test]
-    fn publication_consumes_source_and_preserves_existing_winner() {
-        for publish in [publish_no_replace, publish_by_link] {
-            let temp = tempfile::tempdir().unwrap();
-            let source = temp.path().join("pending");
-            let destination = temp.path().join("entry");
-            std::fs::write(&source, b"first").unwrap();
-            publish(&source, &destination).unwrap();
-            assert!(!source.exists());
-            assert_eq!(std::fs::read(&destination).unwrap(), b"first");
-            std::fs::write(&source, b"second").unwrap();
-            assert_eq!(
-                publish(&source, &destination).unwrap_err().kind(),
-                io::ErrorKind::AlreadyExists
-            );
-            assert_eq!(std::fs::read(&destination).unwrap(), b"first");
-            assert_eq!(std::fs::read(&source).unwrap(), b"second");
-        }
+    #[rstest::rstest]
+    #[case::rename(publish_no_replace)]
+    #[case::link(publish_by_link)]
+    fn publication_consumes_source_and_preserves_existing_winner(
+        #[case] publish: fn(&Path, &Path) -> io::Result<()>,
+    ) {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("pending");
+        let destination = temp.path().join("entry");
+        std::fs::write(&source, b"first").unwrap();
+        publish(&source, &destination).unwrap();
+        assert!(!source.exists());
+        assert_eq!(std::fs::read(&destination).unwrap(), b"first");
+        std::fs::write(&source, b"second").unwrap();
+        assert_eq!(
+            publish(&source, &destination).unwrap_err().kind(),
+            io::ErrorKind::AlreadyExists
+        );
+        assert_eq!(std::fs::read(&destination).unwrap(), b"first");
+        assert_eq!(std::fs::read(&source).unwrap(), b"second");
     }
 
-    #[test]
-    fn negative_epoch_round_trips_integral_and_fractional_timestamps() {
-        for (seconds, nanos) in [(-2, 0), (-2, 123_456_789), (0, 0)] {
-            let value = timespec(unix_time(seconds, nanos));
-            assert_eq!(value.tv_sec, seconds);
-            assert_eq!(value.tv_nsec, nanos);
-        }
+    #[rstest::rstest]
+    #[case::negative_integral(-2, 0)]
+    #[case::negative_fractional(-2, 123_456_789)]
+    #[case::epoch(0, 0)]
+    fn negative_epoch_round_trips_integral_and_fractional_timestamps(
+        #[case] seconds: i64,
+        #[case] nanos: i64,
+    ) {
+        let value = timespec(unix_time(seconds, nanos));
+        assert_eq!(value.tv_sec, seconds);
+        assert_eq!(value.tv_nsec, nanos);
     }
 }
 

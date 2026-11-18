@@ -1,134 +1,14 @@
-//! Ordinary namespace errors/retries compared with a native disposable tree.
-use pvisor_overlay_core::{OverlayCore, service::FilesystemService};
-use std::{
-    collections::BTreeMap,
-    fs,
-    io::{self, Write},
-    path::{Path, PathBuf},
-};
+//! Fixed error contracts and generated namespace state transitions.
+#[path = "namespace_recovery/model.rs"]
+mod model;
 
-#[derive(Clone, Copy, Debug)]
-enum Operation {
-    Rename(&'static str, &'static str),
-    Remove(&'static str, bool),
-    Create(&'static str),
-    Mkdir(&'static str),
-}
-
-impl Operation {
-    fn native(self, root: &Path) -> io::Result<()> {
-        match self {
-            Self::Rename(old, new) => fs::rename(root.join(old), root.join(new)),
-            Self::Remove(path, true) => fs::remove_dir(root.join(path)),
-            Self::Remove(path, false) => fs::remove_file(root.join(path)),
-            Self::Create(path) => fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(root.join(path))?
-                .write_all(b"created"),
-            Self::Mkdir(path) => fs::create_dir(root.join(path)),
-        }
-    }
-
-    fn overlay(self, service: &FilesystemService) -> io::Result<()> {
-        match self {
-            Self::Rename(old, new) => service.rename(Path::new(old), Path::new(new), false),
-            Self::Remove(path, directory) => service.remove(Path::new(path), directory),
-            Self::Create(path) => service
-                .create_file(
-                    Path::new(path),
-                    0o644,
-                    libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL,
-                )?
-                .write_all(b"created"),
-            Self::Mkdir(path) => service.create_dir(Path::new(path), 0o755),
-        }
-    }
-}
-
-type Tree = BTreeMap<PathBuf, Option<Vec<u8>>>;
-
-fn native_tree(root: &Path) -> Tree {
-    fn walk(root: &Path, relative: &Path, tree: &mut Tree) {
-        for entry in fs::read_dir(root.join(relative)).unwrap() {
-            let entry = entry.unwrap();
-            let path = relative.join(entry.file_name());
-            if entry.file_type().unwrap().is_dir() {
-                tree.insert(path.clone(), None);
-                walk(root, &path, tree);
-            } else {
-                assert!(entry.file_type().unwrap().is_file());
-                tree.insert(path, Some(fs::read(entry.path()).unwrap()));
-            }
-        }
-    }
-    let mut tree = Tree::new();
-    walk(root, Path::new(""), &mut tree);
-    tree
-}
-
-fn overlay_tree(service: &FilesystemService) -> Tree {
-    fn walk(service: &FilesystemService, relative: &Path, tree: &mut Tree) {
-        for (name, _) in service.directory_candidates(relative).unwrap() {
-            let path = relative.join(name);
-            let metadata = service.metadata(&path).unwrap();
-            if metadata.is_dir() {
-                tree.insert(path.clone(), None);
-                walk(service, &path, tree);
-            } else {
-                assert!(metadata.is_file());
-                let backing = service.prepare_open(&path, libc::O_RDONLY).unwrap();
-                tree.insert(path, Some(fs::read(backing).unwrap()));
-            }
-        }
-    }
-    let mut tree = Tree::new();
-    walk(service, Path::new(""), &mut tree);
-    tree
-}
-
-fn populate(root: &Path) {
-    fs::create_dir_all(root.join("dir")).unwrap();
-    fs::create_dir(root.join("occupied")).unwrap();
-    fs::create_dir(root.join("empty")).unwrap();
-    fs::write(root.join("a"), b"A").unwrap();
-    fs::write(root.join("dir/inside"), b"nested").unwrap();
-    fs::write(root.join("occupied/item"), b"stay").unwrap();
-}
+use model::{ErrorComparison, JournalMode, Operation, run_trace};
+use proptest::prelude::*;
+use proptest::test_runner::FileFailurePersistence;
 
 #[test]
 fn namespace_type_errors_retries_and_reopens_match_native_without_changing_lower() {
-    for compact in [None, Some(false), Some(true)] {
-        namespace_trace(compact);
-    }
-}
-
-fn namespace_trace(compact: Option<bool>) {
     use Operation::*;
-    let root = tempfile::tempdir().unwrap();
-    let lower = root.path().join("lower");
-    let native = root.path().join("native");
-    let upper = root.path().join("upper");
-    let work = root.path().join("work");
-    populate(&lower);
-    populate(&native);
-    let original = native_tree(&lower);
-    let baseline = pvisor_overlay_core::fingerprint_at(&lower, Path::new("a")).unwrap();
-    let journal = compact.map(|_| root.path().join("preimages"));
-    let core = OverlayCore::new_with_exclusions_and_preimages(
-        vec![lower.clone()],
-        upper.clone(),
-        Some(work.clone()),
-        vec![],
-        journal.clone(),
-    )
-    .unwrap();
-    let core = if compact == Some(true) {
-        core.with_compact_preimages().unwrap()
-    } else {
-        core
-    };
-    let mut service = FilesystemService::new(core);
     let operations = [
         Rename("dir", "occupied"),
         Remove("occupied", true),
@@ -159,93 +39,75 @@ fn namespace_trace(compact: Option<bool>) {
         Remove("final", false),
         Create("final"),
     ];
-    let mut failures = 0;
-    for (index, operation) in operations.into_iter().enumerate() {
-        let before = native_tree(&native);
-        let directory_unlink = matches!(
-            operation,
-            Remove(path, false) if before.get(Path::new(path)) == Some(&None)
-        );
-        let expected = operation.native(&native);
-        let actual = operation.overlay(&service);
-        if directory_unlink {
-            // POSIX unlink specifies EPERM; its rationale documents Linux/LSB
-            // EISDIR and tells portable callers to handle either. Core's
-            // adapter-facing contract remains EISDIR on every platform.
-            assert_eq!(
-                actual.as_ref().err().and_then(|error| error.raw_os_error()),
-                Some(libc::EISDIR),
-                "step {index}: {operation:?}, actual={actual:?}"
-            );
-            assert!(
-                matches!(
-                    expected
-                        .as_ref()
-                        .err()
-                        .and_then(|error| error.raw_os_error()),
-                    Some(libc::EPERM | libc::EISDIR)
-                ),
-                "step {index}: {operation:?}, expected={expected:?}"
-            );
-            assert_eq!(
-                native_tree(&native),
-                before,
-                "native unlink changed a directory"
-            );
-            assert_eq!(
-                overlay_tree(&service),
-                before,
-                "overlay unlink changed a directory"
-            );
-        } else {
-            assert_eq!(
-                actual.as_ref().err().map(|error| error.raw_os_error()),
-                expected.as_ref().err().map(|error| error.raw_os_error()),
-                "step {index}: {operation:?}, actual={actual:?}, expected={expected:?}"
-            );
-        }
-        failures += usize::from(expected.is_err());
-        assert_eq!(
-            overlay_tree(&service),
-            native_tree(&native),
-            "step {index}: {operation:?}"
-        );
-        assert_eq!(
-            native_tree(&lower),
-            original,
-            "lower changed at step {index}"
-        );
-        // Reopen every checkpoint, including immediately after rejected calls.
-        drop(service);
-        service = FilesystemService::new(
-            OverlayCore::open_existing(
-                vec![lower.clone()],
-                upper.clone(),
-                Some(work.clone()),
-                vec![],
-                journal.clone(),
-            )
-            .unwrap(),
-        );
-        assert_eq!(
-            overlay_tree(&service),
-            native_tree(&native),
-            "reopen {index}"
-        );
-        assert_eq!(
-            fs::read_dir(&work).unwrap().count(),
-            0,
-            "scratch at {index}"
-        );
+    for mode in JournalMode::ALL {
+        assert_eq!(run_trace(mode, &operations, ErrorComparison::Exact), 14);
     }
-    assert_eq!(failures, 14);
-    drop(service);
-    if let Some(journal) = journal {
-        let entries = pvisor_overlay_core::load_preimages(&journal).unwrap();
-        let observed = entries
-            .iter()
-            .find(|entry| entry.relative_path() == Path::new("a"))
-            .unwrap();
-        assert_eq!(observed.state, baseline);
+}
+
+fn operation() -> impl Strategy<Value = Operation> {
+    let path = prop::sample::select(vec![
+        "a",
+        "dir",
+        "dir/inside",
+        "occupied",
+        "occupied/item",
+        "empty",
+        "missing",
+        "missing/child",
+        "final",
+        "界",
+        "empty/界",
+    ]);
+    prop_oneof![
+        (path.clone(), path.clone()).prop_map(|(old, new)| Operation::Rename(old, new)),
+        (path.clone(), any::<bool>())
+            .prop_map(|(path, directory)| Operation::Remove(path, directory)),
+        path.clone().prop_map(Operation::Create),
+        path.clone().prop_map(Operation::Mkdir),
+        (path, prop::collection::vec(any::<u8>(), 0..257))
+            .prop_map(|(path, bytes)| Operation::Write(path, bytes)),
+    ]
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig {
+        failure_persistence: Some(Box::new(FileFailurePersistence::WithSource("proptest-regressions"))),
+        ..ProptestConfig::default()
+    })]
+
+    #[test]
+    fn generated_namespace_sequences_match_native(
+        operations in prop::collection::vec(operation(), 1..33),
+    ) {
+        for mode in JournalMode::ALL {
+            run_trace(mode, &operations, ErrorComparison::Outcome);
+        }
+    }
+
+    #[test]
+    fn successful_recreation_cycles_preserve_bytes_and_original_baselines(
+        first in prop::collection::vec(any::<u8>(), 0..1025),
+        second in prop::collection::vec(any::<u8>(), 0..1025),
+    ) {
+        use Operation::*;
+        let operations = [
+            Create("fresh"),
+            Write("fresh", first.clone()),
+            Rename("fresh", "dir/created"),
+            Write("dir/created", second.clone()),
+            Remove("dir/created", false),
+            Mkdir("fresh"),
+            Create("fresh/child"),
+            Write("fresh/child", first),
+            Rename("fresh", "empty/recreated"),
+            Remove("empty/recreated/child", false),
+            Remove("empty/recreated", true),
+            Remove("a", false),
+            Create("a"),
+            Write("a", second),
+        ];
+        for mode in JournalMode::ALL {
+            prop_assert_eq!(run_trace(mode, &operations, ErrorComparison::Exact), 0);
+        }
     }
 }
