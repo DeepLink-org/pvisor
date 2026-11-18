@@ -7,6 +7,7 @@ Workspace snapshots distinguish Run storage by a versioned lease marker, not
 by the `lease.lock` filename. Acquisition writes the marker before native work;
 interrupted marker writes can be retried under the same exclusive lock. Legacy
 empty leases require a valid Run record bound to that directory for exclusion.
+Opening an initialized legacy Run preserves its lease bytes, permissions and timestamps.
 Ordinary project locks and symbolic links remain in the snapshot. The marker
 identifies internal storage; it is not authority against another same-UID process.
 

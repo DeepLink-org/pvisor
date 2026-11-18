@@ -528,7 +528,9 @@ impl RunLease {
             LEASE_IDENTITY.starts_with(&identity),
             "unrecognized Run lease identity"
         );
-        if identity != LEASE_IDENTITY || metadata.mode() & 0o777 != 0o600 {
+        if !stage_dir.join(RUN_META_FILENAME).try_exists()?
+            && (identity != LEASE_IDENTITY || metadata.mode() & 0o777 != 0o600)
+        {
             file.set_permissions(fs::Permissions::from_mode(0o600))?;
             file.rewind()?;
             file.write_all(LEASE_IDENTITY)?;
@@ -1404,6 +1406,42 @@ mod tests {
         fs::hard_link(&target, &lease).unwrap();
         assert!(RunLease::acquire(&stage).is_err());
         assert!(fs::read(&target).unwrap().is_empty());
+    }
+
+    #[test]
+    fn lease_identity_preserves_initialized_legacy_records_on_repeated_admission() {
+        let temp = tempfile::tempdir().unwrap();
+        let stage = temp.path().join("stage");
+        fs::create_dir_all(&stage).unwrap();
+        record(temp.path(), &stage, &stage.join("upper"))
+            .write()
+            .unwrap();
+        let path = stage.join(LEASE_FILENAME);
+        fs::write(&path, b"").unwrap();
+        let before = fs::metadata(&path).unwrap();
+        for _ in 0..3 {
+            drop(RunLease::acquire(&stage).unwrap());
+            let after = fs::metadata(&path).unwrap();
+            assert!(fs::read(&path).unwrap().is_empty());
+            assert_eq!(
+                (after.dev(), after.ino(), after.mode()),
+                (before.dev(), before.ino(), before.mode())
+            );
+            assert_eq!(
+                (
+                    after.mtime(),
+                    after.mtime_nsec(),
+                    after.ctime(),
+                    after.ctime_nsec()
+                ),
+                (
+                    before.mtime(),
+                    before.mtime_nsec(),
+                    before.ctime(),
+                    before.ctime_nsec()
+                )
+            );
+        }
     }
 
     #[test]
