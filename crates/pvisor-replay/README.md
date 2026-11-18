@@ -1,5 +1,9 @@
 # pvisor-replay
 
+Implementation guards scan every Rust source recursively and exempt only the
+crate-root `api.rs` and `lib.rs`. Negative fixtures verify that nested files
+with those names and newly added adapters cannot add public inherent methods.
+
 Replay preparation, tool execution and agent continuation for the
 `pvisor-replay` companion. The engine validates recorded trajectories and
 workspace boundaries before continuation; protocol-specific adapters remain

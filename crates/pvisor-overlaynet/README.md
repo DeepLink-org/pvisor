@@ -1,5 +1,9 @@
 # pvisor-overlaynet
 
+Implementation guards scan every Rust source recursively and exempt only the
+crate-root `api.rs` and `lib.rs`. Negative fixtures verify that nested files
+with those names and newly added adapters cannot add public inherent methods.
+
 **Network interception and egress-policy data planes for pVisor.**
 
 Owns the proxy data plane: request classification, HTTP `CONNECT`,
