@@ -279,7 +279,7 @@ mod portable_tests {
         bytes
     }
 
-    #[test]
+    #[rstest::rstest]
     fn receive_burst_budget_raises_small_defaults_and_preserves_larger_ones() {
         let socket = StdDatagram::unbound().unwrap();
         let before = receive_bytes(&socket);
@@ -306,7 +306,7 @@ mod portable_tests {
         assert_eq!(receive_bytes(&socket), prepared);
     }
 
-    #[test]
+    #[rstest::rstest]
     fn receive_queue_congestion_is_transient_without_hiding_broken_links() {
         assert_eq!(
             send_error(io::Error::from_raw_os_error(libc::ENOBUFS)).kind(),
@@ -326,6 +326,7 @@ mod tests {
     use super::*;
     use std::os::unix::net::UnixDatagram as StdDatagram;
 
+    #[rstest::rstest]
     #[tokio::test]
     async fn receive_keeps_packet_boundaries_sender_paths_and_truncation() {
         let directory = tempfile::tempdir().unwrap();
@@ -358,7 +359,7 @@ mod tests {
         );
     }
 
-    #[test]
+    #[rstest::rstest]
     fn partial_send_counts_complete_datagrams_without_replaying_them() {
         let (sender, receiver) = StdDatagram::pair().unwrap();
         receiver.set_nonblocking(true).unwrap();

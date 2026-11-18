@@ -317,7 +317,7 @@ impl InterceptionObservation for InterceptionMetrics {
 mod tests {
     use super::*;
 
-    #[test]
+    #[rstest::rstest]
     fn explicit_proxy_never_claims_non_bypassable_enforcement() {
         let profile = InterceptionProfile::explicit_proxy();
         assert_eq!(profile.strength, InterceptionStrength::Cooperative);
@@ -326,7 +326,7 @@ mod tests {
         assert!(!profile.udp);
     }
 
-    #[test]
+    #[rstest::rstest]
     fn vm_smoltcp_claims_only_implemented_protocols() {
         let profile = InterceptionProfile::vm_smoltcp();
         assert!(profile.strength == InterceptionStrength::NonBypassable);
@@ -337,7 +337,7 @@ mod tests {
         assert!(!profile.udp);
     }
 
-    #[test]
+    #[rstest::rstest]
     fn metrics_snapshots_are_shared_across_clones() {
         let metrics = InterceptionMetrics::default();
         let clone = metrics.clone();
@@ -354,7 +354,7 @@ mod tests {
         );
     }
 
-    #[test]
+    #[rstest::rstest]
     fn every_metric_updates_only_its_own_counter() {
         let metrics = InterceptionMetrics::default();
         metrics.request_seen();
@@ -379,7 +379,7 @@ mod tests {
         );
     }
 
-    #[test]
+    #[rstest::rstest]
     fn concurrent_metric_updates_are_not_lost() {
         let metrics = InterceptionMetrics::default();
         let workers = (0..8)
@@ -402,7 +402,7 @@ mod tests {
         assert_eq!(snapshot.policy_denied, 0);
     }
 
-    #[test]
+    #[rstest::rstest]
     fn target_evidence_normalizes_names_and_reports_capture_limit() {
         let metrics = InterceptionMetrics::default();
         metrics.target_denied("Example.COM.", 443, NetworkTransport::TcpTunnel);
@@ -417,7 +417,7 @@ mod tests {
         assert_eq!(snapshot.targets["TCP example.com:443"].allowed, 1);
     }
 
-    #[test]
+    #[rstest::rstest]
     fn old_interception_snapshot_without_targets_remains_readable() {
         let snapshot: InterceptionSnapshot =
             serde_json::from_str(r#"{"policy_denied":2}"#).unwrap();
@@ -425,7 +425,7 @@ mod tests {
         assert!(snapshot.targets.is_empty());
     }
 
-    #[test]
+    #[rstest::rstest]
     fn denied_destination_displaces_allowed_only_entry_at_limit() {
         let metrics = InterceptionMetrics::default();
         for index in 0..MAX_TARGETS {

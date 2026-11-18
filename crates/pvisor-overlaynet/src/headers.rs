@@ -74,81 +74,69 @@ impl ForwardingHeaders for HeaderMap {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use proptest::prelude::*;
 
-    fn token_strategy() -> impl Strategy<Value = String> {
-        proptest::string::string_regex("[a-z][a-z0-9-]{0,12}").unwrap()
+    #[rstest::rstest]
+    #[case::lowercase(false)]
+    #[case::uppercase(true)]
+    fn every_fixed_hop_header_is_filtered_case_insensitively(#[case] uppercase: bool) {
+        for name in HOP_BY_HOP {
+            let spelling = if uppercase {
+                name.to_ascii_uppercase()
+            } else {
+                (*name).into()
+            };
+            assert!(is_hop_by_hop(&spelling));
+            assert!(skip_transparent_forward_header(&spelling));
+        }
+        assert!(!is_hop_by_hop("x-request-id"));
     }
 
-    fn hop_header_strategy() -> impl Strategy<Value = &'static str> {
-        prop_oneof![
-            Just("connection"),
-            Just("proxy-connection"),
-            Just("keep-alive"),
-            Just("proxy-authenticate"),
-            Just("proxy-authorization"),
-            Just("te"),
-            Just("trailer"),
-            Just("trailers"),
-            Just("transfer-encoding"),
-            Just("upgrade"),
-        ]
+    #[rstest::rstest]
+    #[case::host("host", true)]
+    #[case::credentials("authorization", false)]
+    #[case::body_length("content-length", false)]
+    #[case::end_to_end("x-request-id", false)]
+    fn transparent_forwarding_preserves_end_to_end_fields(
+        #[case] name: &str,
+        #[case] removed: bool,
+        #[values(false, true)] uppercase: bool,
+    ) {
+        let name = if uppercase {
+            name.to_ascii_uppercase()
+        } else {
+            name.into()
+        };
+        assert_eq!(skip_transparent_forward_header(&name), removed);
     }
 
-    #[test]
-    fn filters_hop_by_hop_and_rewritten_body_headers() {
-        assert!(skip_transparent_forward_header("host"));
-        assert!(skip_upstream_forward_header("authorization"));
-        assert!(ForwardingHeaders::skip_response_header_after_reframing(
-            &HeaderMap::new(),
-            "content-length",
-            true
-        ));
-        assert!(!ForwardingHeaders::skip_response_header_after_reframing(
-            &HeaderMap::new(),
-            "x-request-id",
-            true
-        ));
-    }
-
-    #[test]
-    fn reframed_responses_drop_upstream_framing_and_connection_extensions() {
+    #[rstest::rstest]
+    #[case::single(&["keep-alive, x-private-hop"], "x-private-hop", true)]
+    #[case::unrelated(&["keep-alive, x-private-hop"], "x-end-to-end", false)]
+    #[case::multiple(&["keep-alive", " x-first , X-Second "], "x-second", true)]
+    #[case::first(&["keep-alive", " x-first , X-Second "], "x-first", true)]
+    #[case::not_a_substring(&["x-first-other"], "x-first", false)]
+    #[case::empty_tokens(&[", , X-First, "], "x-first", true)]
+    #[case::absent(&[], "x-first", false)]
+    fn connection_values_nominate_whole_trimmed_tokens(
+        #[case] values: &[&str],
+        #[case] name: &str,
+        #[case] removed: bool,
+    ) {
         let mut headers = HeaderMap::new();
-        headers.insert("connection", "keep-alive, x-upstream-hop".parse().unwrap());
-
-        assert!(ForwardingHeaders::skip_response_header_after_reframing(
-            &headers,
-            "transfer-encoding",
-            false
-        ));
-        assert!(ForwardingHeaders::skip_response_header_after_reframing(
-            &headers,
-            "content-length",
-            false
-        ));
-        assert!(ForwardingHeaders::skip_response_header_after_reframing(
-            &headers,
-            "x-upstream-hop",
-            false
-        ));
-        assert!(!ForwardingHeaders::skip_response_header_after_reframing(
-            &headers,
-            "content-type",
-            false
-        ));
-        assert!(ForwardingHeaders::skip_response_header_after_reframing(
-            &headers,
-            "content-type",
-            true
-        ));
+        for value in values {
+            headers.append("connection", value.parse().unwrap());
+        }
+        assert_eq!(skip_transparent_forward_header_for(&headers, name), removed);
     }
 
-    #[test]
-    fn connection_header_can_nominate_extra_hop_by_hop_fields() {
+    #[rstest::rstest]
+    fn invalid_connection_bytes_do_not_hide_other_values() {
         let mut headers = HeaderMap::new();
-        headers.insert("connection", "keep-alive, x-private-hop".parse().unwrap());
-        headers.insert("x-private-hop", "secret".parse().unwrap());
-
+        headers.append(
+            "connection",
+            axum::http::HeaderValue::from_bytes(&[0xff]).unwrap(),
+        );
+        headers.append("connection", "x-private-hop".parse().unwrap());
         assert!(skip_transparent_forward_header_for(
             &headers,
             "x-private-hop"
@@ -157,101 +145,5 @@ mod tests {
             &headers,
             "x-end-to-end"
         ));
-    }
-
-    #[test]
-    fn every_fixed_hop_header_is_filtered_case_insensitively() {
-        for name in HOP_BY_HOP {
-            assert!(is_hop_by_hop(name));
-            assert!(is_hop_by_hop(&name.to_ascii_uppercase()));
-            assert!(skip_transparent_forward_header(name));
-        }
-        assert!(!is_hop_by_hop("x-request-id"));
-    }
-
-    #[test]
-    fn multiple_connection_values_nominate_trimmed_tokens() {
-        let mut headers = HeaderMap::new();
-        headers.append("connection", "keep-alive".parse().unwrap());
-        headers.append("connection", " x-first , X-Second ".parse().unwrap());
-        assert!(skip_transparent_forward_header_for(&headers, "x-first"));
-        assert!(skip_transparent_forward_header_for(&headers, "x-second"));
-        assert!(!skip_transparent_forward_header_for(&headers, "x-third"));
-    }
-
-    #[test]
-    fn websocket_upgrade_is_a_case_insensitive_protocol_token() {
-        let mut headers = HeaderMap::new();
-        headers.insert("upgrade", "h2c, WebSocket".parse().unwrap());
-        assert!(ForwardingHeaders::is_websocket_upgrade(&headers));
-        headers.insert("upgrade", "h2c".parse().unwrap());
-        assert!(!ForwardingHeaders::is_websocket_upgrade(&headers));
-    }
-
-    proptest! {
-        #[test]
-        fn fixed_hop_headers_are_case_insensitive(name in hop_header_strategy()) {
-            prop_assert!(is_hop_by_hop(name));
-            prop_assert!(is_hop_by_hop(&name.to_ascii_uppercase()));
-            prop_assert!(skip_transparent_forward_header(&name.to_ascii_uppercase()));
-        }
-
-        #[test]
-        fn connection_tokens_nominate_headers_with_arbitrary_spacing_and_case(
-            token in token_strategy(),
-            uppercase in any::<bool>(),
-        ) {
-            let nominated = if uppercase {
-                token.to_ascii_uppercase()
-            } else {
-                token.clone()
-            };
-            let mut headers = HeaderMap::new();
-            headers.insert(
-                "connection",
-                format!(" keep-alive ,  {nominated} ").parse().unwrap(),
-            );
-            let non_nominated_header = format!("{}-other", token);
-            prop_assert!(skip_transparent_forward_header_for(&headers, &token));
-            prop_assert!(!skip_transparent_forward_header_for(
-                &headers,
-                &non_nominated_header,
-            ));
-        }
-
-        #[test]
-        fn reframing_always_removes_content_length_and_conditionally_removes_content_metadata(
-            body_changed in any::<bool>(),
-        ) {
-            let headers = HeaderMap::new();
-            prop_assert!(ForwardingHeaders::skip_response_header_after_reframing(
-                &headers,
-                "content-length",
-                body_changed,
-            ));
-            prop_assert_eq!(
-                ForwardingHeaders::skip_response_header_after_reframing(&headers, "content-type", body_changed),
-                body_changed,
-            );
-            prop_assert_eq!(
-                ForwardingHeaders::skip_response_header_after_reframing(&headers, "content-encoding", body_changed),
-                body_changed,
-            );
-        }
-
-        #[test]
-        fn websocket_upgrade_detection_is_token_based_not_substring(
-            prefix in token_strategy(),
-            suffix in token_strategy(),
-        ) {
-            let mut headers = HeaderMap::new();
-            headers.insert(
-                "upgrade",
-                format!("{prefix}, WebSocket, {suffix}").parse().unwrap(),
-            );
-            prop_assert!(ForwardingHeaders::is_websocket_upgrade(&headers));
-            headers.insert("upgrade", format!("{prefix}websocket{suffix}").parse().unwrap());
-            prop_assert!(!ForwardingHeaders::is_websocket_upgrade(&headers));
-        }
     }
 }

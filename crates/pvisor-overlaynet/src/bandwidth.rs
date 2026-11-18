@@ -104,105 +104,107 @@ pub(crate) fn throttle_body(body: Body, bandwidth: BandwidthSession) -> Body {
 mod tests {
     use super::*;
     use http_body_util::BodyExt;
-    use proptest::prelude::*;
 
-    proptest! {
-        #[test]
-        fn sequential_reservations_have_the_declared_duration(
-            bytes_per_second in 1u64..=1_000_000_000,
-            bytes in 0usize..=100_000,
-        ) {
-            let runtime = tokio::runtime::Builder::new_current_thread()
-                .enable_time()
-                .build()
-                .unwrap();
-            runtime.block_on(async {
-                let bucket = BandwidthBucket::new(bytes_per_second);
-                let first = bucket.reserve(bytes).await;
-                let second = bucket.reserve(bytes).await;
-                let expected_nanos = (bytes as u128)
-                    .saturating_mul(1_000_000_000)
-                    .div_ceil(bytes_per_second as u128)
-                    .min(u64::MAX as u128) as u64;
-                prop_assert!(
-                    second.duration_since(first) >= Duration::from_nanos(expected_nanos),
-                    "reservation interval was shorter than the declared rate"
-                );
-                Ok(())
-            })?;
-        }
-
-        #[test]
-        fn registry_session_contains_one_bucket_per_distinct_limit(
-            limits in prop::collection::vec(
-                (
-                    prop::option::of(proptest::string::string_regex("[a-z]{1,8}\\.example\\.com").unwrap()),
-                    prop::option::of(1u16..=u16::MAX),
-                    1u64..=1_000_000_000,
-                ).prop_map(|(host, port, bytes_per_second)| NetworkBandwidthLimit {
-                    host,
-                    port,
-                    bytes_per_second,
-                }),
-                0..16,
-            ),
-        ) {
-            let runtime = tokio::runtime::Builder::new_current_thread()
-                .enable_time()
-                .build()
-                .unwrap();
-            runtime.block_on(async {
-                let expected = limits.iter().collect::<std::collections::HashSet<_>>().len();
-                let session = BandwidthRegistry::default().session(limits).await;
-                prop_assert_eq!(session.buckets.len(), expected);
-                Ok(())
-            })?;
-        }
+    #[rstest::fixture]
+    fn registry() -> BandwidthRegistry {
+        BandwidthRegistry::default()
     }
 
+    #[rstest::rstest]
+    #[case::empty(1, 0, 0)]
+    #[case::one_second(1_000, 1_000, 1_000_000_000)]
+    #[case::one_nanosecond(1_000_000_000, 1, 1)]
+    #[case::round_up(3, 1, 333_333_334)]
+    #[case::large_payload(1, 100_000, 100_000_000_000_000)]
+    #[case::large_rate(1_000_000_000, 100_000, 100_000)]
+    #[tokio::test(start_paused = true)]
+    async fn reservation_serializes_aggregate_bytes(
+        #[case] rate: u64,
+        #[case] bytes: usize,
+        #[case] nanos: u64,
+    ) {
+        let bucket = BandwidthBucket::new(rate);
+        let start = Instant::now();
+        let first = bucket.reserve(bytes).await;
+        let second = bucket.reserve(bytes).await;
+        let expected = Duration::from_nanos(nanos);
+        assert_eq!(first.duration_since(start), expected);
+        assert_eq!(second.duration_since(first), expected);
+    }
+
+    #[rstest::rstest]
+    #[case::empty(&[], 0)]
+    #[case::one(&[(None, None, 1)], 1)]
+    #[case::duplicates(&[(Some("api.example.com"), Some(443), 1_000); 15], 1)]
+    #[case::different_hosts(&[(Some("one.example.com"), None, 1), (Some("two.example.com"), None, 1)], 2)]
+    #[case::different_ports(&[(None, Some(1), 1), (None, Some(65_535), 1)], 2)]
+    #[case::different_rates(&[(None, None, 1), (None, None, 1_000_000_000)], 2)]
+    #[case::mixed_duplicates(&[(None, None, 1), (None, Some(443), 1), (None, None, 1), (Some("api.example.com"), None, 1)], 3)]
     #[tokio::test]
-    async fn registry_shares_identical_limits_between_sessions() {
-        let registry = BandwidthRegistry::default();
+    async fn registry_session_contains_one_bucket_per_distinct_limit(
+        registry: BandwidthRegistry,
+        #[case] limits: &[(Option<&str>, Option<u16>, u64)],
+        #[case] count: usize,
+    ) {
+        let limits = limits
+            .iter()
+            .map(|(host, port, bytes_per_second)| NetworkBandwidthLimit {
+                host: host.map(str::to_owned),
+                port: *port,
+                bytes_per_second: *bytes_per_second,
+            })
+            .collect();
+        let session = registry.session(limits).await;
+        assert_eq!(session.buckets.len(), count);
+        assert_eq!(session.is_limited(), count != 0);
+    }
+
+    #[rstest::rstest]
+    #[tokio::test]
+    async fn registry_shares_identical_limits_between_sessions(
+        registry: BandwidthRegistry,
+        #[values(1, 1_000, 1_000_000)] rate: u64,
+    ) {
         let limit = NetworkBandwidthLimit {
             host: None,
             port: None,
-            bytes_per_second: 1_000,
+            bytes_per_second: rate,
         };
         let first = registry.session(vec![limit.clone()]).await;
         let second = registry.session(vec![limit]).await;
         assert!(Arc::ptr_eq(&first.buckets[0], &second.buckets[0]));
     }
 
-    #[tokio::test]
-    async fn reservation_serializes_aggregate_bytes() {
-        let bucket = BandwidthBucket::new(1_000);
-        let first = bucket.reserve(1_000).await;
-        let second = bucket.reserve(1_000).await;
-        assert!(second.duration_since(first) >= Duration::from_secs(1));
-    }
-
+    #[rstest::rstest]
+    #[case::one_second(1_000, 1_000, 1_000)]
+    #[case::one_millisecond(1_000, 1, 1)]
+    #[case::one_byte_per_second(1, 1, 1_000)]
     #[tokio::test(start_paused = true)]
-    async fn throttle_waits_for_reserved_capacity() {
-        let registry = BandwidthRegistry::default();
+    async fn throttle_waits_for_reserved_capacity(
+        registry: BandwidthRegistry,
+        #[case] rate: u64,
+        #[case] bytes: usize,
+        #[case] delay_ms: u64,
+    ) {
         let session = registry
             .session(vec![NetworkBandwidthLimit {
                 host: None,
                 port: None,
-                bytes_per_second: 1_000,
+                bytes_per_second: rate,
             }])
             .await;
-        let task = tokio::spawn(async move { session.throttle(1_000).await });
+        let task = tokio::spawn(async move { session.throttle(bytes).await });
         tokio::task::yield_now().await;
         assert!(!task.is_finished());
-        tokio::time::advance(Duration::from_millis(999)).await;
+        tokio::time::advance(Duration::from_millis(delay_ms - 1)).await;
         assert!(!task.is_finished());
         tokio::time::advance(Duration::from_millis(1)).await;
         task.await.unwrap();
     }
 
+    #[rstest::rstest]
     #[tokio::test(start_paused = true)]
-    async fn identical_limits_aggregate_concurrent_sessions() {
-        let registry = BandwidthRegistry::default();
+    async fn identical_limits_aggregate_concurrent_sessions(registry: BandwidthRegistry) {
         let limit = NetworkBandwidthLimit {
             host: None,
             port: None,
@@ -223,9 +225,9 @@ mod tests {
         second.await.unwrap();
     }
 
+    #[rstest::rstest]
     #[tokio::test(start_paused = true)]
-    async fn stacked_limits_use_the_strictest_schedule() {
-        let registry = BandwidthRegistry::default();
+    async fn stacked_limits_use_the_strictest_schedule(registry: BandwidthRegistry) {
         let session = registry
             .session(vec![
                 NetworkBandwidthLimit {
@@ -248,9 +250,9 @@ mod tests {
         task.await.unwrap();
     }
 
+    #[rstest::rstest]
     #[tokio::test(start_paused = true)]
-    async fn throttled_body_preserves_bytes_and_obeys_schedule() {
-        let registry = BandwidthRegistry::default();
+    async fn throttled_body_preserves_bytes_and_obeys_schedule(registry: BandwidthRegistry) {
         let session = registry
             .session(vec![NetworkBandwidthLimit {
                 host: None,

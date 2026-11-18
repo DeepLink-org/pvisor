@@ -34,6 +34,13 @@ Linux-only, and the binary exits 125 on unsupported hosts.
 Validate with `mise run test -- pvisor-guest` and strict rustdoc via
 `RUSTDOCFLAGS='-D warnings' cargo doc --locked -p pvisor-guest --no-deps`.
 
+Private command examples use `rstest` named cases. External `api_contract`
+properties use `proptest` for generated launch values, invalid sidecars and
+resource limits, consecutive/truncated/oversized frames, numeric signals and
+exit reports. Inputs are bounded and properties retain Proptest's default case
+count and failure persistence. Fixed wire/boundary regressions and architecture
+guards remain deterministic. These portable checks do not establish VM execution.
+
 Launch-message paths always use Linux guest syntax, including when a Windows
 host validates them. A leading `/` is absolute; drive letters and backslashes
 do not supply a guest root or separators. Mount/tmpfs traversal and workspace

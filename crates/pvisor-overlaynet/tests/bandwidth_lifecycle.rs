@@ -18,6 +18,7 @@ use axum::http::StatusCode;
 use axum::response::Response;
 use futures_util::poll;
 use http_body_util::BodyExt;
+use proptest::prelude::*;
 use pvisor_core::network::{
     NetworkAccessRule, NetworkBandwidthLimit, NetworkConfig, NetworkMode, NetworkPolicy,
 };
@@ -101,7 +102,8 @@ impl OverlaySink for EchoSink {
     }
 }
 
-fn proxy(host_rate: u64) -> (Router, EchoSink, Arc<AtomicUsize>) {
+#[rstest::fixture]
+fn proxy(#[default(4)] host_rate: u64) -> (Router, EchoSink, Arc<AtomicUsize>) {
     let sink = EchoSink(Arc::new(RwLock::new(policy(host_rate))));
     let active = Arc::new(AtomicUsize::new(0));
     let state = OverlayServerState::new(
@@ -138,8 +140,7 @@ async fn collect(response: Response) -> Vec<u8> {
 }
 
 // Explicit polling is the reservation handshake; no task scheduling or wall
-// clock sleeps decide when a request has entered the limiter. Every wait is
-// bounded by at most two virtual seconds, and there are at most two requests.
+// clock sleeps decide when a request has entered the limiter.
 async fn after<F: Future>(future: F, delay: Duration) -> F::Output {
     let mut future = std::pin::pin!(future);
     assert!(poll!(future.as_mut()).is_pending());
@@ -152,40 +153,23 @@ async fn after<F: Future>(future: F, delay: Duration) -> F::Output {
     }
 }
 
+#[rstest::rstest]
+#[case::upload(false)]
+#[case::download(true)]
 #[tokio::test(start_paused = true)]
-async fn cancelled_upload_or_download_does_not_poison_later_stacked_budgets() {
-    for cancel_download in [false, true] {
-        let (router, _, active) = proxy(4);
-        if cancel_download {
-            let response = after(request(&router), Duration::from_secs(1)).await;
-            let mut download = Box::pin(collect(response));
-            assert!(poll!(download.as_mut()).is_pending());
-            assert_eq!(active.load(Ordering::Relaxed), 1);
-            drop(download);
-        } else {
-            let mut upload = Box::pin(request(&router));
-            assert!(poll!(upload.as_mut()).is_pending());
-            assert_eq!(active.load(Ordering::Relaxed), 1);
-            drop(upload);
-        }
-        assert_eq!(active.load(Ordering::Relaxed), 0);
-
-        // Do not assume cancellation refunds either bucket. Both original
-        // deadlines have expired before observing the next reservation.
-        tokio::time::advance(Duration::from_secs(1)).await;
-        for _ in 0..2 {
-            let response = after(request(&router), Duration::from_secs(1)).await;
-            assert_eq!(active.load(Ordering::Relaxed), 1);
-            let bytes = after(collect(response), Duration::from_secs(1)).await;
-            assert_eq!(bytes, PAYLOAD);
-            assert_eq!(active.load(Ordering::Relaxed), 0);
-        }
-    }
+async fn cancelled_upload_or_download_does_not_poison_later_stacked_budgets(
+    proxy: (Router, EchoSink, Arc<AtomicUsize>),
+    #[case] cancel_download: bool,
+) {
+    assert_cancelled_budget_recovers(proxy, cancel_download, Duration::from_secs(1), 2).await;
 }
 
+#[rstest::rstest]
 #[tokio::test(start_paused = true)]
-async fn policy_swap_preserves_shared_budget_and_in_flight_snapshot() {
-    let (router, sink, active) = proxy(2);
+async fn policy_swap_preserves_shared_budget_and_in_flight_snapshot(
+    #[with(2)] proxy: (Router, EchoSink, Arc<AtomicUsize>),
+) {
+    let (router, sink, active) = proxy;
     let mut old = Box::pin(request(&router));
     assert!(poll!(old.as_mut()).is_pending());
     assert_eq!(active.load(Ordering::Relaxed), 1);
@@ -210,4 +194,56 @@ async fn policy_swap_preserves_shared_budget_and_in_flight_snapshot() {
         PAYLOAD
     );
     assert_eq!(active.load(Ordering::Relaxed), 0);
+}
+
+async fn assert_cancelled_budget_recovers(
+    proxy: (Router, EchoSink, Arc<AtomicUsize>),
+    cancel_download: bool,
+    delay: Duration,
+    recovery_count: usize,
+) {
+    let (router, _, active) = proxy;
+    if cancel_download {
+        let response = after(request(&router), delay).await;
+        let mut download = Box::pin(collect(response));
+        assert!(poll!(download.as_mut()).is_pending());
+        assert_eq!(active.load(Ordering::Relaxed), 1);
+        drop(download);
+    } else {
+        let mut upload = Box::pin(request(&router));
+        assert!(poll!(upload.as_mut()).is_pending());
+        assert_eq!(active.load(Ordering::Relaxed), 1);
+        drop(upload);
+    }
+    assert_eq!(active.load(Ordering::Relaxed), 0);
+
+    // Cancellation need not refund the original reservation.
+    tokio::time::advance(delay).await;
+    for _ in 0..recovery_count {
+        let response = after(request(&router), delay).await;
+        assert_eq!(active.load(Ordering::Relaxed), 1);
+        let bytes = after(collect(response), delay).await;
+        assert_eq!(bytes, PAYLOAD);
+        assert_eq!(active.load(Ordering::Relaxed), 0);
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig {
+        failure_persistence: Some(Box::new(proptest::test_runner::FileFailurePersistence::Direct(
+            concat!(env!("CARGO_MANIFEST_DIR"), "/proptest-regressions/bandwidth_lifecycle.txt")
+        ))),
+        ..ProptestConfig::default()
+    })]
+    #[test]
+    fn generated_cancellations_leave_stacked_budgets_usable(
+        host_rate in prop::sample::select(vec![1u64, 2, 4, 8, 16]),
+        cancel_download in any::<bool>(), recovery_count in 1usize..8,
+    ) {
+        let delay = Duration::from_millis(if host_rate >= 8 { 500 } else { 4_000 / host_rate });
+        tokio::runtime::Builder::new_current_thread().enable_all().start_paused(true).build().unwrap()
+            .block_on(async {
+                assert_cancelled_budget_recovers(proxy(host_rate), cancel_download, delay, recovery_count).await;
+            });
+    }
 }

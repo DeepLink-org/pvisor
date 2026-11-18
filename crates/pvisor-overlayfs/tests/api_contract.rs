@@ -1,4 +1,5 @@
 //! Public contract checks without a host FUSE mount.
+use proptest::prelude::*;
 use pvisor_overlayfs::api::{
     FilesystemMetrics, FsMetrics, OverlayConfiguration, OverlayFs, OverlayMountConfig,
     OverlayMounting, OverlaySession, OverlaySessionControl,
@@ -100,49 +101,19 @@ fn owners_implement_public_contracts() {
     let _: &dyn FilesystemMetrics = &FsMetrics::default();
 }
 
-#[test]
+#[rstest::rstest]
 fn construction_retains_paths_and_defaults_without_io() {
     let root = tempfile::tempdir().unwrap();
-    let lowers = vec![root.path().join("top"), root.path().join("base")];
-    let upper = root.path().join("upper");
-    let work = root.path().join("work");
-    let mountpoint = root.path().join("merged");
-    let config = OverlayMountConfig::new(
-        lowers.clone(),
-        upper.clone(),
-        Some(work.clone()),
-        mountpoint.clone(),
+    assert_construction(
+        vec![root.path().join("top"), root.path().join("base")],
+        root.path().join("upper"),
+        Some(root.path().join("work")),
+        root.path().join("merged"),
     );
-    assert_eq!(config.lower_dirs, lowers);
-    assert_eq!(
-        config.lower_mutability,
-        vec![pvisor_overlay_core::LayerMutability::Immutable; lowers.len()]
-    );
-    assert_eq!(config.apply_target, lowers.last().cloned());
-    assert_eq!(config.upper_dir, upper);
-    assert_eq!(config.work_dir, Some(work));
-    assert_eq!(config.mountpoint, mountpoint);
-    assert!(config.default_permissions);
-    assert!(!config.allow_other && !config.allow_root && !config.read_only && !config.debug);
-    assert_eq!(config.fsname, "pvisor-overlayfs");
-    assert_eq!(
-        config.backend.as_deref(),
-        if cfg!(target_os = "macos") {
-            Some("fskit")
-        } else {
-            None
-        }
-    );
-    assert!(config.baseline_lower.is_none() && config.preimage_dir.is_none());
-    assert!(!config.compact_preimages && config.excluded_paths.is_empty());
-    assert!(config.observation.is_none());
     assert!(std::fs::read_dir(root.path()).unwrap().next().is_none());
-    let copy = config.clone();
-    assert_eq!(copy.lower_dirs, config.lower_dirs);
-    assert_eq!(copy.mountpoint, config.mountpoint);
 }
 
-#[test]
+#[rstest::rstest]
 fn invalid_lower_mutability_fails_before_preparation() {
     let root = tempfile::tempdir().unwrap();
     let mut config = OverlayMountConfig::new(
@@ -168,7 +139,7 @@ fn invalid_lower_mutability_fails_before_preparation() {
     }
 }
 
-#[test]
+#[rstest::rstest]
 fn invalid_input_fails_before_fuse_mounting() {
     let root = tempfile::tempdir().unwrap();
     let mut config = OverlayMountConfig::new(
@@ -205,7 +176,7 @@ fn invalid_input_fails_before_fuse_mounting() {
     assert!(root.path().join("merged").is_dir());
 }
 
-#[test]
+#[rstest::rstest]
 fn default_metrics_snapshots_are_independent_owned_records() {
     let metrics = FsMetrics::default();
     let shared = metrics.clone();
@@ -219,11 +190,87 @@ fn default_metrics_snapshots_are_independent_owned_records() {
     assert_eq!(FsMetrics::default().snapshot().overflow_hits, 0);
 }
 
-#[test]
+#[rstest::rstest]
 fn ordinary_directory_is_not_a_mountpoint() {
     let root = tempfile::tempdir().unwrap();
     let directory: PathBuf = root.path().join("ordinary");
     std::fs::create_dir(&directory).unwrap();
     let directory = std::fs::canonicalize(directory).unwrap();
     assert!(!OverlayFs::is_mountpoint(&directory));
+}
+
+fn assert_construction(
+    lowers: Vec<PathBuf>,
+    upper: PathBuf,
+    work: Option<PathBuf>,
+    mountpoint: PathBuf,
+) {
+    let config = OverlayMountConfig::new(
+        lowers.clone(),
+        upper.clone(),
+        work.clone(),
+        mountpoint.clone(),
+    );
+    assert_eq!(config.lower_dirs, lowers);
+    assert_eq!(
+        config.lower_mutability,
+        vec![pvisor_overlay_core::LayerMutability::Immutable; lowers.len()]
+    );
+    assert_eq!(config.apply_target, lowers.last().cloned());
+    assert_eq!(config.upper_dir, upper);
+    assert_eq!(config.work_dir, work);
+    assert_eq!(config.mountpoint, mountpoint);
+    assert!(config.default_permissions);
+    assert!(!config.allow_other && !config.allow_root && !config.read_only && !config.debug);
+    assert_eq!(config.fsname, "pvisor-overlayfs");
+    assert_eq!(
+        config.backend.as_deref(),
+        if cfg!(target_os = "macos") {
+            Some("fskit")
+        } else {
+            None
+        }
+    );
+    assert!(config.baseline_lower.is_none() && config.preimage_dir.is_none());
+    assert!(!config.compact_preimages && config.excluded_paths.is_empty());
+    assert!(config.observation.is_none());
+    let copy = config.clone();
+    assert_eq!(copy.lower_dirs, config.lower_dirs);
+    assert_eq!(copy.mountpoint, config.mountpoint);
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig {
+        failure_persistence: Some(Box::new(proptest::test_runner::FileFailurePersistence::Direct(
+            concat!(env!("CARGO_MANIFEST_DIR"), "/proptest-regressions/api_contract.txt")
+        ))), ..ProptestConfig::default()
+    })]
+
+    #[test]
+    fn generated_paths_keep_order_duplicates_defaults_and_optional_work(
+        names in prop::collection::vec("[A-Za-z0-9 _.-]{1,24}", 0..9), work in any::<bool>(), duplicate in any::<bool>(),
+    ) {
+        let root = tempfile::tempdir().unwrap();
+        let mut lowers: Vec<_> = names.iter().map(|name| root.path().join(name)).collect();
+        if duplicate && !lowers.is_empty() { lowers.push(lowers[0].clone()); }
+        assert_construction(lowers, root.path().join("upper"), work.then(|| root.path().join("work")), root.path().join("merged"));
+        prop_assert!(std::fs::read_dir(root.path()).unwrap().next().is_none());
+    }
+
+    #[test]
+    fn generated_declaration_mismatches_fail_before_preparation(
+        count in 1usize..9, excess in 1usize..9, shorter in any::<bool>(), foreground in any::<bool>(),
+    ) {
+        let root = tempfile::tempdir().unwrap();
+        let mut config = OverlayMountConfig::new((0..count).map(|i| root.path().join(format!("lower-{i}"))).collect(),
+            root.path().join("upper"), None, root.path().join("merged"));
+        config.backend = None;
+        let declarations = if shorter && count > 1 { 1 + excess % (count - 1) } else { count + excess };
+        config.lower_mutability = vec![pvisor_overlay_core::LayerMutability::Immutable; declarations];
+        let error = if foreground { OverlayFs::run_foreground(config).unwrap_err() }
+                    else { OverlayFs::mount(config).unwrap_err() };
+        prop_assert!(error.to_string().contains("lower mutability length mismatch"));
+        prop_assert!(std::fs::read_dir(root.path()).unwrap().next().is_none());
+    }
+
 }

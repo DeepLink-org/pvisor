@@ -1383,7 +1383,7 @@ mod transport_tests {
         )
     }
 
-    #[test]
+    #[rstest::rstest]
     fn transport_adoption_errors_are_synchronous_and_an_idle_driver_can_shutdown() {
         let error = VmNetwork::start_with_io::<tokio::io::DuplexStream, _>(config(), || {
             Err(io::Error::other("transport adoption fixture"))
@@ -1496,7 +1496,7 @@ impl VmNetworkRuntime for VmNetwork {
 #[cfg(all(test, unix))]
 mod tests {
 
-    #[test]
+    #[rstest::rstest]
     fn dns_tcp_stops_processing_queries_when_responses_are_full() {
         let mut sockets = SocketSet::new(Vec::new());
         let handle = sockets.add(tcp::Socket::new(
@@ -1547,6 +1547,7 @@ mod tests {
     }
     use super::*;
 
+    #[rstest::rstest]
     #[tokio::test]
     async fn slow_guest_backpressures_large_download_without_losing_data() {
         tokio::time::timeout(StdDuration::from_secs(10), async {
@@ -1616,7 +1617,7 @@ mod tests {
         .expect("download stalled after guest resumed");
     }
 
-    #[test]
+    #[rstest::rstest]
     fn denied_vm_flow_records_its_destination() {
         let key = FlowKey {
             guest_port: 49152,
@@ -1676,7 +1677,7 @@ mod tests {
         bytes
     }
 
-    #[test]
+    #[rstest::rstest]
     fn synthetic_dns_is_stable_and_does_not_resolve_on_the_host() {
         let mut dns = SyntheticDns::default();
         let first = dns.answer(&query("Api.Example.COM", 1));
@@ -1689,7 +1690,7 @@ mod tests {
         );
     }
 
-    #[test]
+    #[rstest::rstest]
     fn localhost_resolves_to_loopback_without_allocating() {
         let mut dns = SyntheticDns::default();
         for name in ["localhost", "LOCALHOST"] {
@@ -1707,6 +1708,7 @@ mod tests {
         );
     }
 
+    #[rstest::rstest]
     #[tokio::test]
     async fn stalled_handshake_flows_are_reclaimed_after_the_deadline() {
         let key = FlowKey {
@@ -1775,7 +1777,7 @@ mod tests {
         assert!(flows.is_empty());
     }
 
-    #[test]
+    #[rstest::rstest]
     fn upstream_connected_without_guest_ack_still_expires() {
         let destination = ROUTER_IPV4;
         let key = FlowKey {
@@ -1883,7 +1885,7 @@ mod tests {
         assert!(flows.is_empty());
     }
 
-    #[test]
+    #[rstest::rstest]
     fn aaaa_returns_nodata_and_unknown_type_returns_notimp() {
         let mut dns = SyntheticDns::default();
         let aaaa = dns.answer(&query("example.com", 28));
@@ -1893,7 +1895,7 @@ mod tests {
         assert_eq!(u16::from_be_bytes([txt[2], txt[3]]) & 0x0f, 4);
     }
 
-    #[test]
+    #[rstest::rstest]
     fn malformed_dns_returns_formerr() {
         let mut dns = SyntheticDns::default();
         let response = dns.answer(&[0xab, 0xcd]);
@@ -1901,7 +1903,7 @@ mod tests {
         assert_eq!(u16::from_be_bytes([response[2], response[3]]) & 0x0f, 1);
     }
 
-    #[test]
+    #[rstest::rstest]
     fn virtual_and_link_local_destinations_are_never_literal_egress() {
         for address in [
             ROUTER_IPV4,
@@ -1919,7 +1921,7 @@ mod tests {
         )));
     }
 
-    #[test]
+    #[rstest::rstest]
     fn frame_reader_handles_fragmented_and_coalesced_frames() {
         let mut reader = FrameReader::default();
         reader.bytes.extend_from_slice(&14_u32.to_be_bytes());
@@ -1931,6 +1933,7 @@ mod tests {
         assert!(reader.next_frame().unwrap().is_none());
     }
 
+    #[rstest::rstest]
     #[tokio::test]
     async fn batched_guest_writes_preserve_framing_under_socket_backpressure() {
         use std::os::fd::AsRawFd;
@@ -1982,7 +1985,7 @@ mod tests {
         assert_eq!(arrived, expected);
     }
 
-    #[test]
+    #[rstest::rstest]
     fn host_connection_does_not_imply_the_guest_handshake_is_complete() {
         assert!(guest_handshake_pending(tcp::State::SynReceived));
         assert!(!guest_handshake_pending(tcp::State::Established));
@@ -1995,6 +1998,7 @@ mod flow_lifecycle_regressions {
     use super::*;
     use crate::api::EgressControl;
 
+    #[rstest::rstest]
     #[tokio::test]
     async fn queued_events_do_not_mutate_reused_flow_key() {
         let policy = pvisor_core::network::NetworkPolicy::compile(
@@ -2148,6 +2152,7 @@ mod flow_lifecycle_regressions {
         assert_eq!(flows[&key].inbound.front().unwrap().0, b"new");
     }
 
+    #[rstest::rstest]
     #[tokio::test]
     async fn remote_reset_cancels_idle_upload_and_reports_failure() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -2189,6 +2194,7 @@ mod flow_lifecycle_regressions {
             .unwrap();
         drop(sender);
     }
+    #[rstest::rstest]
     #[tokio::test]
     async fn upstream_half_close_keeps_upload_alive() {
         tokio::time::timeout(StdDuration::from_secs(3), async {

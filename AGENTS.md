@@ -73,6 +73,33 @@ benchmark's registry entry before measuring or writing, keep each user page in
 the order Motivation, experiment design, data and analysis (three sections), and
 keep engineering A/B and diagnostic results out of user pages.
 
+## Rust test discipline
+
+1. In-file tests primarily use doctests for executable documentation and
+   `rstest` in `#[cfg(test)]` modules for implementation rules and private state.
+   Use named boundary/equivalence cases, meaningful parameter combinations and
+   local fixtures; retain async runtime and time settings.
+2. Every `api.rs` must provide doctests documenting key public workflows:
+   construction, normal use, validation/errors and ownership/lifecycle where
+   applicable. Examples use only the public API and assert observable results.
+   Private behavior belongs in unit tests. Prefer runnable, self-contained
+   examples; use `compile_fail` for compile-time contracts. Use `no_run` only
+   when execution requires external services or platform resources, and state
+   that prerequisite; compilation alone does not validate runtime behavior.
+3. Crate `tests/` directories primarily use `proptest` to exercise public API
+   contracts and cross-component behavior with bounded meaningful inputs or
+   operation sequences. Assert independent invariants, validation errors and
+   state after failure. Keep shrinking and failure persistence, and promote
+   discovered failures to fixed regressions. Do not wrap fixed examples in
+   property macros merely to satisfy this convention.
+
+Keep deterministic boundaries, exact wire assertions and fixed scenario/resource
+regressions, using `rstest` where appropriate. Source/architecture guards and
+hardware/fault runners retain their native forms. Each case or generated input,
+including shrinking attempts, owns fresh mutable resources, bounded waits and
+cleanup. Random sampling must not replace explicit boundary coverage. Migrate
+one crate at a time; preserve existing coverage and assertions during migration.
+
 ## Test command
 
 Use `mise run test` as the default validation command. It runs Rust tests through
@@ -82,6 +109,10 @@ positionally, for example `mise run test -- pvisor-core`. Short aliases are
 `pvisor`, `core` (`control` and `agentctl` remain aliases), and `capture` (Gateway). Use a direct `cargo test`
 invocation only when doctests or an explicitly documented special runner is
 required.
+
+After changing public API documentation or examples, also run
+`mise run test-doc -- <package>` and rustdoc with warnings denied; a package-only
+nextest run does not execute doctests.
 
 ## Semantic preservation specifications
 
