@@ -65,6 +65,16 @@ pub(super) enum DockerCommand {
         /// Select an image platform; downloading does not enable CPU emulation.
         #[arg(long, value_parser = ["linux/amd64", "linux/arm64", "linux/arm64/v8"])]
         platform: Option<String>,
+        /// Registry username for authenticated pulls.
+        #[arg(long)]
+        username: Option<String>,
+        /// Registry password; prefer --password-stdin to keep it out of the
+        /// process list.
+        #[arg(long, requires = "username")]
+        password: Option<String>,
+        /// Read the registry password from stdin; requires --username.
+        #[arg(long, requires = "username", conflicts_with = "password")]
+        password_stdin: bool,
         image: String,
     },
     /// List locally pulled images.
@@ -120,6 +130,12 @@ pub(super) enum ImageCommand {
     Pull {
         #[arg(long, value_parser = ["linux/amd64", "linux/arm64", "linux/arm64/v8"])]
         platform: Option<String>,
+        #[arg(long)]
+        username: Option<String>,
+        #[arg(long, requires = "username")]
+        password: Option<String>,
+        #[arg(long, requires = "username", conflicts_with = "password")]
+        password_stdin: bool,
         image: String,
     },
     #[command(alias = "list")]
@@ -150,7 +166,19 @@ impl DockerCommand {
             },
             Self::Image { command } => match command {
                 ImageCommand::Build(args) => Self::Build(*args),
-                ImageCommand::Pull { platform, image } => Self::Pull { platform, image },
+                ImageCommand::Pull {
+                    platform,
+                    username,
+                    password,
+                    password_stdin,
+                    image,
+                } => Self::Pull {
+                    platform,
+                    username,
+                    password,
+                    password_stdin,
+                    image,
+                },
                 ImageCommand::Ls(args) => Self::Images(args),
                 ImageCommand::Rm(args) => Self::Rmi(args),
                 ImageCommand::Inspect(args) => Self::Image {
@@ -477,7 +505,7 @@ pub(super) fn run(command: DockerCommand) -> anyhow::Result<i32> {
         return query::kill(args);
     }
     query::validate(&command)?;
-    let store = Store::discover()?;
+    let mut store = Store::discover()?;
     match command {
         DockerCommand::Build(_)
         | DockerCommand::Builder(_)
@@ -489,7 +517,27 @@ pub(super) fn run(command: DockerCommand) -> anyhow::Result<i32> {
             unreachable!()
         }
         DockerCommand::Inspect(_) | DockerCommand::Kill(_) => unreachable!(),
-        DockerCommand::Pull { image, platform } => {
+        DockerCommand::Pull {
+            image,
+            platform,
+            username,
+            password,
+            password_stdin,
+        } => {
+            if let Some(username) = username {
+                let password = if password_stdin {
+                    let mut secret = String::new();
+                    std::io::Read::read_to_string(&mut std::io::stdin(), &mut secret)
+                        .context("read registry password from stdin")?;
+                    secret.trim_end_matches(['\r', '\n']).to_string()
+                } else {
+                    password.context("registry --username needs --password or --password-stdin")?
+                };
+                store.set_registry_credentials(pvisor::docker::RegistryCredentials {
+                    username,
+                    password,
+                });
+            }
             let image = {
                 let mut display = progress::PullDisplay::new(&image);
                 let mut progress = |event| display.update(event);
@@ -1006,14 +1054,94 @@ mod tests {
     }
 
     #[test]
+    fn pull_credentials_require_a_password_source_bound_to_the_username() {
+        let parsed = Cli::try_parse_from([
+            "pvisor",
+            "pull",
+            "--username",
+            "deploy",
+            "--password-stdin",
+            "harbor.internal/task:1",
+        ])
+        .unwrap();
+        let DockerCommand::Pull {
+            username,
+            password_stdin,
+            image,
+            ..
+        } = parsed.command
+        else {
+            panic!()
+        };
+        assert_eq!(username.as_deref(), Some("deploy"));
+        assert!(password_stdin);
+        assert_eq!(image, "harbor.internal/task:1");
+        // A password without its username, or both password sources at once.
+        assert!(
+            Cli::try_parse_from([
+                "pvisor",
+                "pull",
+                "--password",
+                "p",
+                "harbor.internal/task:1"
+            ])
+            .is_err()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "pvisor",
+                "pull",
+                "--username",
+                "deploy",
+                "--password",
+                "p",
+                "--password-stdin",
+                "harbor.internal/task:1"
+            ])
+            .is_err()
+        );
+        // Both grouped spellings route to the same command after ungrouping.
+        let grouped = Cli::try_parse_from([
+            "pvisor",
+            "image",
+            "pull",
+            "--username",
+            "deploy",
+            "--password",
+            "p",
+            "harbor.internal/task:1",
+        ])
+        .unwrap()
+        .command
+        .ungroup();
+        let DockerCommand::Pull {
+            username: grouped_user,
+            image: grouped_image,
+            ..
+        } = grouped
+        else {
+            panic!()
+        };
+        assert_eq!(grouped_user.as_deref(), Some("deploy"));
+        assert_eq!(grouped_image, "harbor.internal/task:1");
+    }
+
+    #[test]
     fn docker_platform_options_precede_the_image_and_preserve_guest_flags() {
         let parsed =
             Cli::try_parse_from(["pvisor", "pull", "--platform=linux/amd64", "alpine"]).unwrap();
-        let DockerCommand::Pull { platform, image } = parsed.command else {
+        let DockerCommand::Pull {
+            platform,
+            image,
+            username,
+            ..
+        } = parsed.command
+        else {
             panic!()
         };
         assert_eq!(platform.as_deref(), Some("linux/amd64"));
         assert_eq!(image, "alpine");
+        assert!(username.is_none());
         let parsed = Cli::try_parse_from([
             "pvisor",
             "run",

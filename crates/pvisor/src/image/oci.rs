@@ -65,6 +65,24 @@ impl ResolvedImage {
 pub struct ImageStore {
     pub(crate) root: PathBuf,
     client: Client,
+    credentials: Option<RegistryCredentials>,
+}
+
+/// Registry credentials for authenticated pulls; held in memory only.
+#[derive(Clone)]
+pub struct RegistryCredentials {
+    pub username: String,
+    pub password: String,
+}
+
+impl std::fmt::Debug for RegistryCredentials {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("RegistryCredentials")
+            .field("username", &self.username)
+            .field("password", &"«redacted»")
+            .finish()
+    }
 }
 
 /// Synchronous observations of OCI image preparation. Byte counts represent
@@ -205,7 +223,16 @@ impl ImageStore {
             }
         }
         let client = client.build().context("build OCI registry client")?;
-        Ok(Self { root, client })
+        Ok(Self {
+            root,
+            client,
+            credentials: None,
+        })
+    }
+
+    /// Credentials for authenticated pulls; apply before the first fetch.
+    pub fn set_registry_credentials(&mut self, credentials: RegistryCredentials) {
+        self.credentials = Some(credentials);
     }
 
     pub fn prepare(&self, image: &str) -> anyhow::Result<PreparedImage> {
@@ -353,7 +380,8 @@ impl ImageStore {
     ) -> anyhow::Result<ResolvedImage> {
         let image_ref = ImageReference::parse(image)?;
         progress(PullProgress::Resolving);
-        let mut registry = RegistryClient::new(&self.client, image_ref.clone());
+        let mut registry =
+            RegistryClient::new(&self.client, image_ref.clone(), self.credentials.as_ref());
         let (mut body, mut manifest_digest) = registry.fetch_manifest(&image_ref.reference)?;
         let value: serde_json::Value = serde_json::from_slice(&body)
             .with_context(|| format!("decode OCI manifest for {image}"))?;
@@ -409,7 +437,11 @@ impl ImageStore {
     ) -> anyhow::Result<()> {
         let manifest_digest = &resolved.prepared.digest;
         let image = resolved.reference.as_str();
-        let mut registry = RegistryClient::new(&self.client, resolved.image_ref.clone());
+        let mut registry = RegistryClient::new(
+            &self.client,
+            resolved.image_ref.clone(),
+            self.credentials.as_ref(),
+        );
         let digest_hex = digest_hex(manifest_digest)?;
         let rootfs = self.root.join("rootfs-v3/sha256").join(digest_hex);
         let lock_path = self.root.join("locks").join(format!("{digest_hex}.lock"));
@@ -631,14 +663,20 @@ fn retry_throttled_registry_get(
 struct RegistryClient<'a> {
     client: &'a Client,
     image: ImageReference,
+    credentials: Option<&'a RegistryCredentials>,
     token: Option<String>,
 }
 
 impl<'a> RegistryClient<'a> {
-    fn new(client: &'a Client, image: ImageReference) -> Self {
+    fn new(
+        client: &'a Client,
+        image: ImageReference,
+        credentials: Option<&'a RegistryCredentials>,
+    ) -> Self {
         Self {
             client,
             image,
+            credentials,
             token: None,
         }
     }
@@ -696,6 +734,9 @@ impl<'a> RegistryClient<'a> {
             .get("realm")
             .context("Bearer challenge has no realm")?;
         let mut request = self.client.get(realm);
+        if let Some(credentials) = self.credentials {
+            request = request.basic_auth(&credentials.username, Some(&credentials.password));
+        }
         if let Some(service) = fields.get("service") {
             request = request.query(&[("service", service)]);
         }
@@ -1576,6 +1617,7 @@ mod tests {
         let mut registry = RegistryClient::new(
             &store.client,
             ImageReference::parse("example.invalid/repo:tag").unwrap(),
+            None,
         );
         events.clear();
         assert_eq!(
