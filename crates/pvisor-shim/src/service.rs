@@ -969,6 +969,18 @@ impl Task for PvisorTask {
         #[cfg(feature = "vm")]
         {
             plan.egress_gate = egress_gate;
+            if wants_vm
+                && plan.egress_gate.is_none()
+                && matches!(
+                    plan.vm_network_plan(),
+                    Ok(posture) if posture.mode == crate::plan::VmNetworkMode::Off
+                )
+            {
+                warn!(
+                    "task {}: VM has no network source (no egress policy, no io.pvisor.vm.network annotation); booting without a network device",
+                    req.id
+                );
+            }
         }
         #[cfg(not(feature = "vm"))]
         let _ = &spec;
