@@ -157,8 +157,11 @@ Bundles annotated with `"io.pvisor.executor": "vm"` (see
 [Executor tiers](#executor-tiers)) run in a libkrun
 microVM instead of host namespaces: one VM per task, rootfs shared
 read-write over virtio-fs (`/dev/root`), stdio over the virtio-console, VM
-shape via `io.pvisor.vm.cpus` / `io.pvisor.vm.memory-mib` (default 2 vCPU /
-512 MiB). Kill signals the VM runner (destroying the VM); the guest exit
+shape from `io.pvisor.vm.cpus` / `io.pvisor.vm.memory-mib` or, when an
+annotation is absent, derived from the workload's own OCI limits (memory
+limit minus a 256 MiB hypervisor reserve, floored at 256 MiB; cpu quota
+rounded up; default 2 vCPU / 512 MiB). Invalid annotation values fail the
+task instead of silently resizing the guest. Kill signals the VM runner (destroying the VM); the guest exit
 code propagates through the task exit status. The shim configures a vsock
 proxy for the guest control protocol (see below); this is not a network isolation claim.
 
@@ -188,7 +191,10 @@ volumes as plain passthrough. Only the operator-managed payloads share is
 physically immutable and DAX-mapped. Snapshotter
 request mounts used to materialize the rootfs are distinct from OCI spec
 mounts and remain accepted. VM CPU/RAM annotations select VM shape; they
-are not enforcement of OCI cgroup limits. The `io.pvisor.vm.log` annotation
+are not enforcement of OCI cgroup limits: an absent annotation sizes the
+guest from the workload's own limit (minus the hypervisor reserve), and an
+annotation that pins the guest below the container limits beyond that
+reserve records a planning warning — the guest cannot use the difference. The `io.pvisor.vm.log` annotation
 (optional log filter, or `1` for `debug`) makes the VM runner write VMM and
 early console diagnostics to `<bundle>/pvisor-vm.log` instead of stderr.
 
