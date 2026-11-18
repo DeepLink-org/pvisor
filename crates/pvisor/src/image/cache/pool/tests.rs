@@ -46,7 +46,7 @@ fn public_export_rejects_private_predecessor_slots() {
 
 /// Explicit special runner: installed Kubo, isolated loopback-only test network.
 #[test]
-#[ignore = "requires PVISOR_TEST_IPFS and PVISOR_TEST_DAEMON executables"]
+#[ignore = "requires the PVISOR_TEST_IPFS executable"]
 fn real_kubo_peers_serve_lazy_ranges_without_a_local_pool() {
     use std::{
         io::BufRead,
@@ -186,82 +186,30 @@ fn real_kubo_peers_serve_lazy_ranges_without_a_local_pool() {
     };
     let handle =
         publish_local_image(&location, &source, &image, "example:real-ipfs", "amd64").unwrap();
-    let publisher_images = temporary.path().join("publisher-images");
-    fs::create_dir(&publisher_images).unwrap();
-    let manifest = publisher_images.join("peer-image.json");
+    let bundle = temporary.path().join("bundle");
+    crate::image::cache::export_pool(&location, &handle, &bundle).unwrap();
     fs::write(
-        &manifest,
+        bundle.join("image.json"),
         serde_json::to_vec(&serde_json::json!({
-            "rootfs": publisher, "entrypoint": [], "cmd": [], "env": {}, "native_guest": true,
-            "pooled_image": {
-                "reference": "example:real-ipfs", "id": format!("sha256:{}", "8".repeat(64)),
-                "digest": digest, "platform": "linux/amd64",
-                "cache": {"location": location, "handle": handle},
-                "env": {}, "entrypoint": [], "cmd": [], "cwd": "/",
-                "user": "", "stop_signal": 15, "volumes": [], "created_ms": 0
-            }
+            "reference": "example:real-ipfs", "id": format!("sha256:{}", "8".repeat(64)),
+            "digest": digest, "platform": "linux/amd64",
+            "cache": {"location": "/pvisor/store/images/pool-v2", "handle": handle},
+            "env": {}, "entrypoint": [], "cmd": [], "cwd": "/",
+            "user": "", "stop_signal": 15, "volumes": [], "created_ms": 0
         }))
         .unwrap(),
     )
     .unwrap();
-    let daemon = std::env::var_os("PVISOR_TEST_DAEMON").expect("set PVISOR_TEST_DAEMON");
-    let executable = PathBuf::from(std::env::var_os("PVISOR_TEST_IPFS").unwrap());
-    let mut paths = vec![executable.parent().unwrap().to_path_buf()];
-    paths.extend(std::env::split_paths(
-        &std::env::var_os("PATH").unwrap_or_default(),
-    ));
-    let path = std::env::join_paths(paths).unwrap();
-    let run_daemon = |args: &[&str]| {
-        let result = Command::new(&daemon)
-            .env("PATH", &path)
-            .args(args)
-            .output()
-            .unwrap();
-        assert!(
-            result.status.success(),
-            "{}",
-            String::from_utf8_lossy(&result.stderr)
-        );
-        result.stdout
-    };
-    let status = run_daemon(&[
-        "image",
-        "peer-image",
-        "--images-dir",
-        publisher_images.to_str().unwrap(),
+    let mut seed = Kubo::new(temporary.path().join("seed"));
+    let output = seed.command(&[
+        "add",
+        "--recursive",
+        "--quieter",
+        "--cid-version=1",
+        "--pin=true",
+        bundle.to_str().unwrap(),
     ]);
-    assert_eq!(
-        serde_json::from_slice::<serde_json::Value>(&status).unwrap()["visibility"],
-        "private"
-    );
-    assert!(
-        !publisher_images.join(".ipfs").exists(),
-        "inspection must not initialize Kubo"
-    );
-    let result = run_daemon(&[
-        "image",
-        "peer-image",
-        "--images-dir",
-        publisher_images.to_str().unwrap(),
-        "--public",
-    ]);
-    let result: serde_json::Value = serde_json::from_slice(&result).unwrap();
-    let cid = result["cid"].as_str().unwrap();
-    fs::copy(&manifest, publisher_images.join("peer-alias.json")).unwrap();
-    let alias = run_daemon(&[
-        "image",
-        "peer-alias",
-        "--images-dir",
-        publisher_images.to_str().unwrap(),
-        "--public",
-    ]);
-    assert_eq!(
-        serde_json::from_slice::<serde_json::Value>(&alias).unwrap()["cid"],
-        cid
-    );
-    // The first public operation initializes the hidden Kubo repository and
-    // chooses local ports itself. Configure only this test's network before start.
-    let mut seed = Kubo::new(publisher_images.join(".ipfs"));
+    let cid = std::str::from_utf8(&output).unwrap().trim();
     seed.start();
     let images = temporary.path().join("receiver-images");
     let mut receiver = Kubo::new(images.join(".ipfs"));
@@ -283,23 +231,18 @@ fn real_kubo_peers_serve_lazy_ranges_without_a_local_pool() {
         .find(|v| v.starts_with("/ip4/127.0.0.1/tcp/"))
         .expect("loopback peer");
     receiver.command(&["swarm", "connect", peer]);
-    run_daemon(&[
-        "image",
-        "peer-image",
-        "--images-dir",
-        images.to_str().unwrap(),
-        "--from",
-        cid,
-    ]);
     fs::remove_dir_all(&publisher).unwrap();
     fs::remove_dir_all(&source.root).unwrap();
-    let installed: serde_json::Value =
-        serde_json::from_slice(&fs::read(images.join("peer-image.json")).unwrap()).unwrap();
-    let remote: crate::docker::Image =
-        serde_json::from_value(installed["pooled_image"].clone()).unwrap();
+    fs::remove_dir_all(bundle).unwrap();
+    let repository = format!("ipfs+http://127.0.0.1:{}/ipfs/{cid}", receiver.gateway);
+    let mut remote: crate::docker::Image =
+        serde_json::from_slice(&crate::docker::Store::read_image_repository(&repository).unwrap())
+            .unwrap();
+    let store_root = images.join("store");
+    remote.cache.location = store_root.join("images/pool-v2");
+    remote.cache.repository = Some(repository);
     assert!(!remote.cache.location.exists());
-    let store =
-        crate::docker::Store::open(PathBuf::from(installed["rootfs"].as_str().unwrap())).unwrap();
+    let store = crate::docker::Store::open(store_root).unwrap();
     let owner = store.open_image(&remote).unwrap();
     assert_eq!(
         backend::read_at(&owner.rootfs().join("hello"), 6, 9)
@@ -321,60 +264,6 @@ fn real_kubo_peers_serve_lazy_ranges_without_a_local_pool() {
         receiver.command(&["pin", "ls", "--type=recursive", "--quiet"]),
         pins_before,
         "receiver must not recursively pin the image"
-    );
-    // Publication keeps the local image local; visibility is revision-scoped.
-    let original: serde_json::Value =
-        serde_json::from_slice(&fs::read(&manifest).unwrap()).unwrap();
-    assert!(original["pooled_image"]["cache"]["repository"].is_null());
-    let mut replacement = original;
-    replacement["pooled_image"]["cache"]["handle"] = format!(
-        "pvisor-v2:{}:linux-amd64:{}",
-        "6".repeat(64),
-        "7".repeat(64)
-    )
-    .into();
-    fs::write(&manifest, serde_json::to_vec(&replacement).unwrap()).unwrap();
-    let status = run_daemon(&[
-        "image",
-        "peer-image",
-        "--images-dir",
-        publisher_images.to_str().unwrap(),
-    ]);
-    assert_eq!(
-        serde_json::from_slice::<serde_json::Value>(&status).unwrap()["visibility"],
-        "private",
-        "new revisions must not inherit public permission"
-    );
-    let private = run_daemon(&[
-        "image",
-        "peer-image",
-        "--images-dir",
-        publisher_images.to_str().unwrap(),
-        "--private",
-    ]);
-    assert_eq!(
-        serde_json::from_slice::<serde_json::Value>(&private).unwrap()["visibility"],
-        "private"
-    );
-    assert!(
-        String::from_utf8(seed.command(&["pin", "ls", "--type=recursive", "--quiet"]))
-            .unwrap()
-            .lines()
-            .any(|line| line == cid),
-        "another public name must retain the pin"
-    );
-    run_daemon(&[
-        "image",
-        "peer-alias",
-        "--images-dir",
-        publisher_images.to_str().unwrap(),
-        "--private",
-    ]);
-    assert!(
-        !String::from_utf8(seed.command(&["pin", "ls", "--type=recursive", "--quiet"]))
-            .unwrap()
-            .lines()
-            .any(|line| line == cid)
     );
 }
 

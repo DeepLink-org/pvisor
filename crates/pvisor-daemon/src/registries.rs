@@ -62,35 +62,6 @@ pub(super) fn load(images: &Path) -> anyhow::Result<Vec<ImageRegistry>> {
     Ok(config.registries)
 }
 
-pub(super) fn destination(images: &Path, explicit: Option<&str>) -> anyhow::Result<Option<String>> {
-    if let Some(location) = explicit.filter(|s| s.contains("://")) {
-        return Ok(Some(location.into()));
-    }
-    let registries = load(images)?;
-    if let Some(name) = explicit {
-        let registry = registries
-            .iter()
-            .find(|r| r.name == name)
-            .context("unknown destination registry")?;
-        ensure!(
-            registry.location.starts_with("s3://"),
-            "named HTTP registries are read-only"
-        );
-        return Ok(Some(registry.location.clone()));
-    }
-    if registries.is_empty() {
-        return Ok(None);
-    } // Preserve explicit legacy IPFS workflow.
-    Ok(Some(
-        registries
-            .iter()
-            .find(|r| r.resolve && r.location.starts_with("s3://"))
-            .context("no writable registry; use --to s3:// or file:///")?
-            .location
-            .clone(),
-    ))
-}
-
 impl Registry {
     pub(super) fn run(self) -> anyhow::Result<()> {
         let action = self.action.unwrap_or(Action::List);

@@ -1450,29 +1450,20 @@ before copying data. This prevents exposing removed files from a private
 predecessor; such images need rebuilding into a fresh pool before publication.
 Treat the exported image, including its config/environment, as public. The
 destination must not exist; failure can leave a partial export.
-IPFS does not supply anonymity, publisher authentication, access control or
-permanent retention. The daemon manages its node inside the local image
-repository: `serve --ipfs`, `image NAME --public/--private`, and
-`image NAME --from CID`. It selects ports and records publication CIDs without
-separate repository/output/gateway arguments. IPFS chunk boundaries need not match V2 frames;
-WAN performance and transfer amplification are not yet established.
+The daemon can serve existing IPFS bindings through its local Kubo node with
+`serve --ipfs`. IPFS chunk boundaries need not match V2 frames.
 
 The explicit Kubo runner uses two temporary loopback-only peers, disables
 bootstrap/mDNS/routing, removes the original local pool, and checks actual
 Bitswap reception, bounded working-set delivery and unchanged receiver pins:
 
 ```sh
-mise exec -- cargo build --locked -p pvisor-daemon
 PVISOR_TEST_IPFS=/absolute/path/to/ipfs \
-  PVISOR_TEST_DAEMON="$PWD/target/debug/pvisor-daemon" \
   mise run test -- pvisor -- --lib --run-ignored ignored-only real_kubo
 ```
 
-This runner has been exercised with Kubo 0.34.1. It validates real local P2P
-exchange, daemon publication/import, seed pinning and gateway range compatibility,
-not public DHT discovery, NAT traversal or VM boot performance. Set
-`PVISOR_TEST_DAEMON` to the actual build output when not using the default target
-directory.
+The runner covers local P2P exchange and lazy gateway reads. Public DHT
+discovery, NAT traversal and VM boot performance need separate validation.
 
 Filesystem/S3 publish and writable prepare import OCI sources under a scoped
 `staging/.import-*` directory, removed on success and error after publication

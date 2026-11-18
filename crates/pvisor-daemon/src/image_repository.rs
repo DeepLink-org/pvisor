@@ -1,9 +1,9 @@
-//! Local image policy, S3/static publication, and optional daemon-owned IPFS.
+//! Prepared templates, S3/static publication, and the daemon-owned IPFS service.
 use anyhow::{Context, ensure};
 use clap::{Args, Subcommand};
 use fs2::FileExt;
 use pvisor_daemon::api::PreparedImage;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use std::{
     fs::{self, File, OpenOptions},
     io::Write,
@@ -18,31 +18,6 @@ use tokio::{
 };
 
 pub(super) const DEFAULT_IMAGES: &str = ".pvisor/images";
-
-#[derive(Args)]
-#[command(group(clap::ArgGroup::new("operation").args(["public", "private", "from", "pull"])))]
-pub(super) struct Image {
-    /// Local image name: inspect if present, otherwise resolve configured registries.
-    name: String,
-    /// Publish this revision publicly. Already distributed bytes cannot be recalled.
-    #[arg(long)]
-    public: bool,
-    /// Stop retaining this publication; previously shared bytes remain public.
-    #[arg(long)]
-    private: bool,
-    /// Install from a trusted immutable CID, s3:// repository, or HTTP/HTTPS mirror.
-    #[arg(long)]
-    from: Option<String>,
-    /// Resolve configured registries again and atomically refresh this local name.
-    #[arg(long)]
-    pull: bool,
-    /// Publish to a configured registry name, s3:// prefix, or file:/// directory.
-    #[arg(long, requires = "public")]
-    to: Option<String>,
-    /// Image repository; use the same override as prepare-image and serve.
-    #[arg(long, default_value = DEFAULT_IMAGES)]
-    images_dir: PathBuf,
-}
 
 #[derive(Args)]
 pub(super) struct Manage {
@@ -106,20 +81,10 @@ impl Manage {
                 metadata
             }
             Operation::Push { name, to } => {
-                pvisor::docker::Store::validate_image_destination(&to)?;
-                let (image, result) = Image {
-                    name,
-                    public: true,
-                    private: false,
-                    from: None,
-                    pull: false,
-                    to: Some(to),
-                    images_dir: self.images_dir,
-                }
-                .execute(false)?;
+                let (image, source) = push(&self.images_dir, &name, &to)?;
                 serde_json::json!({
-                    "source": result["source"], "image_handle": image.pooled_image.cache.handle,
-                    "digest": image.pooled_image.digest, "platform": image.pooled_image.platform,
+                    "source": source, "image_handle": image.cache.handle,
+                    "digest": image.digest, "platform": image.platform,
                 })
             }
             Operation::Pull {
@@ -127,37 +92,15 @@ impl Manage {
                 from,
                 refresh,
             } => {
-                if let Some(source) = &from {
-                    ensure!(
-                        is_object_repository(source),
-                        "--from requires an S3 or HTTP(S) publication"
-                    );
-                }
-                let (_, result) = Image {
-                    name,
-                    public: false,
-                    private: false,
-                    pull: from.is_none(),
-                    from,
-                    to: None,
-                    images_dir: self.images_dir,
-                }
-                .execute(refresh)?;
-                result
+                let image = pull(&self.images_dir, &name, from.as_deref(), refresh)?;
+                serde_json::json!({
+                    "image": name, "source": image.cache.repository, "mirrors": image.cache.mirrors,
+                })
             }
         };
         println!("{}", serde_json::to_string(&value)?);
         Ok(())
     }
-}
-
-#[derive(Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Distribution {
-    handle: String,
-    #[serde(alias = "cid")]
-    source: String,
-    public: bool,
 }
 
 pub(super) fn validate_name(name: &str) -> anyhow::Result<()> {
@@ -196,7 +139,7 @@ pub(super) fn lock(path: &Path) -> anyhow::Result<File> {
     Ok(file)
 }
 
-/// Preparation and visibility changes serialize on the same image key.
+/// Preparation, publication and import serialize on the same image key.
 pub(super) fn image_lock(images: &Path, name: &str) -> anyhow::Result<File> {
     validate_name(name)?;
     private_directory(&images.join(".distribution"))?;
@@ -249,14 +192,6 @@ fn kubo(repo: &Path, args: &[&str]) -> anyhow::Result<Vec<u8>> {
     Ok(result.stdout)
 }
 
-fn validate_cid(cid: &str) -> anyhow::Result<()> {
-    ensure!(
-        (32..=128).contains(&cid.len()) && cid.bytes().all(|b| b.is_ascii_alphanumeric()),
-        "invalid immutable CID"
-    );
-    Ok(())
-}
-
 fn address(config: &serde_json::Value, key: &str) -> anyhow::Result<String> {
     let value = config["Addresses"][key]
         .as_str()
@@ -298,247 +233,70 @@ fn ensure_repo(images: &Path) -> anyhow::Result<PathBuf> {
     Ok(repo)
 }
 
-fn gateway(images: &Path) -> anyhow::Result<String> {
-    let config: serde_json::Value = read_json(&images.join(".ipfs/config"))?;
-    address(&config, "Gateway")
+fn push(
+    images: &Path,
+    name: &str,
+    destination: &str,
+) -> anyhow::Result<(pvisor::docker::Image, String)> {
+    use pvisor::docker::Store;
+    Store::validate_image_destination(destination)?;
+    let _lock = image_lock(images, name)?;
+    let image: PreparedImage = read_json(&images.join(format!("{name}.json")))?;
+    let portable = serde_json::to_vec(&portable_template(&image))?;
+    let source = Store::open(image.rootfs)?.publish_registry_image(
+        &image.pooled_image,
+        name,
+        destination,
+        &portable,
+    )?;
+    Ok((image.pooled_image, source))
 }
 
-fn distribution(images: &Path, name: &str) -> anyhow::Result<Option<Distribution>> {
-    let path = images.join(".distribution").join(format!("{name}.json"));
-    match read_json(&path) {
-        Ok(record) => Ok(Some(record)),
-        Err(error)
-            if error
-                .downcast_ref::<std::io::Error>()
-                .is_some_and(|e| e.kind() == std::io::ErrorKind::NotFound) =>
-        {
-            Ok(None)
-        }
-        Err(error) => Err(error),
+fn pull(
+    images: &Path,
+    name: &str,
+    source: Option<&str>,
+    refresh: bool,
+) -> anyhow::Result<pvisor::docker::Image> {
+    use pvisor::docker::Store;
+    if let Some(source) = source {
+        ensure!(
+            ["s3://", "http://", "https://"]
+                .iter()
+                .any(|scheme| source.starts_with(scheme)),
+            "--from requires an S3 or HTTP(S) publication"
+        );
     }
-}
-
-fn release_pin(images: &Path, cid: &str) -> anyhow::Result<()> {
-    // Another local name may retain the same immutable publication.
-    for entry in fs::read_dir(images.join(".distribution"))? {
-        let path = entry?.path();
-        if path.extension().is_some_and(|ext| ext == "json") {
-            let record: Distribution = read_json(&path)?;
-            if record.public && record.source == cid {
-                let name = path
-                    .file_stem()
-                    .and_then(|name| name.to_str())
-                    .context("invalid image record name")?;
-                validate_name(name)?;
-                match read_json::<PreparedImage>(&images.join(format!("{name}.json"))) {
-                    Ok(image) if image.pooled_image.cache.handle == record.handle => return Ok(()),
-                    Ok(_) => {}
-                    Err(error)
-                        if error
-                            .downcast_ref::<std::io::Error>()
-                            .is_some_and(|e| e.kind() == std::io::ErrorKind::NotFound) => {}
-                    Err(error) => return Err(error),
-                }
-            }
-        }
-    }
-    let repo = images.join(".ipfs");
-    let pins = kubo(&repo, &["pin", "ls", "--type=recursive", "--quiet"])?;
-    if std::str::from_utf8(&pins)?.lines().any(|pin| pin == cid) {
-        kubo(&repo, &["pin", "rm", cid])?;
-    }
-    Ok(())
-}
-
-impl Image {
-    pub(super) fn run(self) -> anyhow::Result<()> {
-        let replacement = if self.public {
-            "push NAME --images-dir DIR --to URI"
-        } else if self.from.is_some() {
-            "pull NAME --images-dir DIR --from SOURCE"
-        } else if self.pull {
-            "pull NAME --images-dir DIR --refresh"
-        } else if self.private {
-            "inspect NAME --images-dir DIR to query; --private is available during the transition"
-        } else {
-            "inspect NAME --images-dir DIR, or pvisor image pull NAME --images-dir DIR to resolve"
-        };
-        eprintln!("warning: pvisor-daemon image is deprecated; use pvisor image {replacement}");
-        let refresh = self.pull;
-        let (_, value) = self.execute(refresh)?;
-        println!("{}", serde_json::to_string(&value)?);
-        Ok(())
-    }
-
-    fn execute(self, refresh: bool) -> anyhow::Result<(PreparedImage, serde_json::Value)> {
-        validate_name(&self.name)?;
-        let _image_lock = image_lock(&self.images_dir, &self.name)?;
-        let images = self.images_dir.canonicalize()?;
-        let _catalog_lock = if self.public || self.private {
-            Some(lock(&images.join(".distribution/catalog.lock"))?)
-        } else {
-            None
-        };
-        let manifest = images.join(format!("{}.json", self.name));
-        if self.from.is_some() || self.pull {
-            ensure!(
-                refresh || !manifest.try_exists()?,
-                "image already exists; use --refresh"
-            );
-        }
-        let resolved = if let Some(source) = &self.from {
-            let repository = if is_object_repository(source) {
-                source.trim_end_matches('/').to_string()
-            } else {
-                validate_cid(source)?;
-                ensure_repo(&images)?;
-                format!("ipfs+{}/ipfs/{source}", gateway(&images)?)
-            };
-            let bytes = pvisor::docker::Store::read_image_repository(&repository)?;
-            Some((bytes, vec![repository]))
-        } else if self.pull || (!manifest.try_exists()? && !self.public && !self.private) {
-            let registries = crate::registries::load(&images)?;
-            ensure!(
-                !registries.is_empty(),
-                "image absent locally; configure registries or use --from"
-            );
-            let resolved =
-                pvisor::docker::Store::resolve_image_repository(&self.name, &registries)?;
-            Some((resolved.template, resolved.repositories))
-        } else {
-            None
-        };
-        let previous = distribution(&images, &self.name)?;
-        let image = if let Some((bytes, mut repositories)) = resolved {
-            let mut image: PreparedImage = serde_json::from_slice(&bytes)?;
-            image.rootfs = images.join("store");
-            let store = pvisor::docker::Store::open(image.rootfs.clone())?;
-            image.pooled_image.cache.location = image.rootfs.join("images/pool-v2");
-            image.pooled_image.cache.repository = Some(repositories.remove(0));
-            image.pooled_image.cache.mirrors = repositories;
-            image.library_dir = None;
-            store.import_image_config(&image.pooled_image)?;
-            // Validate pinned identity/root metadata before local visibility,
-            // without fetching the complete image contents.
-            drop(store.open_image(&image.pooled_image)?);
-            // Install with no public marker: fetching public bytes does not
-            // grant permission to publish subsequent local revisions.
-            write_json(&manifest, &image, refresh)?;
-            image
-        } else {
-            read_json(&manifest)?
-        };
-        let record_path = images
-            .join(".distribution")
-            .join(format!("{}.json", self.name));
-        let record = if self.public {
-            let destination = crate::registries::destination(&images, self.to.as_deref())?;
-            let source = if let Some(destination) = &destination {
-                ensure!(
-                    destination.starts_with("s3://") || destination.starts_with("file://"),
-                    "publication requires s3:// or file:///; HTTP mirrors are read-only"
-                );
-                let portable = portable_template(&image);
-                pvisor::docker::Store::open(image.rootfs.clone())?.publish_registry_image(
-                    &image.pooled_image,
-                    &self.name,
-                    destination,
-                    &serde_json::to_vec(&portable)?,
-                )?
-            } else if let Some(binding) = &image.pooled_image.cache.repository {
-                ensure!(
-                    binding.starts_with("ipfs+"),
-                    "remote S3/HTTP images cannot be republished; use a local prepared image"
-                );
-                let repo = ensure_repo(&images)?;
-                let url = url::Url::parse(
-                    binding
-                        .strip_prefix("ipfs+")
-                        .context("invalid IPFS binding")?,
-                )?;
-                let cid = url
-                    .path()
-                    .strip_prefix("/ipfs/")
-                    .context("invalid IPFS CID path")?;
-                validate_cid(cid)?;
-                kubo(&repo, &["pin", "add", cid])?;
-                cid.to_string()
-            } else {
-                let repo = ensure_repo(&images)?;
-                let staging = tempfile::tempdir_in(&images)?;
-                let pool = staging.path().join("pool");
-                pvisor::docker::Store::open(image.rootfs.clone())?
-                    .export_image_pool(&image.pooled_image, &pool)?;
-                let portable = portable_template(&image);
-                write_json(&pool.join("image.json"), &portable, false)?;
-                let output = kubo(
-                    &repo,
-                    &[
-                        "add",
-                        "--recursive",
-                        "--quieter",
-                        "--cid-version=1",
-                        "--pin=true",
-                        pool.to_str().context("non-UTF-8 image directory")?,
-                    ],
-                )?;
-                let cid = std::str::from_utf8(&output)?.trim();
-                validate_cid(cid)?;
-                cid.to_string()
-            };
-            let record = Distribution {
-                handle: image.pooled_image.cache.handle.clone(),
-                source,
-                public: true,
-            };
-            write_json(&record_path, &record, true)?;
-            if let Some(old) = &previous
-                && old.source != record.source
-                && validate_cid(&old.source).is_ok()
-            {
-                release_pin(&images, &old.source)?;
-            }
-            Some(record)
-        } else if self.private
-            && let Some(mut record) = previous
-        {
-            record.public = false;
-            write_json(&record_path, &record, true)?;
-            if validate_cid(&record.source).is_ok() {
-                release_pin(&images, &record.source)?;
-            }
-            Some(record)
-        } else {
-            previous
-        }
-        .filter(|record| record.handle == image.pooled_image.cache.handle);
-        let source = record
-            .as_ref()
-            .map(|r| r.source.clone())
-            .or_else(|| image.pooled_image.cache.repository.clone());
-        let cid = source
-            .as_ref()
-            .filter(|s| validate_cid(s).is_ok())
-            .cloned()
-            .or_else(|| {
-                source
-                    .as_ref()
-                    .filter(|s| s.starts_with("ipfs+"))
-                    .and_then(|binding| binding.rsplit('/').next().map(String::from))
-            });
-        let value = serde_json::json!({
-            "image": self.name,
-            "visibility": if record.as_ref().is_some_and(|r| r.public) { "public" } else { "private" },
-            "cid": cid,
-            "source": source,
-            "mirrors": image.pooled_image.cache.mirrors,
-        });
-        Ok((image, value))
-    }
-}
-
-fn is_object_repository(source: &str) -> bool {
-    source.starts_with("s3://") || source.starts_with("http://") || source.starts_with("https://")
+    let _lock = image_lock(images, name)?;
+    let images = images.canonicalize()?;
+    let manifest = images.join(format!("{name}.json"));
+    ensure!(
+        refresh || !manifest.try_exists()?,
+        "image already exists; use --refresh"
+    );
+    let (bytes, mut repositories) = if let Some(source) = source {
+        let repository = source.trim_end_matches('/').to_owned();
+        (Store::read_image_repository(&repository)?, vec![repository])
+    } else {
+        let registries = crate::registries::load(&images)?;
+        ensure!(
+            !registries.is_empty(),
+            "image absent locally; configure registries or use --from"
+        );
+        let resolved = Store::resolve_image_repository(name, &registries)?;
+        (resolved.template, resolved.repositories)
+    };
+    let mut image: PreparedImage = serde_json::from_slice(&bytes)?;
+    image.rootfs = images.join("store");
+    let store = Store::open(image.rootfs.clone())?;
+    image.pooled_image.cache.location = image.rootfs.join("images/pool-v2");
+    image.pooled_image.cache.repository = Some(repositories.remove(0));
+    image.pooled_image.cache.mirrors = repositories;
+    image.library_dir = None;
+    store.import_image_config(&image.pooled_image)?;
+    drop(store.open_image(&image.pooled_image)?);
+    write_json(&manifest, &image, refresh)?;
+    Ok(image.pooled_image)
 }
 
 fn portable_template(image: &PreparedImage) -> PreparedImage {
@@ -664,7 +422,7 @@ mod tests {
     #[test]
     fn image_keys_cannot_collide_with_global_lock_namespaces() {
         let temp = tempfile::tempdir().unwrap();
-        for name in ["catalog", "registries", "node"] {
+        for name in ["registries", "node"] {
             let _image = image_lock(temp.path(), name).unwrap();
             let global = OpenOptions::new()
                 .read(true)
@@ -685,34 +443,22 @@ mod tests {
     }
 
     #[test]
-    fn image_keys_are_confined_and_private_is_the_default() {
+    fn image_keys_are_confined() {
         for name in ["../escape", ".hidden", "", "a/b"] {
             assert!(validate_name(name).is_err());
         }
         validate_name("python-3.12").unwrap();
-        let tmp = tempfile::tempdir().unwrap();
-        assert!(distribution(tmp.path(), "python").unwrap().is_none());
-        assert!(!tmp.path().join(".ipfs").exists());
     }
 
     #[test]
     fn records_are_atomic_and_new_imports_cannot_overwrite() {
         let tmp = tempfile::tempdir().unwrap();
-        let record = Distribution {
-            handle: "revision".into(),
-            source: "b".repeat(59),
-            public: false,
-        };
         let path = tmp.path().join("image.json");
-        write_json(&path, &record, false).unwrap();
-        assert!(write_json(&path, &record, false).is_err());
-        assert!(!read_json::<Distribution>(&path).unwrap().public);
-        let record = Distribution {
-            public: true,
-            ..record
-        };
-        write_json(&path, &record, true).unwrap();
-        assert!(read_json::<Distribution>(&path).unwrap().public);
+        write_json(&path, &"original", false).unwrap();
+        assert!(write_json(&path, &"updated", false).is_err());
+        assert_eq!(read_json::<String>(&path).unwrap(), "original");
+        write_json(&path, &"updated", true).unwrap();
+        assert_eq!(read_json::<String>(&path).unwrap(), "updated");
     }
 
     #[tokio::test]

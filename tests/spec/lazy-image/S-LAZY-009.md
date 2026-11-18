@@ -1,11 +1,10 @@
-# S-LAZY-009: Prepared commands and legacy adapters share one publication
+# S-LAZY-009: Prepared image commands publish and import pinned templates
 
-**Origin**: New unreviewed compatibility-stage contract for [#161](https://github.com/DeepLink-org/pvisor/issues/161).
+**Origin**: New unreviewed prepared-template contract for [#161](https://github.com/DeepLink-org/pvisor/issues/161).
 
 **Contract**: Root/grouped push publish the same prepared revision. Explicit and
 configured-registry imports preserve native/E2B template fields without reading
-data. Queries stay local. Both legacy spellings retain JSON stdout and warn on
-stderr. This case does not assert final retirement or approve specifications.
+data. Queries stay local. Publishing creates no legacy visibility or CID records.
 
 **Prerequisites**: Executable `SUBJECT_BIN`, matching sibling `pvisor-daemon`,
 Python 3, Bash and loopback sockets. The prepared fixture uses an actual native
@@ -36,16 +35,9 @@ $ python3 "$TESTDIR/../fixture.py" use S-LAZY-009 --timeout 180 <<'CASE'
 >   pvisor image push "$name" --images-dir "$publisher" --to "file://$CASE_ROOT/releases" > repeated.json
 >   cmp "$name.json" repeated.json
 > done
-> "$LAZY_DAEMON_BIN" image native.v1 --images-dir "$publisher" > legacy.json 2> direct.stderr
-> pvisor daemon image native.v1 --images-dir "$publisher" > forwarded.json 2> forwarded.stderr
-> cmp legacy.json forwarded.json
-> for entry in direct forwarded; do grep -F 'deprecated' "$entry.stderr"; grep -F 'pvisor image' "$entry.stderr"; done
-> python3 - <<'PY'
-> import json
-> legacy, published = [json.load(open(p)) for p in ('legacy.json', 'native.v1.json')]
-> assert legacy['image'] == 'native.v1' and legacy['visibility'] == 'public'
-> assert legacy['source'] == published['source'] and legacy['cid'] is None
-> PY
+> assert_absent "$publisher/.distribution/native.v1.json"
+> assert_absent "$publisher/.distribution/e2b.json"
+> assert_absent "$publisher/.ipfs"
 > lazy_start_repository "$CASE_ROOT/releases"
 > receiver="$CASE_ROOT/receiver"
 > source_uri=$(journey_json e2b.json /source)

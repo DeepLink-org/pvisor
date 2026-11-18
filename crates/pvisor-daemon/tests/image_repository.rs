@@ -115,15 +115,10 @@ impl Fixture {
         command
     }
 
-    fn command(&self, server: &Server, images: &Path, args: &[&str]) -> Output {
-        let mut command = self.environment(server, images, env!("CARGO_BIN_EXE_pvisor-daemon"));
-        command
-            .arg("image")
-            .arg("tiny")
-            .arg("--images-dir")
-            .arg(images)
-            .args(args);
-        command.output().unwrap()
+    fn pull(&self, server: &Server, images: &Path, args: &[&str]) -> Output {
+        let mut command = vec!["pull", "tiny"];
+        command.extend_from_slice(args);
+        self.manage(server, images, &command)
     }
 
     fn registry(&self, server: &Server, images: &Path, args: &[&str]) -> Output {
@@ -155,10 +150,10 @@ impl Fixture {
     }
 
     fn publish(&self, server: &Server) -> Output {
-        self.command(
+        self.manage(
             server,
             &self.images,
-            &["--public", "--to", "s3://images/releases"],
+            &["push", "tiny", "--to", "s3://images/releases"],
         )
     }
 }
@@ -440,7 +435,7 @@ fn s3_publication_http_mirror_and_signed_lazy_reads() {
     let import_start = server.data.lock().unwrap().requests.len();
     for (name, repository) in [("s3-reader", source), ("http-reader", http.as_str())] {
         let images = fixture._root.path().join(name);
-        success(fixture.command(&server, &images, &["--from", repository]));
+        success(fixture.pull(&server, &images, &["--from", repository]));
         let installed: PreparedImage =
             serde_json::from_slice(&std::fs::read(images.join("tiny.json")).unwrap()).unwrap();
         assert_eq!(
@@ -454,7 +449,7 @@ fn s3_publication_http_mirror_and_signed_lazy_reads() {
         assert!(!images.join(".ipfs").exists());
         assert!(
             !fixture
-                .command(&server, &images, &["--from", repository])
+                .pull(&server, &images, &["--from", repository])
                 .status
                 .success(),
             "never overwrite"
@@ -512,7 +507,7 @@ fn s3_publication_http_mirror_and_signed_lazy_reads() {
 }
 
 #[test]
-fn prepared_image_commands_share_publication_and_keep_legacy_and_template_contracts() {
+fn prepared_image_commands_retain_template_metadata_and_ignore_retired_policy() {
     let fixture = Fixture::new();
     let server = Server::new();
     let path = fixture.images.join("tiny.json");
@@ -532,11 +527,6 @@ fn prepared_image_commands_share_publication_and_keep_legacy_and_template_contra
         &fixture.images,
         &["push", "tiny", "--to", "s3://images/releases"],
     ));
-    let legacy = fixture.publish(&server);
-    assert!(String::from_utf8_lossy(&legacy.stderr).contains("deprecated"));
-    let legacy = success(legacy);
-    assert_eq!(legacy["source"], published["source"]);
-    assert_eq!(legacy["visibility"], "public");
     assert_eq!(before, std::fs::read(&path).unwrap());
     let receiver = fixture._root.path().join("receiver");
     let source = published["source"].as_str().unwrap();
@@ -586,17 +576,13 @@ fn prepared_image_commands_share_publication_and_keep_legacy_and_template_contra
         .unwrap();
     assert!(!failed.status.success());
     assert_eq!(installed, std::fs::read(&imported_path).unwrap());
+    server.data.lock().unwrap().fault = None;
     std::fs::write(receiver.join(".distribution/copy.json"), b"invalid JSON").unwrap();
-    assert!(
-        !fixture
-            .manage(
-                &server,
-                &receiver,
-                &["pull", "copy", "--from", source, "--refresh"]
-            )
-            .status
-            .success()
-    );
+    success(fixture.manage(
+        &server,
+        &receiver,
+        &["pull", "copy", "--from", source, "--refresh"],
+    ));
     assert_eq!(installed, std::fs::read(imported_path).unwrap());
     let missing = fixture._root.path().join("absent");
     assert_eq!(
@@ -627,7 +613,7 @@ fn older_prepared_publications_without_oci_config_remain_importable() {
         .objects
         .retain(|key, _| !key.contains("/configs/"));
     let receiver = fixture._root.path().join("legacy-reader");
-    success(fixture.command(
+    success(fixture.pull(
         &server,
         &receiver,
         &["--from", publication["source"].as_str().unwrap()],
@@ -653,7 +639,13 @@ fn chaos_publication_failure_and_lost_ack_reconcile_without_partial_visibility()
     assert!(!fixture.images.join(".distribution/tiny.json").exists());
     server.inject(Fault::LostWriteAck, "image.json");
     let publication = success(fixture.publish(&server));
-    assert_eq!(publication["visibility"], "public");
+    assert!(
+        publication["image_handle"]
+            .as_str()
+            .unwrap()
+            .starts_with("pvisor-v2:")
+    );
+    assert!(!fixture.images.join(".distribution/tiny.json").exists());
     assert!(server.data.lock().unwrap().injected > 0);
 }
 
@@ -662,10 +654,10 @@ fn filesystem_export_can_be_served_by_an_ordinary_static_mirror() {
     let fixture = Fixture::new();
     let server = Server::new();
     let destination = format!("file://{}", fixture._root.path().join("mirror").display());
-    let result = success(fixture.command(
+    let result = success(fixture.manage(
         &server,
         &fixture.images,
-        &["--public", "--to", &destination],
+        &["push", "tiny", "--to", &destination],
     ));
     let root = PathBuf::from(
         result["source"]
@@ -689,7 +681,7 @@ fn filesystem_export_can_be_served_by_an_ordinary_static_mirror() {
     }
     mirror(&root, &root, &mut server.data.lock().unwrap());
     let images = fixture._root.path().join("mirror-reader");
-    success(fixture.command(
+    success(fixture.pull(
         &server,
         &images,
         &["--from", &format!("{}/cdn", server.url)],
@@ -729,7 +721,7 @@ fn chaos_import_faults_fail_closed_and_recover_without_poisoning_cache() {
     {
         let images = fixture._root.path().join(format!("fault-{round}"));
         server.inject(fault, suffix);
-        let output = fixture.command(&server, &images, &["--from", &http]);
+        let output = fixture.pull(&server, &images, &["--from", &http]);
         assert!(!output.status.success(), "{fault:?} unexpectedly accepted");
         assert!(
             server.data.lock().unwrap().injected > 0,
@@ -740,11 +732,11 @@ fn chaos_import_faults_fail_closed_and_recover_without_poisoning_cache() {
             "failed import became visible"
         );
         server.data.lock().unwrap().fault = None;
-        success(fixture.command(&server, &images, &["--from", &http]));
+        success(fixture.pull(&server, &images, &["--from", &http]));
     }
     let images = fixture._root.path().join("transient");
     server.inject(Fault::BusyOnce, "COMMIT.json");
-    success(fixture.command(&server, &images, &["--from", &http]));
+    success(fixture.pull(&server, &images, &["--from", &http]));
 }
 
 #[test]
@@ -756,7 +748,7 @@ fn chaos_file_content_faults_are_verified_and_recover_for_both_transports() {
     let http = format!("{}/{}", server.url, s3.strip_prefix("s3://").unwrap());
     for (transport, source) in [("http", http.as_str()), ("s3", s3)] {
         let images = fixture._root.path().join(transport);
-        success(fixture.command(&server, &images, &["--from", source]));
+        success(fixture.pull(&server, &images, &["--from", source]));
         for (round, fault) in [
             Fault::Corrupt,
             Fault::WrongRange,
@@ -808,21 +800,25 @@ fn publishing_an_image_named_registries_cannot_replace_registry_configuration() 
     ));
     let config = fixture.images.join(".distribution/config/registries.json");
     let before = std::fs::read(&config).unwrap();
-    let mut command = fixture.environment(
+    success(fixture.manage(
         &origin,
         &fixture.images,
-        env!("CARGO_BIN_EXE_pvisor-daemon"),
-    );
-    command
-        .args(["image", "registries", "--public", "--images-dir"])
-        .arg(&fixture.images);
-    success(command.output().unwrap());
+        &["push", "registries", "--to", "s3://images/releases"],
+    ));
     assert_eq!(std::fs::read(config).unwrap(), before);
     assert!(
-        fixture
+        origin
+            .data
+            .lock()
+            .unwrap()
+            .objects
+            .contains_key("images/releases/refs/registries.json")
+    );
+    assert!(
+        !fixture
             .images
             .join(".distribution/registries.json")
-            .is_file()
+            .exists()
     );
     let listed = success(fixture.registry(&origin, &fixture.images, &["list"]));
     assert_eq!(listed["registries"][0]["name"], "origin");
@@ -838,7 +834,7 @@ fn configured_registry_resolves_once_and_fails_over_verified_downloads_in_order(
         &fixture.images,
         &["add", "origin", "s3://images/releases"],
     ));
-    let publication = success(fixture.command(&origin, &fixture.images, &["--public"]));
+    let publication = success(fixture.publish(&origin));
     let source = publication["source"].as_str().unwrap();
     copy_registry(&origin, &mirror);
     let images = fixture._root.path().join("configured-reader");
@@ -852,7 +848,7 @@ fn configured_registry_resolves_once_and_fails_over_verified_downloads_in_order(
     let order = Arc::new(Mutex::new(vec![]));
     mirror.data.lock().unwrap().order = Some(("cdn".into(), order.clone()));
     origin.data.lock().unwrap().order = Some(("origin".into(), order.clone()));
-    let result = success(fixture.command(&origin, &images, &[]));
+    let result = success(fixture.pull(&origin, &images, &[]));
     assert_eq!(result["mirrors"][0], source);
     let trace = order.lock().unwrap().clone();
     assert!(
@@ -947,7 +943,7 @@ fn configured_registry_resolves_once_and_fails_over_verified_downloads_in_order(
             &metadata,
             &["add", "origin", "s3://images/releases"],
         ));
-        success(fixture.command(&origin, &metadata, &[]));
+        success(fixture.pull(&origin, &metadata, &[]));
         assert!(
             mirror.data.lock().unwrap().injected > 0,
             "metadata corruption was not exercised"
@@ -960,23 +956,21 @@ fn registry_reference_commit_failure_keeps_old_name_and_lost_ack_is_reconciled()
     let fixture = Fixture::new();
     let origin = Server::new();
     let initial = success(fixture.publish(&origin));
-    let record = std::fs::read(fixture.images.join(".distribution/tiny.json")).unwrap();
     let reference = origin.data.lock().unwrap().objects["images/releases/refs/tiny.json"].clone();
     let manifest = fixture.images.join("tiny.json");
     let mut image: serde_json::Value =
         serde_json::from_slice(&std::fs::read(&manifest).unwrap()).unwrap();
     image["cmd"] = serde_json::json!(["updated"]);
     std::fs::write(&manifest, serde_json::to_vec(&image).unwrap()).unwrap();
+    let before = std::fs::read(&manifest).unwrap();
     origin.inject(Fault::FailUpload, "refs/tiny.json");
     assert!(!fixture.publish(&origin).status.success());
     assert_eq!(
         origin.data.lock().unwrap().objects["images/releases/refs/tiny.json"],
         reference
     );
-    assert_eq!(
-        std::fs::read(fixture.images.join(".distribution/tiny.json")).unwrap(),
-        record
-    );
+    assert_eq!(std::fs::read(manifest).unwrap(), before);
+    assert!(!fixture.images.join(".distribution/tiny.json").exists());
     origin.inject(Fault::LostWriteAck, "refs/tiny.json");
     let next = success(fixture.publish(&origin));
     assert_ne!(initial["source"], next["source"]);
@@ -1007,7 +1001,7 @@ fn registry_fallback_never_changes_the_selected_publication_and_failed_pull_is_a
         &["add", "first", &format!("{}/registry", first.url)],
     ));
     success(fixture.registry(&origin, &images, &["add", "origin", "s3://images/releases"]));
-    success(fixture.command(&origin, &images, &[]));
+    success(fixture.pull(&origin, &images, &[]));
     let installed = std::fs::read(images.join("tiny.json")).unwrap();
     // Publish a new launch revision through the origin's mutable index.
     let path = fixture.images.join("tiny.json");
@@ -1032,7 +1026,7 @@ fn registry_fallback_never_changes_the_selected_publication_and_failed_pull_is_a
         .retain(|key, _| !key.contains(&format!("/{old_hash}/")));
     let order = Arc::new(Mutex::new(vec![]));
     origin.data.lock().unwrap().order = Some(("origin".into(), order.clone()));
-    let output = fixture.command(&origin, &images, &["--pull"]);
+    let output = fixture.pull(&origin, &images, &["--refresh"]);
     assert!(
         !output.status.success(),
         "must fail rather than silently use origin's different release"
@@ -1066,7 +1060,7 @@ fn registry_fallback_never_changes_the_selected_publication_and_failed_pull_is_a
         String::from_utf8_lossy(&output.stderr)
     );
     order.lock().unwrap().clear();
-    success(fixture.command(&origin, &images, &[])); // Local-first inspect.
+    success(fixture.manage(&origin, &images, &["inspect", "tiny"]));
     assert!(order.lock().unwrap().is_empty());
     // Explicit refresh can choose B after the higher-priority name is absent.
     first
@@ -1075,7 +1069,7 @@ fn registry_fallback_never_changes_the_selected_publication_and_failed_pull_is_a
         .unwrap()
         .objects
         .remove("registry/refs/tiny.json");
-    let refreshed = success(fixture.command(&origin, &images, &["--pull"]));
+    let refreshed = success(fixture.pull(&origin, &images, &["--refresh"]));
     assert_eq!(
         refreshed["source"].as_str().unwrap().rsplit('/').next(),
         new["source"].as_str().unwrap().rsplit('/').next()
@@ -1155,7 +1149,7 @@ fn concurrent_registry_configuration_changes_do_not_lose_updates() {
 }
 
 #[test]
-fn offline_registry_is_skipped_and_named_publication_uses_the_selected_registry() {
+fn offline_registry_is_skipped_and_explicit_publication_ignores_registry_settings() {
     let fixture = Fixture::new();
     let origin = Server::new();
     let offline = Server::new();
@@ -1165,7 +1159,7 @@ fn offline_registry_is_skipped_and_named_publication_uses_the_selected_registry(
     let images = fixture._root.path().join("offline-reader");
     success(fixture.registry(&origin, &images, &["add", "offline", &offline_url]));
     success(fixture.registry(&origin, &images, &["add", "origin", "s3://images/releases"]));
-    let resolved = success(fixture.command(&origin, &images, &[]));
+    let resolved = success(fixture.pull(&origin, &images, &[]));
     assert_eq!(resolved["mirrors"][0], publication["source"]);
     let output = fixture
         .reader(&origin, &images, "offline")
@@ -1179,11 +1173,19 @@ fn offline_registry_is_skipped_and_named_publication_uses_the_selected_registry(
     success(fixture.registry(
         &origin,
         &fixture.images,
-        &["add", "origin", "s3://images/releases"],
+        &["add", "wrong", "s3://other-bucket/ignored"],
     ));
-    let selected =
-        success(fixture.command(&origin, &fixture.images, &["--public", "--to", "origin"]));
+    let selected = success(fixture.publish(&origin));
     assert_eq!(selected["source"], publication["source"]);
+    assert!(
+        !origin
+            .data
+            .lock()
+            .unwrap()
+            .requests
+            .iter()
+            .any(|(_, key, _)| key.contains("other-bucket"))
+    );
 }
 
 /// Explicit special runner: stdlib Python TLS/Range server and OpenSSL create an
@@ -1299,7 +1301,7 @@ server.serve_forever()
     let images = fixture._root.path().join("tls-reader");
     assert!(
         !fixture
-            .command(&server, &images, &["--from", &location])
+            .pull(&server, &images, &["--from", &location])
             .status
             .success(),
         "untrusted CA accepted"
@@ -1309,11 +1311,14 @@ server.serve_forever()
     let mut command = fixture.environment(&server, &mismatch, env!("CARGO_BIN_EXE_pvisor-daemon"));
     command
         .env("SSL_CERT_FILE", &cert)
-        .arg("image")
-        .arg("tiny")
-        .arg("--images-dir")
+        .args(["image-manage", "--images-dir"])
         .arg(&mismatch)
-        .args(["--from", &location.replace("127.0.0.1", "localhost")]);
+        .args([
+            "pull",
+            "tiny",
+            "--from",
+            &location.replace("127.0.0.1", "localhost"),
+        ]);
     assert!(
         !command.output().unwrap().status.success(),
         "hostname verification was bypassed"
@@ -1322,11 +1327,9 @@ server.serve_forever()
     let mut command = fixture.environment(&server, &images, env!("CARGO_BIN_EXE_pvisor-daemon"));
     command
         .env("SSL_CERT_FILE", &cert)
-        .arg("image")
-        .arg("tiny")
-        .arg("--images-dir")
+        .args(["image-manage", "--images-dir"])
         .arg(&images)
-        .args(["--from", &location]);
+        .args(["pull", "tiny", "--from", &location]);
     success(command.output().unwrap());
     let output = fixture
         .reader(&server, &images, "tls-cache")

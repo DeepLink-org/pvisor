@@ -50,8 +50,6 @@ enum Command {
     },
     /// Prepare a pooled native template or an explicitly supplied upstream service.
     PrepareImage(prepared_image::PrepareImage),
-    /// Inspect an image, publish it, or install from a trusted CID/S3/HTTP repository.
-    Image(image_repository::Image),
     #[command(hide = true)]
     ImageManage(image_repository::Manage),
     /// Configure ordered V2 image registries (not OCI/Docker registry endpoints).
@@ -93,7 +91,7 @@ enum Command {
         /// Private persistent state. Keep the absolute path short for Unix control sockets.
         #[arg(long, default_value = ".pvisor/daemon", requires = "state_service")]
         state: PathBuf,
-        /// Image repository; defaults to .pvisor/images, as in prepare-image and image.
+        /// Image repository; defaults to .pvisor/images, as in prepare-image.
         #[arg(long, requires = "image_service")]
         images_dir: Option<PathBuf>,
         /// Existing delegated cgroup v2 subtree for per-sandbox process-tree limits.
@@ -135,7 +133,15 @@ fn main() -> anyhow::Result<()> {
     if pvisor::run_krun_internal_if_requested()? {
         return Ok(());
     }
-    let args = Args::parse();
+    let args = Args::try_parse().unwrap_or_else(|error| {
+        use clap::error::{ContextKind, ContextValue, ErrorKind};
+        if error.kind() == ErrorKind::InvalidSubcommand
+            && matches!(error.get(ContextKind::InvalidSubcommand), Some(ContextValue::String(name)) if name == "image")
+        {
+            eprintln!("Use pvisor image --help for image commands.");
+        }
+        error.exit()
+    });
     match &args.command {
         Command::Start { options } => {
             return user_service::print(&user_service::start(options)?);
@@ -157,9 +163,6 @@ fn main() -> anyhow::Result<()> {
         _ => {}
     }
     if let Command::PrepareImage(options) = args.command {
-        return options.run();
-    }
-    if let Command::Image(options) = args.command {
         return options.run();
     }
     if let Command::ImageManage(options) = args.command {
@@ -212,7 +215,6 @@ async fn run(command: Command) -> anyhow::Result<()> {
         | Command::Stop { .. }
         | Command::ResolveMemoryPool { .. } => unreachable!(),
         Command::PrepareImage(_)
-        | Command::Image(_)
         | Command::ImageManage(_)
         | Command::Registry(_)
         | Command::Protocol
@@ -590,7 +592,7 @@ mod tests {
     }
 
     #[test]
-    fn registries_and_explicit_pull_use_minimal_validated_operations() {
+    fn registries_and_prepared_image_operations_parse() {
         for args in [
             vec!["registry"],
             vec!["registry", "list"],
@@ -603,8 +605,32 @@ mod tests {
             ],
             vec!["registry", "move", "cdn", "1"],
             vec!["registry", "remove", "cdn"],
-            vec!["image", "python", "--pull"],
-            vec!["image", "python", "--public", "--to", "origin"],
+            vec![
+                "image-manage",
+                "--images-dir",
+                "catalog",
+                "pull",
+                "python",
+                "--refresh",
+            ],
+            vec![
+                "image-manage",
+                "--images-dir",
+                "catalog",
+                "pull",
+                "python",
+                "--from",
+                "https://mirror.example/image",
+            ],
+            vec![
+                "image-manage",
+                "--images-dir",
+                "catalog",
+                "push",
+                "python",
+                "--to",
+                "s3://images/releases",
+            ],
         ] {
             let mut command = vec!["pvisor-daemon"];
             command.extend(args);
@@ -613,84 +639,34 @@ mod tests {
         assert!(
             Args::try_parse_from([
                 "pvisor-daemon",
-                "image",
-                "python",
-                "--pull",
-                "--from",
-                "https://mirror.example/image"
+                "image-manage",
+                "--images-dir",
+                "catalog",
+                "push",
+                "python"
             ])
             .is_err()
-        );
-        assert!(
-            Args::try_parse_from(["pvisor-daemon", "image", "python", "--pull", "--public"])
-                .is_err()
         );
     }
 
     #[test]
-    fn image_distribution_has_minimal_defaults_and_no_legacy_parameters() {
+    fn retired_image_subcommand_is_rejected_and_services_still_parse() {
         assert!(Args::try_parse_from(["pvisor-daemon", "serve", "--ipfs"]).is_ok());
-        for args in [
-            vec!["image", "python"],
-            vec!["image", "python", "--public"],
-            vec!["image", "python", "--private"],
-            vec![
-                "image",
-                "python",
-                "--public",
-                "--to",
-                "s3://images/releases",
-            ],
-            vec![
-                "image",
-                "python",
-                "--from",
-                "https://mirror.example/releases/revision",
-            ],
-            vec!["image", "python", "--from", "s3://images/releases/revision"],
-            vec!["image", "python", "--from", &"b".repeat(59)],
+        for options in [
+            vec![],
+            vec!["--public", "--to", "s3://images/releases"],
+            vec!["--private"],
+            vec!["--pull"],
+            vec!["--from", "https://mirror.example/releases/revision"],
+            vec!["--from", &"b".repeat(59)],
         ] {
-            let mut full = vec!["pvisor-daemon"];
-            full.extend(args);
-            assert!(Args::try_parse_from(full).is_ok());
-        }
-        for option in [
-            "--repo",
-            "--manifest",
-            "--output",
-            "--gateway-port",
-            "--library-dir",
-        ] {
-            assert!(
-                Args::try_parse_from(["pvisor-daemon", "image", "python", option, "value"])
-                    .is_err()
+            let mut command = vec!["pvisor-daemon", "image", "python"];
+            command.extend(options);
+            assert_eq!(
+                Args::try_parse_from(command).err().unwrap().kind(),
+                clap::error::ErrorKind::InvalidSubcommand,
             );
         }
-        assert!(
-            Args::try_parse_from(["pvisor-daemon", "image", "python", "--public", "--private"])
-                .is_err()
-        );
-        assert!(
-            Args::try_parse_from([
-                "pvisor-daemon",
-                "image",
-                "python",
-                "--to",
-                "s3://images/releases"
-            ])
-            .is_err()
-        );
-        assert!(
-            Args::try_parse_from([
-                "pvisor-daemon",
-                "image",
-                "python",
-                "--public",
-                "--from",
-                "cid"
-            ])
-            .is_err()
-        );
         assert!(Args::try_parse_from(["pvisor-daemon", "serve", "--ipfs-repo", "/repo"]).is_err());
         assert!(
             Args::try_parse_from([

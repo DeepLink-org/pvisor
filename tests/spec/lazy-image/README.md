@@ -8,9 +8,8 @@ the contract and migration boundaries. Ordinary build/pull output,
 image queries and daemon service lifecycle retain their existing meanings.
 No new high-level cache command tree is proposed.
 
-These specifications are new, unreviewed drafts. Implemented behavior has PASS
-cases; final retirement retains an explicit XFAIL case.
-XFAIL is an implementation gap, not product acceptance or human approval.
+These specifications are unreviewed drafts. The cases require PASS, including
+both retired daemon spellings. Passing execution is separate from human approval.
 The feature follows [issue #161](https://github.com/DeepLink-org/pvisor/issues/161).
 Do not edit historical approval records or weaken existing tests to pass them.
 
@@ -27,8 +26,6 @@ mise run test-spec-fixtures
 mise run test-py -- discover -s tests/spec/lazy-image/regression -p 'test_*.py' -v
 ```
 
-The full strict gate must fail while final retirement remains XFAIL. An unexpected
-pass also fails, requiring an explicit review of the declared exception.
 The shared [scenario fixture](../fixture.py) owns fresh HOME, XDG, image,
 container and Session directories, bounded process cleanup and retained failure
 evidence. Feature resources are in [regression/](regression/README.md); native
@@ -41,13 +38,12 @@ hypervisor or container service is required. Missing prerequisites are failures,
 including in expected-failure cases.
 S-LAZY-005 requires an amd64 host: the existing daemon prepare-image fixes its
 build platform to linux/amd64 and rejects arm64 hosts even without RUN. Its
-platform refusal is not an accepted XFAIL for the proposed command changes.
+platform requirement remains part of the case.
 On arm64, run the other implemented cases with
-`--case S-LAZY-001,S-LAZY-002,S-LAZY-003,S-LAZY-004,S-LAZY-007,S-LAZY-008,S-LAZY-009 --strict`.
+`--case S-LAZY-001,S-LAZY-002,S-LAZY-003,S-LAZY-004,S-LAZY-006,S-LAZY-007,S-LAZY-008,S-LAZY-009 --strict`.
 S-LAZY-009 constructs a local prepared fixture from a real native build and
-checks command/deprecation parity on either architecture; it does not replace
-S-LAZY-005's prepare-image integration prerequisite. Removing stale implementation
-exceptions strengthens the required result to PASS, without changing approval.
+checks the new command workflow on either architecture; it does not replace
+S-LAZY-005's prepare-image integration prerequisite.
 
 ## Coverage boundaries
 

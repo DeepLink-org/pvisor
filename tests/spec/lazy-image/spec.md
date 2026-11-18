@@ -1,10 +1,8 @@
 # Lazy image publication through image push
 
 Status: **draft, unreviewed feature request**
-([#161](https://github.com/DeepLink-org/pvisor/issues/161)). Push, pull and the
-daemon compatibility stage are implemented; final retirement remains pending.
-Execution evidence and human approval
-are separate; this feature does not change approval ledgers or snapshots.
+([#161](https://github.com/DeepLink-org/pvisor/issues/161)). Push, pull and daemon
+image retirement are implemented. Passing tests do not constitute human approval.
 
 ## User workflow and boundary
 
@@ -147,22 +145,15 @@ do not silently rewrite old shared-pool locations into bundle layouts.
 
 These rows refer to both `pvisor-daemon image` and `pvisor daemon image`.
 
-1. **Transition:** prove new-entry parity, then announce one compatibility
-   release cycle. Old image commands delegate to the shared implementation,
-   preserve stdout JSON/failure semantics and warn on stderr with a replacement.
-   Keep old implicit resolution only in the adapter; new inspect is a query.
-2. **Final retirement:** ordinary daemon help no longer lists image. Explicit
-   use fails with a `pvisor image` migration diagnostic before local/remote
-   mutation, service startup or fallback execution. `prepare-image`, `registry`
-   and service start/status/stop/serve are outside this removal.
-3. Preserve legacy CID import and `--private` local IPFS retention during
-   transition. Decide their replacement or removal before ending compatibility.
-   Neither image rm nor a failed push revokes distributed bytes or deletes S3
-   objects. This request does not add remote unpublish.
+Daemon help omits `image`. Invoking either old spelling fails with a
+`pvisor image` migration diagnostic before creating state or starting a
+service. `prepare-image`, `registry` and service start/status/stop/serve
+remain available.
 
-The retirement case remains XFAIL through transition. Maintainers choose the
-release/version boundary; these draft tests do not authorize removing working
-commands immediately.
+CID import, visibility policy and pin changes leave with the old command.
+Existing IPFS bindings can still use `serve --ipfs`; manage their pins in Kubo.
+Existing catalog records and V2 publications stay in place. Push and pull
+ignore old per-image policy records and create none.
 
 ## Executable evidence
 
@@ -173,27 +164,23 @@ commands immediately.
 | [S-LAZY-003](S-LAZY-003.md) | Equivalent push entry points, idempotence and explicit-target selection | PASS |
 | [S-LAZY-004](S-LAZY-004.md) | Lazy HTTP import, exact data and atomic failure | PASS |
 | [S-LAZY-005](S-LAZY-005.md) | Prepared native/E2B template publication and import | PASS; amd64 prerequisite |
-| [S-LAZY-006](S-LAZY-006.md) | Final direct/forwarded daemon image retirement | XFAIL: image remains active |
+| [S-LAZY-006](S-LAZY-006.md) | Final direct/forwarded daemon image retirement | PASS |
 | [S-LAZY-007](S-LAZY-007.md) | Legacy shared-pool readers, read-only behavior and corruption refusal | PASS |
 | [S-LAZY-008](S-LAZY-008.md) | Destination/source admission and no implicit S3 push | PASS |
-| [S-LAZY-009](S-LAZY-009.md) | Prepared adapters, registry resolution and legacy stdout/stderr parity | PASS |
+| [S-LAZY-009](S-LAZY-009.md) | Prepared publication, registry resolution and local queries | PASS |
 
-Missing executables, OpenSSL or loopback service readiness fail even under
-XFAIL. Strict mode rejects XFAIL; XPASS requires review of the declared gap.
-Native fixtures use owned
-resources and real CLI processes without a VM or public service.
+Missing executables, OpenSSL or loopback service readiness fail the cases.
+Native fixtures use owned resources and real CLI processes without a VM or
+public service.
 S-LAZY-005 additionally requires an amd64 host because the existing daemon
 prepare-image fixes its build platform to linux/amd64, including no-RUN builds.
-An arm64 host must report that prerequisite failure rather than an accepted XFAIL.
+An arm64 host reports that prerequisite failure.
 
 Retain `pvisor-cli/tests/cache_backends.rs` and
 `pvisor-daemon/tests/image_repository.rs` as the evidence owners for signed S3,
 conditional writes, lost acknowledgements, bounded faults/retries, mirror trust,
-atomic refresh and concurrent configuration. New entry tests supplement the
-preserved legacy assertions. Their ignored TLS and
-KVM guest/mmap/credential tests require explicit native runs.
+atomic refresh and concurrent configuration. Their TLS and KVM
+guest/mmap/credential tests require explicit native runs.
 
-Before final retirement, add explicit execd/envd inputs and concurrent
-source-tag mutation against the new frontend.
-These remain acceptance requirements, not claims established by the local
-Scrut draft or fixture self-tests.
+Explicit execd/envd input preparation and concurrent source-tag mutation
+are outside the local Scrut and fixture coverage.
