@@ -23,6 +23,7 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 pub use crate::image::oci::PullProgress;
+pub use crate::image::oci::RegistryCredentials;
 
 /// VM-isolated Dockerfile builds and OCI image publication.
 pub mod build;
@@ -495,6 +496,7 @@ impl Output {
 pub struct Store {
     root: PathBuf,
     images: crate::image::store::LocalStore,
+    registry_credentials: Option<crate::image::oci::RegistryCredentials>,
 }
 
 fn private_directory(path: &Path) -> anyhow::Result<()> {
@@ -559,9 +561,21 @@ impl Store {
         for name in ["instances", "volumes", "images", "results"] {
             private_directory(&root.join(name))?;
         }
-        let store = Self { root, images };
+        let store = Self {
+            root,
+            images,
+            registry_credentials: None,
+        };
         store.initialize_networks()?;
         Ok(store)
+    }
+
+    /// Credentials applied to every subsequent authenticated pull.
+    pub fn set_registry_credentials(
+        &mut self,
+        credentials: crate::image::oci::RegistryCredentials,
+    ) {
+        self.registry_credentials = Some(credentials);
     }
     fn lock(&self) -> anyhow::Result<File> {
         let file = OpenOptions::new()
@@ -717,7 +731,10 @@ impl Store {
         progress(PullProgress::Waiting);
         let _pull = self.image_pull_lock(reference, arch)?;
         let staging = self.images.staging()?;
-        let store = crate::image::oci::ImageStore::new(Some(staging.path().into()))?;
+        let mut store = crate::image::oci::ImageStore::new(Some(staging.path().into()))?;
+        if let Some(credentials) = &self.registry_credentials {
+            store.set_registry_credentials(credentials.clone());
+        }
         let resolved = store.resolve_with_progress(reference, arch, progress)?;
         let cached =
             match crate::image::cache::published_local_image(&self.images.pool(), reference, arch)?
