@@ -249,7 +249,7 @@ fn running_image() -> anyhow::Result<&'static RunningImage> {
         identity,
         _file: file,
     });
-    Ok(IMAGE.get().expect("running image initialized"))
+    IMAGE.get().context("running image is not initialized")
 }
 fn running_digest() -> anyhow::Result<String> {
     Ok(running_image()?.digest.clone())
@@ -465,7 +465,10 @@ fn run_owner(mut channel: UnixStream, request: Request) -> anyhow::Result<()> {
             while !*ready {
                 ready = wake.wait(ready).unwrap_or_else(|e| e.into_inner());
             }
-            unblock_owner_signals().expect("unblock owner runtime signals");
+            if let Err(error) = unblock_owner_signals() {
+                eprintln!("cannot unblock owner runtime signals: {error:#}");
+                std::process::exit(1);
+            }
         })
         .build()?;
     struct Release(Arc<(Mutex<bool>, std::sync::Condvar)>);
@@ -763,11 +766,15 @@ fn launch(
                 owned.finish()?;
                 let result = match response.result {
                     Ok(result) => result,
-                    Err(error) if cancelled.is_some() => {
-                        eprintln!("Session cancellation outcome uncertain; not retried: {error}");
-                        return Ok(128 + cancelled.unwrap());
+                    Err(error) => {
+                        if let Some(signal) = cancelled {
+                            eprintln!(
+                                "Session cancellation outcome uncertain; not retried: {error}"
+                            );
+                            return Ok(128 + signal);
+                        }
+                        return Err(error.into());
                     }
-                    Err(error) => return Err(error.into()),
                 };
                 if result.cancelled {
                     eprintln!("request cancelled");
@@ -835,7 +842,7 @@ pub(crate) fn call(mut command: SessionCommand) -> anyhow::Result<i32> {
             &args.output_dir,
             args.mount.as_deref(),
         )?
-        .expect("explicit drop source");
+        .context("drop source is required")?;
         args.mount = None;
     }
     let target = command.pin_target()?;
@@ -854,7 +861,7 @@ pub(crate) fn call(mut command: SessionCommand) -> anyhow::Result<i32> {
         .and_then(|record| record.live_control.as_ref())
         .is_some_and(|endpoint| endpoint.is_available());
     if matches!(&command, SessionCommand::Resume(_)) && live {
-        let record = record.as_ref().unwrap();
+        let record = record.as_ref().context("live Session record is missing")?;
         let SessionCommand::Resume(args) = command else {
             unreachable!();
         };

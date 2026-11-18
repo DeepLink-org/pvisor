@@ -1,3 +1,5 @@
+use pvisor_cli::api::{Application, CommandLine};
+
 fn main() -> anyhow::Result<()> {
-    pvisor_cli::cli::main()
+    Application::run()
 }

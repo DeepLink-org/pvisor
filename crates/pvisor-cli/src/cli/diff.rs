@@ -70,8 +70,7 @@ fn bounded_text_prefix(bytes: &[u8], limit: usize) -> &str {
     let prefix = &bytes[..limit.min(bytes.len())];
     match std::str::from_utf8(prefix) {
         Ok(text) => text,
-        Err(error) => std::str::from_utf8(&prefix[..error.valid_up_to()])
-            .expect("prefix before a UTF-8 error is valid"),
+        Err(error) => std::str::from_utf8(&prefix[..error.valid_up_to()]).unwrap_or_default(),
     }
 }
 

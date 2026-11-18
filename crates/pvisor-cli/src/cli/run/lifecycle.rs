@@ -17,6 +17,7 @@ use pvisor::{RunLineage, RunRecord, default_run_home, resolve_run};
 use pvisor_journal::api::JournalStore;
 use pvisor_journal::api::{DurableFiles, Persistence};
 
+use anyhow::Context;
 use clap::Args;
 use pvisor_core::RunState;
 use std::{
@@ -26,7 +27,7 @@ use std::{
 
 #[derive(Debug, Clone, Args, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct ForkArgs {
+pub(crate) struct ForkArgs {
     /// Source Session id, workspace, run.json, or path inside the source Session.
     source: PathBuf,
     /// Workspace starts a new command; execution continues saved CPU/RAM state.
@@ -211,7 +212,11 @@ pub(in crate::cli) async fn fork(args: ForkArgs) -> anyhow::Result<i32> {
         let _ = std::fs::remove_dir_all(&stage);
         return Err(error);
     }
-    config.overlayfs.as_mut().expect("configured above").stage = Some(stage);
+    config
+        .overlayfs
+        .as_mut()
+        .context("workspace fork requires OverlayFS settings")?
+        .stage = Some(stage);
     drop(source_lease);
     drop(source_session);
     execute_config(

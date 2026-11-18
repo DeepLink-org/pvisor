@@ -22,17 +22,15 @@ mod vm_check;
 use crate::companions;
 mod product;
 mod run;
-pub mod runtime;
+mod runtime;
 mod session_exec;
 mod stage;
 mod stage_source;
 #[cfg(unix)]
-pub mod terminal;
+pub(crate) mod terminal;
 mod trajectory;
 
-pub use checkpoint::ResumeArgs;
 use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
-pub use run::RunArgs;
 use std::ffi::OsString;
 
 #[derive(Debug, Parser)]
@@ -263,7 +261,7 @@ fn normalize_default_spawn(mut args: Vec<OsString>, command: &clap::Command) -> 
     args
 }
 
-pub fn main() -> anyhow::Result<()> {
+pub(crate) fn main() -> anyhow::Result<()> {
     let startup_entry = (std::env::var("PVISOR_STARTUP_PROFILE").as_deref() == Ok("1"))
         .then(std::time::Instant::now);
     if pvisor::docker::internal_if_requested()? {
@@ -317,7 +315,7 @@ pub fn main() -> anyhow::Result<()> {
                     .to_str()
                     .ok_or_else(|| anyhow::anyhow!("feature name must be UTF-8"))?
                     .strip_prefix("--feature=")
-                    .expect("leading feature option")
+                    .ok_or_else(|| anyhow::anyhow!("expected a leading feature option"))?
             };
             for name in value.split(',') {
                 name.parse::<pvisor::features::Feature>()

@@ -52,6 +52,7 @@ pvisor-vm.workspace = true
 pvisor-containers.workspace = true
 
 [dev-dependencies]
+syn = { version = "2", features = ["full", "visit"] }
 tempfile.workspace = true
 tar.workspace = true
 pvisor-containers.workspace = true

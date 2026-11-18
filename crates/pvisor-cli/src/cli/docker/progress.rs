@@ -55,6 +55,10 @@ impl<W: Write> PullDisplay<W> {
                 if first {
                     self.download = Some((digest.clone(), Instant::now()));
                 }
+                let (_, started) = self
+                    .download
+                    .get_or_insert_with(|| (digest.clone(), Instant::now()));
+                let elapsed = started.elapsed().as_secs_f64().max(0.1);
                 let interval = if self.terminal {
                     Duration::from_millis(100)
                 } else {
@@ -63,14 +67,6 @@ impl<W: Write> PullDisplay<W> {
                 if !first && total != Some(downloaded) && self.last_draw.elapsed() < interval {
                     return;
                 }
-                let elapsed = self
-                    .download
-                    .as_ref()
-                    .unwrap()
-                    .1
-                    .elapsed()
-                    .as_secs_f64()
-                    .max(0.1);
                 let speed = bytes((downloaded as f64 / elapsed) as u64);
                 let amount = match total {
                     Some(total) => {

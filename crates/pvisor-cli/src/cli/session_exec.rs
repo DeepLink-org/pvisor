@@ -61,7 +61,7 @@ fn linux(selector: &Path, argv: &[String], interactive: bool, tty: bool) -> anyh
     let mut pty = tty.then(Pty::new).transpose()?;
     let null = std::fs::File::open("/dev/null")?;
     let stdio = if let Some(pty) = &pty {
-        [pty.slave.as_ref().unwrap().as_fd(); 3]
+        [pty.slave.as_ref().context("PTY slave is closed")?.as_fd(); 3]
     } else {
         [
             if interactive {

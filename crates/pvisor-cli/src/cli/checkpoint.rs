@@ -42,7 +42,7 @@ pub(super) struct Selection {
     pub output_dir: PathBuf,
 }
 impl Selection {
-    pub fn resolve(&self) -> anyhow::Result<RunRecord> {
+    pub(super) fn resolve(&self) -> anyhow::Result<RunRecord> {
         let record = resolve_run(Some(&self.session), &self.output_dir)?;
         super::host_service::check_record(&record)?;
         Ok(record)
@@ -90,7 +90,7 @@ pub(crate) struct SuspendArgs {
 
 #[derive(Debug, Args, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct ResumeArgs {
+pub(crate) struct ResumeArgs {
     #[command(flatten)]
     selection: Selection,
     /// Read all captured RAM before starting the successor; default is lazy.
