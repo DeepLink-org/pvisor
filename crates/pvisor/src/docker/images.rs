@@ -6,6 +6,108 @@ use crate::image::{
 };
 
 impl Store {
+    /// Validate an explicit S3 or absolute file publication destination without I/O.
+    /// Credentials, query strings, fragments and writable HTTP destinations are rejected.
+    ///
+    /// ```
+    /// use pvisor::docker::Store;
+    /// assert!(Store::validate_image_destination("s3://images/releases").is_ok());
+    /// assert!(Store::validate_image_destination("file:///tmp/releases").is_ok());
+    /// assert!(Store::validate_image_destination("https://example.com/images").is_err());
+    /// assert!(Store::validate_image_destination("file://relative").is_err());
+    /// ```
+    pub fn validate_image_destination(destination: &str) -> anyhow::Result<()> {
+        cache::validate_destination(destination)
+    }
+
+    /// Publish a snapshot of an existing local tag or unambiguous image ID.
+    /// Never pulls OCI or changes the source catalog. Uses the recorded platform;
+    /// later tag changes cannot change this publication. See
+    /// [`Self::publish_image_repository`] for destination and failure semantics.
+    /// Returns JSON containing `source`, `image_handle`, `digest` and `platform`.
+    pub fn push_image(
+        &self,
+        selector: &str,
+        destination: &str,
+    ) -> anyhow::Result<serde_json::Value> {
+        Self::validate_image_destination(destination)?;
+        let image = self.local_image(selector)?.context("No such local image")?;
+        let mut portable = image.clone();
+        portable.cache.location = "/pvisor/store/images/pool-v2".into();
+        portable.cache.repository = None;
+        portable.cache.mirrors.clear();
+        let source =
+            self.publish_image_repository(&image, destination, &serde_json::to_vec(&portable)?)?;
+        Ok(serde_json::json!({
+            "source": source, "image_handle": image.cache.handle,
+            "digest": image.digest, "platform": image.platform,
+        }))
+    }
+
+    /// Import an ordinary image from a fixed S3/HTTP(S) publication, fetching only
+    /// its descriptor, OCI configuration and V2 root metadata. Host paths are
+    /// rebound to this store. Existing names require `refresh`; failures leave
+    /// the catalog unchanged, though verified metadata may remain cached.
+    /// The publisher is trusted for launch defaults. No mutable name resolution,
+    /// OCI fallback, image data download or remote writes occur.
+    pub fn pull_image_repository(
+        &self,
+        reference: &str,
+        source: &str,
+        refresh: bool,
+    ) -> anyhow::Result<Image> {
+        let key = image_reference_key(reference)?;
+        let _pull = self.image_pull_lock(reference, "repository")?;
+        {
+            let _guard = self.lock()?;
+            ensure!(
+                refresh || !self.catalog()?.contains_key(&key),
+                "image already exists; use --refresh"
+            );
+        }
+        let mut image: Image = serde_json::from_slice(&Self::read_image_repository(source)?)
+            .context("publication is not an ordinary image")?;
+        image.reference = reference.into();
+        image.cache.location = self.images.pool();
+        image.cache.repository = Some(source.trim_end_matches('/').into());
+        image.cache.mirrors.clear();
+        ensure!(
+            self.import_image_config(&image)?,
+            "publication has no OCI configuration"
+        );
+        drop(self.open_image(&image)?);
+        let _guard = self.lock()?;
+        let mut images = self.catalog()?;
+        ensure!(
+            refresh || !images.contains_key(&key),
+            "image already exists; use --refresh"
+        );
+        images.insert(key, image.clone());
+        self.save_catalog(&images)?;
+        Ok(image)
+    }
+
+    /// Retain a remote image's original OCI configuration after checking its
+    /// digest and bounded JSON. Returns false only when the asset is absent
+    /// (older prepared publications lack it); corruption and transport errors
+    /// fail. Does not install an image reference or fetch image data. The image
+    /// must already be rebound to this store; no publisher-supplied paths are used.
+    pub fn import_image_config(&self, image: &Image) -> anyhow::Result<bool> {
+        let source = image
+            .cache
+            .repository
+            .as_ref()
+            .context("image has no remote repository")?;
+        let repositories = std::iter::once(source.clone())
+            .chain(image.cache.mirrors.clone())
+            .collect::<Vec<_>>();
+        let Some(bytes) = cache::read_repository_config(&repositories, &image.id)? else {
+            return Ok(false);
+        };
+        self.images.retain_config(&image.id, &bytes)?;
+        Ok(true)
+    }
+
     /// Validate prepared-image/registry keys without filesystem or network I/O.
     /// Accepts 1..=128 ASCII alphanumeric/`-_.` characters, not leading `.`.
     pub fn validate_image_key(name: &str) -> anyhow::Result<()> {
@@ -79,7 +181,8 @@ impl Store {
     }
 
     /// Export a local pinned V2 image into a new directory for explicit public
-    /// distribution. Copies only revision metadata and its dependency inventory,
+    /// distribution. Copies only original OCI configuration, revision metadata
+    /// and its dependency inventory,
     /// not other revisions, catalog tags, credentials or writable projections.
     /// Rejects packs retaining slots not reachable from this revision, so a
     /// public export cannot disclose files removed from a private predecessor.
@@ -93,7 +196,23 @@ impl Store {
         // Validate the DTO's platform/digest against its pinned revision before
         // publishing a template that could not subsequently be opened.
         let _owner = self.open_image(image)?;
-        crate::image::cache::export_pool(&image.cache.location, &image.cache.handle, destination)
+        let config = fs::read(self.image_config_path(image)?)?;
+        ensure!(
+            config.len() <= 1024 * 1024,
+            "image configuration exceeds publication limit"
+        );
+        crate::image::oci::verify_digest(&image.id, &config)?;
+        crate::image::cache::export_pool(&image.cache.location, &image.cache.handle, destination)?;
+        let configs = destination.join("configs");
+        fs::create_dir(&configs)?;
+        fs::write(
+            configs.join(format!(
+                "{}.json",
+                crate::image::oci::digest_hex(&image.id)?
+            )),
+            config,
+        )?;
+        Ok(())
     }
 
     pub(super) fn image_pull_lock(
@@ -170,17 +289,21 @@ impl Store {
     }
 
     pub(super) fn image_config_path(&self, image: &Image) -> anyhow::Result<PathBuf> {
-        Ok(image
-            .cache
-            .location
-            .parent()
-            .context("pool has no owner directory")?
-            .join("configs")
-            .join(format!(
-                "{}.json",
-                crate::image::oci::digest_hex(&image.id)?
-            )))
+        image_config_path(image)
     }
+}
+
+pub(super) fn image_config_path(image: &Image) -> anyhow::Result<PathBuf> {
+    Ok(image
+        .cache
+        .location
+        .parent()
+        .context("pool has no owner directory")?
+        .join("configs")
+        .join(format!(
+            "{}.json",
+            crate::image::oci::digest_hex(&image.id)?
+        )))
 }
 
 #[cfg(test)]

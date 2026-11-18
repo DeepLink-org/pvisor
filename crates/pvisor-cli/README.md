@@ -108,7 +108,7 @@ durable stage preparation uses its `Persistence` and `DurableFiles` contracts.
 
 ## Command help and live VM controls
 
-Root help starts with **Commands** (container `run`, `build`, `pull`, `images`, `rmi`,
+Root help starts with **Commands** (container `run`, `build`, `pull`, `push`, `images`, `rmi`,
 `exec`, `ps`, `start`, `stop`, `rm`, `logs`), **Agent Commands** (Session `spawn`, `stage`,
 `status`, `kill`, `review`, `apply`, `drop`, `inspect`, `checkpoint`, `suspend`,
 `resume`, `fork`) and **Tools** (installed `daemon`/`replay` companions, `cache`, `feature`,
@@ -545,11 +545,11 @@ the native platform, including for cached images. Each local reference holds one
 platform; pulling the same tag for another platform replaces that reference,
 while existing containers keep their pinned images.
 
-The registered commands are `run`, `build`, `pull`, `images`, `rmi`, `exec`,
+The registered commands are `run`, `build`, `pull`, `push`, `images`, `rmi`, `exec`,
 `ps`, `start`, `stop`, `restart`, `wait`, `cp`, `rm`, `logs`, `network`, `volume`,
 `builder` and `compose`. Docker's grouped
 spellings are also accepted: `container run/exec/ls/start/stop/restart/wait/cp/rm/logs/inspect` and
-`image build/pull/ls/rm/inspect`; `ls` accepts `list` (`container ls` also accepts `ps`)
+`image build/pull/push/ls/rm/inspect`; `ls` accepts `list` (`container ls` also accepts `ps`)
 and `rm` accepts `remove`. These dispatch to the same implementations and retain
 the same options and exit codes. Unsupported grouped commands fail during parsing,
 without falling back to Session execution.
@@ -581,8 +581,9 @@ escalation. Values below `-1` are rejected before contacting a container.
 | --- | --- |
 | `run` | `--platform`, `--name`, `--rm`, `-d`, `-i`, `-t`, `-e`, `--env-file`, `-w`, `-u`, `--entrypoint`, `-v`, `-p`, `--cpus`, `-m/--memory`, `-M`, `--memory-pool`, `--shared-kernel-base`, `--network`/`--net bridge/none/NAME`, `--ip`, `-l/--label`, `--restart`, `--stop-signal`, `--stop-timeout` |
 | `build` | Local context, `-f`, repeated `-t`/`--build-arg`, `--target`, `--platform`, `--pull`, `--no-cache`, `-q`, `--iidfile`, `-o type=oci,dest=PATH`, `--network default/none`, `--cpus`, `-m`, `--timeout`, `--progress auto/plain` |
-| `pull` | `--platform`, one public OCI image reference |
-| `images` | Optional repository, `-q`, `--no-trunc`, `-f/--filter`, `--format` |
+| `pull` | `--platform` and `--username` with `--password-stdin` or `--password` for OCI; `--from` for a fixed S3/HTTP(S) publication, `--refresh`, `--images-dir` |
+| `push`, `image push` | Local image, explicit `--to s3://BUCKET/PREFIX` or `file:///ABSOLUTE/PATH`, optional `--images-dir` |
+| `images` | Optional repository, `-q`, `--no-trunc`, `-f/--filter`, `--format`, `--images-dir` |
 | `rmi` | Multiple references/IDs, `-f` |
 | `exec` | `-i`, `-t`, `-e`, `--env-file`, `-w`, `-u`, command and arguments |
 | `ps` | `-a`, `-q`, `--no-trunc`, `-f/--filter`, `--format` |
@@ -592,9 +593,37 @@ escalation. Values below `-1` are rejected before contacting a container.
 | `logs` | One container, `-f` |
 | `network` | `create --driver bridge --subnet --gateway`, `ls -q --no-trunc`, `inspect`, `rm -f` |
 | `volume` | `create [-d local] [NAME]`, `ls [-q] [--format]`, `inspect [-f/--format] NAME...`, `rm NAME...` |
-| `container inspect`, `image inspect` | Multiple selectors, `-f/--format`; default JSON array |
+| `container inspect`, `image inspect` | Multiple selectors, `-f/--format`; default JSON array; image queries also accept `--images-dir` |
 | `restart`, `wait` | Multiple container selectors; restart has `-t/--timeout` |
 | `cp` | `HOST_PATH CONTAINER:PATH` or the reverse; files/directories in live or stopped containers, bounded below |
+
+Publish a local build or pulled image without another conversion command:
+
+```sh
+pvisor build -t app:local .
+pvisor push app:local --to s3://bucket/releases
+# Equivalent: pvisor image push app:local --to s3://bucket/releases
+pvisor image pull app:local --from https://mirror.example/releases/PUBLICATION_SHA256
+pvisor image inspect app:local
+```
+
+Push requires an explicit destination; ordinary OCI registry push is not
+implemented. It snapshots an existing local revision, retains its platform and
+never pulls a missing source. Ambient cache settings cannot select the target.
+The JSON receipt contains `source`, `image_handle`, `digest` and `platform`.
+Import reads the descriptor, original OCI config and V2 root metadata, leaving
+file contents remote. It preserves labels, health checks and build defaults;
+existing names require `--refresh`, and a failed refresh leaves the prior
+catalog record intact. Inspect retains its Docker array and adds
+`Pvisor.Source/ImageHandle/Digest/Platform` for remote bindings.
+
+`--images-dir DIR` explicitly selects the daemon's prepared-template catalog.
+Push, pull, ls and inspect delegate to the trusted installed daemon companion
+without starting a daemon service. Pull without `--from` resolves that catalog's
+configured V2 registries; ordinary pulls still use OCI. Queries never resolve
+missing names. Build output and `cache list/stat/read` file diagnostics are
+unchanged. See the [lazy-image specification](../../tests/spec/lazy-image/spec.md)
+and [daemon migration](../pvisor-daemon/README.md#s3-and-httphttps-lazy-image-repositories).
 
 The first profile supports Apple Silicon macOS/HVF and Linux x86_64/KVM;
 Linux runtime acceptance must be validated separately. macOS binaries require

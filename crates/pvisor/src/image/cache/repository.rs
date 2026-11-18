@@ -194,6 +194,52 @@ pub(crate) fn read_repository_template(location: &str) -> anyhow::Result<Vec<u8>
     Ok(bytes)
 }
 
+pub(crate) fn read_repository_config(
+    repositories: &[String],
+    digest: &str,
+) -> anyhow::Result<Option<Vec<u8>>> {
+    let hex = crate::image::oci::digest_hex(digest)?;
+    ensure!(
+        !repositories.is_empty() && repositories.len() <= 8,
+        "require 1..=8 repositories"
+    );
+    if repositories.len() > 1 {
+        super::mirrors::validate(repositories)?;
+    }
+    let key = format!("configs/{hex}.json");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    let mut errors = Vec::new();
+    for repository in repositories {
+        let result = (|| {
+            let storage = super::mirrors::open(repository)?;
+            let budget = deadline
+                .saturating_duration_since(std::time::Instant::now())
+                .min(std::time::Duration::from_secs(5));
+            ensure!(!budget.is_zero(), "configuration read deadline exhausted");
+            let Some(object) = storage.read_timed(&key, None, MAX_CONTROL, budget)? else {
+                return Ok(None);
+            };
+            ensure!(
+                super::hash(&object.bytes) == digest,
+                "image config digest mismatch"
+            );
+            serde_json::from_slice::<serde_json::Value>(&object.bytes)?;
+            Ok(Some(object.bytes))
+        })();
+        match result {
+            Ok(Some(bytes)) => return Ok(Some(bytes)),
+            Ok(None) => {}
+            Err(error) => errors.push(format!("{error:#}")),
+        }
+    }
+    ensure!(
+        errors.is_empty(),
+        "image configuration read failed: {}",
+        errors.join("; ")
+    );
+    Ok(None)
+}
+
 pub(crate) fn publish_repository(
     source: &Path,
     destination: &str,

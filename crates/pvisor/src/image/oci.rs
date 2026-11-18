@@ -903,7 +903,7 @@ pub(crate) fn digest_hex(digest: &str) -> anyhow::Result<&str> {
     Ok(value)
 }
 
-fn verify_digest(expected: &str, body: &[u8]) -> anyhow::Result<()> {
+pub(crate) fn verify_digest(expected: &str, body: &[u8]) -> anyhow::Result<()> {
     digest_hex(expected)?;
     let actual = format!("sha256:{}", crate::util::encode_hex(&Sha256::digest(body)));
     anyhow::ensure!(

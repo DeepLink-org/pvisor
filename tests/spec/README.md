@@ -42,6 +42,7 @@ into every feature.
 | --- | --- | --- |
 | Docker basic commands | [docker-cli/spec.md](docker-cli/spec.md) | Individual container and image commands |
 | Docker Compose profile | [docker-compose/spec.md](docker-compose/spec.md) | Project and multi-service orchestration |
+| Lazy images | [lazy-image/spec.md](lazy-image/spec.md) | Image push to S3, lazy import and daemon image deprecation; unreviewed |
 | Sessions | [session/README.md](session/README.md) | Launch, completion, status and cancellation |
 | Staging | [stage/README.md](stage/README.md) | Review, selective apply, conflicts, drop and staged binds |
 | Checkpoints | [checkpoint/README.md](checkpoint/README.md) | Checkpoint, restore and fork |

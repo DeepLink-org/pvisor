@@ -123,6 +123,7 @@ fn grouped_commands(command: &clap::Command) -> String {
                 "run",
                 "build",
                 "pull",
+                "push",
                 "images",
                 "rmi",
                 "exec",

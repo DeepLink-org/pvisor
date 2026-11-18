@@ -136,6 +136,15 @@ impl Fixture {
         command.output().unwrap()
     }
 
+    fn manage(&self, server: &Server, images: &Path, args: &[&str]) -> Output {
+        self.environment(server, images, env!("CARGO_BIN_EXE_pvisor-daemon"))
+            .args(["image-manage", "--images-dir"])
+            .arg(images)
+            .args(args)
+            .output()
+            .unwrap()
+    }
+
     fn reader(&self, server: &Server, images: &Path, cache_tag: &str) -> Command {
         let mut command = self.environment(server, images, std::env::current_exe().unwrap());
         command.args(["--exact", "repository_reader_child", "--ignored"]);
@@ -500,6 +509,130 @@ fn s3_publication_http_mirror_and_signed_lazy_reads() {
             .any(|(_, _, signed)| !signed),
         "HTTP reader must be anonymous"
     );
+}
+
+#[test]
+fn prepared_image_commands_share_publication_and_keep_legacy_and_template_contracts() {
+    let fixture = Fixture::new();
+    let server = Server::new();
+    let path = fixture.images.join("tiny.json");
+    let mut original: PreparedImage =
+        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    original.e2b = Some(pvisor_daemon::api::E2bTemplate {
+        cpu_millis: 1500,
+        memory_bytes: 768 * 1024 * 1024,
+        envd_version: "0.10.2".into(),
+    });
+    original.env.insert("EXAMPLE".into(), "template".into());
+    original.cmd = vec!["/bin/sleep".into(), "infinity".into()];
+    std::fs::write(&path, serde_json::to_vec(&original).unwrap()).unwrap();
+    let before = std::fs::read(&path).unwrap();
+    let published = success(fixture.manage(
+        &server,
+        &fixture.images,
+        &["push", "tiny", "--to", "s3://images/releases"],
+    ));
+    let legacy = fixture.publish(&server);
+    assert!(String::from_utf8_lossy(&legacy.stderr).contains("deprecated"));
+    let legacy = success(legacy);
+    assert_eq!(legacy["source"], published["source"]);
+    assert_eq!(legacy["visibility"], "public");
+    assert_eq!(before, std::fs::read(&path).unwrap());
+    let receiver = fixture._root.path().join("receiver");
+    let source = published["source"].as_str().unwrap();
+    let start = server.data.lock().unwrap().requests.len();
+    success(fixture.manage(&server, &receiver, &["pull", "copy", "--from", source]));
+    let imported_path = receiver.join("copy.json");
+    let installed = std::fs::read(&imported_path).unwrap();
+    let imported: PreparedImage = serde_json::from_slice(&installed).unwrap();
+    let mut expected = original;
+    expected.rootfs = receiver.join("store");
+    expected.pooled_image.cache.location = receiver.join("store/images/pool-v2");
+    expected.pooled_image.cache.repository = Some(source.into());
+    expected.library_dir = None;
+    assert_eq!(
+        serde_json::to_value(imported).unwrap(),
+        serde_json::to_value(expected).unwrap()
+    );
+    assert!(
+        !server.data.lock().unwrap().requests[start..]
+            .iter()
+            .any(|(_, key, _)| key.contains("/data/"))
+    );
+    let reads = server.data.lock().unwrap().requests.len();
+    let inspected = success(fixture.manage(&server, &receiver, &["inspect", "copy"]));
+    assert_eq!(
+        inspected["Pvisor"]["ImageHandle"],
+        published["image_handle"]
+    );
+    assert_eq!(inspected["RepoTags"], serde_json::json!(["copy"]));
+    let listed = success(fixture.manage(&server, &receiver, &["ls"]));
+    assert_eq!(listed.as_array().unwrap().len(), 1);
+    assert_eq!(server.data.lock().unwrap().requests.len(), reads);
+    assert!(
+        !fixture
+            .manage(&server, &receiver, &["pull", "copy", "--from", source])
+            .status
+            .success()
+    );
+    server.inject(Fault::Corrupt, "root.bin");
+    let fresh = fixture._root.path().join("refresh-home");
+    let mut refresh = fixture.environment(&server, &fresh, env!("CARGO_BIN_EXE_pvisor-daemon"));
+    let failed = refresh
+        .args(["image-manage", "--images-dir"])
+        .arg(&receiver)
+        .args(["pull", "copy", "--from", source, "--refresh"])
+        .output()
+        .unwrap();
+    assert!(!failed.status.success());
+    assert_eq!(installed, std::fs::read(&imported_path).unwrap());
+    std::fs::write(receiver.join(".distribution/copy.json"), b"invalid JSON").unwrap();
+    assert!(
+        !fixture
+            .manage(
+                &server,
+                &receiver,
+                &["pull", "copy", "--from", source, "--refresh"]
+            )
+            .status
+            .success()
+    );
+    assert_eq!(installed, std::fs::read(imported_path).unwrap());
+    let missing = fixture._root.path().join("absent");
+    assert_eq!(
+        success(fixture.manage(&server, &missing, &["ls"])),
+        serde_json::json!([])
+    );
+    assert!(
+        !fixture
+            .manage(&server, &missing, &["inspect", "unknown"])
+            .status
+            .success()
+    );
+    assert!(
+        !missing.exists(),
+        "queries must not create a catalog or resolve names"
+    );
+}
+
+#[test]
+fn older_prepared_publications_without_oci_config_remain_importable() {
+    let fixture = Fixture::new();
+    let server = Server::new();
+    let publication = success(fixture.publish(&server));
+    server
+        .data
+        .lock()
+        .unwrap()
+        .objects
+        .retain(|key, _| !key.contains("/configs/"));
+    let receiver = fixture._root.path().join("legacy-reader");
+    success(fixture.command(
+        &server,
+        &receiver,
+        &["--from", publication["source"].as_str().unwrap()],
+    ));
+    assert!(receiver.join("tiny.json").exists());
 }
 
 #[test]

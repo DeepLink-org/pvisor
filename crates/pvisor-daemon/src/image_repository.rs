@@ -1,6 +1,6 @@
 //! Local image policy, S3/static publication, and optional daemon-owned IPFS.
 use anyhow::{Context, ensure};
-use clap::Args;
+use clap::{Args, Subcommand};
 use fs2::FileExt;
 use pvisor_daemon::api::PreparedImage;
 use serde::{Deserialize, Serialize};
@@ -42,6 +42,113 @@ pub(super) struct Image {
     /// Image repository; use the same override as prepare-image and serve.
     #[arg(long, default_value = DEFAULT_IMAGES)]
     images_dir: PathBuf,
+}
+
+#[derive(Args)]
+pub(super) struct Manage {
+    #[arg(long)]
+    images_dir: PathBuf,
+    #[command(subcommand)]
+    command: Operation,
+}
+
+#[derive(Subcommand)]
+enum Operation {
+    Push {
+        name: String,
+        #[arg(long)]
+        to: String,
+    },
+    Pull {
+        name: String,
+        #[arg(long)]
+        from: Option<String>,
+        #[arg(long)]
+        refresh: bool,
+    },
+    Ls,
+    Inspect {
+        name: String,
+    },
+}
+
+impl Manage {
+    pub(super) fn run(self) -> anyhow::Result<()> {
+        let value = match self.command {
+            Operation::Ls => {
+                let entries = match fs::read_dir(&self.images_dir) {
+                    Ok(entries) => Some(entries),
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+                    Err(error) => return Err(error.into()),
+                };
+                let mut images = Vec::new();
+                for entry in entries.into_iter().flatten() {
+                    let path = entry?.path();
+                    if path.extension().is_some_and(|ext| ext == "json") {
+                        let name = path
+                            .file_stem()
+                            .and_then(|name| name.to_str())
+                            .context("invalid image name")?;
+                        validate_name(name)?;
+                        let image: PreparedImage = read_json(&path)?;
+                        images.push((name.to_owned(), image.pooled_image));
+                    }
+                }
+                images.sort_by(|a, b| a.0.cmp(&b.0));
+                serde_json::to_value(images)?
+            }
+            Operation::Inspect { name } => {
+                validate_name(&name)?;
+                let image: PreparedImage =
+                    read_json(&self.images_dir.join(format!("{name}.json")))?;
+                let mut metadata = image.pooled_image.inspect()?;
+                metadata["RepoTags"] = serde_json::json!([name]);
+                metadata
+            }
+            Operation::Push { name, to } => {
+                pvisor::docker::Store::validate_image_destination(&to)?;
+                let (image, result) = Image {
+                    name,
+                    public: true,
+                    private: false,
+                    from: None,
+                    pull: false,
+                    to: Some(to),
+                    images_dir: self.images_dir,
+                }
+                .execute(false)?;
+                serde_json::json!({
+                    "source": result["source"], "image_handle": image.pooled_image.cache.handle,
+                    "digest": image.pooled_image.digest, "platform": image.pooled_image.platform,
+                })
+            }
+            Operation::Pull {
+                name,
+                from,
+                refresh,
+            } => {
+                if let Some(source) = &from {
+                    ensure!(
+                        is_object_repository(source),
+                        "--from requires an S3 or HTTP(S) publication"
+                    );
+                }
+                let (_, result) = Image {
+                    name,
+                    public: false,
+                    private: false,
+                    pull: from.is_none(),
+                    from,
+                    to: None,
+                    images_dir: self.images_dir,
+                }
+                .execute(refresh)?;
+                result
+            }
+        };
+        println!("{}", serde_json::to_string(&value)?);
+        Ok(())
+    }
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -245,6 +352,25 @@ fn release_pin(images: &Path, cid: &str) -> anyhow::Result<()> {
 
 impl Image {
     pub(super) fn run(self) -> anyhow::Result<()> {
+        let replacement = if self.public {
+            "push NAME --images-dir DIR --to URI"
+        } else if self.from.is_some() {
+            "pull NAME --images-dir DIR --from SOURCE"
+        } else if self.pull {
+            "pull NAME --images-dir DIR --refresh"
+        } else if self.private {
+            "inspect NAME --images-dir DIR to query; --private is available during the transition"
+        } else {
+            "inspect NAME --images-dir DIR, or pvisor image pull NAME --images-dir DIR to resolve"
+        };
+        eprintln!("warning: pvisor-daemon image is deprecated; use pvisor image {replacement}");
+        let refresh = self.pull;
+        let (_, value) = self.execute(refresh)?;
+        println!("{}", serde_json::to_string(&value)?);
+        Ok(())
+    }
+
+    fn execute(self, refresh: bool) -> anyhow::Result<(PreparedImage, serde_json::Value)> {
         validate_name(&self.name)?;
         let _image_lock = image_lock(&self.images_dir, &self.name)?;
         let images = self.images_dir.canonicalize()?;
@@ -254,8 +380,13 @@ impl Image {
             None
         };
         let manifest = images.join(format!("{}.json", self.name));
+        if self.from.is_some() || self.pull {
+            ensure!(
+                refresh || !manifest.try_exists()?,
+                "image already exists; use --refresh"
+            );
+        }
         let resolved = if let Some(source) = &self.from {
-            ensure!(!manifest.try_exists()?, "image already exists");
             let repository = if is_object_repository(source) {
                 source.trim_end_matches('/').to_string()
             } else {
@@ -277,7 +408,8 @@ impl Image {
         } else {
             None
         };
-        if let Some((bytes, mut repositories)) = resolved {
+        let previous = distribution(&images, &self.name)?;
+        let image = if let Some((bytes, mut repositories)) = resolved {
             let mut image: PreparedImage = serde_json::from_slice(&bytes)?;
             image.rootfs = images.join("store");
             let store = pvisor::docker::Store::open(image.rootfs.clone())?;
@@ -285,19 +417,21 @@ impl Image {
             image.pooled_image.cache.repository = Some(repositories.remove(0));
             image.pooled_image.cache.mirrors = repositories;
             image.library_dir = None;
+            store.import_image_config(&image.pooled_image)?;
             // Validate pinned identity/root metadata before local visibility,
             // without fetching the complete image contents.
             drop(store.open_image(&image.pooled_image)?);
             // Install with no public marker: fetching public bytes does not
             // grant permission to publish subsequent local revisions.
-            write_json(&manifest, &image, self.pull)?;
-        }
-        let image: PreparedImage = read_json(&manifest)?;
+            write_json(&manifest, &image, refresh)?;
+            image
+        } else {
+            read_json(&manifest)?
+        };
         let record_path = images
             .join(".distribution")
             .join(format!("{}.json", self.name));
-        let previous = distribution(&images, &self.name)?;
-        if self.public {
+        let record = if self.public {
             let destination = crate::registries::destination(&images, self.to.as_deref())?;
             let source = if let Some(destination) = &destination {
                 ensure!(
@@ -352,21 +486,19 @@ impl Image {
                 validate_cid(cid)?;
                 cid.to_string()
             };
-            write_json(
-                &record_path,
-                &Distribution {
-                    handle: image.pooled_image.cache.handle.clone(),
-                    source: source.clone(),
-                    public: true,
-                },
-                true,
-            )?;
+            let record = Distribution {
+                handle: image.pooled_image.cache.handle.clone(),
+                source,
+                public: true,
+            };
+            write_json(&record_path, &record, true)?;
             if let Some(old) = &previous
-                && old.source != source
+                && old.source != record.source
                 && validate_cid(&old.source).is_ok()
             {
                 release_pin(&images, &old.source)?;
             }
+            Some(record)
         } else if self.private
             && let Some(mut record) = previous
         {
@@ -375,9 +507,11 @@ impl Image {
             if validate_cid(&record.source).is_ok() {
                 release_pin(&images, &record.source)?;
             }
+            Some(record)
+        } else {
+            previous
         }
-        let record = distribution(&images, &self.name)?
-            .filter(|record| record.handle == image.pooled_image.cache.handle);
+        .filter(|record| record.handle == image.pooled_image.cache.handle);
         let source = record
             .as_ref()
             .map(|r| r.source.clone())
@@ -392,17 +526,14 @@ impl Image {
                     .filter(|s| s.starts_with("ipfs+"))
                     .and_then(|binding| binding.rsplit('/').next().map(String::from))
             });
-        println!(
-            "{}",
-            serde_json::json!({
-                "image": self.name,
-                "visibility": if record.as_ref().is_some_and(|r| r.public) { "public" } else { "private" },
-                "cid": cid,
-                "source": source,
-                "mirrors": image.pooled_image.cache.mirrors,
-            })
-        );
-        Ok(())
+        let value = serde_json::json!({
+            "image": self.name,
+            "visibility": if record.as_ref().is_some_and(|r| r.public) { "public" } else { "private" },
+            "cid": cid,
+            "source": source,
+            "mirrors": image.pooled_image.cache.mirrors,
+        });
+        Ok((image, value))
     }
 }
 

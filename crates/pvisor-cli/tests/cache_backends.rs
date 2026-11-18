@@ -112,6 +112,170 @@ fn successful(output: Output) -> Vec<u8> {
     output.stdout
 }
 
+fn image_cli(root: &Path, s3: &MockS3, args: &[&str]) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_pvisor"))
+        .env_clear()
+        .env("HOME", root.join("home"))
+        .env("XDG_CACHE_HOME", root.join("cache"))
+        .env("PVISOR_DOCKER_HOME", root.join("docker"))
+        .env("PVISOR_IMAGE_STORE", root.join("docker/images"))
+        .env("PVISOR_DAEMON_HOME", root.join("daemon"))
+        .env("AWS_ACCESS_KEY_ID", "AKIATEST")
+        .env("AWS_SECRET_ACCESS_KEY", "test-secret")
+        .env("AWS_SESSION_TOKEN", "test-token")
+        .env("AWS_DEFAULT_REGION", "us-east-1")
+        .env("AWS_ENDPOINT", &s3.endpoint)
+        .env("AWS_ALLOW_HTTP", "true")
+        .args(args)
+        .output()
+        .unwrap()
+}
+
+#[test]
+fn image_push_aliases_and_s3_import_preserve_config_builds_and_failed_refresh() {
+    let tmp = tempfile::tempdir().unwrap();
+    let s3 = MockS3::start();
+    let producer = tmp.path().join("producer");
+    let reader = tmp.path().join("reader");
+    let context = tmp.path().join("context");
+    fs::create_dir(&context).unwrap();
+    fs::write(context.join("payload"), b"published payload").unwrap();
+    fs::write(context.join("Dockerfile"), "FROM scratch\nCOPY payload /payload\nLABEL app.role=worker\nENV FEATURE=lazy\nHEALTHCHECK CMD [\"/probe\"]\nCMD [\"/payload\"]\n").unwrap();
+    successful(image_cli(
+        &producer,
+        &s3,
+        &["build", "-q", "-t", "local:test", context.to_str().unwrap()],
+    ));
+    let before = successful(image_cli(
+        &producer,
+        &s3,
+        &["image", "inspect", "local:test"],
+    ));
+    let destination = "s3://cache-bucket/team";
+    let first = successful(image_cli(
+        &producer,
+        &s3,
+        &["push", "local:test", "--to", destination],
+    ));
+    let second = successful(image_cli(
+        &producer,
+        &s3,
+        &["image", "push", "local:test", "--to", destination],
+    ));
+    assert_eq!(
+        first, second,
+        "both spellings pin and publish identical bytes"
+    );
+    assert_eq!(
+        before,
+        successful(image_cli(
+            &producer,
+            &s3,
+            &["image", "inspect", "local:test"]
+        ))
+    );
+    let receipt: serde_json::Value = serde_json::from_slice(&first).unwrap();
+    let source = receipt["source"].as_str().unwrap();
+    let objects = s3.objects.lock().unwrap().clone();
+    assert!(objects.keys().any(|key| key.contains("/configs/")));
+    // With every data object absent, only a metadata-only import can succeed.
+    s3.objects
+        .lock()
+        .unwrap()
+        .retain(|key, _| !key.contains("/data/"));
+    s3.read_only.store(true, Ordering::Relaxed);
+    let puts = s3.puts.load(Ordering::Relaxed);
+    successful(image_cli(
+        &reader,
+        &s3,
+        &["image", "pull", "copy:test", "--from", source],
+    ));
+    let installed = successful(image_cli(&reader, &s3, &["image", "inspect", "copy:test"]));
+    let original: serde_json::Value = serde_json::from_slice(&before).unwrap();
+    let imported: serde_json::Value = serde_json::from_slice(&installed).unwrap();
+    for field in ["Id", "Config", "RootFS", "Architecture", "Os"] {
+        assert_eq!(original[0][field], imported[0][field], "{field}");
+    }
+    assert_eq!(imported[0]["Pvisor"]["Source"], source);
+    assert_eq!(
+        imported[0]["Pvisor"]["ImageHandle"],
+        receipt["image_handle"]
+    );
+    let reads = s3.gets.load(Ordering::Relaxed);
+    successful(image_cli(
+        &reader,
+        &s3,
+        &["image", "ls", "--filter", "label=app.role=worker"],
+    ));
+    assert_eq!(s3.gets.load(Ordering::Relaxed), reads, "queries are local");
+    assert!(
+        !image_cli(&reader, &s3, &["pull", "copy:test", "--from", source])
+            .status
+            .success()
+    );
+    let (config_key, _) = objects
+        .iter()
+        .find(|(key, _)| key.contains("/configs/"))
+        .unwrap();
+    s3.objects
+        .lock()
+        .unwrap()
+        .insert(config_key.clone(), b"{}".to_vec());
+    assert!(
+        !image_cli(
+            &reader,
+            &s3,
+            &["image", "pull", "copy:test", "--from", source, "--refresh"]
+        )
+        .status
+        .success()
+    );
+    assert_eq!(
+        installed,
+        successful(image_cli(&reader, &s3, &["image", "inspect", "copy:test"]))
+    );
+    *s3.objects.lock().unwrap() = objects;
+    successful(image_cli(
+        &reader,
+        &s3,
+        &["pull", "copy:test", "--from", source, "--refresh"],
+    ));
+    fs::write(
+        context.join("Dockerfile"),
+        "FROM copy:test\nLABEL imported=yes\n",
+    )
+    .unwrap();
+    successful(image_cli(
+        &reader,
+        &s3,
+        &[
+            "build",
+            "-q",
+            "-t",
+            "derived:test",
+            context.to_str().unwrap(),
+        ],
+    ));
+    let derived: serde_json::Value = serde_json::from_slice(&successful(image_cli(
+        &reader,
+        &s3,
+        &["image", "inspect", "derived:test"],
+    )))
+    .unwrap();
+    assert_eq!(derived[0]["Config"]["Labels"]["app.role"], "worker");
+    assert_eq!(derived[0]["Config"]["Labels"]["imported"], "yes");
+    assert_eq!(
+        derived[0]["Config"]["Healthcheck"],
+        original[0]["Config"]["Healthcheck"]
+    );
+    assert_eq!(
+        s3.puts.load(Ordering::Relaxed),
+        puts,
+        "readers never write remote objects"
+    );
+    assert!(!reader.join("daemon").exists());
+}
+
 #[test]
 fn s3_cli_publishes_once_then_independent_read_only_clients_need_no_registry_or_daemon() {
     let tmp = tempfile::tempdir().unwrap();

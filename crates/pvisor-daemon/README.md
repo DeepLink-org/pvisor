@@ -121,13 +121,12 @@ pvisor-daemon registry add domestic https://mirror.example/pvisor --download-onl
 pvisor-daemon registry add origin s3://my-bucket/pvisor
 pvisor-daemon registry list
 
-# Publisher: first eligible S3 registry is the default destination.
-pvisor-daemon image python --public
-pvisor-daemon image python --public --to origin
+# Publisher: select the destination explicitly.
+pvisor image push python --images-dir .pvisor/images --to s3://my-bucket/pvisor
 
-# Receiver: resolve on local miss; refresh an existing name only explicitly.
-pvisor-daemon image python
-pvisor-daemon image python --pull
+# Receiver: resolve explicitly; refresh an existing name only explicitly.
+pvisor image pull python --images-dir .pvisor/images
+pvisor image pull python --images-dir .pvisor/images --refresh
 
 pvisor-daemon registry move origin 1    # one-based priority
 pvisor-daemon registry remove domestic
@@ -221,19 +220,34 @@ origin's name index is queried in that configuration.
 
 ## S3 and HTTP/HTTPS lazy image repositories
 
-The same `image` command supports an S3-compatible bucket/prefix or a static
-mirror. No IPFS node is required:
+Use `pvisor image push/pull` with an explicit prepared-template catalog for an
+S3-compatible bucket/prefix or a static mirror. Root `pvisor push` is equivalent
+to `pvisor image push`. No daemon service or IPFS node is required:
 
 ```sh
 # Publisher: host AWS credentials and region come from its environment.
-pvisor-daemon image python --public --to s3://my-bucket/pvisor
+pvisor image push python --images-dir .pvisor/images --to s3://my-bucket/pvisor
 # The JSON result's "source" is an immutable, hash-named repository root.
 
 # Receiver: use that source directly, with read-only host AWS credentials.
-pvisor-daemon image python --from s3://my-bucket/pvisor/PUBLICATION_SHA256
+pvisor image pull python --images-dir .pvisor/images --from s3://my-bucket/pvisor/PUBLICATION_SHA256
 # Or use a mirror/CDN serving the same directory anonymously:
-pvisor-daemon image python --from https://mirror.example/pvisor/PUBLICATION_SHA256
+pvisor image pull python --images-dir .pvisor/images --from https://mirror.example/pvisor/PUBLICATION_SHA256
 ```
+
+`pvisor image ls/inspect --images-dir DIR` only query local records. Explicit
+pull imports or resolves a prepared template; replacing a local name requires
+`--refresh`. Native/E2B profiles, resource settings, command and environment
+survive import, while host paths are rebound. `prepare-image` and `registry`
+remain daemon commands. The companion's hidden `image-manage` protocol owns
+these operations; it invokes the same implementation as legacy `image`.
+
+This release begins the `pvisor-daemon image` / `pvisor daemon image` deprecation
+cycle. Legacy calls retain their JSON stdout, implicit miss resolution, IPFS
+retention and failure semantics, with a migration warning on stderr. They are
+not removed yet. `--private` remains a legacy local-retention operation; it
+cannot revoke distributed bytes. Final refusal/removal is specified separately
+in [S-LAZY-006](../../tests/spec/lazy-image/S-LAZY-006.md).
 
 Use `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, optional `AWS_SESSION_TOKEN`,
 and `AWS_DEFAULT_REGION` through your deployment's secret mechanism. For an
@@ -250,13 +264,16 @@ inconsistent writes fail explicitly rather than falling back to overwrites.
 For an open-source mirror without S3, export a static publication locally:
 
 ```sh
-pvisor-daemon image python --public --to file:///srv/pvisor-mirror
+pvisor image push python --images-dir .pvisor/images --to file:///srv/pvisor-mirror
 # Synchronize the returned hash-named directory to the mirror, then import
 # its HTTPS root with --from. This is a V2 bundle, not an OCI registry URL.
 ```
 
 Every publication is self-contained: V2 control/index/data objects and a portable
-`image.json`. The publisher verifies immutable existing objects before reuse,
+`image.json`, plus the original OCI configuration under `configs/SHA256.json`.
+Import verifies its digest before retaining it for local metadata queries.
+Older publications without this asset remain usable by daemon runtime, but
+cannot provide full OCI inspect metadata. The publisher verifies immutable existing objects before reuse,
 uploads sequentially, then writes `image.json` **last** as the visibility point.
 The directory is named by the template SHA-256, so publishing the same snapshot
 is idempotent and cannot overwrite another snapshot. Conditional-write conflicts
@@ -268,7 +285,7 @@ publications nor revokes already distributed data.
 
 Import fetches a bounded template, rebinds local host paths, verifies the pinned
 revision/digest and root metadata, and atomically installs a new name. It does
-not fetch all image files or overwrite an existing name. Hash-named sources
+not fetch image data; replacing an existing name requires `--refresh`. Hash-named sources
 also authenticate the template against the directory name. Runtime reads keep
 the selected publication and V2 handle fixed; no mutable-tag or local-pool fallback is
 performed. Failed imports leave no visible image manifest. Missing/corrupt remote

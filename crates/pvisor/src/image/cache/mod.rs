@@ -53,7 +53,9 @@ pub(crate) use repository::{
     publish_reference, resolve_repository, validate_name as validate_registry_name,
     validate_registries,
 };
-pub(crate) use repository::{publish_repository, read_repository_template, validate_destination};
+pub(crate) use repository::{
+    publish_repository, read_repository_config, read_repository_template, validate_destination,
+};
 mod repository;
 
 /// Serve until process termination, notifying the owner after binding and worker startup.

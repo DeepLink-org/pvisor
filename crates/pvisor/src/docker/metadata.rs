@@ -64,32 +64,21 @@ impl Store {
 
     /// Read Docker-shaped image metadata by local tag, digest or unambiguous ID.
     /// Never pulls. Config contains original OCI defaults (including labels);
-    /// private V2 pool paths/handles are not exposed. Output can contain secrets
+    /// private V2 pool paths are not exposed. Remote bindings include a `Pvisor`
+    /// extension with publication source, handle, manifest digest and platform.
+    /// Output can contain secrets
     /// embedded in image environment or labels.
     pub fn inspect_image(&self, selector: &str) -> anyhow::Result<Value> {
         let image = self.local_image(selector)?.context("No such image")?;
-        let original = self.image_configuration(&image)?;
         let tags: Vec<_> = self
             .images()?
             .into_iter()
             .filter(|i| i.id == image.id)
             .map(|i| i.reference)
             .collect();
-        let (os, arch) = image
-            .platform
-            .split_once('/')
-            .context("invalid image platform")?;
-        let canonical = image_reference_key(&image.reference)?;
-        let repository = canonical
-            .split_once('@')
-            .context("invalid canonical image reference")?
-            .0;
-        Ok(json!({
-            "Id": image.id, "RepoTags": tags, "RepoDigests": [format!("{repository}@{}",image.digest)],
-            "Created": original.get("created").cloned().unwrap_or(json!(timestamp(image.created_ms))),
-            "Architecture": arch, "Os": os, "Config": original["config"],
-            "RootFS": original["rootfs"]
-        }))
+        let mut metadata = image.inspect()?;
+        metadata["RepoTags"] = json!(tags);
+        Ok(metadata)
     }
 
     /// Read container identity, effective configuration, mounts, ports and current
@@ -184,5 +173,39 @@ impl Store {
             "Pvisor": {"Kind":"container","SessionId":instance.id,"ExecutionId":instance.generation,
                 "OwnerEpoch":instance.owner_epoch,"Generation": instance.generation, "Vcpus": instance.config.cpus}
         }))
+    }
+}
+
+impl Image {
+    /// Read this pinned image's original OCI metadata from its local config.
+    /// Does not resolve names, access a network, create directories or open image
+    /// data. Remote bindings expose `Pvisor` source/handle/digest/platform; private
+    /// pool paths are omitted. Image environment and labels may contain secrets.
+    /// Older publications without an OCI config return an error.
+    pub fn inspect(&self) -> anyhow::Result<Value> {
+        let bytes = fs::read(super::images::image_config_path(self)?)?;
+        crate::image::oci::verify_digest(&self.id, &bytes)?;
+        let original: Value = serde_json::from_slice(&bytes)?;
+        let (os, arch) = self
+            .platform
+            .split_once('/')
+            .context("invalid image platform")?;
+        let canonical = image_reference_key(&self.reference)?;
+        let repository = canonical
+            .split_once('@')
+            .context("invalid canonical image reference")?
+            .0;
+        let mut metadata = json!({
+            "Id": self.id, "RepoTags": [self.reference], "RepoDigests": [format!("{repository}@{}", self.digest)],
+            "Created": original.get("created").cloned().unwrap_or(json!(timestamp(self.created_ms))),
+            "Architecture": arch, "Os": os, "Config": original["config"], "RootFS": original["rootfs"]
+        });
+        if let Some(source) = &self.cache.repository {
+            metadata["Pvisor"] = json!({
+                "Source": source, "ImageHandle": self.cache.handle,
+                "Digest": self.digest, "Platform": self.platform,
+            });
+        }
+        Ok(metadata)
     }
 }

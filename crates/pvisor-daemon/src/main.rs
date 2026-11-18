@@ -52,6 +52,8 @@ enum Command {
     PrepareImage(prepared_image::PrepareImage),
     /// Inspect an image, publish it, or install from a trusted CID/S3/HTTP repository.
     Image(image_repository::Image),
+    #[command(hide = true)]
+    ImageManage(image_repository::Manage),
     /// Configure ordered V2 image registries (not OCI/Docker registry endpoints).
     Registry(registries::Registry),
     #[command(hide = true)]
@@ -160,6 +162,9 @@ fn main() -> anyhow::Result<()> {
     if let Command::Image(options) = args.command {
         return options.run();
     }
+    if let Command::ImageManage(options) = args.command {
+        return options.run();
+    }
     if let Command::Registry(options) = args.command {
         return options.run();
     }
@@ -208,6 +213,7 @@ async fn run(command: Command) -> anyhow::Result<()> {
         | Command::ResolveMemoryPool { .. } => unreachable!(),
         Command::PrepareImage(_)
         | Command::Image(_)
+        | Command::ImageManage(_)
         | Command::Registry(_)
         | Command::Protocol
         | Command::MemoryPool { .. }

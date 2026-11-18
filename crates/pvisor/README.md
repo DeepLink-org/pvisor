@@ -1419,6 +1419,19 @@ repositories must be trusted by the caller; V2 handles authenticate subsequent
 metadata/content, not publisher identity. Failed uploads can leave unreachable
 objects and there is no automatic remote GC.
 
+`Store::push_image` selects one local catalog snapshot and publishes its portable
+`Image` descriptor through that same exporter; it never pulls a missing source
+or changes the catalog. `Store::pull_image_repository` authenticates that
+descriptor, the original OCI config and the pinned root before atomically
+installing a reference. Existing names require explicit refresh; failed imports
+leave their previous record unchanged. Original configs travel as bounded,
+digest-checked `configs/SHA256.json` assets, so inspect, health checks and later
+builds retain the OCI defaults. `Image::inspect` reads only local metadata and
+exposes remote source/handle/digest/platform under `Pvisor`. Prepared templates
+retain their existing descriptor schema; `Store::import_image_config` also
+accepts older prepared publications without that optional asset, for runtime
+compatibility. Those older imports cannot supply full OCI metadata to inspect.
+
 Generic clients select `CacheBackend::Http` with a read-only HTTP/HTTPS location
 (`PVISOR_CACHE_BACKEND=http`, `PVISOR_CACHE_LOCATION=https://...`); HTTP defaults
 to read-only, and explicit writable mode is rejected. S3 uses the existing host
