@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Bind Windows hardware acceptance to the exact candidate inputs."""
+
 from __future__ import annotations
 
 import argparse
@@ -9,8 +10,12 @@ import re
 from pathlib import Path
 
 INPUTS = (
-    "pvisor.exe", "examples/whp_smoke.exe", "libkrunfw.dll", "whp-guest",
-    "vm-guest", "pvisor-rootfs.bin.gz",
+    "pvisor.exe",
+    "examples/whp_smoke.exe",
+    "libkrunfw.dll",
+    "whp-guest",
+    "vm-guest",
+    "pvisor-rootfs.bin.gz",
 )
 COVERAGE = {
     "smoke": "whp-api-startup-exit-and-files",
@@ -51,24 +56,31 @@ def record(root: Path, evidence: Path, source_sha: str, suite: str) -> dict:
             if f"WHP_SMOKE cpus={cpus} exit={code} PASS" not in log.splitlines():
                 raise ValueError("missing successful WHP smoke scenario")
     else:
-        reports = ["vm-cli/report.json"] if suite == "vm-cli" else [
-            "containers-1/report.json", "containers-2/report.json"
-        ]
+        reports = (
+            ["vm-cli/report.json"]
+            if suite == "vm-cli"
+            else ["containers-1/report.json", "containers-2/report.json"]
+        )
         for name in reports:
             report = read(evidence / name)
             expected_hashes = {
                 "binary_sha256": frozen["inputs_sha256"]["pvisor.exe"],
-                "firmware_sha256" if suite == "vm-cli" else "libkrunfw.dll_sha256":
-                    frozen["inputs_sha256"]["libkrunfw.dll"],
-                "guest_sha256" if suite == "vm-cli" else "pvisor-rootfs.bin.gz_sha256":
-                    frozen["inputs_sha256"]["vm-guest" if suite == "vm-cli" else "pvisor-rootfs.bin.gz"],
+                "firmware_sha256" if suite == "vm-cli" else "libkrunfw.dll_sha256": frozen[
+                    "inputs_sha256"
+                ]["libkrunfw.dll"],
+                "guest_sha256" if suite == "vm-cli" else "pvisor-rootfs.bin.gz_sha256": frozen[
+                    "inputs_sha256"
+                ]["vm-guest" if suite == "vm-cli" else "pvisor-rootfs.bin.gz"],
             }
             if any(report.get(key) != digest for key, digest in expected_hashes.items()):
                 raise ValueError(f"driver did not exercise these candidate bytes: {name}")
             cases = report.get("cases" if suite == "vm-cli" else "commands")
-            if (report.get("passed") is not True or not cases
-                    or not all(case.get("passed") is True for case in cases)
-                    or report.get("cleanup_errors")):
+            if (
+                report.get("passed") is not True
+                or not cases
+                or not all(case.get("passed") is True for case in cases)
+                or report.get("cleanup_errors")
+            ):
                 raise ValueError(f"acceptance failed: {name}")
     return {**frozen, "status": "PASS", "suite": suite, "coverage": COVERAGE[suite]}
 

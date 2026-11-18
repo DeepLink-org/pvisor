@@ -490,8 +490,8 @@ def install_smoke(
 
         _run([str(scripts / "pvisor"), "run", "--help"], env=env)
         _run([str(scripts / "pvisor"), "spawn", "--help"], env=env)
-        for command in ("prepare", "publish", "read"):
-            _run([str(scripts / "pvisor"), "cache", command, "--help"], env=env)
+        for command in ("build", "pull", "push", "inspect"):
+            _run([str(scripts / "pvisor"), "image", command, "--help"], env=env)
         for command in ("replay",):
             _run([str(scripts / "pvisor"), command, "--help"], env=env)
 

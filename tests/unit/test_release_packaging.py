@@ -1149,7 +1149,7 @@ class ReleasePackagingTests(unittest.TestCase):
                     ):
                         wheel_verify._wheel_contents(wheel)
 
-    def test_install_smoke_uses_integrated_cache_and_daemon(self):
+    def test_install_smoke_uses_image_frontend_and_daemon(self):
         for platform in ["manylinux_2_28_x86_64", "macosx_11_0_arm64"]:
             with self.subTest(platform=platform):
                 with ExitStack() as resources:
@@ -1181,14 +1181,16 @@ class ReleasePackagingTests(unittest.TestCase):
                     for name in expected:
                         assert [name, "--version"] in commands
                         assert [name, "--help"] in commands
-                    for command in ("prepare", "publish", "read"):
-                        assert ["pvisor", "cache", command, "--help"] in commands
+                    for command in ("build", "pull", "push", "inspect"):
+                        assert ["pvisor", "image", command, "--help"] in commands
                     for command in ("run", "spawn", "replay"):
                         assert ["pvisor", command, "--help"] in commands
                     assert ["pvisor-daemon", "serve", "--help"] in commands
                     assert ["pvisor-daemon", "protocol"] in commands
                     assert not any(
-                        "service" in command or "pvisor-memory-pool" in command
+                        "cache" in command
+                        or "service" in command
+                        or "pvisor-memory-pool" in command
                         for command in commands
                     )
 
