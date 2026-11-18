@@ -444,6 +444,25 @@ jobs:
           mise exec -- rustup target add x86_64-unknown-linux-musl
           mise exec -- rustc --edition=2021 --target x86_64-unknown-linux-musl -C linker=rust-lld tests/vm_guest.rs -o "$RUNNER_TEMP/vm-guest"
           python3 tests/vm_cli_contract.py --binary target/debug/pvisor --guest "$RUNNER_TEMP/vm-guest" --output "$RUNNER_TEMP/vm-cli-${{ runner.os }}"
+
+      - name: Ready barrier and failed-start ownership / KVM
+        if: runner.os == 'Linux' && matrix.shard == 'pvisor'
+        shell: bash
+        run: |
+          set -euo pipefail
+          lifecycle_firmware="$(mise run fw -- build --target x86_64-unknown-linux-gnu)"
+          export PVISOR_CASE_VM_FIRMWARE_PATH="$lifecycle_firmware"
+          mise run test-vm-lifecycle 2>&1 | tee "$RUNNER_TEMP/vm-lifecycle.log"
+      - uses: actions/upload-artifact@v4
+        if: always() && runner.os == 'Linux' && matrix.shard == 'pvisor'
+        with:
+          name: vm-lifecycle-Linux
+          path: |
+            ${{ runner.temp }}/vm-lifecycle.log
+            target/nextest/vm-lifecycle/junit.xml
+          if-no-files-found: error
+          retention-days: 7
+
       - uses: actions/upload-artifact@v4
         if: always() && runner.os == 'Linux' && matrix.shard == 'pvisor'
         with:

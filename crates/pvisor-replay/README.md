@@ -103,8 +103,14 @@ protocol-specific finish checks still decide continuation validity.
 
 ## Validation
 
+Runnable `api.rs` doctests cover configuration defaults and conflicting modes,
+JSON validation before publication, and local PrepareOnly execution with a
+recorded tool that must remain unexecuted. They require no agent SDK or model.
+
+
 ```sh
 mise run test -- pvisor-replay
+mise run test-doc -- pvisor-replay
 RUSTDOCFLAGS='-D warnings' mise exec -- cargo doc --locked -p pvisor-replay --no-deps
 ```
 

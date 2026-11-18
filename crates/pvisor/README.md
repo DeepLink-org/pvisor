@@ -356,7 +356,10 @@ The schema-1 `ApplyCommandResponse` is serializable JSON:
   candidate-only preview leaves the starting counts unchanged;
 - `execution: Option<ApplyCommandExecution>` contains `apply_id`, `applied`,
   `recovery_required`, `ledger_confirmed`, and `error`. Counts come only from
-  confirmed committed ledger intent, including when Run publication later fails;
+  confirmed committed ledger intent, including when Run publication later fails.
+  A typed apply failure retains its attempt ID and requires stage reconciliation
+  even after Committed when backup cleanup remains. `ledger_confirmed` requires
+  reading the matching record, never just the error's last-confirmed phase;
 - `plan: Option<String>` is a confirmation token bound to source, generation,
   target identity, candidate inventory and upper contents. Preview a candidate
   universe, then submit explicit picker paths with its token. A changed plan

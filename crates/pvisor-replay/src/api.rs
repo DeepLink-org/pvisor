@@ -378,6 +378,21 @@ pub trait AgentProfile {
 }
 
 /// TOML loading and owned request conversion. Neither method starts a workload.
+///
+/// Loading and conversion preserve caller ownership of runtime and filesystem setup:
+/// ```
+/// use pvisor_replay::api::{ReplayConfiguration, ReplayMode, ReplayToml};
+/// let root = tempfile::tempdir()?;
+/// let config = root.path().join("replay.toml");
+/// std::fs::write(&config, "[replay]\nagent='codex'\ntrajectory='history.jsonl'\nafter_step=1\nprepare_only=true\n")?;
+/// let request = ReplayToml::from_file(&config)?.into_request(root.path())?;
+/// assert_eq!(request.workspace, root.path());
+/// assert_eq!(request.mode, ReplayMode::PrepareOnly);
+/// assert_eq!(std::fs::read_dir(root.path())?.count(), 1);
+/// std::fs::write(&config, "[replay]\nagent='codex'\ntrajectory='history.jsonl'\nafter_step=1\nprepare_only=true\nreplay_only=true\n")?;
+/// assert!(ReplayToml::from_file(&config)?.into_request(root.path()).is_err());
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
 pub trait ReplayConfiguration: Sized {
     /// Read UTF-8 TOML; I/O, parse and unknown-field failures return Configuration.
     /// Reads only the supplied file; does not create state or output directories.
@@ -389,6 +404,46 @@ pub trait ReplayConfiguration: Sized {
 }
 
 /// Versioned request loading and blocking execution, including artifacts and receipts.
+///
+/// Prepare a recorded Codex tool batch using only private local files. No SDK,
+/// shell, model or VM is required; preparation must not execute its tool:
+/// ```
+/// use pvisor_replay::api::{PlaybackRequest, ReplayPhase, ReplayRequest, REQUEST_SCHEMA_VERSION};
+/// use serde_json::json;
+/// let root = tempfile::tempdir()?;
+/// let workspace = root.path().join("workspace");
+/// std::fs::create_dir(&workspace)?;
+/// let trajectory = root.path().join("history.jsonl");
+/// let events = [
+///     json!({"type":"session_meta","payload":{"id":"docs"}}),
+///     json!({"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"prepare"}]}}),
+///     json!({"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"tool"}]}}),
+///     json!({"type":"response_item","payload":{"type":"function_call","call_id":"one","name":"exec_command","arguments":json!({"cmd":"touch must-not-exist"}).to_string()}}),
+///     json!({"type":"response_item","payload":{"type":"function_call_output","call_id":"one","output":"old observation"}}),
+/// ];
+/// std::fs::write(&trajectory, events.iter().map(ToString::to_string).collect::<Vec<_>>().join("\n"))?;
+/// let path = root.path().join("request.json");
+/// let mut input = json!({"schema_version":"unsupported", "agent":{"type":"codex"},
+///     "trajectory":trajectory, "after_step":1, "workspace":workspace,
+///     "state_dir":root.path().join("state"), "output_dir":root.path().join("output"),
+///     "prepare_only":true, "run_id":"docs"});
+/// std::fs::write(&path, serde_json::to_vec(&input)?)?;
+/// assert!(PlaybackRequest::from_json(&path).is_err());
+/// assert!(!root.path().join("state").exists());
+/// input["schema_version"] = json!(REQUEST_SCHEMA_VERSION);
+/// std::fs::write(&path, serde_json::to_vec(&input)?)?;
+/// let report = PlaybackRequest::from_json(&path)?.execute()?;
+/// assert_eq!(report.exit_code, 0);
+/// assert_eq!(report.result.phase, ReplayPhase::Prepared);
+/// assert_eq!(report.result.replayed_tool_calls, 0);
+/// let manifest = report.result.output_dir.join("manifest.json");
+/// let published = std::fs::read(&manifest)?;
+/// assert!(!workspace.join("must-not-exist").exists());
+/// // An existing output child is never overwritten by another execution.
+/// assert!(PlaybackRequest::from_json(&path)?.execute().is_err());
+/// assert_eq!(std::fs::read(&manifest)?, published);
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
 pub trait ReplayRequest: Sized {
     /// Read JSON, rejecting unknown fields, wrong schema, unknown agents or conflicting
     /// modes. No workload starts and no state/output directories are created.
