@@ -34,7 +34,7 @@ fallback for direct module runners.
 | `PVISOR_BENCH_OUTPUT` | New evidence leaf below an existing `.data` parent. Stage requires a short leaf directly inside the owned lab. Existing output is refused. |
 | `PVISOR_BENCH_LAB` | Existing, deployed private OverlayBD lab with a passed functional smoke and frozen source/derived identities. |
 | `PVISOR_BENCH_PREPARED_STORE` | Existing public-cache-API prepared store for the pinned linux/amd64 source. |
-| `PVISOR_BENCH_BINARY_DIR` | Prebuilt `pvisor` and `pvisor-daemon`; prepared/lazy default to `target/release`, stage requires an explicit directory. |
+| `PVISOR_BENCH_BINARY_DIR` | Prebuilt `pvisor` and `pvisor-daemon`. Lazy VM and stage preparation also require `examples/cache_probe` beside them. Prepared/lazy default to `target/release`; stage requires an explicit directory. |
 | `PVISOR_BENCH_FIRMWARE` | Prepared/lazy dynamic firmware; defaults to `BINARY_DIR/libkrunfw.so.5`. |
 | `PVISOR_BENCH_CPUS` | Two application CPUs, default `12,13`. |
 | `PVISOR_BENCH_SERVICE_CPUS` | Two disjoint service CPUs, default `14,15`. |

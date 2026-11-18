@@ -88,9 +88,8 @@ reads and validates the recorded Bundle; this is not an O(1) history index.
 owns Session lifecycle, scheduling, policy adaptation and execution. The
 `pvisor-cli` application owns Session lifecycle commands, the per-Session owner
 bootstrap, terminal/rendering code and companion discovery.
-Cache storage and the optional node resource client remain runtime components; cache
-argument parsing lives under `pvisor cache` in the app; `pvisor-daemon serve --cache`
-owns the server entry point.
+Cache storage, CacheClient and the optional node resource client remain runtime
+components. `pvisor-daemon serve --cache` owns the server entry point.
 Dockerfile builds have a separate, user-private RUN checkpoint cache under
 `PVISOR_DOCKER_HOME/build-cache-v1`. Its identity includes the native base digest,
 instruction prefix, in-scope arguments, selected COPY inputs, execution settings,
@@ -98,7 +97,7 @@ and preceding RUN output digests. Successful checkpoints are sealed OCI layers;
 metadata-only publication reuses the sealed filesystem. Build-wide shared leases
 and per-key exclusive locks coordinate concurrent builds with `builder prune`.
 Pruning takes an exclusive lease, waits for builds, and never removes published
-image pool data. This is not the distributed `pvisor cache` service. See the
+image pool data. This is not the shared image cache service. See the
 [build command profile](../pvisor-cli/README.md#vm-isolated-image-builds-experimental)
 for invalidation, cleanup controls and compatibility limits.
 Native Sessions and Docker-style VM launches authenticate and negotiate a selected
@@ -1148,7 +1147,7 @@ Python script/rootfs, conflicts with `--libraries` and does not attach a DAX
 window. This exercises the physical pager's successful-file-READ hints through
 the normal rootfs path, with full payload and private-write validation.
 
-`pvisor cache` provides `prepare`, `publish`, `list`, `stat` and `read`;
+The Rust `pvisor::cache::CacheClient` exposes the cache protocol, and
 `pvisor-daemon serve --cache` serves the cache. The optional `vm.node_socket`
 connects to a caller-provided same-host resource service; the runtime retains its
 client protocol and connection pins for restored RAM. No node server, owner
@@ -1381,20 +1380,11 @@ fields and obsolete storage formats are rejected. Use a fresh store and re-pull
 or rebuild images; no compatibility reader or automatic migration is provided.
 Stop and clean up old containers through the old version before switching stores.
 
-Remote bindings set `CachedImage.repository` to an immutable
-`s3://BUCKET/PREFIX`, `http://`/`https://` static root, or
-`ipfs+http://127.0.0.1:PORT/ipfs/CID`. Old experimental `ipfs` JSON fields can
-still be read as this same repository field. The binding overrides the local pool for reads,
-without OCI-pull or local-pool fallback. Explicit pinned mirrors may serve the
-same publication. For IPFS, the gateway must be a trusted local Kubo:
-only literal-loopback HTTP is accepted, proxies and redirects are disabled,
-and range responses must match exactly. Kubo verifies the UnixFS DAG; V2 still
-authenticates revision metadata and content frames before decoding. Gateway
-failures, including missing dependencies, remain errors, not absent image files.
-The existing host network bridge keeps Kubo access outside the VM network
-namespace. Retain Kubo throughout VM access, including detached supervisors
-that survive daemon restart. The Kubo restriction applies only to IPFS:
-ordinary HTTP/HTTPS repositories can use public mirror/CDN hosts.
+Remote bindings set `CachedImage.repository` to an immutable S3 or HTTP(S)
+repository. The binding overrides the local pool; remote failures do not
+trigger an OCI pull or local-pool fallback. Explicit pinned mirrors may serve
+the same publication. Former IPFS bindings fail to open and must be rebuilt
+or imported from a supported repository.
 
 `ImageRegistry` describes ordered, credential-free roots and whether each is
 authorized to resolve names. `Store::resolve_image_repository` chooses the first
@@ -1419,6 +1409,19 @@ repositories must be trusted by the caller; V2 handles authenticate subsequent
 metadata/content, not publisher identity. Failed uploads can leave unreachable
 objects and there is no automatic remote GC.
 
+`Store::push_image` selects one local catalog snapshot and publishes its portable
+`Image` descriptor through that same exporter; it never pulls a missing source
+or changes the catalog. `Store::pull_image_repository` authenticates that
+descriptor, the original OCI config and the pinned root before atomically
+installing a reference. Existing names require explicit refresh; failed imports
+leave their previous record unchanged. Original configs travel as bounded,
+digest-checked `configs/SHA256.json` assets, so inspect, health checks and later
+builds retain the OCI defaults. `Image::inspect` reads only local metadata and
+exposes remote source/handle/digest/platform under `Pvisor`. Prepared templates
+retain their existing descriptor schema; `Store::import_image_config` also
+accepts older prepared publications without that optional asset, for runtime
+compatibility. Those older imports cannot supply full OCI metadata to inspect.
+
 Generic clients select `CacheBackend::Http` with a read-only HTTP/HTTPS location
 (`PVISOR_CACHE_BACKEND=http`, `PVISOR_CACHE_LOCATION=https://...`); HTTP defaults
 to read-only, and explicit writable mode is rejected. S3 uses the existing host
@@ -1437,35 +1440,15 @@ before copying data. This prevents exposing removed files from a private
 predecessor; such images need rebuilding into a fresh pool before publication.
 Treat the exported image, including its config/environment, as public. The
 destination must not exist; failure can leave a partial export.
-IPFS does not supply anonymity, publisher authentication, access control or
-permanent retention. The daemon manages its node inside the local image
-repository: `serve --ipfs`, `image NAME --public/--private`, and
-`image NAME --from CID`. It selects ports and records publication CIDs without
-separate repository/output/gateway arguments. IPFS chunk boundaries need not match V2 frames;
-WAN performance and transfer amplification are not yet established.
 
-The explicit Kubo runner uses two temporary loopback-only peers, disables
-bootstrap/mDNS/routing, removes the original local pool, and checks actual
-Bitswap reception, bounded working-set delivery and unchanged receiver pins:
-
-```sh
-mise exec -- cargo build --locked -p pvisor-daemon
-PVISOR_TEST_IPFS=/absolute/path/to/ipfs \
-  PVISOR_TEST_DAEMON="$PWD/target/debug/pvisor-daemon" \
-  mise run test -- pvisor -- --lib --run-ignored ignored-only real_kubo
-```
-
-This runner has been exercised with Kubo 0.34.1. It validates real local P2P
-exchange, daemon publication/import, seed pinning and gateway range compatibility,
-not public DHT discovery, NAT traversal or VM boot performance. Set
-`PVISOR_TEST_DAEMON` to the actual build output when not using the default target
-directory.
-
-Filesystem/S3 publish and writable prepare import OCI sources under a scoped
+Writable filesystem/S3 cache preparation imports OCI sources under a scoped
 `staging/.import-*` directory, removed on success and error after publication
 finishes. They retain no raw OCI layers, extracted roots or prepared records.
 Read-only preparation needs no local import directory. Registry TLS can add a
 PEM CA bundle through the host-only `SSL_CERT_FILE`; invalid bundles fail closed.
+For writable filesystem caches, `CacheClient::prepare_with_blobs` resolves the
+manifest through OCI and reads the config and layers from a supplied, immutable
+SHA-256 directory. Missing or corrupt seed blobs fail preparation.
 
 Pool, filesystem and S3 stores use one V2 physical format. All filesystem
 metadata is inline in independently compressed directory radix frames, routed by
@@ -1735,8 +1718,7 @@ explicit; a non-Unicode token is an error rather than an ignored credential.
 Attachment uses capabilities derived from the validated source, without
 reinterpreting address prefixes. Capability parsing starts no transport workers:
 the Linux runner creates the host-network bridge before constructing its final
-Unix client, preserving single-threaded namespace setup. IPFS and the pinned
-private-network bridge remain supported.
+Unix client, preserving single-threaded namespace setup.
 
 - Capable TCP/Unix services advertise optional `metadata_pages` in Prepared.
   The client loads authenticated directory radix frames, including permissions,
@@ -1887,11 +1869,10 @@ retains its owner through exit; its declaration preserves the lower stack's
 identity and order. Writable uppers retain their normal behavior.
 
 Ordinary VM CLI runs can select a durably prepared physical rootfs independently
-of the live workspace:
+of the live workspace. Prepare the base with `SnapshotStore::prepare_rootfs`
+and use the returned base's `reference().id` for `BASE_ID`.
 
 ```bash
-pvisor cache prepare-rootfs --rootfs /opt/rootfs-source --base-store /opt/pvisor-bases
-# Use the prepared_rootfs.base.id from the JSON result:
 pvisor spawn --vm --rootfs-base-store /opt/pvisor-bases --rootfs-base BASE_ID -- /bin/sh
 ```
 

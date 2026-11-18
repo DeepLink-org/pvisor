@@ -88,9 +88,15 @@ fi
 export SUBJECT_BIN
 SUBJECT_BIN="$(cd "$(dirname "$subject")" && pwd)/$(basename "$subject")"
 needs_driver=0
+needs_cache_probe=0
 for file in "${files[@]}"; do
   if [[ "$file" =~ S-DOC-0(59|60|61|62)\.md$ ]]; then needs_driver=1; fi
+  if [[ "$file" =~ S-LAZY-00(4|7)\.md$ ]]; then needs_cache_probe=1; fi
 done
+if [[ "$needs_cache_probe" == 1 && -z "${PVISOR_CASE_CACHE_PROBE:-}" ]]; then
+  cargo build --locked -p pvisor --example cache_probe
+  export PVISOR_CASE_CACHE_PROBE="$CARGO_TARGET_DIR/debug/examples/cache_probe"
+fi
 if [[ "$needs_driver" == 1 ]]; then
   if [[ -z "${PVISOR_CASE_VM_DRIVER:-}" ]]; then
     mise run vm-case-driver --

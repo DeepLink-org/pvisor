@@ -1,4 +1,4 @@
-//! Local physical-rootfs preparation and normal Session-owner admission boundaries.
+//! Prepared VM base selection and Session-owner admission boundaries.
 #![cfg(any(target_os = "macos", all(target_os = "linux", target_arch = "x86_64")))]
 use pvisor::environment_snapshot::SnapshotStore;
 use std::{
@@ -205,23 +205,15 @@ fn isolated_host_case(name: &str) -> bool {
 fn prepare(root: &Path) -> pvisor::PreparedRootfs {
     fs::create_dir(root.join("source")).unwrap();
     fs::write(root.join("source/file"), b"owned").unwrap();
-    let output = command(env!("CARGO_BIN_EXE_pvisor"), root)
-        .arg("cache")
-        .args(["prepare-rootfs", "--rootfs"])
-        .arg(root.join("source"))
-        .arg("--base-store")
-        .arg(root.join("store"))
-        .env("PVISOR_CACHE_SERVER", "unix:///does-not-exist.sock")
-        .output()
+    let store = root.join("store");
+    let base = SnapshotStore::new(&store)
+        .unwrap()
+        .prepare_rootfs(&root.join("source"))
         .unwrap();
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(value["schema_version"], 1);
-    serde_json::from_value(value["prepared_rootfs"].clone()).unwrap()
+    pvisor::PreparedRootfs {
+        store: store.canonicalize().unwrap(),
+        base: base.reference().clone(),
+    }
 }
 
 fn run(root: &Path, args: &[&str]) -> Output {
@@ -235,38 +227,19 @@ fn run(root: &Path, args: &[&str]) -> Output {
 fn prepare_workspace(root: &Path) -> pvisor::PreparedBase {
     fs::create_dir(root.join("workspace-source")).unwrap();
     fs::write(root.join("workspace-source/file"), b"fixed workspace").unwrap();
-    let output = command(env!("CARGO_BIN_EXE_pvisor"), root)
-        .arg("cache")
-        .args(["prepare-workspace", "--workspace"])
-        .arg(root.join("workspace-source"))
-        .arg("--base-store")
-        .arg(root.join("workspace-store"))
-        .env("PVISOR_CACHE_SERVER", "unix:///does-not-exist.sock")
-        .output()
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(value["schema_version"], 1);
-    assert!(value.get("prepared_rootfs").is_none());
-    let selected: pvisor::PreparedBase =
-        serde_json::from_value(value["prepared_workspace"].clone()).unwrap();
-    let held = SnapshotStore::new(&selected.store)
+    let store = root.join("workspace-store");
+    let base = SnapshotStore::new(&store)
         .unwrap()
-        .open_prepared_workspace(&selected.base)
+        .prepare_workspace(&root.join("workspace-source"))
         .unwrap();
-    assert_eq!(
-        value["workspace"],
-        serde_json::to_value(held.root()).unwrap()
-    );
-    selected
+    pvisor::PreparedBase {
+        store: store.canonicalize().unwrap(),
+        base: base.reference().clone(),
+    }
 }
 
 #[test]
-fn local_workspace_prepare_is_persistent_purpose_bound_and_rejects_overlap() {
+fn prepared_workspace_persists_and_retired_prepare_does_not_create_a_store() {
     let root = tempfile::tempdir().unwrap();
     let selected = prepare_workspace(root.path());
     fs::remove_dir_all(root.path().join("workspace-source")).unwrap();
@@ -288,7 +261,8 @@ fn local_workspace_prepare_is_persistent_purpose_bound_and_rejects_overlap() {
         .output()
         .unwrap();
     assert!(!output.status.success());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("independent trees"));
+    assert_eq!(output.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("unrecognized subcommand"));
     assert!(!nested.exists());
 }
 
@@ -406,7 +380,8 @@ fn workspace_owner_rejects_wrong_purpose_and_json_spec_in_private_namespace() {
             .output()
             .unwrap();
         assert!(!output.status.success());
-        assert!(String::from_utf8_lossy(&output.stderr).contains("exposes private host authority"));
+        assert_eq!(output.status.code(), Some(2));
+        assert!(String::from_utf8_lossy(&output.stderr).contains("unrecognized subcommand"));
         assert!(!destination.exists());
     }
     assert_eq!(
@@ -417,7 +392,7 @@ fn workspace_owner_rejects_wrong_purpose_and_json_spec_in_private_namespace() {
 }
 
 #[test]
-fn local_prepare_survives_cli_exit_and_refuses_source_store_overlap() {
+fn prepared_rootfs_persists_and_retired_prepare_does_not_create_a_store() {
     let temp = tempfile::tempdir().unwrap();
     let selected = prepare(temp.path());
     fs::remove_dir_all(temp.path().join("source")).unwrap();
@@ -444,10 +419,11 @@ fn local_prepare_survives_cli_exit_and_refuses_source_store_overlap() {
         .output()
         .unwrap();
     assert!(!output.status.success());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("independent trees"));
+    assert_eq!(output.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("unrecognized subcommand"));
     assert!(
         !nested.exists(),
-        "overlap is rejected before initializing the destination"
+        "the removed command must not initialize the destination"
     );
 }
 
@@ -614,8 +590,6 @@ fn normal_owner_authenticates_catalog_before_vm_start_and_rejects_exposure() {
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("base reference mismatch"));
 
-    // Local cache preparation does not enter a Session owner. Its source/store
-    // checks must still protect the canonical authority before any copy/init.
     let authority = pvisor::host_transport::host_authority_root().unwrap();
     let secret_source = authority.join("private-rootfs-input");
     fs::create_dir(&secret_source).unwrap();
@@ -641,14 +615,12 @@ fn normal_owner_authenticates_catalog_before_vm_start_and_rejects_exposure() {
             .output()
             .unwrap();
         assert!(!output.status.success());
+        assert_eq!(output.status.code(), Some(2));
         let stderr = String::from_utf8_lossy(&output.stderr);
-        assert!(
-            stderr.contains("exposes private host authority"),
-            "{stderr}"
-        );
+        assert!(stderr.contains("unrecognized subcommand"), "{stderr}");
         assert!(
             !destination.exists(),
-            "authority is rejected before initializing the destination"
+            "the removed command must not initialize the destination"
         );
     }
     assert_eq!(authority_entries(&authority), before);

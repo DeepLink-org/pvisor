@@ -12,10 +12,12 @@ default-run = "pvisor-daemon"
 [[bin]]
 name = "pvisor-daemon"
 path = "src/main.rs"
+required-features = ["daemon-bin"]
 
 
 [features]
-default = []
+default = ["daemon-bin"]
+daemon-bin = []
 
 [dependencies]
 anyhow.workspace = true

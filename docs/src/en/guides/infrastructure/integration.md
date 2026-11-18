@@ -46,7 +46,7 @@ VM shim CPU/RAM annotations configure VM shape. Some host OCI constraints are ac
 
 ## Image caching is a shared service {#cache}
 
-Clients manage content through `pvisor cache prepare/publish/list/stat/read`. The service entry point is `pvisor-daemon serve --cache`, which can run alongside `--sandbox`. The cache service supports Linux x86_64 and macOS ARM64; cache-only operation does not require KVM or sandbox cgroup prerequisites.
+Publish images with `pvisor push` and use Rust CacheClient for cache diagnostics. The service entry point is `pvisor-daemon serve --cache`, which can run alongside `--sandbox`. The cache service supports Linux x86_64 and macOS ARM64; cache-only operation does not require KVM or sandbox cgroup prerequisites.
 
 Cache endpoints, storage, and authentication are independent of the sandbox API. Preparing a cached image does not create the prepared-image manifest and guest bootstrap required by the daemon. See the [shared image cache reference](../../reference/shared-image-cache.md) for configuration and backend contracts.
 

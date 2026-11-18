@@ -479,9 +479,10 @@ Design: 负载、对照、控制变量与有效样本判据。
   工程分析，不更新跨运行时用户表或合并旧批次。
 - **普通 CLI 工作区快照入口快速对照：** 两组固定同一个已认证 prepared-rootfs
   selector 与物理 generation，仅比较 live Mutable 工作区和公开 CLI 认证的
-  `--workspace-base-store STORE --workspace-base ID`。工作区快照由
+  `--workspace-base-store STORE --workspace-base ID`。历史批次用当时的
   `pvisor cache prepare-workspace --workspace SOURCE --base-store STORE` 在计时外
-  准备并保留独立费用，rootfs/workspace 使用独立 store。快照组以所选固定
+  准备快照并单列费用。新部署可用 `SnapshotStore::prepare_workspace`，rootfs/workspace
+  使用独立 store。快照组以所选固定
   generation 为唯一 Immutable lower 与 frozen baseline，apply target 保持
   独立 trial 工作区，fresh stage 在正常 RunLease 内创建，不冒充 execution restore。
   这是所有权/缓存资格与读观察、journal 语义的联合处理，不能单独归因 metadata cache。

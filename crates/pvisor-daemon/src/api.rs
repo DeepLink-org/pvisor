@@ -25,7 +25,103 @@ use std::{
 };
 
 pub use crate::daemon::Daemon;
+pub use crate::image_repository::PreparedCatalog;
 pub use crate::runtime::NativeRuntime;
+
+/// A change to the ordered prepared-template registry configuration.
+pub enum RegistryUpdate {
+    /// Append the supplied source at lowest priority. Its location must be unique.
+    Add(pvisor::docker::ImageRegistry),
+    /// Remove the named source from future resolution. Existing bindings stay pinned.
+    Remove(String),
+    /// Move an existing source to a position in the current order.
+    Move {
+        /// Existing source name.
+        name: String,
+        /// One-based priority in `1..=registry count`.
+        position: usize,
+    },
+}
+
+/// Prepared-template operations for a trusted, same-user catalog. No daemon service
+/// is needed. Mutations serialize per template name or registry configuration;
+/// queries read committed records without taking mutation locks.
+pub trait PreparedCatalogService: Sized {
+    /// Select a directory without accessing it. Relative paths use the process
+    /// working directory. The caller must control the catalog and its ancestors.
+    ///
+    /// ```
+    /// # fn main() -> anyhow::Result<()> {
+    /// use pvisor::docker::ImageRegistry;
+    /// use pvisor_daemon::api::{PreparedCatalog, PreparedCatalogService, RegistryUpdate};
+    /// let root = tempfile::tempdir()?;
+    /// let path = root.path().join("catalog");
+    /// let catalog = PreparedCatalog::new(path.clone());
+    /// assert!(catalog.list()?.is_empty());
+    /// assert!(catalog.inspect("../escape").is_err());
+    /// assert!(!path.exists());
+    /// let source = ImageRegistry {
+    ///     name: "origin".into(),
+    ///     location: "https://images.example.test/v2".into(),
+    ///     resolve: true,
+    /// };
+    /// catalog.update_registries(RegistryUpdate::Add(source))?;
+    /// assert!(catalog.update_registries(RegistryUpdate::Remove("missing".into())).is_err());
+    /// assert_eq!(catalog.registries()?[0].name, "origin");
+    /// # Ok(())
+    /// # }
+    /// ```
+    fn new(images: PathBuf) -> Self;
+
+    /// Read committed template names and pinned images in sorted order. An absent
+    /// directory is empty. Invalid records fail the query without making changes.
+    fn list(&self) -> Result<Vec<(String, pvisor::docker::Image)>>;
+
+    /// Read one template's local OCI metadata as a Docker inspect object with the
+    /// local name in `RepoTags`. Missing or invalid names or metadata fail locally.
+    fn inspect(&self, name: &str) -> Result<serde_json::Value>;
+
+    /// Publish an existing local template to S3 or an absolute `file://` directory.
+    /// Returns JSON with `source`, `image_handle`, `digest` and `platform`. The bundle
+    /// is immutable. The name index advances after upload if its pre-upload
+    /// version still matches or already points to the same publication. Failure
+    /// can leave unreferenced objects. The local template is unchanged.
+    fn push(&self, name: &str, destination: &str) -> Result<serde_json::Value>;
+
+    /// Import a template from S3 or HTTP(S), or resolve its name through configured
+    /// registries when `source` is absent. Only metadata is fetched at import.
+    /// Engine profiles and launch settings are validated before commit. Existing
+    /// names require `refresh`. Failure preserves their committed records;
+    /// directories and verified metadata may remain. Trust the selected publisher.
+    fn pull(
+        &self,
+        name: &str,
+        source: Option<&str>,
+        refresh: bool,
+    ) -> Result<pvisor::docker::Image>;
+
+    /// Build and atomically install a trusted local template. The callback receives
+    /// the canonical store path while the name is locked and must return a manifest
+    /// rooted at that path. Do not reenter a mutation of the same name. Errors leave
+    /// the previous manifest in place before commit. Prepared data may remain.
+    fn prepare(
+        &self,
+        name: &str,
+        build: impl FnOnce(PathBuf) -> Result<PreparedImage>,
+    ) -> Result<()>;
+
+    /// Read configured sources in priority order. An absent file is empty. Invalid
+    /// configurations fail without accessing the network or changing the catalog.
+    fn registries(&self) -> Result<Vec<pvisor::docker::ImageRegistry>>;
+
+    /// Apply a registry change under the configuration lock and return the new order.
+    /// Validation errors preserve the previous file. Already imported images keep
+    /// their fixed bindings. This operation can create private configuration state.
+    fn update_registries(
+        &self,
+        update: RegistryUpdate,
+    ) -> Result<Vec<pvisor::docker::ImageRegistry>>;
+}
 
 /// Operator-provisioned E2B template settings, retained with each native identity.
 /// These are not client-selected resources or a template build service.

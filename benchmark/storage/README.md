@@ -49,7 +49,10 @@ admission. Do not start a measurement against a global daemon.
   select memory. Negative baseline-subtracted increments remain raw evidence
   and fail a metric that requires nonnegative values rather than being clamped.
 - Local reads use `python` or `mmap-scan`. Phase metrics require mmap.
-- Remote requires `daemon`; workload is `shell`, `python` or `mmap-scan`.
+- Remote requires `daemon` and the [cache probe](../criterion/README.md),
+  with workload `shell`, `python` or `mmap-scan`. The separately recorded
+  cache preparation clock starts after staging verified OCI blobs. The probe
+  resolves the manifest and reads config and layers from that local directory.
   Both cold and warm states execute even when only one metric is selected.
 - Image format requires `baseline`, `candidate`, `baseline_runner`. Defaults:
   `files=10000`, `directories=1`, `backend=pool`, `payload=repeat`.

@@ -66,6 +66,7 @@ pub struct ImageStore {
     pub(crate) root: PathBuf,
     client: Client,
     credentials: Option<RegistryCredentials>,
+    seeded_blobs: Option<PathBuf>,
 }
 
 /// Registry credentials for authenticated pulls; held in memory only.
@@ -227,12 +228,18 @@ impl ImageStore {
             root,
             client,
             credentials: None,
+            seeded_blobs: None,
         })
     }
 
     /// Credentials for authenticated pulls; apply before the first fetch.
     pub fn set_registry_credentials(&mut self, credentials: RegistryCredentials) {
         self.credentials = Some(credentials);
+    }
+
+    pub(crate) fn with_seeded_blobs(mut self, blobs: Option<&Path>) -> Self {
+        self.seeded_blobs = blobs.map(Path::to_owned);
+        self
     }
 
     pub fn prepare(&self, image: &str) -> anyhow::Result<PreparedImage> {
@@ -508,6 +515,21 @@ impl ImageStore {
         progress: &mut dyn FnMut(PullProgress),
     ) -> anyhow::Result<PathBuf> {
         let digest_hex = digest_hex(&descriptor.digest)?;
+        if let Some(blobs) = &self.seeded_blobs {
+            let path = blobs.join(digest_hex);
+            let metadata = fs::symlink_metadata(&path)
+                .with_context(|| format!("read seeded OCI blob {}", descriptor.digest))?;
+            anyhow::ensure!(
+                metadata.is_file() && descriptor.size.is_none_or(|size| metadata.len() == size),
+                "invalid seeded OCI blob {}",
+                descriptor.digest
+            );
+            progress(PullProgress::Verifying {
+                digest: descriptor.digest.clone(),
+            });
+            verify_file_digest(&descriptor.digest, &path)?;
+            return Ok(path);
+        }
         let destination = self.root.join("blobs/sha256").join(digest_hex);
         if destination.is_file() {
             progress(PullProgress::Verifying {
@@ -903,7 +925,7 @@ pub(crate) fn digest_hex(digest: &str) -> anyhow::Result<&str> {
     Ok(value)
 }
 
-fn verify_digest(expected: &str, body: &[u8]) -> anyhow::Result<()> {
+pub(crate) fn verify_digest(expected: &str, body: &[u8]) -> anyhow::Result<()> {
     digest_hex(expected)?;
     let actual = format!("sha256:{}", crate::util::encode_hex(&Sha256::digest(body)));
     anyhow::ensure!(

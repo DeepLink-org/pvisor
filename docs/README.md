@@ -333,7 +333,7 @@ The integration matrix distinguishes native CLI Sessions, embedded Rust Runtime,
 daemon Sandbox API and containerd shim identities and exposed capabilities.
 It summarizes the owning references and source contracts; it must not promote
 underlying VM or pool tests into daemon SDK conformance or deployment evidence.
-Cache clients use `pvisor cache`; the cache server uses
+Cache diagnostics use the Rust client; the cache server uses
 `pvisor-daemon serve --cache`. Human review and execution volume are independent:
 more parallel tasks alone do not establish automatic acceptance or RL benefits.
 

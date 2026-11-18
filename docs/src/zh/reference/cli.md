@@ -9,7 +9,7 @@ Host、OCI VM 和透明 host-rootfs VM 的完整命令示例见
 
 根帮助（`pvisor` 或 `pvisor --help`）按 **Commands**（兼容 Docker 的容器命令）、
 **Agent Commands**（`spawn`、`status`、`kill`、`review`、`apply`、`drop`、`inspect`、`checkpoint`、`suspend`、`resume`、`fork`）和 **Tools**
-（已安装的 `replay` 伴随程序、`cache`、`feature`、`help`）分组。帮助提供简短的
+（已安装的 `daemon` 和 `replay` 伴随程序、`feature`、`help`）分组。帮助提供简短的
 run-review-apply 示例；用 `pvisor help COMMAND` 查看详细选项。
 
 ```bash
@@ -155,8 +155,16 @@ STOPSIGNAL。COPY 支持 JSON/glob、数字 --chown 和八进制 --chmod；支�
 这是 Docker build 子集：拒绝远程/stdin 上下文、ADD、ONBUILD、heredoc、RUN mount、
 secret/SSH/cache mount、名称形式 COPY 属主、外部镜像 COPY、扩展变量替换、
 异构执行、设备节点和文件 capabilities。COPY 源路径不能穿过符号链接。
-尚不支持 push、Docker archive 导出或多平台构建。Apple Silicon/HVF 有原生验收覆盖，
+尚不支持推送到 OCI registry、Docker archive 导出或多平台构建。Apple Silicon/HVF 有原生验收覆盖，
 Linux/KVM 需要单独进行运行时验收。
+
+### 发布懒加载镜像 {#image-publication}
+
+用 `pvisor push IMAGE --to URI` 或 `pvisor image push` 将本地镜像发布到 S3
+或绝对 `file:///` 目录。JSON 回执包含固定的 `source`。接收端用
+`pvisor image pull IMAGE --from SOURCE` 从 S3 或 HTTP(S) 导入，显式指定
+`--refresh` 才能替换已有本地名称。使用 `--images-dir DIR` 直接访问 daemon 的预制模板目录。
+操作示例见[共享镜像缓存指南](shared-image-cache.md)。
 
 ## Session owner 与持久操作 {#host-agentctl}
 
@@ -203,16 +211,15 @@ pvisor spawn --executor vm --feature workload-aware-memory-offloading -- /bin/sl
 
 ## Daemon 与缓存命令 {#service}
 
-`pvisor spawn` 与后续 Session 命令提供原生执行与审查；`pvisor run` 等容器命令管理独立 VM。直接调用 `pvisor-daemon` 准备模板并运行部分 OpenSandbox/E2B profile，或单独启用缓存/池组件；`pvisor cache` 是缓存客户端。
+`pvisor spawn` 与后续 Session 命令提供原生执行与审查；`pvisor run` 等容器命令管理独立 VM。直接调用 `pvisor-daemon` 准备模板并运行部分 OpenSandbox/E2B profile，或单独启用缓存/池组件。
 
 ```bash
 pvisor-daemon prepare-image --help
 pvisor-daemon serve --help
 pvisor-daemon memory-pool --help
-pvisor cache --help
 ```
 
-为 `pvisor-daemon serve --sandbox` 添加 `--memory-pool`，启用默认关闭的独立池组件。`pvisor cache prepare/publish/list/stat/read` 是客户端命令，`pvisor-daemon serve --cache` 提供缓存服务。Node 运行时协议供原生调用方使用，没有 daemon acquire/release 适配器。NativeRuntime 嵌入 VM 执行；checkpoint/fork 与 stage/apply API 未实现。所有权、安装与部署边界见 [daemon 指南](../guides/daemon/index.md)。
+为 `pvisor-daemon serve --sandbox` 添加 `--memory-pool`，启用默认关闭的独立池组件。`pvisor-daemon serve --cache` 提供缓存服务。文件查询使用 Rust 缓存客户端。Node 运行时协议供原生调用方使用，没有 daemon acquire/release 适配器。NativeRuntime 嵌入 VM 执行；checkpoint/fork 与 stage/apply API 未实现。所有权、安装与部署边界见 [daemon 指南](../guides/daemon/index.md)。
 
 其他未知名称按默认执行规则处理。不支持的控制命令 `ctrl` 是明确例外：
 `pvisor ctrl`、`pvisor ctrl --help` 和 `pvisor help ctrl` 在 Session 准入前
@@ -1004,18 +1011,16 @@ deny-all 仍允许已配置的内部 Gateway 路由。各路径的范围见 [网
 
 #### 使用封存 rootfs {#prepared-rootfs}
 
-先将静止的独立 Linux rootfs 准备到私有 store，再用返回的 `base.id` 替换
-`BASE_ID`。store 应位于 workspace、stage、所有 guest 暴露路径及 VM 可写
-backing/control 路径之外。
+通过 Rust SDK 的 `SnapshotStore::prepare_rootfs` 将静止的独立 Linux rootfs
+封存到私有 store，用返回基底的 `reference().id` 替换 `BASE_ID`。store 应位于
+workspace、stage、所有 guest 暴露路径及 VM 可写 backing/control 路径之外。
 
 ```bash
-pvisor cache prepare-rootfs --rootfs /srv/linux-rootfs --base-store /srv/pvisor-bases
 pvisor spawn --vm --rootfs-base-store /srv/pvisor-bases --rootfs-base BASE_ID -- /bin/sh
 ```
 
-本地准备不使用缓存服务；成功输出包含 `schema_version`、`prepared_rootfs`
-（canonical `store` 与 `base.id`）及独立 `rootfs` 路径。首次准备包含复制、
-完整内容/元数据校验和持久 pin。后续普通 CLI 由 Session owner 认证该对象，
+首次准备包含复制、完整内容与元数据校验和持久 pin。
+后续普通 CLI 由 Session owner 认证该对象，
 取得运行期 lease 并接通 Immutable 物理 lower；不会每次重新封存。
 默认工作区保持 live；可显式选择[封存工作区](#prepared-workspace)。
 
@@ -1037,20 +1042,19 @@ rootfs 的 SDK 调用（包括仅以 `with_rootfs_base` 提供 owner），以及
 
 #### 使用封存工作区 {#prepared-workspace}
 
-将静止的项目准备到另一个私有 store，并在项目目录运行。`ROOTFS_ID` 来自
-上述 rootfs 准备命令，`WORKSPACE_ID` 来自工作区准备结果。
+通过 Rust SDK 的 `SnapshotStore::prepare_workspace` 将静止的项目封存到另一个
+私有 store，再从真实项目目录运行。用返回基底的 `reference().id` 替换
+`WORKSPACE_ID`，用封存 rootfs 的 ID 替换 `ROOTFS_ID`。
 
 ```bash
-pvisor cache prepare-workspace --workspace /srv/project --base-store /srv/pvisor-workspace-bases
 cd /srv/project
 pvisor spawn --vm --rootfs-base-store /srv/pvisor-bases --rootfs-base ROOTFS_ID \
   --workspace-base-store /srv/pvisor-workspace-bases --workspace-base WORKSPACE_ID \
   --stage /srv/pvisor-stages/review-1 -- /bin/sh
 ```
 
-准备结果包含 `schema_version`、`prepared_workspace`（canonical `store` 与
-`base.id`）和独立 `workspace` 路径。首次准备复制并校验内容与元数据，持久 pin
-跨命令退出和 GC 保留；后续 Session owner 重新认证 workspace catalog 并取得
+首次准备复制并校验内容与元数据，持久 pin
+跨进程退出和 GC 保留；后续 Session owner 重新认证 workspace catalog 并取得
 运行期 lease，无需重新封存。
 
 读取使用所选固定 generation，宿主项目的后续修改不会进入当前 Run 的快照读视图。
@@ -1121,12 +1125,10 @@ staging 数据，但保留紧凑的 Run/Overlay 元数据、apply ledger 和 cap
 
 ### 共享镜像文件缓存
 
-`pvisor-daemon serve --cache` 在前台提供独立 OCI 镜像文件服务；`pvisor cache prepare IMAGE`、
-`pvisor cache list DIGEST [PATH]`、`pvisor cache stat DIGEST PATH` 和
-`pvisor cache read DIGEST PATH` 通过 `PVISOR_CACHE_SERVER` 访问它。
-`pvisor cache publish IMAGE` 显式发布到可写 filesystem/S3 后端。默认使用用户缓存目录下的
-`pvisor/cache.sock` Unix socket。服务端可用 `--cache-image-store DIR`
-指定已有 OCI store。文件读取支持分段和 SHA-256 校验。
+`pvisor-daemon serve --cache` 提供 OCI 镜像文件服务，默认使用用户缓存目录下的
+`pvisor/cache.sock`。服务端可用 `--cache-image-store DIR` 指定已有 OCI store。
+Rust 缓存客户端可通过 `PVISOR_CACHE_SERVER` 连接，并对分段读取进行 SHA-256 校验。
+可移植镜像通过 `pvisor push --to` 发布。
 
 VM 镜像启动会自动探测默认 socket；服务可用时，将远程镜像作为只读 lower 直接接入 virtio-fs 文件服务，不创建中间宿主 FUSE 挂载，
 以 1 MiB 数据块按需读取并持久缓存。默认 socket 不存在或已失效时走本地 OCI 准备。

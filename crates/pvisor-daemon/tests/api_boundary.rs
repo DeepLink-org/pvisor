@@ -69,7 +69,9 @@ fn only_api_is_public_and_declarations_are_uniform() {
                 assert!(
                     matches!(
                         path.as_str(),
-                        "crate::daemon::Daemon" | "crate::runtime::NativeRuntime"
+                        "crate::daemon::Daemon"
+                            | "crate::runtime::NativeRuntime"
+                            | "crate::image_repository::PreparedCatalog"
                     ),
                     "only explicit opaque owners may be re-exported"
                 );
@@ -86,7 +88,10 @@ fn private_sources_cannot_add_public_paths_or_inherent_methods() {
     struct Private;
     impl<'ast> Visit<'ast> for Private {
         fn visit_item_struct(&mut self, item: &'ast syn::ItemStruct) {
-            if matches!(item.ident.to_string().as_str(), "Daemon" | "NativeRuntime") {
+            if matches!(
+                item.ident.to_string().as_str(),
+                "Daemon" | "NativeRuntime" | "PreparedCatalog"
+            ) {
                 assert!(matches!(item.vis, Visibility::Public(_)));
                 assert!(
                     item.fields
@@ -175,6 +180,19 @@ fn public_behavior_has_one_canonical_surface() {
         }
     }
     let expected = BTreeMap::from([
+        (
+            "PreparedCatalogService",
+            vec![
+                "new",
+                "list",
+                "inspect",
+                "push",
+                "pull",
+                "prepare",
+                "registries",
+                "update_registries",
+            ],
+        ),
         ("RuntimeValidation", vec!["validate"]),
         (
             "Runtime",

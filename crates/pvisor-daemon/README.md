@@ -121,13 +121,12 @@ pvisor-daemon registry add domestic https://mirror.example/pvisor --download-onl
 pvisor-daemon registry add origin s3://my-bucket/pvisor
 pvisor-daemon registry list
 
-# Publisher: first eligible S3 registry is the default destination.
-pvisor-daemon image python --public
-pvisor-daemon image python --public --to origin
+# Publisher: select the destination explicitly.
+pvisor image push python --images-dir .pvisor/images --to s3://my-bucket/pvisor
 
-# Receiver: resolve on local miss; refresh an existing name only explicitly.
-pvisor-daemon image python
-pvisor-daemon image python --pull
+# Receiver: resolve explicitly; refresh an existing name only explicitly.
+pvisor image pull python --images-dir .pvisor/images
+pvisor image pull python --images-dir .pvisor/images --refresh
 
 pvisor-daemon registry move origin 1    # one-based priority
 pvisor-daemon registry remove domestic
@@ -206,8 +205,8 @@ refs/NAME.json                     {"version":1,"publication":"<64 lowercase hex
 The publisher uploads the complete immutable bundle, then conditionally commits
 the name reference using its observed version token. Lost acknowledgements are
 read back; concurrent different updates fail rather than overwrite an unobserved
-winner. Reference failure leaves the previous name and local publication record
-unchanged, although the new unreferenced bundle may remain. Direct S3/file-prefix
+winner. Reference failure leaves the previous name and local template unchanged,
+although the new unreferenced bundle may remain. Direct S3/file-prefix
 publication also writes the index; older bundles without `refs/` remain usable
 via direct `--from`.
 
@@ -221,19 +220,32 @@ origin's name index is queried in that configuration.
 
 ## S3 and HTTP/HTTPS lazy image repositories
 
-The same `image` command supports an S3-compatible bucket/prefix or a static
-mirror. No IPFS node is required:
+Use `pvisor image push/pull` with an explicit prepared-template catalog for an
+S3-compatible bucket/prefix or a static mirror. Root `pvisor push` is equivalent
+to `pvisor image push`. The CLI accesses the catalog through the daemon crate's
+Rust API (`PreparedCatalog` and `PreparedCatalogService`). Catalog commands
+run in the caller without the daemon executable or a running service:
 
 ```sh
 # Publisher: host AWS credentials and region come from its environment.
-pvisor-daemon image python --public --to s3://my-bucket/pvisor
+pvisor image push python --images-dir .pvisor/images --to s3://my-bucket/pvisor
 # The JSON result's "source" is an immutable, hash-named repository root.
 
 # Receiver: use that source directly, with read-only host AWS credentials.
-pvisor-daemon image python --from s3://my-bucket/pvisor/PUBLICATION_SHA256
+pvisor image pull python --images-dir .pvisor/images --from s3://my-bucket/pvisor/PUBLICATION_SHA256
 # Or use a mirror/CDN serving the same directory anonymously:
-pvisor-daemon image python --from https://mirror.example/pvisor/PUBLICATION_SHA256
+pvisor image pull python --images-dir .pvisor/images --from https://mirror.example/pvisor/PUBLICATION_SHA256
 ```
+
+`pvisor image ls/inspect --images-dir DIR` only query local records. Explicit
+pull imports or resolves a prepared template; replacing a local name requires
+`--refresh`. Native/E2B profiles, resource settings, command and environment
+survive import, while host paths are rebound. `prepare-image` and `registry`
+remain daemon commands.
+
+`pvisor-daemon image`, `pvisor daemon image` and `serve --ipfs` have been
+removed. Rebuild or re-import former IPFS images from S3 or HTTP(S).
+See [the migration table](../../tests/spec/lazy-image/spec.md#pvisor-daemon-image-retirement).
 
 Use `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, optional `AWS_SESSION_TOKEN`,
 and `AWS_DEFAULT_REGION` through your deployment's secret mechanism. For an
@@ -241,7 +253,7 @@ S3-compatible service, set `AWS_ENDPOINT` (or the provider's supported
 `AWS_ENDPOINT_URL_S3`) and region; `AWS_VIRTUAL_HOSTED_STYLE_REQUEST` selects
 addressing style. `AWS_ALLOW_HTTP=true` is only for explicitly trusted HTTP
 endpoints such as a local test service. Never put credentials in repository URLs
-or image JSON. No bucket policy/ACL is automatically changed by `--public`.
+or image JSON. Push leaves bucket policies and ACLs unchanged.
 Configure CDN origin access or public read access separately; do not give public
 clients the publisher's AWS credentials.
 The S3 service must support atomic conditional object creation; unsupported or
@@ -250,25 +262,26 @@ inconsistent writes fail explicitly rather than falling back to overwrites.
 For an open-source mirror without S3, export a static publication locally:
 
 ```sh
-pvisor-daemon image python --public --to file:///srv/pvisor-mirror
+pvisor image push python --images-dir .pvisor/images --to file:///srv/pvisor-mirror
 # Synchronize the returned hash-named directory to the mirror, then import
 # its HTTPS root with --from. This is a V2 bundle, not an OCI registry URL.
 ```
 
 Every publication is self-contained: V2 control/index/data objects and a portable
-`image.json`. The publisher verifies immutable existing objects before reuse,
+`image.json`, plus the original OCI configuration under `configs/SHA256.json`.
+Import verifies its digest before retaining it for local metadata queries.
+Older publications without this asset remain usable by daemon runtime, but
+cannot provide full OCI inspect metadata. The publisher verifies immutable existing objects before reuse,
 uploads sequentially, then writes `image.json` **last** as the visibility point.
 The directory is named by the template SHA-256, so publishing the same snapshot
 is idempotent and cannot overwrite another snapshot. Conditional-write conflicts
 and lost acknowledgements are reconciled by reading back exact bytes. Partial
-failures can leave unreachable objects, but never install a successful local
-publication record before the full upload is confirmed. There is no automatic
-remote GC. `--private` changes the local policy; it neither deletes remote
-publications nor revokes already distributed data.
+failures can leave unreachable objects. Push leaves the local template intact.
+There is no automatic remote GC or revocation of distributed bytes.
 
 Import fetches a bounded template, rebinds local host paths, verifies the pinned
 revision/digest and root metadata, and atomically installs a new name. It does
-not fetch all image files or overwrite an existing name. Hash-named sources
+not fetch image data; replacing an existing name requires `--refresh`. Hash-named sources
 also authenticate the template against the directory name. Runtime reads keep
 the selected publication and V2 handle fixed; no mutable-tag or local-pool fallback is
 performed. Failed imports leave no visible image manifest. Missing/corrupt remote
@@ -329,97 +342,11 @@ the integration suite with a private fixture environment. These tests do not
 establish real cloud/CDN availability, actual vendor SigV4 interoperability,
 WAN performance or real VM startup; validate those in the target deployment.
 
-## Public IPFS image distribution (experimental)
-
-IPFS is an optional read-only V2 image source, not a sandbox scheduler.
-Install Kubo separately and put `ipfs` on `PATH`. Normal use only needs an image
-name and an operation:
-
-```sh
-pvisor-daemon serve --ipfs
-pvisor-daemon image python             # JSON: visibility and CID
-pvisor-daemon image python --public    # publish and retain this revision
-pvisor-daemon image python --private   # stop retaining its publication
-# On another machine, using a CID received from a trusted publisher:
-pvisor-daemon image python --from bafy...
-```
-
-`prepare-image`, `image` and sandbox/IPFS `serve` default to the same
-`.pvisor/images` repository relative to the working directory. For a custom
-location, use the existing `--images-dir DIR` override consistently. There is
-no separate IPFS repository, output manifest, firmware or gateway-port argument.
-The earlier experimental `ipfs-publish`, `ipfs-import` and `--ipfs-repo` CLI
-are removed rather than retained as compatibility aliases.
-
-The repository owns `<name>.json`, `store/` (V2 images), `.distribution/`
-(revision-bound visibility/CIDs and locks) and `.ipfs/` (Kubo implementation
-state). New images are private. Preparing a new revision does not inherit an
-old revision's public permission. Preparation and visibility changes serialize
-on the image key. Publication/unpin changes also serialize repository-wide,
-so another public name retaining the same CID cannot lose its pin.
-
-Only explicit `--public` exports one revision's dependencies and a portable
-`image.json`, imports them into Kubo and pins the resulting CID. The local
-manifest keeps its local-pool binding: publishing does not turn a local image
-into a network-dependent image. Publication returns the CID and records it
-atomically; it does not create another user-managed template file. Image
-configuration/environment are public. Packs retaining slots from an earlier
-revision are rejected before export to avoid disclosing removed private files;
-rebuild such an image into a fresh pool before publishing.
-
-`--from CID` fetches the portable template and validates pinned root metadata
-through the local gateway, rebinds host paths automatically, and refuses to
-replace an existing name. It does not fetch all image contents.
-It needs a running `serve --ipfs`. Firmware uses the normal runtime defaults.
-The CID must come from a trusted publisher: content integrity does not establish
-publisher identity or make an arbitrary executable image safe. Subsequent
-index/content reads remain lazy. Imported images default to private local
-publication policy and are not recursively pinned; their already-public cached
-blocks can still be shared by Kubo. `--public` on an imported image explicitly
-pins the complete remote publication.
-
-On first `serve --ipfs` or `image --public`, the daemon initializes its empty
-internal Kubo repository and selects distinct loopback API/gateway ports, then
-persists them for restart. Users do not initialize a second repo or select ports.
-Existing node configuration is validated, not rewritten. An external port
-conflict fails startup. `serve --ipfs` starts `ipfs daemon --enable-gc`, normally
-joining public IPFS. It can be combined with sandbox/cache serving. No account
-is needed, but IPFS is **not anonymous** and provides no availability guarantee.
-Configure Kubo's internal storage/network limits for the deployment.
-
-`--private` records the private policy, then removes a recursive pin if no
-other local public name retains it. It is retryable if unpinning fails, but is
-**not revocation**: cached blocks may remain available locally until GC and
-other peers can retain copies indefinitely. Failed publication/record writes
-may leave blocks or an extra pin; reconcile these explicitly. No private flag
-can make already published bytes secret again.
-
-The daemon waits up to 30 seconds for Kubo readiness, fails on unexpected exit,
-and kills/reaps its owned process on orderly shutdown without deleting data.
-Abrupt daemon death can leave Kubo running; reconcile that process before
-restart. Existing same-user `start` does not manage IPFS. Detached VMs still
-need the node for lazy reads; stopping its owning `serve` can interrupt them.
-
-The reader disables HTTP proxies/redirects, bounds response sizes, validates
-exact Range responses, and retains V2 revision/frame/content authentication.
-There is no local-pool/registry/HTTP-origin fallback. Missing dependencies and
-gateway/network errors fail reads rather than becoming nonexistent files.
-The host-side network bridge preserves access across VM network isolation.
-IPFS uses the same bounded HTTP reader described above, restricted to its
-trusted local Kubo gateway; saturation fails explicitly.
-IPFS's UnixFS blocks need not align with V2 frames, so requested range bytes do
-not establish actual P2P bytes. Public-network success rates, NAT traversal,
-peer bandwidth contribution, WAN startup P50/P95 and transfer amplification
-still need real multi-host validation. The pvisor README documents an explicit
-two-node Kubo runner (validated with 0.34.1) that checks actual Bitswap transfer
-and lazy reads on an isolated loopback network. Neither that runner nor mock
-gateway tests establish public-network performance.
-
 ## Single-node ownership and deployment safety
 
 Both supported SDK profiles operate only on the receiving daemon's local
 sandboxes. Peer discovery, Home queues, owner routing and `/v1/cluster/*`
-extensions are unsupported. IPFS image distribution is independent.
+extensions are unsupported.
 
 When replacing a deployment with queued or remotely assigned work, stop new
 submissions and reconcile that work through the executable that owns it.
@@ -1030,8 +957,7 @@ behavior. The sandbox option does not change portable cache endpoint rules.
 `pvisor-daemon protocol` prints the pinned baseline. Connect SDK version 1.1.0
 with the chosen domain and protocol, and use a prepared image satisfying the
 contract above. Invoke the separately built `pvisor-daemon` executable directly.
-`pvisor cache` provides `prepare`, `publish`, `prepare-rootfs`,
-`prepare-workspace`, `list`, `stat` and `read`. The daemon owns cache serving
+The Rust `pvisor::cache::CacheClient` exposes the cache protocol. The daemon owns cache serving
 through `pvisor-daemon serve --cache --cache-listen ENDPOINT --cache-image-store DIRECTORY`.
 Cache serving supports Linux and macOS and does not require KVM or cgroups.
 It preserves `PVISOR_CACHE_LOCATION` / `PVISOR_CACHE_SERVER`, `PVISOR_IMAGE_STORE`
@@ -1195,6 +1121,7 @@ private. There are no root or implementation-module compatibility exports.
 | `DaemonService` / `Daemon` | Locked open with an owner-bound runtime factory, authenticated router, bounded maintenance |
 | `Runtime` | Explicit preflight, create/inspect/control/delete, live endpoints and E2B template lookup; no default implementations |
 | `NativeRuntimeService` / `NativeRuntime` | Trusted native construction, optional pool selection before sharing, hidden supervisor reentry |
+| `PreparedCatalogService` / `PreparedCatalog` | In-process template operations and ordered registry configuration |
 | `RuntimeValidation` | Side-effect-free `RuntimeSpec` / `E2bTemplate` input validation |
 | `MemoryPoolService` / `PoolConfig` | Configuration-bound detached startup and foreground component reentry |
 

@@ -381,8 +381,8 @@ fn kernel_help_discovers_commands_and_default_execution_dispatches_spawn() {
             "Commands:\n",
             "Agent Commands:\n",
             &[
-                "run", "build", "pull", "images", "rmi", "exec", "ps", "start", "stop", "rm",
-                "logs", "inspect", "kill",
+                "run", "build", "pull", "push", "images", "rmi", "exec", "ps", "start", "stop",
+                "rm", "logs", "inspect", "kill",
             ][..],
         ),
         (
@@ -400,7 +400,7 @@ fn kernel_help_discovers_commands_and_default_execution_dispatches_spawn() {
                 "fork",
             ][..],
         ),
-        ("Tools:\n", "Options:\n", &["cache", "feature", "help"][..]),
+        ("Tools:\n", "Options:\n", &["feature", "help"][..]),
     ] {
         let section = help.split(start).nth(1).unwrap().split(end).next().unwrap();
         for name in names {
@@ -410,7 +410,7 @@ fn kernel_help_discovers_commands_and_default_execution_dispatches_spawn() {
             assert!(!section.contains("  tui "), "{section}");
         }
     }
-    for name in ["service", "memory-pool"] {
+    for name in ["service", "memory-pool", "cache"] {
         assert!(!help.contains(&format!("\n  {name} ")), "{help}");
     }
     for heading in [
@@ -580,17 +580,16 @@ fn explicit_default_execution_remains_available() {
 }
 
 #[test]
-fn cache_help_is_integrated_without_retired_service_commands() {
-    let output = Command::new(env!("CARGO_BIN_EXE_pvisor"))
-        .arg("cache")
-        .arg("--help")
-        .output()
-        .unwrap();
-    assert!(output.status.success());
-    let help = String::from_utf8_lossy(&output.stdout);
-    assert!(help.contains("Usage: pvisor cache"), "{help}");
-    assert!(!help.contains("  serve"), "{help}");
-    assert!(!help.contains("pvisor service"), "{help}");
+fn retired_cache_command_is_rejected() {
+    for args in [["cache", "--help"], ["help", "cache"]] {
+        let output = Command::new(env!("CARGO_BIN_EXE_pvisor"))
+            .args(args)
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(2));
+        assert!(output.stdout.is_empty());
+        assert!(String::from_utf8_lossy(&output.stderr).contains("unrecognized subcommand"));
+    }
 }
 
 #[test]
@@ -606,11 +605,19 @@ fn isolated_core_keeps_session_commands_and_runs_without_extensions() {
     let help = String::from_utf8_lossy(&output.stdout);
     for name in [
         "run", "build", "spawn", "status", "kill", "pull", "images", "rmi", "exec", "ps", "start",
-        "stop", "rm", "logs", "inspect", "fork", "apply", "drop", "cache", "help",
+        "stop", "rm", "logs", "inspect", "fork", "apply", "drop", "help",
     ] {
         assert!(help.contains(&format!("\n  {name} ")), "{help}");
     }
-    for name in ["env", "service", "daemon", "memory-pool", "tui", "replay"] {
+    for name in [
+        "env",
+        "service",
+        "daemon",
+        "memory-pool",
+        "tui",
+        "replay",
+        "cache",
+    ] {
         assert!(!help.contains(&format!("\n  {name} ")), "{help}");
     }
     let output = Command::new(&kernel)

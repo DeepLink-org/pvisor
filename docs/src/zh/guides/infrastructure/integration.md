@@ -46,7 +46,7 @@ VM shim 的 CPU/RAM 注解配置 VM 形状；部分宿主 OCI 约束被接受为
 
 ## 镜像缓存是共享服务 {#cache}
 
-客户端通过 `pvisor cache prepare/publish/list/stat/read` 管理内容；服务入口为 `pvisor-daemon serve --cache`，可以与 `--sandbox` 同时启用。缓存服务支持 Linux x86_64 与 macOS ARM64；单独启用缓存不要求 KVM 或 sandbox cgroup 条件。
+镜像用 `pvisor push` 发布，缓存诊断使用 Rust CacheClient；服务入口为 `pvisor-daemon serve --cache`，可以与 `--sandbox` 同时启用。缓存服务支持 Linux x86_64 与 macOS ARM64；单独启用缓存不要求 KVM 或 sandbox cgroup 条件。
 
 缓存端点、存储与认证独立于 sandbox API。准备了缓存镜像并不等于生成了 daemon 所需的 prepared-image manifest 和 guest bootstrap。配置与后端合同见[共享镜像缓存参考](../../reference/shared-image-cache.md)。
 

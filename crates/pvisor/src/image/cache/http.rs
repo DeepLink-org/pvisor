@@ -1,4 +1,4 @@
-//! Bounded read-only HTTP repositories, including local IPFS gateways.
+//! Bounded read-only HTTP repositories.
 use super::storage::StoredObject;
 use anyhow::{Context, ensure};
 use object_store::UpdateVersion;
@@ -52,49 +52,22 @@ impl Drop for Http {
 
 impl Http {
     pub(super) fn validate(address: &str) -> anyhow::Result<reqwest::Url> {
-        if !address.starts_with("ipfs+") {
-            let mut root = reqwest::Url::parse(address)?;
-            ensure!(
-                matches!(root.scheme(), "http" | "https")
-                    && root.host_str().is_some()
-                    && root.username().is_empty()
-                    && root.password().is_none()
-                    && root.query().is_none()
-                    && root.fragment().is_none()
-                    && !root.path().contains('%')
-                    && !address.contains('%')
-                    && address.split('/').all(|part| part != "." && part != "..")
-                    && !address.contains('\\'),
-                "HTTP repository must be an absolute http(s) URL without credentials, query or fragment"
-            );
-            let path = format!("{}/", root.path().trim_end_matches('/'));
-            root.set_path(&path);
-            return Ok(root);
-        }
-        let url = address
-            .strip_prefix("ipfs+")
-            .context("expected ipfs+http://LOOPBACK:PORT/ipfs/CID")?;
-        let mut root = reqwest::Url::parse(url)?;
+        let mut root = reqwest::Url::parse(address)?;
         ensure!(
-            root.scheme() == "http"
-                && root.host_str().is_some_and(|host| {
-                    host.parse::<std::net::IpAddr>()
-                        .is_ok_and(|ip| ip.is_loopback())
-                })
+            matches!(root.scheme(), "http" | "https")
+                && root.host_str().is_some()
                 && root.username().is_empty()
                 && root.password().is_none()
                 && root.query().is_none()
-                && root.fragment().is_none(),
-            "IPFS requires a trusted literal-loopback HTTP gateway"
+                && root.fragment().is_none()
+                && !root.path().contains('%')
+                && !address.contains('%')
+                && address.split('/').all(|part| part != "." && part != "..")
+                && !address.contains('\\'),
+            "HTTP repository must be an absolute http(s) URL without credentials, query or fragment"
         );
-        let path = root.path().trim_end_matches('/');
-        let cid = path.strip_prefix("/ipfs/").context("expected /ipfs/CID")?;
-        // Kubo validates the full CID. Exclude paths, IPNS and URL metacharacters.
-        ensure!(
-            (32..=128).contains(&cid.len()) && cid.bytes().all(|b| b.is_ascii_alphanumeric()),
-            "invalid immutable IPFS directory CID"
-        );
-        root.set_path(&format!("{path}/"));
+        let path = format!("{}/", root.path().trim_end_matches('/'));
+        root.set_path(&path);
         Ok(root)
     }
 
@@ -373,6 +346,7 @@ mod tests {
         }
         for address in [
             "file:///tmp/pool",
+            "ipfs+http://127.0.0.1:8080/ipfs/bafyobsolete",
             "https://user:secret@example/root",
             "https://example/root?token=secret",
             "https://example/root#fragment",
@@ -410,21 +384,6 @@ mod tests {
         assert_eq!(client.active.load(Ordering::Acquire), 0);
     }
 
-    #[test]
-    fn confines_gateway_and_requires_immutable_root() {
-        let cid = "b".repeat(59);
-        assert!(Http::new(&format!("ipfs+http://127.0.0.1:8080/ipfs/{cid}")).is_ok());
-        for root in [
-            format!("ipfs+http://example.com/ipfs/{cid}"),
-            format!("ipfs+http://127.0.0.1/ipns/{cid}"),
-            format!("ipfs+http://127.0.0.1/ipfs/{cid}/nested"),
-            format!("ipfs+http://user@127.0.0.1/ipfs/{cid}"),
-            format!("ipfs+http://127.0.0.1/ipfs/{cid}?x=1"),
-        ] {
-            assert!(Http::new(&root).is_err(), "{root}");
-        }
-    }
-
     fn response(
         status: &str,
         headers: &str,
@@ -433,11 +392,7 @@ mod tests {
         use std::io::{BufRead, Write};
         use std::net::TcpListener;
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let address = format!(
-            "ipfs+http://{}/ipfs/{}",
-            listener.local_addr().unwrap(),
-            "b".repeat(59)
-        );
+        let address = format!("http://{}/bundle", listener.local_addr().unwrap());
         let status = status.to_owned();
         let headers = headers.to_owned();
         let body = body.to_vec();
@@ -484,7 +439,7 @@ mod tests {
         assert_eq!(bytes, b"abc");
         let request = task.join().unwrap().to_lowercase();
         assert!(request.contains("range: bytes=2-4"));
-        assert!(request.contains("/data/file "));
+        assert!(request.contains("/bundle/data/file "));
         for (status, headers, body, range, limit) in [
             ("200 OK", "", b"abc".as_slice(), Some(2..5), 64),
             (
