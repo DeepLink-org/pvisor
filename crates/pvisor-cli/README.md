@@ -327,6 +327,11 @@ credentials and implicit loader paths retain the VM's existing environment scrub
 explicit `-e` values have Docker precedence. Unset entries remain absent, including
 HOME, PATH and TMPDIR.
 
+With no explicit or unset `TMPDIR`, the runtime supplies a private executable
+tmpfs beneath the guest's `/dev/shm`, bounded by guest RAM. Its mountpoint is not
+a rootfs review/apply candidate; user files with similar names remain ordinary
+staged changes. Old checkpoints keep their captured temporary-filesystem path.
+
 ### Applying project changes
 
 For new `stage` Sessions, ordinary `apply` selects only changes beneath the recorded

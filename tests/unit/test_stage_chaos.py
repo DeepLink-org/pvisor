@@ -244,6 +244,48 @@ class SafetyTests(unittest.TestCase):
         completion["result"]["failure"] = {"kind": "unknown"}
         self.assertFalse(chaos.committed_completion(run, completion))
 
+    def test_project_only_omits_environment_writes_without_changing_default_schedule(self):
+        self.assertEqual(len(chaos.DEFAULT_SCENARIOS), 40)
+        self.assertNotIn("project_only", chaos.DEFAULT_SCENARIOS)
+        with workspace() as (root, _):
+            for scenario in ["project_all", "project_only"]:
+                with self.subTest(scenario=scenario):
+                    options = chaos.parser().parse_args(
+                        [
+                            "--binary",
+                            "unused",
+                            "--firmware",
+                            "unused",
+                            "--output",
+                            str(root / scenario),
+                            "--seed",
+                            "17",
+                            "--seconds",
+                            "90",
+                            "--scenario",
+                            scenario,
+                        ]
+                    )
+                    with patch.object(chaos, "safe_ancestors", side_effect=lambda path: Path(path)):
+                        driver = chaos.Driver(options)
+                    driver.round = 1
+                    driver.scenario = scenario
+                    try:
+                        with patch.object(
+                            driver, "command", side_effect=RuntimeError("before native execution")
+                        ) as command:
+                            with self.assertRaisesRegex(RuntimeError, "before native execution"):
+                                driver.run_case()
+                        script = command.call_args.args[0][-1]
+                        self.assertIn("rm delete.txt", script)
+                        self.assertIn("exit 23", script)
+                        self.assertEqual(
+                            str(driver.sentinel / "sentinel") in script,
+                            scenario == "project_all",
+                        )
+                    finally:
+                        driver.events.close()
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -343,6 +343,83 @@ fn native_fixture_for(mut fixture: Fixture) -> Fixture {
 
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 #[test]
+#[ignore = "real Linux KVM host-root VM; GNU builds need PVISOR_TEST_LIBRARY_DIR"]
+fn native_stage_private_scratch_leaves_no_environment_apply_candidates() {
+    let fixture = native_fixture();
+    fs::write(fixture.path("workspace/edit"), b"original").unwrap();
+    fs::create_dir(fixture.path("workspace/.pvisor-tmp-user-owned")).unwrap();
+    fs::write(
+        fixture.path("workspace/.pvisor-tmp-user-owned/user.txt"),
+        b"original user file",
+    )
+    .unwrap();
+    let output = fixture.run_with_timeout(
+        fixture
+            .command()
+            .args([
+                "stage",
+                "--cpus",
+                "1",
+                "--memory",
+                "256m",
+                "--network",
+                "none",
+                "--stage",
+            ])
+            .arg(fixture.path("stage"))
+            .args([
+                "--",
+                "/bin/sh",
+                "-c",
+                r#"set -eu
+test -n "$TMPDIR"
+test "$(stat -f -c %T "$TMPDIR")" = tmpfs
+test "$(stat -c %a "$TMPDIR")" = 1777
+set -- $(stat -f -c '%S %b' "$TMPDIR")
+test "$(($1 * $2))" -eq 67108864
+printf '#!/bin/sh\necho scratch-exec-ok\n' > "$TMPDIR/probe"
+chmod +x "$TMPDIR/probe"
+"$TMPDIR/probe"
+printf staged > edit
+printf visible > .pvisor-tmp-user-owned/user.txt
+"#,
+            ]),
+        Duration::from_secs(30),
+    );
+    success(&output);
+    assert_eq!(output.stdout, b"scratch-exec-ok\n");
+    assert_eq!(
+        fs::read(fixture.path("workspace/edit")).unwrap(),
+        b"original"
+    );
+    assert_eq!(
+        fs::read(fixture.path("workspace/.pvisor-tmp-user-owned/user.txt")).unwrap(),
+        b"original user file"
+    );
+    let applied = fixture.run(
+        fixture
+            .command()
+            .args(["apply"])
+            .arg(fixture.path("stage"))
+            .args(["--all", "--json"]),
+    );
+    success(&applied);
+    let applied: serde_json::Value = serde_json::from_slice(&applied.stdout).unwrap();
+    assert_eq!(applied["status"], "applied");
+    assert_eq!(applied["remaining"]["in_scope"], 0);
+    assert_eq!(applied["remaining"]["outside_scope"], 0);
+    assert_eq!(fs::read(fixture.path("workspace/edit")).unwrap(), b"staged");
+    assert_eq!(
+        fs::read(fixture.path("workspace/.pvisor-tmp-user-owned/user.txt")).unwrap(),
+        b"visible"
+    );
+    let dropped = fixture.run(fixture.command().arg("drop").arg(fixture.path("stage")));
+    assert!(!dropped.status.success(), "{dropped:?}");
+    assert_eq!(fs::read(fixture.path("workspace/edit")).unwrap(), b"staged");
+}
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[test]
 #[ignore = "real Linux KVM host-root VM and /usr/bin/python3; GNU builds need PVISOR_TEST_LIBRARY_DIR"]
 fn native_stage_preserves_device_and_inode_across_ancestor_copy_up() {
     // Keep the input on the checkout's backing mount, not necessarily /tmp's.
@@ -822,6 +899,18 @@ fn native_stage_explicit_unsets_survive_guest_defaults_and_scratch_setup() {
             !env.contains_key(key),
             "guest restored explicit unset {key}: {env:?}"
         );
+    }
+}
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[test]
+#[ignore = "real Linux KVM host-root VM; PVISOR_TEST_LIBRARY_DIR for GNU firmware"]
+fn native_stage_explicit_tmpdir_values_survive_private_scratch_setup() {
+    let fixture = native_fixture();
+    for (name, value) in [("explicit-tmp", "/tmp/explicit-value"), ("empty-tmp", "")] {
+        let assignment = format!("TMPDIR={value}");
+        let env = guest_environment(&fixture, name, &["-e", &assignment], &[]);
+        assert_eq!(env.get("TMPDIR").map(String::as_str), Some(value));
     }
 }
 

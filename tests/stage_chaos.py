@@ -23,9 +23,9 @@ from pathlib import Path
 LIMIT = 32768
 REGULAR_SCENARIOS = ("chain", "conflict", "symlink", "rebind", "project_all", "nested_all")
 FAULT_SCENARIOS = ("parallel_apply", "parallel_drop", "live_cancel", "kill_apply")
-SCENARIOS = (*REGULAR_SCENARIOS, *FAULT_SCENARIOS)
+SCENARIOS = (*REGULAR_SCENARIOS, *FAULT_SCENARIOS, "project_only")
 # A named 40-round cycle; round-dependent seeds vary payloads and race order.
-DEFAULT_SCENARIOS = (*SCENARIOS,) * 4
+DEFAULT_SCENARIOS = (*REGULAR_SCENARIOS, *FAULT_SCENARIOS) * 4
 UNCOVERED = [
     "owner/runner-specific SIGKILL and host power loss",
     "automatic pending-apply recovery (pending is observed, never repaired by the driver)",
@@ -709,7 +709,9 @@ class Driver:
         )
         script += "\nrm delete.txt\nmv rename-old.txt rename-new.txt\n"
         script += f"printf %s {quote(token)} > added.txt\n"
-        script += f"printf %s staged-only > {quote(str(self.sentinel / 'sentinel'))}\nexit 23\n"
+        if self.scenario != "project_only":
+            script += f"printf %s staged-only > {quote(str(self.sentinel / 'sentinel'))}\n"
+        script += "exit 23\n"
         self.emit(
             "case",
             path=self.case,
@@ -825,7 +827,7 @@ class Driver:
                 sorted(item["path"] for item in left["selected"]),
                 sorted(expected_paths - set(first)),
             )
-            if self.scenario == "project_all":
+            if self.scenario in ("project_all", "project_only"):
                 obj = self.apply(["--all"], status="applied")
                 self.oracle("all exact target", content_snapshot(self.project), expected)
                 require(
@@ -837,6 +839,8 @@ class Driver:
                     isinstance(outside_count, int) and outside_count >= 0,
                     "missing outside-scope count",
                 )
+                if self.scenario == "project_only":
+                    require(outside_count == 0, "project-only left unexpected environment changes")
                 self.emit(
                     "drop_scope", remaining=obj["remaining"], fully_applied=outside_count == 0
                 )
