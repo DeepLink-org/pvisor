@@ -11703,7 +11703,7 @@ mod tests {
                     .is_err());
                 let mut changed = saved.clone();
                 changed
-                    .rebind_roots(|p| Ok(p.to_owned()), &[], true, &[lower.clone()])
+                    .rebind_roots(|p| Ok(p.to_owned()), &[], true, std::slice::from_ref(&lower))
                     .unwrap();
                 let mut changed = saved.clone();
                 assert!(changed
@@ -11715,7 +11715,7 @@ mod tests {
                         }),
                         &[],
                         false,
-                        &[lower.clone()]
+                        std::slice::from_ref(&lower)
                     )
                     .is_err());
                 std::fs::write(lower.join("referenced"), b"bad content").unwrap();
