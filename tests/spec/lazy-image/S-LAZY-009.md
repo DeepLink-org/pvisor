@@ -4,7 +4,8 @@
 
 **Contract**: Root/grouped push publish the same prepared revision. Explicit and
 configured-registry imports preserve native/E2B template fields without reading
-data. Queries stay local. Publishing creates no legacy visibility or CID records.
+data. Queries stay local. Image commands run without a daemon executable beside
+the CLI. Publishing creates no legacy visibility or CID records.
 
 **Prerequisites**: Executable `SUBJECT_BIN`, matching sibling `pvisor-daemon`,
 Python 3, Bash and loopback sockets. The prepared fixture uses an actual native
@@ -14,6 +15,9 @@ FROM scratch build; it does not run prepare-image, a VM, execd or envd.
 $ python3 "$TESTDIR/../fixture.py" use S-LAZY-009 --timeout 180 <<'CASE'
 > source "$PVISOR_PROJECT_ROOT/tests/spec/lazy-image/regression/fixtures.bash"
 > lazy_require_daemon
+> mkdir -m 700 standalone
+> cp "$SUBJECT_BIN" standalone/pvisor
+> export SUBJECT_BIN="$PWD/standalone/pvisor"
 > mkdir context
 > printf 'template bytes\n' > context/payload
 > printf 'FROM scratch\nCOPY payload /payload\nLABEL role=template\n' > context/Dockerfile

@@ -1,10 +1,6 @@
-//! Image transfers; prepared catalogs stay owned by the daemon companion.
+//! Image transfers for ordinary images and prepared templates.
 use super::*;
-use std::{
-    ffi::OsString,
-    path::Path,
-    process::{Command, Stdio},
-};
+use pvisor_daemon::api::{PreparedCatalog, PreparedCatalogService};
 
 #[derive(Debug, Args)]
 pub(in crate::cli) struct Push {
@@ -43,37 +39,11 @@ pub(in crate::cli) struct Pull {
     images_dir: Option<PathBuf>,
 }
 
-pub(super) fn prepared(images: &Path, args: &[OsString]) -> anyhow::Result<serde_json::Value> {
-    let (executable, _) = crate::companions::find("daemon")?
-        .context("prepared images require pvisor-daemon installed beside pvisor")?;
-    let output = Command::new(executable)
-        .args(["image-manage", "--images-dir"])
-        .arg(images)
-        .args(args)
-        .stdin(Stdio::null())
-        .output()
-        .context("manage prepared images")?;
-    ensure!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr).trim()
-    );
-    serde_json::from_slice(&output.stdout).context("invalid prepared-image response")
-}
-
 pub(super) fn push(args: Push) -> anyhow::Result<i32> {
     let destination = args.to.context("OCI registry push is not implemented; use --to s3://BUCKET/PREFIX or file:///ABSOLUTE/PATH")?;
     Store::validate_image_destination(&destination)?;
     let receipt = if let Some(images) = args.images_dir {
-        prepared(
-            &images,
-            &[
-                "push".into(),
-                args.image.into(),
-                "--to".into(),
-                destination.into(),
-            ],
-        )?
+        PreparedCatalog::new(images).push(&args.image, &destination)?
     } else {
         Store::discover()?.push_image(&args.image, &destination)?
     };
@@ -87,14 +57,14 @@ pub(super) fn pull(args: Pull) -> anyhow::Result<i32> {
         "--refresh requires --from or --images-dir"
     );
     if let Some(images) = args.images_dir {
-        let mut command = vec!["pull".into(), args.image.into()];
-        if let Some(source) = args.from {
-            command.extend(["--from".into(), source.into()]);
-        }
-        if args.refresh {
-            command.push("--refresh".into());
-        }
-        println!("{}", prepared(&images, &command)?);
+        let image =
+            PreparedCatalog::new(images).pull(&args.image, args.from.as_deref(), args.refresh)?;
+        println!(
+            "{}",
+            serde_json::json!({
+                "image": args.image, "source": image.cache.repository, "mirrors": image.cache.mirrors,
+            })
+        );
         return Ok(0);
     }
     let mut store = Store::discover()?;

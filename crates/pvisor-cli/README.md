@@ -111,7 +111,7 @@ durable stage preparation uses its `Persistence` and `DurableFiles` contracts.
 Root help starts with **Commands** (container `run`, `build`, `pull`, `push`, `images`, `rmi`,
 `exec`, `ps`, `start`, `stop`, `rm`, `logs`), **Agent Commands** (Session `spawn`, `stage`,
 `status`, `kill`, `review`, `apply`, `drop`, `inspect`, `checkpoint`, `suspend`,
-`resume`, `fork`) and **Tools** (installed `daemon`/`replay` companions, `cache`, `feature`,
+`resume`, `fork`) and **Tools** (installed `daemon`/`replay` companions, `feature`,
 `help`). It includes the run-review-apply examples; use `pvisor help COMMAND`
 for command options.
 
@@ -618,11 +618,10 @@ catalog record intact. Inspect retains its Docker array and adds
 `Pvisor.Source/ImageHandle/Digest/Platform` for remote bindings.
 
 `--images-dir DIR` explicitly selects the daemon's prepared-template catalog.
-Push, pull, ls and inspect delegate to the trusted installed daemon companion
-without starting a daemon service. Pull without `--from` resolves that catalog's
-configured V2 registries; ordinary pulls still use OCI. Queries never resolve
-missing names. Build output and `cache list/stat/read` file diagnostics are
-unchanged. See the [lazy-image specification](../../tests/spec/lazy-image/spec.md)
+Push, pull, ls and inspect access that catalog from the `pvisor` process.
+Pull without `--from` resolves the catalog's configured V2 registries; ordinary
+pulls use OCI. Queries never resolve missing names. For file-level diagnostics
+use the Rust cache client. See the [lazy-image specification](../../tests/spec/lazy-image/spec.md)
 and [daemon migration](../pvisor-daemon/README.md#s3-and-httphttps-lazy-image-repositories).
 
 The first profile supports Apple Silicon macOS/HVF and Linux x86_64/KVM;
@@ -1136,7 +1135,7 @@ Pool revisions remain pinned in container records across tag replacement/removal
 Short and fully qualified Docker Hub references address the same catalog tag.
 Replacing or removing it through any alias affects that one identity; existing
 containers and distinct tags retain their pinned revisions.
-Filesystem/S3 publishers use `--image-store` as the parent of scoped
+Writable filesystem/S3 cache preparation uses `PVISOR_IMAGE_STORE` as the parent of scoped
 `staging/.import-*` directories, removed after success or error. No raw OCI
 directory is retained. `SSL_CERT_FILE` can supply a host registry CA bundle.
 Socket clients and the VM bridge require protocol V2; unsupported peers fail

@@ -1,5 +1,6 @@
 //! Bounded Docker formatting/filtering, validated before touching storage.
 use super::*;
+use pvisor_daemon::api::{PreparedCatalog, PreparedCatalogService};
 use serde_json::{Value, json};
 
 pub(super) fn labels(entries: &[String]) -> anyhow::Result<BTreeMap<String, String>> {
@@ -343,15 +344,16 @@ pub(super) fn inspect(command: DockerCommand) -> anyhow::Result<i32> {
         "--images-dir selects images, not containers"
     );
     let format = args.format.as_deref().map(Format::parse).transpose()?;
-    let store = if args.images_dir.is_none() {
+    let catalog = args.images_dir.map(PreparedCatalog::new);
+    let store = if catalog.is_none() {
         Some(Store::discover()?)
     } else {
         None
     };
     let mut rows = vec![];
     let status = batch(&args.selectors, |selector| {
-        let row = if let Some(images) = &args.images_dir {
-            super::transfer::prepared(images, &["inspect".into(), selector.into()])?
+        let row = if let Some(catalog) = &catalog {
+            catalog.inspect(selector)?
         } else {
             let store = store.as_ref().context("missing image store")?;
             match kind {
@@ -500,8 +502,8 @@ pub(super) fn containers(store: &Store, args: List) -> anyhow::Result<i32> {
 pub(super) fn images(args: ListImages) -> anyhow::Result<i32> {
     let filters = Filters::parse(&args.filters, true)?;
     let format = args.format.as_deref().map(Format::parse).transpose()?;
-    let images: Vec<(String, docker::Image)> = if let Some(directory) = &args.images_dir {
-        serde_json::from_value(super::transfer::prepared(directory, &["ls".into()])?)?
+    let images: Vec<(String, docker::Image)> = if let Some(directory) = args.images_dir {
+        PreparedCatalog::new(directory).list()?
     } else {
         Store::discover()?
             .images()?

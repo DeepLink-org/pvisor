@@ -2778,6 +2778,7 @@ dependencies = [
  "pvisor",
  "pvisor-containers",
  "pvisor-core",
+ "pvisor-daemon",
  "pvisor-gateway",
  "pvisor-guest",
  "pvisor-journal",

@@ -85,22 +85,18 @@ fn digest_bytes(bytes: &[u8]) -> String {
 enum Operation {
     Request(Request),
     ReadFile { digest: String, path: Vec<u8> },
-    Publish { image: String, architecture: String },
 }
 
 fn prepare(image: &str, refresh: bool) -> Operation {
-    Operation::Request(Request::Prepare {
-        image: image.into(),
-        architecture: architecture().into(),
-        refresh,
-    })
+    prepare_for(image, architecture(), refresh)
 }
 
-fn publish(image: &str, architecture: &str) -> Operation {
-    Operation::Publish {
+fn prepare_for(image: &str, architecture: &str, refresh: bool) -> Operation {
+    Operation::Request(Request::Prepare {
         image: image.into(),
         architecture: architecture.into(),
-    }
+        refresh,
+    })
 }
 
 fn read_file(digest: &str, path: &str) -> Operation {
@@ -130,10 +126,6 @@ fn cache_client_child() -> anyhow::Result<()> {
     )?)?;
     let data = match operation {
         Operation::Request(request) => serde_json::to_vec(&client.request(request)?.0)?,
-        Operation::Publish {
-            image,
-            architecture,
-        } => serde_json::to_vec(&client.publish(&image, &architecture, false)?)?,
         Operation::ReadFile { digest, path } => {
             let mut data = Vec::new();
             loop {
@@ -498,7 +490,7 @@ fn s3_pool_is_readable_without_registry_or_daemon_after_preparation() {
     );
 }
 #[test]
-fn explicit_s3_publisher_rebuilds_missing_objects_and_conditionally_updates_its_own_head() {
+fn refreshing_s3_cache_rebuilds_missing_objects_and_conditionally_updates_its_own_head() {
     let tmp = tempfile::tempdir().unwrap();
     let source = tmp.path().join("source");
     let target = if architecture() == "amd64" {
@@ -517,7 +509,7 @@ fn explicit_s3_publisher_rebuilds_missing_objects_and_conditionally_updates_its_
             Some(&s3),
             false,
             Some(&source),
-            publish(&registry.reference, target),
+            prepare_for(&registry.reference, target, true),
         );
         let response: serde_json::Value = serde_json::from_slice(&successful(output)).unwrap();
         assert_eq!(response["digest"], image_digest);
@@ -576,7 +568,7 @@ fn explicit_s3_publisher_rebuilds_missing_objects_and_conditionally_updates_its_
         Some(&s3),
         false,
         Some(&source),
-        publish(&registry.reference, target),
+        prepare_for(&registry.reference, target, true),
     );
     assert!(!failed.status.success(), "injected upload refusal");
     clean_imports(&source);
@@ -607,32 +599,12 @@ fn explicit_s3_publisher_rebuilds_missing_objects_and_conditionally_updates_its_
         Some(&s3),
         true,
         Some(&staging),
-        publish(&registry.reference, architecture()),
+        prepare(&registry.reference, true),
     );
     assert!(!rejected.status.success());
     assert!(String::from_utf8_lossy(&rejected.stderr).contains("read-only"));
     assert!(!staging.exists());
     assert_eq!(s3.puts.load(Ordering::Relaxed), before);
-}
-
-#[test]
-fn publisher_rejects_server_backend_before_connecting() {
-    let tmp = tempfile::tempdir().unwrap();
-    let staging = tmp.path().join("unused-staging");
-    let output = cache_client(
-        tmp.path(),
-        "server",
-        "unix:///nonexistent/pvisor-publish.sock",
-        None,
-        false,
-        Some(&staging),
-        publish("example:test", architecture()),
-    );
-    assert!(!output.status.success());
-    assert!(
-        String::from_utf8_lossy(&output.stderr).contains("publish requires a filesystem or S3")
-    );
-    assert!(!staging.exists());
 }
 
 #[test]
@@ -648,7 +620,7 @@ fn filesystem_client_and_explicit_options_use_the_same_daemonless_contract() {
         None,
         false,
         Some(&source),
-        publish(&registry.reference, architecture()),
+        prepare(&registry.reference, false),
     ));
     let prepared: serde_json::Value = serde_json::from_slice(&prepared).unwrap();
     let handle = prepared["image_handle"].as_str().unwrap();
@@ -656,36 +628,31 @@ fn filesystem_client_and_explicit_options_use_the_same_daemonless_contract() {
     // Fail after the config and manifest have been downloaded, so cleanup must
     // remove a partially populated import rather than just an empty directory.
     fs::write(tmp.path().join("registry/fail"), b"layer").unwrap();
-    for operation in [
-        publish(&registry.reference, architecture()),
+    let failed = cache_client(
+        tmp.path(),
+        "filesystem",
+        shared.to_str().unwrap(),
+        None,
+        false,
+        Some(&source),
         prepare(&registry.reference, true),
-    ] {
-        let failed = cache_client(
-            tmp.path(),
-            "filesystem",
-            shared.to_str().unwrap(),
-            None,
-            false,
-            Some(&source),
-            operation,
-        );
-        assert!(!failed.status.success(), "injected registry failure");
-        clean_imports(&source);
-        let previous = successful(cache_client(
-            tmp.path(),
-            "filesystem",
-            shared.to_str().unwrap(),
-            None,
-            true,
-            None,
-            prepare(&registry.reference, false),
-        ));
-        let previous: serde_json::Value = serde_json::from_slice(&previous).unwrap();
-        assert_eq!(
-            previous["image_handle"], handle,
-            "failed import cannot replace HEAD"
-        );
-    }
+    );
+    assert!(!failed.status.success(), "injected registry failure");
+    clean_imports(&source);
+    let previous = successful(cache_client(
+        tmp.path(),
+        "filesystem",
+        shared.to_str().unwrap(),
+        None,
+        true,
+        None,
+        prepare(&registry.reference, false),
+    ));
+    let previous: serde_json::Value = serde_json::from_slice(&previous).unwrap();
+    assert_eq!(
+        previous["image_handle"], handle,
+        "failed import cannot replace HEAD"
+    );
     fs::write(tmp.path().join("registry/ca.pem"), b"invalid CA bundle").unwrap();
     let failed = cache_client(
         tmp.path(),
@@ -694,7 +661,7 @@ fn filesystem_client_and_explicit_options_use_the_same_daemonless_contract() {
         None,
         false,
         Some(&source),
-        publish(&registry.reference, architecture()),
+        prepare(&registry.reference, true),
     );
     assert!(!failed.status.success());
     assert!(String::from_utf8_lossy(&failed.stderr).contains("SSL_CERT_FILE"));
@@ -924,7 +891,7 @@ fn a_lost_head_acknowledgement_is_reconciled_after_sdk_conditional_retry() {
             Some(&s3),
             false,
             Some(&source),
-            publish(&registry.reference, architecture()),
+            prepare(&registry.reference, true),
         ));
         let response: serde_json::Value = serde_json::from_slice(&response).unwrap();
         let objects = s3.objects.lock().unwrap();

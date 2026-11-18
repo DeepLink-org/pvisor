@@ -400,20 +400,6 @@ impl CacheClient {
         self.request_timeout(request, TIMEOUT)
     }
 
-    /// Publish the local OCI image even when its remote reference already exists.
-    /// Only filesystem and S3 backends support publication without a daemon.
-    pub fn publish(
-        &self,
-        image: &str,
-        architecture: &str,
-        refresh: bool,
-    ) -> anyhow::Result<Response> {
-        match &self.transport {
-            CacheTransport::Objects(cache) => cache.publish_image(image, architecture, refresh),
-            CacheTransport::Server { .. } => bail!("publish requires a filesystem or S3 backend"),
-        }
-    }
-
     fn request_timeout(
         &self,
         request: Request,

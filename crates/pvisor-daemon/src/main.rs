@@ -1,5 +1,4 @@
 mod cache_component;
-mod image_repository;
 mod prepared_image;
 mod registries;
 mod user_service;
@@ -10,6 +9,8 @@ use pvisor_daemon::api::{
     NativeRuntimeService,
 };
 use std::{net::SocketAddr, path::PathBuf, sync::Arc};
+
+const DEFAULT_IMAGES: &str = ".pvisor/images";
 
 #[derive(Parser)]
 #[command(
@@ -50,8 +51,6 @@ enum Command {
     },
     /// Prepare a pooled native template or an explicitly supplied upstream service.
     PrepareImage(prepared_image::PrepareImage),
-    #[command(hide = true)]
-    ImageManage(image_repository::Manage),
     /// Configure ordered V2 image registries (not OCI/Docker registry endpoints).
     Registry(registries::Registry),
     #[command(hide = true)]
@@ -161,9 +160,6 @@ fn main() -> anyhow::Result<()> {
     if let Command::PrepareImage(options) = args.command {
         return options.run();
     }
-    if let Command::ImageManage(options) = args.command {
-        return options.run();
-    }
     if let Command::Registry(options) = args.command {
         return options.run();
     }
@@ -211,7 +207,6 @@ async fn run(command: Command) -> anyhow::Result<()> {
         | Command::Stop { .. }
         | Command::ResolveMemoryPool { .. } => unreachable!(),
         Command::PrepareImage(_)
-        | Command::ImageManage(_)
         | Command::Registry(_)
         | Command::Protocol
         | Command::MemoryPool { .. }
@@ -290,7 +285,7 @@ async fn run(command: Command) -> anyhow::Result<()> {
                     "wildcard listen requires an explicit public endpoint"
                 );
                 let images_dir = images_dir
-                    .unwrap_or_else(|| image_repository::DEFAULT_IMAGES.into())
+                    .unwrap_or_else(|| DEFAULT_IMAGES.into())
                     .canonicalize()?;
                 let cgroup_root = cgroup_root
                     .ok_or_else(|| anyhow::anyhow!("sandbox requires --cgroup-root"))?
@@ -574,7 +569,7 @@ mod tests {
     }
 
     #[test]
-    fn registries_and_prepared_image_operations_parse() {
+    fn registry_configuration_operations_parse() {
         for args in [
             vec!["registry"],
             vec!["registry", "list"],
@@ -587,48 +582,11 @@ mod tests {
             ],
             vec!["registry", "move", "cdn", "1"],
             vec!["registry", "remove", "cdn"],
-            vec![
-                "image-manage",
-                "--images-dir",
-                "catalog",
-                "pull",
-                "python",
-                "--refresh",
-            ],
-            vec![
-                "image-manage",
-                "--images-dir",
-                "catalog",
-                "pull",
-                "python",
-                "--from",
-                "https://mirror.example/image",
-            ],
-            vec![
-                "image-manage",
-                "--images-dir",
-                "catalog",
-                "push",
-                "python",
-                "--to",
-                "s3://images/releases",
-            ],
         ] {
             let mut command = vec!["pvisor-daemon"];
             command.extend(args);
             assert!(Args::try_parse_from(command).is_ok());
         }
-        assert!(
-            Args::try_parse_from([
-                "pvisor-daemon",
-                "image-manage",
-                "--images-dir",
-                "catalog",
-                "push",
-                "python"
-            ])
-            .is_err()
-        );
     }
 
     #[test]
@@ -648,6 +606,13 @@ mod tests {
                 clap::error::ErrorKind::InvalidSubcommand,
             );
         }
+        assert_eq!(
+            Args::try_parse_from(["pvisor-daemon", "image-manage", "--help"])
+                .err()
+                .unwrap()
+                .kind(),
+            clap::error::ErrorKind::InvalidSubcommand,
+        );
         for option in ["--ipfs", "--ipfs-repo"] {
             let error = Args::try_parse_from(["pvisor-daemon", "serve", "--cache", option])
                 .err()

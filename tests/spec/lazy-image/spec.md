@@ -27,10 +27,8 @@ pvisor image inspect example:latest
 
 There is no separate conversion command and no upload flag on build in this
 request. Retain `build --output type=oci,dest=PATH`, quiet output and iidfile
-semantics. Do not add `cache pull/inspect/registry` or another mirror of image
-management commands. Current `cache list/stat/read` inspect files *inside* an
-image, while image ls/inspect inspect catalog objects; they are not aliases.
-File-level diagnostics use the Rust cache client.
+semantics. Image `ls` and `inspect` query catalog objects. To inspect files
+inside a pinned image, use the Rust cache client.
 
 `image push` provides explicit S3/file
 publication mode. It does not claim that ordinary OCI-registry push is already
@@ -103,7 +101,8 @@ Prepared templates preserve engine/profile flags, entrypoint, cmd, environment,
 E2B resource/version settings and the pinned V2 image. Rebind only host-local
 paths. `pvisor-daemon prepare-image` and `registry` remain available until a
 separate equivalent migration is specified; this request retires only `image`.
-Existing daemon serve must consume records imported by the new image commands.
+The image commands access the prepared catalog in-process through the daemon
+crate's Rust API. Daemon serve consumes the same prepared records.
 No arbitrary template DTO or new top-level template/cache manager is needed.
 
 ## Publication and failure invariants

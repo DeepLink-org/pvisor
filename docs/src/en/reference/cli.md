@@ -14,7 +14,7 @@ are in
 Root help (`pvisor` or `pvisor --help`) groups commands under **Commands**
 (Docker-compatible container commands), **Agent Commands** (`spawn`, `status`,
 `kill`, `review`, `apply`, `drop`, `inspect`, `checkpoint`, `suspend`, `resume`, `fork`) and **Tools**
-(installed `replay` companion, `cache`, `feature`, `help`). It shows a short
+(installed `daemon` and `replay` companions, `feature`, `help`). It shows a short
 run-review-apply example; use `pvisor help COMMAND` for detailed options.
 
 ```bash
@@ -188,8 +188,9 @@ Use `pvisor push IMAGE --to URI` or `pvisor image push` to publish a local
 image to S3 or an absolute `file:///` directory. The JSON receipt contains a
 pinned `source`. Import it with `pvisor image pull IMAGE --from SOURCE` using
 S3 or HTTP(S). Use explicit `--refresh` to replace an existing local name.
-Prepared daemon templates use `--images-dir DIR`. See the [shared image
-cache guide](shared-image-cache.md) for an example.
+Use `--images-dir DIR` to select prepared daemon templates. These commands
+access the catalog directly. See the [shared image cache guide](shared-image-cache.md)
+for an example.
 
 ## Session owners and durable operations {#host-agentctl}
 

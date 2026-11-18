@@ -222,7 +222,9 @@ origin's name index is queried in that configuration.
 
 Use `pvisor image push/pull` with an explicit prepared-template catalog for an
 S3-compatible bucket/prefix or a static mirror. Root `pvisor push` is equivalent
-to `pvisor image push`. No daemon service is required:
+to `pvisor image push`. The CLI accesses the catalog through the daemon crate's
+Rust API (`PreparedCatalog` and `PreparedCatalogService`). Catalog commands
+run in the caller without the daemon executable or a running service:
 
 ```sh
 # Publisher: host AWS credentials and region come from its environment.
@@ -1119,6 +1121,7 @@ private. There are no root or implementation-module compatibility exports.
 | `DaemonService` / `Daemon` | Locked open with an owner-bound runtime factory, authenticated router, bounded maintenance |
 | `Runtime` | Explicit preflight, create/inspect/control/delete, live endpoints and E2B template lookup; no default implementations |
 | `NativeRuntimeService` / `NativeRuntime` | Trusted native construction, optional pool selection before sharing, hidden supervisor reentry |
+| `PreparedCatalogService` / `PreparedCatalog` | In-process template operations and ordered registry configuration |
 | `RuntimeValidation` | Side-effect-free `RuntimeSpec` / `E2bTemplate` input validation |
 | `MemoryPoolService` / `PoolConfig` | Configuration-bound detached startup and foreground component reentry |
 

@@ -1,9 +1,9 @@
 //! Prepared templates and S3/static publication.
+use crate::api::{PreparedCatalogService, PreparedImage, RegistryUpdate};
 use anyhow::{Context, ensure};
-use clap::{Args, Subcommand};
 use fs2::FileExt;
-use pvisor_daemon::api::PreparedImage;
-use serde::Serialize;
+use pvisor::docker::{Image, ImageRegistry, Store};
+use serde::{Deserialize, Serialize};
 use std::{
     fs::{self, File, OpenOptions},
     io::Write,
@@ -11,97 +11,196 @@ use std::{
     path::{Path, PathBuf},
 };
 
-pub(super) const DEFAULT_IMAGES: &str = ".pvisor/images";
+const REGISTRY_CONFIG: &str = ".distribution/config/registries.json";
 
-#[derive(Args)]
-pub(super) struct Manage {
-    #[arg(long)]
-    images_dir: PathBuf,
-    #[command(subcommand)]
-    command: Operation,
+/// A directory of prepared sandbox templates and its registry configuration.
+pub struct PreparedCatalog {
+    images: PathBuf,
 }
 
-#[derive(Subcommand)]
-enum Operation {
-    Push {
-        name: String,
-        #[arg(long)]
-        to: String,
-    },
-    Pull {
-        name: String,
-        #[arg(long)]
-        from: Option<String>,
-        #[arg(long)]
-        refresh: bool,
-    },
-    Ls,
-    Inspect {
-        name: String,
-    },
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RegistryConfig {
+    version: u32,
+    registries: Vec<ImageRegistry>,
 }
 
-impl Manage {
-    pub(super) fn run(self) -> anyhow::Result<()> {
-        let value = match self.command {
-            Operation::Ls => {
-                let entries = match fs::read_dir(&self.images_dir) {
-                    Ok(entries) => Some(entries),
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-                    Err(error) => return Err(error.into()),
-                };
-                let mut images = Vec::new();
-                for entry in entries.into_iter().flatten() {
-                    let path = entry?.path();
-                    if path.extension().is_some_and(|ext| ext == "json") {
-                        let name = path
-                            .file_stem()
-                            .and_then(|name| name.to_str())
-                            .context("invalid image name")?;
-                        validate_name(name)?;
-                        let image: PreparedImage = read_json(&path)?;
-                        images.push((name.to_owned(), image.pooled_image));
-                    }
-                }
-                images.sort_by(|a, b| a.0.cmp(&b.0));
-                serde_json::to_value(images)?
-            }
-            Operation::Inspect { name } => {
-                validate_name(&name)?;
-                let image: PreparedImage =
-                    read_json(&self.images_dir.join(format!("{name}.json")))?;
-                let mut metadata = image.pooled_image.inspect()?;
-                metadata["RepoTags"] = serde_json::json!([name]);
-                metadata
-            }
-            Operation::Push { name, to } => {
-                let (image, source) = push(&self.images_dir, &name, &to)?;
-                serde_json::json!({
-                    "source": source, "image_handle": image.cache.handle,
-                    "digest": image.digest, "platform": image.platform,
-                })
-            }
-            Operation::Pull {
-                name,
-                from,
-                refresh,
-            } => {
-                let image = pull(&self.images_dir, &name, from.as_deref(), refresh)?;
-                serde_json::json!({
-                    "image": name, "source": image.cache.repository, "mirrors": image.cache.mirrors,
-                })
-            }
+impl PreparedCatalogService for PreparedCatalog {
+    fn new(images: PathBuf) -> Self {
+        Self { images }
+    }
+
+    fn list(&self) -> anyhow::Result<Vec<(String, Image)>> {
+        let entries = match fs::read_dir(&self.images) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(vec![]),
+            Err(error) => return Err(error.into()),
         };
-        println!("{}", serde_json::to_string(&value)?);
-        Ok(())
+        let mut images = Vec::new();
+        for entry in entries {
+            let path = entry?.path();
+            if path.extension().is_some_and(|ext| ext == "json") {
+                let name = path
+                    .file_stem()
+                    .and_then(|name| name.to_str())
+                    .context("invalid image name")?;
+                validate_name(name)?;
+                let image: PreparedImage = read_json(&path)?;
+                images.push((name.to_owned(), image.pooled_image));
+            }
+        }
+        images.sort_by(|a, b| a.0.cmp(&b.0));
+        Ok(images)
+    }
+
+    fn inspect(&self, name: &str) -> anyhow::Result<serde_json::Value> {
+        validate_name(name)?;
+        let image: PreparedImage = read_json(&self.images.join(format!("{name}.json")))?;
+        let mut metadata = image.pooled_image.inspect()?;
+        metadata["RepoTags"] = serde_json::json!([name]);
+        Ok(metadata)
+    }
+
+    fn push(&self, name: &str, destination: &str) -> anyhow::Result<serde_json::Value> {
+        Store::validate_image_destination(destination)?;
+        let _lock = image_lock(&self.images, name)?;
+        let image: PreparedImage = read_json(&self.images.join(format!("{name}.json")))?;
+        let portable = serde_json::to_vec(&portable_template(&image))?;
+        let source = Store::open(image.rootfs)?.publish_registry_image(
+            &image.pooled_image,
+            name,
+            destination,
+            &portable,
+        )?;
+        Ok(serde_json::json!({
+            "source": source, "image_handle": image.pooled_image.cache.handle,
+            "digest": image.pooled_image.digest, "platform": image.pooled_image.platform,
+        }))
+    }
+
+    fn pull(&self, name: &str, source: Option<&str>, refresh: bool) -> anyhow::Result<Image> {
+        if let Some(source) = source {
+            ensure!(
+                ["s3://", "http://", "https://"]
+                    .iter()
+                    .any(|scheme| source.starts_with(scheme)),
+                "--from requires an S3 or HTTP(S) publication"
+            );
+        }
+        let _lock = image_lock(&self.images, name)?;
+        let images = self.images.canonicalize()?;
+        let manifest = images.join(format!("{name}.json"));
+        ensure!(
+            refresh || !manifest.try_exists()?,
+            "image already exists; use --refresh"
+        );
+        let (bytes, mut repositories) = if let Some(source) = source {
+            let repository = source.trim_end_matches('/').to_owned();
+            (Store::read_image_repository(&repository)?, vec![repository])
+        } else {
+            let registries = PreparedCatalog::new(images.clone()).registries()?;
+            ensure!(
+                !registries.is_empty(),
+                "image absent locally; configure registries or use --from"
+            );
+            let resolved = Store::resolve_image_repository(name, &registries)?;
+            (resolved.template, resolved.repositories)
+        };
+        let mut image: PreparedImage = serde_json::from_slice(&bytes)?;
+        image.rootfs = images.join("store");
+        let store = Store::open(image.rootfs.clone())?;
+        image.pooled_image.cache.location = image.rootfs.join("images/pool-v2");
+        image.pooled_image.cache.repository = Some(repositories.remove(0));
+        image.pooled_image.cache.mirrors = repositories;
+        image.library_dir = None;
+        store.import_image_config(&image.pooled_image)?;
+        drop(store.open_image(&image.pooled_image)?);
+        write_json(&manifest, &image, refresh)?;
+        Ok(image.pooled_image)
+    }
+
+    fn prepare(
+        &self,
+        name: &str,
+        build: impl FnOnce(PathBuf) -> anyhow::Result<PreparedImage>,
+    ) -> anyhow::Result<()> {
+        validate_name(name)?;
+        fs::create_dir_all(&self.images)?;
+        let images = self.images.canonicalize()?;
+        let _lock = image_lock(&images, name)?;
+        let root = images.join("store");
+        let manifest = build(root.clone())?;
+        ensure!(
+            manifest.rootfs == root,
+            "prepared template belongs to a different store"
+        );
+        write_json(&images.join(format!("{name}.json")), &manifest, true)
+    }
+
+    fn registries(&self) -> anyhow::Result<Vec<ImageRegistry>> {
+        let config: RegistryConfig = match read_json(&self.images.join(REGISTRY_CONFIG)) {
+            Ok(config) => config,
+            Err(error)
+                if error
+                    .downcast_ref::<std::io::Error>()
+                    .is_some_and(|error| error.kind() == std::io::ErrorKind::NotFound) =>
+            {
+                return Ok(vec![]);
+            }
+            Err(error) => return Err(error),
+        };
+        ensure!(
+            config.version == 1,
+            "unsupported registry configuration version"
+        );
+        Store::validate_image_registries(&config.registries)?;
+        Ok(config.registries)
+    }
+
+    fn update_registries(&self, update: RegistryUpdate) -> anyhow::Result<Vec<ImageRegistry>> {
+        private_directory(&self.images.join(".distribution"))?;
+        private_directory(&self.images.join(".distribution/config"))?;
+        let _lock = lock(&self.images.join(".distribution/registries.lock"))?;
+        let mut registries = self.registries()?;
+        match update {
+            RegistryUpdate::Add(mut registry) => {
+                registry.location = registry.location.trim_end_matches('/').into();
+                registries.push(registry);
+            }
+            RegistryUpdate::Remove(name) => {
+                registries.remove(registry_index(&registries, &name)?);
+            }
+            RegistryUpdate::Move { name, position } => {
+                ensure!(
+                    position > 0 && position <= registries.len(),
+                    "priority position must be in 1..=registry count"
+                );
+                let registry = registries.remove(registry_index(&registries, &name)?);
+                registries.insert(position - 1, registry);
+            }
+        }
+        Store::validate_image_registries(&registries)?;
+        let config = RegistryConfig {
+            version: 1,
+            registries,
+        };
+        write_json(&self.images.join(REGISTRY_CONFIG), &config, true)?;
+        Ok(config.registries)
     }
 }
 
-pub(super) fn validate_name(name: &str) -> anyhow::Result<()> {
+fn registry_index(registries: &[ImageRegistry], name: &str) -> anyhow::Result<usize> {
+    registries
+        .iter()
+        .position(|registry| registry.name == name)
+        .context("unknown registry")
+}
+
+fn validate_name(name: &str) -> anyhow::Result<()> {
     pvisor::docker::Store::validate_image_key(name)
 }
 
-pub(super) fn private_directory(path: &Path) -> anyhow::Result<()> {
+fn private_directory(path: &Path) -> anyhow::Result<()> {
     fs::DirBuilder::new()
         .recursive(true)
         .mode(0o700)
@@ -115,7 +214,7 @@ pub(super) fn private_directory(path: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-pub(super) fn lock(path: &Path) -> anyhow::Result<File> {
+fn lock(path: &Path) -> anyhow::Result<File> {
     let file = OpenOptions::new()
         .read(true)
         .write(true)
@@ -134,7 +233,7 @@ pub(super) fn lock(path: &Path) -> anyhow::Result<File> {
 }
 
 /// Preparation, publication and import serialize on the same image key.
-pub(super) fn image_lock(images: &Path, name: &str) -> anyhow::Result<File> {
+fn image_lock(images: &Path, name: &str) -> anyhow::Result<File> {
     validate_name(name)?;
     private_directory(&images.join(".distribution"))?;
     let directory = images.join(".distribution/image-locks");
@@ -142,7 +241,7 @@ pub(super) fn image_lock(images: &Path, name: &str) -> anyhow::Result<File> {
     lock(&directory.join(format!("{name}.lock")))
 }
 
-pub(super) fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> anyhow::Result<T> {
+fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> anyhow::Result<T> {
     let file = OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
@@ -154,7 +253,7 @@ pub(super) fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> anyhow::
     Ok(serde_json::from_reader(file)?)
 }
 
-pub(super) fn write_json(path: &Path, value: &impl Serialize, replace: bool) -> anyhow::Result<()> {
+fn write_json(path: &Path, value: &impl Serialize, replace: bool) -> anyhow::Result<()> {
     let parent = path.parent().context("record requires parent")?;
     let mut file = tempfile::NamedTempFile::new_in(parent)?;
     serde_json::to_writer_pretty(file.as_file_mut(), value)?;
@@ -167,72 +266,6 @@ pub(super) fn write_json(path: &Path, value: &impl Serialize, replace: bool) -> 
     }
     File::open(parent)?.sync_all()?;
     Ok(())
-}
-
-fn push(
-    images: &Path,
-    name: &str,
-    destination: &str,
-) -> anyhow::Result<(pvisor::docker::Image, String)> {
-    use pvisor::docker::Store;
-    Store::validate_image_destination(destination)?;
-    let _lock = image_lock(images, name)?;
-    let image: PreparedImage = read_json(&images.join(format!("{name}.json")))?;
-    let portable = serde_json::to_vec(&portable_template(&image))?;
-    let source = Store::open(image.rootfs)?.publish_registry_image(
-        &image.pooled_image,
-        name,
-        destination,
-        &portable,
-    )?;
-    Ok((image.pooled_image, source))
-}
-
-fn pull(
-    images: &Path,
-    name: &str,
-    source: Option<&str>,
-    refresh: bool,
-) -> anyhow::Result<pvisor::docker::Image> {
-    use pvisor::docker::Store;
-    if let Some(source) = source {
-        ensure!(
-            ["s3://", "http://", "https://"]
-                .iter()
-                .any(|scheme| source.starts_with(scheme)),
-            "--from requires an S3 or HTTP(S) publication"
-        );
-    }
-    let _lock = image_lock(images, name)?;
-    let images = images.canonicalize()?;
-    let manifest = images.join(format!("{name}.json"));
-    ensure!(
-        refresh || !manifest.try_exists()?,
-        "image already exists; use --refresh"
-    );
-    let (bytes, mut repositories) = if let Some(source) = source {
-        let repository = source.trim_end_matches('/').to_owned();
-        (Store::read_image_repository(&repository)?, vec![repository])
-    } else {
-        let registries = crate::registries::load(&images)?;
-        ensure!(
-            !registries.is_empty(),
-            "image absent locally; configure registries or use --from"
-        );
-        let resolved = Store::resolve_image_repository(name, &registries)?;
-        (resolved.template, resolved.repositories)
-    };
-    let mut image: PreparedImage = serde_json::from_slice(&bytes)?;
-    image.rootfs = images.join("store");
-    let store = Store::open(image.rootfs.clone())?;
-    image.pooled_image.cache.location = image.rootfs.join("images/pool-v2");
-    image.pooled_image.cache.repository = Some(repositories.remove(0));
-    image.pooled_image.cache.mirrors = repositories;
-    image.library_dir = None;
-    store.import_image_config(&image.pooled_image)?;
-    drop(store.open_image(&image.pooled_image)?);
-    write_json(&manifest, &image, refresh)?;
-    Ok(image.pooled_image)
 }
 
 fn portable_template(image: &PreparedImage) -> PreparedImage {
@@ -288,5 +321,74 @@ mod tests {
         assert_eq!(read_json::<String>(&path).unwrap(), "original");
         write_json(&path, &"updated", true).unwrap();
         assert_eq!(read_json::<String>(&path).unwrap(), "updated");
+    }
+
+    #[test]
+    fn configuration_never_shadows_a_valid_image_named_registries() {
+        let temp = tempfile::tempdir().unwrap();
+        let catalog = PreparedCatalog::new(temp.path().into());
+        let image = temp.path().join("registries.json");
+        std::fs::write(&image, b"local prepared image").unwrap();
+        private_directory(&temp.path().join(".distribution")).unwrap();
+        let policy = temp.path().join(".distribution/registries.json");
+        std::fs::write(&policy, b"image publication policy").unwrap();
+        assert!(catalog.registries().unwrap().is_empty());
+        catalog
+            .update_registries(RegistryUpdate::Add(ImageRegistry {
+                name: "origin".into(),
+                location: "https://origin.example/pvisor".into(),
+                resolve: true,
+            }))
+            .unwrap();
+        assert_eq!(catalog.registries().unwrap().len(), 1);
+        assert_eq!(std::fs::read(image).unwrap(), b"local prepared image");
+        assert_eq!(std::fs::read(policy).unwrap(), b"image publication policy");
+    }
+
+    #[test]
+    fn configuration_is_versioned_bounded_and_strict_without_network_io() {
+        let temp = tempfile::tempdir().unwrap();
+        let catalog = PreparedCatalog::new(temp.path().into());
+        private_directory(&temp.path().join(".distribution/config")).unwrap();
+        write_json(
+            &temp.path().join(REGISTRY_CONFIG),
+            &serde_json::json!({
+                "version": 99, "registries": []
+            }),
+            false,
+        )
+        .unwrap();
+        assert!(catalog.registries().is_err());
+        write_json(&temp.path().join(REGISTRY_CONFIG), &serde_json::json!({
+            "version": 1, "registries": [
+                {"name": "origin", "location": "https://origin.example/pvisor", "password": "not-a-real-secret"}
+            ]
+        }), true).unwrap();
+        assert!(
+            catalog.registries().is_err(),
+            "unknown credential fields cannot be silently persisted"
+        );
+        let registry: ImageRegistry = serde_json::from_value(serde_json::json!({
+            "name": "origin", "location": "https://origin.example/pvisor"
+        }))
+        .unwrap();
+        assert!(
+            registry.resolve,
+            "legacy minimal entries resolve by default"
+        );
+        let mut entries: Vec<_> = (0..9)
+            .map(|i| ImageRegistry {
+                name: format!("r-{i}"),
+                location: format!("https://r-{i}.example"),
+                resolve: true,
+            })
+            .collect();
+        assert!(Store::validate_image_registries(&entries).is_err());
+        entries.truncate(1);
+        entries[0].resolve = false;
+        assert!(
+            Store::resolve_image_repository("tiny", &entries).is_err(),
+            "download-only sources must not be queried for names"
+        );
     }
 }

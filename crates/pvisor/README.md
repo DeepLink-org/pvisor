@@ -1441,7 +1441,7 @@ predecessor; such images need rebuilding into a fresh pool before publication.
 Treat the exported image, including its config/environment, as public. The
 destination must not exist; failure can leave a partial export.
 
-Filesystem/S3 publish and writable prepare import OCI sources under a scoped
+Writable filesystem/S3 cache preparation imports OCI sources under a scoped
 `staging/.import-*` directory, removed on success and error after publication
 finishes. They retain no raw OCI layers, extracted roots or prepared records.
 Read-only preparation needs no local import directory. Registry TLS can add a

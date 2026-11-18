@@ -9,7 +9,7 @@ Host、OCI VM 和透明 host-rootfs VM 的完整命令示例见
 
 根帮助（`pvisor` 或 `pvisor --help`）按 **Commands**（兼容 Docker 的容器命令）、
 **Agent Commands**（`spawn`、`status`、`kill`、`review`、`apply`、`drop`、`inspect`、`checkpoint`、`suspend`、`resume`、`fork`）和 **Tools**
-（已安装的 `replay` 伴随程序、`cache`、`feature`、`help`）分组。帮助提供简短的
+（已安装的 `daemon` 和 `replay` 伴随程序、`feature`、`help`）分组。帮助提供简短的
 run-review-apply 示例；用 `pvisor help COMMAND` 查看详细选项。
 
 ```bash
@@ -163,7 +163,7 @@ Linux/KVM 需要单独进行运行时验收。
 用 `pvisor push IMAGE --to URI` 或 `pvisor image push` 将本地镜像发布到 S3
 或绝对 `file:///` 目录。JSON 回执包含固定的 `source`。接收端用
 `pvisor image pull IMAGE --from SOURCE` 从 S3 或 HTTP(S) 导入，显式指定
-`--refresh` 才能替换已有本地名称。Daemon 预制模板使用 `--images-dir DIR`。
+`--refresh` 才能替换已有本地名称。使用 `--images-dir DIR` 直接访问 daemon 的预制模板目录。
 操作示例见[共享镜像缓存指南](shared-image-cache.md)。
 
 ## Session owner 与持久操作 {#host-agentctl}

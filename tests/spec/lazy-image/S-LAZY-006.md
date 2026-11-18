@@ -4,7 +4,8 @@
 
 **Contract**: Direct and forwarded daemon image commands fail with a
 `pvisor image` migration diagnostic before creating state.
-Daemon help omits image and the IPFS service flag. Template preparation,
+Daemon help omits image and the IPFS service flag. The hidden image-management
+entry point also refuses. Template preparation,
 registry configuration and cache serving remain available.
 
 **Prerequisites**: Executable `SUBJECT_BIN`, matching sibling `pvisor-daemon`,
@@ -30,6 +31,10 @@ $ python3 "$TESTDIR/../fixture.py" use S-LAZY-006 --timeout 30 <<'CASE'
 >   grep -F 'pvisor image' old.stderr
 >   assert_absent "$CASE_ROOT/legacy"
 >   assert_absent "$CASE_ROOT/old-target"
+>   expect_refused "${executable[@]}" image-manage --images-dir "$CASE_ROOT/legacy" ls > old.stdout 2> old.stderr
+>   test ! -s old.stdout
+>   grep -F 'unrecognized subcommand' old.stderr
+>   assert_absent "$CASE_ROOT/legacy"
 >   "${executable[@]}" --help > daemon-help
 >   ! grep -Eq '^[[:space:]]+image[[:space:]]' daemon-help
 >   "${executable[@]}" serve --help > service-help

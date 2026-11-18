@@ -2,11 +2,10 @@
 //! or unpack a registry image on the sandbox creation path.
 use anyhow::{Context, ensure};
 use clap::Args;
-use pvisor_daemon::api::{PreparedImage, RuntimeValidation};
-use std::{
-    collections::BTreeMap, fs, io::Write, os::unix::fs::PermissionsExt, path::PathBuf,
-    time::Duration,
+use pvisor_daemon::api::{
+    PreparedCatalog, PreparedCatalogService, PreparedImage, RuntimeValidation,
 };
+use std::{collections::BTreeMap, fs, os::unix::fs::PermissionsExt, path::PathBuf, time::Duration};
 
 #[derive(Args)]
 pub struct PrepareImage {
@@ -36,7 +35,7 @@ pub struct PrepareImage {
     #[arg(long, default_value_t = 512)]
     memory_mib: u64,
     /// Directory containing prepared manifests and the shared compressed store.
-    #[arg(long, default_value = crate::image_repository::DEFAULT_IMAGES)]
+    #[arg(long, default_value = crate::DEFAULT_IMAGES)]
     images_dir: PathBuf,
     /// Dynamic host firmware directory; omitted for the packaged static daemon.
     #[arg(long)]
@@ -44,7 +43,7 @@ pub struct PrepareImage {
 }
 impl PrepareImage {
     pub fn run(self) -> anyhow::Result<()> {
-        crate::image_repository::validate_name(&self.name)?;
+        pvisor::docker::Store::validate_image_key(&self.name)?;
         ensure!(
             !self.image.contains(['\n', '\r', '\0']) && !self.image.contains(char::is_whitespace),
             "invalid base image reference"
@@ -108,83 +107,75 @@ impl PrepareImage {
                 "guest service must be statically linked (build with CGO_ENABLED=0)"
             );
         }
-        fs::create_dir_all(&self.images_dir)?;
-        let images = self.images_dir.canonicalize()?;
-        let _image_lock = crate::image_repository::image_lock(&images, &self.name)?;
-        let store_root = images.join("store");
-        let store = pvisor::docker::Store::open(store_root.clone())?;
-        let context = tempfile::tempdir()?;
-        if !native_guest {
-            for (name, bytes) in [
-                (service, execd.as_slice()),
-                (
-                    "sandbox-init",
-                    include_bytes!(env!("PVISOR_SANDBOX_INIT")).as_slice(),
-                ),
-            ] {
-                let path = context.path().join(name);
-                fs::write(&path, bytes)?;
-                fs::set_permissions(&path, fs::Permissions::from_mode(0o755))?;
+        PreparedCatalog::new(self.images_dir).prepare(&self.name, |store_root| {
+            let store = pvisor::docker::Store::open(store_root.clone())?;
+            let context = tempfile::tempdir()?;
+            if !native_guest {
+                for (name, bytes) in [
+                    (service, execd.as_slice()),
+                    (
+                        "sandbox-init",
+                        include_bytes!(env!("PVISOR_SANDBOX_INIT")).as_slice(),
+                    ),
+                ] {
+                    let path = context.path().join(name);
+                    fs::write(&path, bytes)?;
+                    fs::set_permissions(&path, fs::Permissions::from_mode(0o755))?;
+                }
             }
-        }
-        let dockerfile = context.path().join("Dockerfile");
-        fs::write(
-            &dockerfile,
-            if native_guest {
-                format!(
-                    "FROM {}\nENTRYPOINT []\nCMD [\"/bin/sleep\",\"infinity\"]\n",
-                    self.image
-                )
-            } else {
-                format!(
-                    "FROM {}\nCOPY {service} /opt/pvisor/{service}\nCOPY sandbox-init /opt/pvisor/sandbox-init\nENTRYPOINT [\"/opt/pvisor/sandbox-init\"]\nCMD [\"/bin/sleep\",\"infinity\"]\n",
-                    self.image
-                )
-            },
-        )?;
-        let image = pvisor::docker::build::build(
-            &store,
-            &pvisor::docker::build::BuildOptions {
-                context: context.path().into(),
-                file: dockerfile,
-                tags: vec![],
-                build_args: BTreeMap::new(),
-                target: None,
-                platform: Some("linux/amd64".into()),
-                pull: false,
-                no_cache: false,
-                cpus: 1,
-                memory_mib: 512,
-                network: false,
-                timeout: Duration::from_secs(300),
-                quiet: true,
-                output: None,
-            },
-        )?;
-        let manifest = PreparedImage {
-            rootfs: store_root,
-            entrypoint: if native_guest {
-                vec![]
-            } else if e2b.is_some() {
-                vec!["/opt/pvisor/sandbox-init".into(), "--envd".into()]
-            } else {
-                vec!["/opt/pvisor/sandbox-init".into()]
-            },
-            cmd: vec!["/bin/sleep".into(), "infinity".into()],
-            env: image.env.clone(),
-            library_dir: self.library_dir.map(|p| p.canonicalize()).transpose()?,
-            e2b: e2b.clone(),
-            pooled_image: image,
-            native_opensandbox: !native_guest && e2b.is_none(),
-            native_e2b: !native_guest && e2b.is_some(),
-            native_guest,
-        };
-        let mut file = tempfile::NamedTempFile::new_in(&images)?;
-        serde_json::to_writer_pretty(file.as_file_mut(), &manifest)?;
-        file.as_file_mut().write_all(b"\n")?;
-        file.as_file().sync_all()?;
-        file.persist(images.join(format!("{}.json", self.name)))?;
-        fs::File::open(&images)?.sync_all()?;
+            let dockerfile = context.path().join("Dockerfile");
+            fs::write(
+                &dockerfile,
+                if native_guest {
+                    format!(
+                        "FROM {}\nENTRYPOINT []\nCMD [\"/bin/sleep\",\"infinity\"]\n",
+                        self.image
+                    )
+                } else {
+                    format!(
+                        "FROM {}\nCOPY {service} /opt/pvisor/{service}\nCOPY sandbox-init /opt/pvisor/sandbox-init\nENTRYPOINT [\"/opt/pvisor/sandbox-init\"]\nCMD [\"/bin/sleep\",\"infinity\"]\n",
+                        self.image
+                    )
+                },
+            )?;
+            let image = pvisor::docker::build::build(
+                &store,
+                &pvisor::docker::build::BuildOptions {
+                    context: context.path().into(),
+                    file: dockerfile,
+                    tags: vec![],
+                    build_args: BTreeMap::new(),
+                    target: None,
+                    platform: Some("linux/amd64".into()),
+                    pull: false,
+                    no_cache: false,
+                    cpus: 1,
+                    memory_mib: 512,
+                    network: false,
+                    timeout: Duration::from_secs(300),
+                    quiet: true,
+                    output: None,
+                },
+            )?;
+            Ok(PreparedImage {
+                rootfs: store_root,
+                entrypoint: if native_guest {
+                    vec![]
+                } else if e2b.is_some() {
+                    vec!["/opt/pvisor/sandbox-init".into(), "--envd".into()]
+                } else {
+                    vec!["/opt/pvisor/sandbox-init".into()]
+                },
+                cmd: vec!["/bin/sleep".into(), "infinity".into()],
+                env: image.env.clone(),
+                library_dir: self.library_dir.map(|p| p.canonicalize()).transpose()?,
+                e2b: e2b.clone(),
+                pooled_image: image,
+                native_opensandbox: !native_guest && e2b.is_none(),
+                native_e2b: !native_guest && e2b.is_some(),
+                native_guest,
+            })
+        })?;
         println!("{}", self.name);
         Ok(())
     }
