@@ -61,6 +61,19 @@ a later passing run alone does not explain an earlier leak report.
 Workload drivers and guest probes live directly under `tests/`. Hardware modules
 have explicit names outside the default `test*.py` pattern.
 
+## Rust test style
+
+Follow the [Rust test discipline](../AGENTS.md#rust-test-discipline): in-file
+implementation tests primarily use doctest/rstest, every `api.rs` provides
+executable documentation, and crate `tests/` primarily use proptest through the
+public API. Preserve deterministic boundaries, fixed regressions and native
+architecture/hardware runners. Migrate one crate at a time without weakening
+existing coverage.
+
+Use workspace dev-dependencies and existing runners. Property and ordinary
+example tests run through nextest; changed API doctests also require
+`mise run test-doc -- <package>` and rustdoc with warnings denied.
+
 ## Execution
 
 | Command | Scope |

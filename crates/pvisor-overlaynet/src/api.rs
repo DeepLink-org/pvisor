@@ -83,6 +83,23 @@ pub struct InterceptionProfile {
 
 /// Owned traffic observation. Default values are zero/empty and old records use those defaults.
 /// Concurrent sampling is not a transaction across counters; cooperative bypass traffic is absent.
+///
+/// Old records retain their counters and default missing fields, including nested targets.
+///
+/// ```
+/// use pvisor_overlaynet::api::{InterceptionSnapshot, TargetCounters};
+///
+/// let snapshot: InterceptionSnapshot = serde_json::from_str(
+///     r#"{"requests_seen":3,"targets":{"HTTP example.com:80":{"denied":2}}}"#,
+/// )?;
+/// assert_eq!(snapshot.requests_seen, 3);
+/// assert_eq!(snapshot.policy_allowed, 0);
+/// assert_eq!(snapshot.targets["HTTP example.com:80"], TargetCounters {
+///     denied: 2, ..Default::default()
+/// });
+/// assert_eq!(snapshot.peer_packets_received, 0);
+/// # Ok::<(), serde_json::Error>(())
+/// ```
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct InterceptionSnapshot {
@@ -216,6 +233,22 @@ pub struct OverlayRequestContext<T> {
 }
 
 /// Coverage profiles for implemented drivers; no I/O or installation occurs.
+///
+/// ```
+/// use pvisor_overlaynet::api::{
+///     InterceptionCoverage, InterceptionDriver, InterceptionProfile, InterceptionStrength,
+/// };
+///
+/// let proxy = InterceptionProfile::explicit_proxy();
+/// assert_eq!(proxy.driver, InterceptionDriver::ExplicitProxy);
+/// assert_eq!(proxy.strength, InterceptionStrength::Cooperative);
+/// assert!(proxy.http && proxy.tcp_connect);
+/// assert!(!proxy.dns && !proxy.udp && !proxy.inherited_by_children);
+/// let vm = InterceptionProfile::vm_smoltcp();
+/// assert_eq!(vm.strength, InterceptionStrength::NonBypassable);
+/// assert!(vm.dns && vm.tcp_connect && vm.inherited_by_children);
+/// assert!(!vm.http && !vm.udp && !vm.peer_ipv4);
+/// ```
 pub trait InterceptionCoverage: Sized {
     /// Cooperative HTTP/CONNECT coverage with no general DNS/UDP/child enforcement.
     fn explicit_proxy() -> Self;
@@ -231,6 +264,27 @@ pub trait InterceptionObservation {
 }
 
 /// Construction and live policy replacement for an execution's egress owner.
+///
+/// Peer authority requires an unrestricted compiled policy; constructing it performs no I/O.
+///
+/// ```
+/// use pvisor_core::network::{NetworkConfig, NetworkMode, NetworkPolicy};
+/// use pvisor_overlaynet::api::{BandwidthRegistry, EgressControl, EgressRuntime};
+///
+/// let restricted = NetworkPolicy::compile(&NetworkConfig {
+///     mode: NetworkMode::NoNetwork, ..Default::default()
+/// })?;
+/// assert!(EgressRuntime::for_peer_network(restricted, BandwidthRegistry::default()).is_err());
+/// let public = NetworkPolicy::compile(&NetworkConfig::default())?;
+/// let egress = EgressRuntime::for_peer_network(public, BandwidthRegistry::default())?;
+/// let clone = egress.clone();
+/// clone.replace_policy(NetworkPolicy::compile(&NetworkConfig {
+///     mode: NetworkMode::NoNetwork, ..Default::default()
+/// })?);
+/// # Ok::<(), anyhow::Error>(())
+/// ```
+///
+/// The replacement is shared by both handles; later peer admissions are rejected.
 pub trait EgressControl: Sized {
     /// Construct peer-capable egress using the default Core controller. Reject scoped
     /// grants, denies and bandwidth budgets before publishing an owner. Peer membership
@@ -254,6 +308,32 @@ pub trait EgressControl: Sized {
 }
 
 /// Owned VM data-plane configuration and deterministic guest addressing.
+///
+/// Configuration owns attribution values and shared egress/metrics handles, without starting a worker.
+///
+/// ```
+/// use std::sync::Arc;
+/// use pvisor_core::{PolicyControlController, network::{NetworkConfig, NetworkPolicy}};
+/// use pvisor_overlaynet::api::{
+///     BandwidthRegistry, EgressContext, EgressControl, EgressRuntime,
+///     GUEST_IPV4, InterceptionObservation, InterceptionSnapshot,
+///     VmNetworkConfig, VmNetworkConfiguration,
+/// };
+///
+/// let egress = EgressRuntime::with_bandwidth_registry(
+///     NetworkPolicy::compile(&NetworkConfig::default())?,
+///     Arc::new(PolicyControlController), BandwidthRegistry::default(),
+/// );
+/// let config = VmNetworkConfig::new(egress, EgressContext {
+///     run_id: Some("run-1".into()), execution_id: Some("execution-1".into()),
+/// });
+/// assert_eq!(config.max_flows, 1024);
+/// assert!(config.gateway.is_none() && config.peer_network.is_none());
+/// assert_eq!(config.context.run_id.as_deref(), Some("run-1"));
+/// assert_eq!(config.metrics.snapshot(), InterceptionSnapshot::default());
+/// assert_eq!(VmNetworkConfig::guest_mac(GUEST_IPV4), [2, 80, 86, 0, 0, 2]);
+/// # Ok::<(), anyhow::Error>(())
+/// ```
 pub trait VmNetworkConfiguration: Sized {
     /// Use 1024 flows, fresh metrics, no Gateway and no peer membership; no I/O.
     fn new(egress: EgressRuntime, context: EgressContext) -> Self;
@@ -263,6 +343,50 @@ pub trait VmNetworkConfiguration: Sized {
 }
 
 /// Lifetime of a framed Ethernet/TCP/DNS worker; declarations are platform-uniform.
+///
+/// This in-memory transport needs no VM or listener. Invalid configuration is rejected before
+/// its factory runs; explicit shutdown joins the worker and releases the adopted endpoint.
+///
+/// ```
+/// use std::sync::Arc;
+/// use pvisor_core::{PolicyControlController, network::{NetworkConfig, NetworkPolicy}};
+/// use pvisor_overlaynet::api::{
+///     BandwidthRegistry, EgressContext, EgressControl, EgressRuntime, InterceptionSnapshot,
+///     VmNetwork, VmNetworkConfig, VmNetworkConfiguration, VmNetworkRuntime,
+/// };
+/// use tokio::io::AsyncReadExt;
+///
+/// let config = VmNetworkConfig::new(EgressRuntime::with_bandwidth_registry(
+///     NetworkPolicy::compile(&NetworkConfig::default())?,
+///     Arc::new(PolicyControlController), BandwidthRegistry::default(),
+/// ), EgressContext::default());
+/// let mut invalid = config.clone();
+/// invalid.max_flows = 0;
+/// let failure = VmNetwork::start_with_io::<tokio::io::DuplexStream, _>(
+///     invalid, || panic!("invalid capacity must not adopt a transport"),
+/// );
+/// assert!(failure.err().unwrap().to_string().contains("max_flows"));
+/// let (host, mut guest) = tokio::io::duplex(4096);
+/// let network = VmNetwork::start_with_io(config, move || Ok(host))?;
+/// assert_eq!(network.shutdown()?, InterceptionSnapshot::default());
+/// let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
+/// runtime.block_on(async {
+///     let eof = tokio::time::timeout(std::time::Duration::from_secs(3), guest.read(&mut [0; 1])).await??;
+///     assert_eq!(eof, 0);
+///     Ok::<(), anyhow::Error>(())
+/// })?;
+/// # Ok::<(), anyhow::Error>(())
+/// ```
+///
+/// Shutdown consumes ownership, so the same worker cannot be shut down twice.
+///
+/// ```compile_fail,E0382
+/// use pvisor_overlaynet::api::{VmNetwork, VmNetworkRuntime};
+/// fn shutdown_twice(network: VmNetwork) {
+///     let _ = network.shutdown();
+///     let _ = network.shutdown();
+/// }
+/// ```
 pub trait VmNetworkRuntime: Sized {
     /// Consume configuration and start a dedicated runtime thread. Reject zero flow
     /// capacity and invalid/conflicting peer membership before startup succeeds. The
@@ -283,6 +407,42 @@ pub trait VmNetworkRuntime: Sized {
 
 /// Optional lifecycle hook for authorized GET/CONNECT downstream delivery.
 /// Implementations fence native pause/resume and tolerate cancellation during awaits.
+///
+/// A semaphore can model resume acknowledgements in an adapter test. Native adapters
+/// must additionally perform the platform pause/resume and cleanup operations.
+///
+/// ```
+/// use std::sync::Arc;
+/// use async_trait::async_trait;
+/// use futures_util::poll;
+/// use pvisor_overlaynet::api::DownloadWait;
+/// use tokio::sync::Semaphore;
+///
+/// struct AcknowledgedWait(Arc<Semaphore>);
+/// #[async_trait]
+/// impl DownloadWait for AcknowledgedWait {
+///     async fn waiting(&mut self) -> anyhow::Result<()> { Ok(()) }
+///     async fn ready(&mut self) -> anyhow::Result<()> {
+///         self.0.acquire().await?.forget();
+///         Ok(())
+///     }
+///     fn cancel(&mut self) { self.0.close(); }
+/// }
+/// let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
+/// runtime.block_on(async {
+///     let acknowledgements = Arc::new(Semaphore::new(0));
+///     let mut wait = AcknowledgedWait(acknowledgements.clone());
+///     wait.waiting().await?;
+///     let mut ready = Box::pin(wait.ready());
+///     assert!(poll!(ready.as_mut()).is_pending());
+///     acknowledgements.add_permits(1);
+///     ready.await?;
+///     wait.cancel();
+///     assert!(acknowledgements.is_closed());
+///     Ok::<(), anyhow::Error>(())
+/// })?;
+/// # Ok::<(), anyhow::Error>(())
+/// ```
 #[allow(clippy::double_must_use)]
 #[async_trait]
 pub trait DownloadWait: Send {
@@ -362,6 +522,65 @@ pub trait OverlaySink: Clone + Send + Sync + 'static {
 }
 
 /// Proxy construction and ownership transfer to an Axum router.
+///
+/// A local sink can handle a relative request without a listener or upstream connection.
+/// Absolute proxy requests still require destination authorization before sink selection.
+///
+/// ```
+/// use std::{net::SocketAddr, sync::{Arc, atomic::{AtomicUsize, Ordering}}};
+/// use async_trait::async_trait;
+/// use axum::{body::Body, extract::{ConnectInfo, Request}, response::Response};
+/// use http_body_util::BodyExt;
+/// use pvisor_core::{PolicyControlController, network::{NetworkConfig, NetworkMode, NetworkPolicy, ResolvedAddressPolicy}};
+/// use pvisor_overlaynet::api::{
+///     BandwidthRegistry, DownloadWait, InterceptionMetrics, InterceptionObservation,
+///     OverlayProxy, OverlayRequestContext, OverlayServerState, OverlaySink, ProxyEvent,
+/// };
+/// use tower::ServiceExt;
+///
+/// #[derive(Clone)]
+/// struct HealthSink(NetworkPolicy);
+/// #[async_trait]
+/// impl OverlaySink for HealthSink {
+///     type RequestContext = ();
+///     fn request_context(&self, _: &Request) -> anyhow::Result<OverlayRequestContext<()>> {
+///         Ok(OverlayRequestContext {
+///             policy: self.0.clone(), run_id: None, execution_id: None,
+///             session_id: "health".into(), sink: (),
+///         })
+///     }
+///     fn accepts(&self, _: &Request) -> bool { false }
+///     async fn handle(&self, _: Request, _: SocketAddr, context: &OverlayRequestContext<()>) -> anyhow::Result<Response> {
+///         assert_eq!(context.session_id, "health");
+///         Ok(Response::new(Body::from("healthy")))
+///     }
+///     fn download_wait(&self, _: &OverlayRequestContext<()>) -> anyhow::Result<Option<Box<dyn DownloadWait>>> { Ok(None) }
+///     fn observe(&self, _: &OverlayRequestContext<()>, _: ProxyEvent<'_>) {}
+/// }
+/// let policy = NetworkPolicy::compile(&NetworkConfig { mode: NetworkMode::NoNetwork, ..Default::default() })?;
+/// let active = Arc::new(AtomicUsize::new(0));
+/// let metrics = InterceptionMetrics::default();
+/// let before = metrics.snapshot();
+/// let router = OverlayServerState::new(Arc::new(PolicyControlController), HealthSink(policy), active.clone())
+///     .with_interception_metrics(metrics.clone())
+///     .with_bandwidth_registry(BandwidthRegistry::default())
+///     .with_resolved_address_policy(ResolvedAddressPolicy::Strict)
+///     .into_router();
+/// let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
+/// runtime.block_on(async {
+///     let mut request = Request::builder().uri("/health").body(Body::empty())?;
+///     request.extensions_mut().insert(ConnectInfo("127.0.0.1:40000".parse::<SocketAddr>()?));
+///     let response = router.oneshot(request).await?;
+///     assert_eq!(active.load(Ordering::Relaxed), 1);
+///     assert_eq!(response.into_body().collect().await?.to_bytes(), "healthy");
+///     assert_eq!(active.load(Ordering::Relaxed), 0);
+///     Ok::<(), anyhow::Error>(())
+/// })?;
+/// assert_eq!(before.requests_seen, 0);
+/// assert_eq!(metrics.clone().snapshot().requests_seen, 1);
+/// assert_eq!(metrics.snapshot().sink_requests, 1);
+/// # Ok::<(), anyhow::Error>(())
+/// ```
 pub trait OverlayProxy<S: OverlaySink>: Sized {
     /// Bind controller, sink and shared active-request counter. Creates 128 admission
     /// slots and fresh accounting/bandwidth owners. No listener starts. The default
@@ -384,6 +603,23 @@ pub trait OverlayProxy<S: OverlaySink>: Sized {
 }
 
 /// Stateless HTTP header safety on the existing HeaderMap; no mutation or I/O.
+///
+/// ```
+/// use axum::http::HeaderMap;
+/// use pvisor_overlaynet::api::ForwardingHeaders;
+///
+/// let mut headers = HeaderMap::new();
+/// headers.insert("connection", "keep-alive, X-Private-Hop".parse()?);
+/// headers.insert("upgrade", "h2c, WebSocket".parse()?);
+/// assert!(headers.skip_upstream_forward_header("AUTHORIZATION"));
+/// assert!(headers.skip_upstream_forward_header("x-private-hop"));
+/// assert!(!headers.skip_upstream_forward_header("x-request-id"));
+/// assert!(headers.skip_response_header_after_reframing("content-length", false));
+/// assert!(!headers.skip_response_header_after_reframing("content-type", false));
+/// assert!(headers.skip_response_header_after_reframing("content-type", true));
+/// assert!(headers.is_websocket_upgrade());
+/// # Ok::<(), axum::http::header::InvalidHeaderValue>(())
+/// ```
 pub trait ForwardingHeaders {
     /// Filter hop-by-hop/Connection-nominated headers, Host, length, credentials and Expect
     /// before upstream model forwarding. Names and tokens are matched case-insensitively.

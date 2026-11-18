@@ -1,4 +1,5 @@
 //! Portable, side-effect-free admission checks through the public API.
+use proptest::prelude::*;
 use pvisor_overlay_core::{FileAccessPolicy, LayerMutability};
 use pvisor_overlayfs::api::{
     FsMetrics, KernelCacheConfig, KernelCachePolicy, OverlayConfiguration, OverlayFs,
@@ -29,7 +30,7 @@ fn candidate(root: &Path) -> OverlayMountConfig {
     config
 }
 
-#[test]
+#[rstest::rstest]
 fn default_is_disabled_without_ownership_or_cached_observation_optin() {
     let cache = KernelCacheConfig::default();
     assert_eq!(cache.policy, KernelCachePolicy::Disabled);
@@ -57,7 +58,7 @@ fn default_is_disabled_without_ownership_or_cached_observation_optin() {
     assert!(std::fs::read_dir(root.path()).unwrap().next().is_none());
 }
 
-#[test]
+#[rstest::rstest]
 fn stable_view_admission_is_linux_host_only_and_ttl_is_bounded() {
     let root = tempfile::tempdir().unwrap();
     for policy in [
@@ -94,7 +95,7 @@ fn stable_view_admission_is_linux_host_only_and_ttl_is_bounded() {
     assert!(std::fs::read_dir(root.path()).unwrap().next().is_none());
 }
 
-#[test]
+#[rstest::rstest]
 fn each_missing_proof_and_observation_policy_is_explicitly_rejected_before_io() {
     let root = tempfile::tempdir().unwrap();
     let base = candidate(root.path());
@@ -160,27 +161,11 @@ fn each_missing_proof_and_observation_policy_is_explicitly_rejected_before_io() 
     c.allow_root = true;
     cases.push((c, "owner-only"));
     for (config, expected) in cases {
-        assert!(
-            config
-                .validate_kernel_cache()
-                .unwrap_err()
-                .to_string()
-                .contains(expected),
-            "{expected}"
-        );
-        for foreground in [false, true] {
-            let error = if foreground {
-                OverlayFs::run_foreground(config.clone()).unwrap_err()
-            } else {
-                OverlayFs::mount(config.clone()).unwrap_err()
-            };
-            assert!(error.to_string().contains(expected), "{error}");
-        }
-        assert!(std::fs::read_dir(root.path()).unwrap().next().is_none());
+        assert_rejected_before_io(root.path(), config, expected);
     }
 }
 
-#[test]
+#[rstest::rstest]
 fn writable_and_macfuse_views_do_not_silently_downgrade() {
     let root = tempfile::tempdir().unwrap();
     let mut config = candidate(root.path());
@@ -210,4 +195,113 @@ fn writable_and_macfuse_views_do_not_silently_downgrade() {
         assert!(error.to_string().contains("Linux HOST"));
     }
     assert!(std::fs::read_dir(root.path()).unwrap().next().is_none());
+}
+
+fn assert_rejected_before_io(root: &Path, config: OverlayMountConfig, expected: &str) {
+    let before = format!("{config:?}");
+    assert!(
+        config
+            .validate_kernel_cache()
+            .unwrap_err()
+            .to_string()
+            .contains(expected)
+    );
+    assert_eq!(format!("{config:?}"), before);
+    for foreground in [false, true] {
+        let error = if foreground {
+            OverlayFs::run_foreground(config.clone()).unwrap_err()
+        } else {
+            OverlayFs::mount(config.clone()).unwrap_err()
+        };
+        assert!(error.to_string().contains(expected), "{error}");
+    }
+    assert!(std::fs::read_dir(root).unwrap().next().is_none());
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig {
+        failure_persistence: Some(Box::new(proptest::test_runner::FileFailurePersistence::Direct(
+            concat!(env!("CARGO_MANIFEST_DIR"), "/proptest-regressions/kernel_cache_contract.txt")
+        ))), ..ProptestConfig::default()
+    })]
+
+    #[test]
+    fn valid_cache_inputs_respect_platform_and_writable_data_constraints(
+        nanos in 1u64..=60_000_000_000, count in 1usize..9,
+        data in any::<bool>(), read_only in any::<bool>(),
+    ) {
+        let root = tempfile::tempdir().unwrap();
+        let mut config = candidate(root.path());
+        config.lower_dirs = (0..count).map(|i| root.path().join(format!("lower-{i}"))).collect();
+        config.lower_mutability = vec![LayerMutability::Immutable; count];
+        config.kernel_cache.ttl = Duration::from_nanos(nanos);
+        config.kernel_cache.policy = if data { KernelCachePolicy::MetadataAndData } else { KernelCachePolicy::Metadata };
+        config.read_only = read_only;
+        let before = format!("{config:?}");
+        let result = config.validate_kernel_cache();
+        prop_assert_eq!(result.is_ok(), cfg!(target_os = "linux") && (!data || read_only));
+        if let Err(error) = result {
+            let expected = if cfg!(target_os = "linux") { "writable MetadataAndData" } else { "Linux HOST" };
+            prop_assert!(error.to_string().contains(expected));
+        }
+        prop_assert_eq!(format!("{config:?}"), before);
+        prop_assert!(std::fs::read_dir(root.path()).unwrap().next().is_none());
+    }
+
+    #[test]
+    fn invalid_ttls_always_reject_before_mount_preparation(
+        ttl in prop_oneof![Just(Duration::ZERO), (60_000_000_001u64..=u64::MAX).prop_map(Duration::from_nanos)],
+        data in any::<bool>(),
+    ) {
+        let root = tempfile::tempdir().unwrap();
+        let mut config = candidate(root.path());
+        config.kernel_cache.ttl = ttl;
+        config.kernel_cache.policy = if data { KernelCachePolicy::MetadataAndData } else { KernelCachePolicy::Metadata };
+        assert_rejected_before_io(root.path(), config, "TTL");
+    }
+
+    #[test]
+    fn missing_cache_contracts_cannot_be_hidden_by_platform_rejection(
+        fault in 0u8..14, nanos in 1u64..=60_000_000_000,
+        count in 1usize..9, selected in any::<usize>(), name in "[a-z]{1,20}",
+    ) {
+        let root = tempfile::tempdir().unwrap();
+        let mut config = candidate(root.path());
+        config.lower_dirs = (0..count).map(|i| root.path().join(format!("lower-{i}"))).collect();
+        config.lower_mutability = vec![LayerMutability::Immutable; count];
+        config.kernel_cache.ttl = Duration::from_nanos(nanos);
+        let expected = match fault {
+            0 => { config.kernel_cache.owned_view = None; "owned-view contract" }
+            1 => { config.kernel_cache.owned_view.as_mut().unwrap().exclusive_upper_and_work = false; "exclusive upper/work" }
+            2 => { config.kernel_cache.owned_view.as_mut().unwrap().fixed_metadata_and_aliases = false; "backing atime" }
+            3 => { config.kernel_cache.read_observation = ReadObservationSemantics::RequestCallbacks; "StableView" }
+            4 => { config.lower_mutability[selected % count] = LayerMutability::Mutable; "Immutable" }
+            5 => { config.lower_mutability.clear(); "Immutable" }
+            6 => { config.lower_mutability.push(LayerMutability::Immutable); "Immutable" }
+            7 => { config.preimage_dir = Some(root.path().join(name)); "first-content" }
+            8 => { config.compact_preimages = true; "first-content" }
+            9 => { config.observation = Some(FsMetrics::default()); "read metrics" }
+            10 => { config.excluded_paths.push(name.into()); "exclusions" }
+            11 => { config.default_permissions = false; "default_permissions" }
+            12 => { config.allow_other = true; "owner-only" }
+            _ => { config.allow_root = true; "owner-only" }
+        };
+        assert_rejected_before_io(root.path(), config, expected);
+    }
+
+    #[test]
+    fn disabled_and_uncached_validation_do_not_require_owned_view_proofs(
+        uncached in any::<bool>(), seconds in any::<u64>(), read_only in any::<bool>(),
+    ) {
+        let root = tempfile::tempdir().unwrap();
+        let mut config = candidate(root.path());
+        config.kernel_cache.policy = if uncached { KernelCachePolicy::Uncached } else { KernelCachePolicy::Disabled };
+        config.kernel_cache.ttl = Duration::from_secs(seconds);
+        config.kernel_cache.owned_view = None;
+        config.kernel_cache.read_observation = ReadObservationSemantics::RequestCallbacks;
+        config.lower_mutability.clear();
+        config.read_only = read_only;
+        config.validate_kernel_cache().unwrap();
+        prop_assert!(std::fs::read_dir(root.path()).unwrap().next().is_none());
+    }
 }

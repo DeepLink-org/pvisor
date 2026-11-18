@@ -9,9 +9,13 @@ use axum::{
 };
 use futures_util::{StreamExt, poll, stream};
 use http_body_util::BodyExt;
+use proptest::prelude::*;
 use pvisor_core::network::{NetworkAccessRule, NetworkConfig, NetworkMode, NetworkPolicy};
 use pvisor_overlaynet::api::OverlayProxy;
-use pvisor_overlaynet::api::{OverlayRequestContext, OverlayServerState, OverlaySink};
+use pvisor_overlaynet::api::{
+    InterceptionMetrics, InterceptionObservation, OverlayRequestContext, OverlayServerState,
+    OverlaySink,
+};
 use std::{
     io,
     net::SocketAddr,
@@ -104,8 +108,8 @@ async fn healthy(router: &Router) {
     );
 }
 
-async fn recovery(real_time: bool) {
-    let policy = NetworkPolicy::compile(&NetworkConfig {
+fn policy() -> NetworkPolicy {
+    NetworkPolicy::compile(&NetworkConfig {
         mode: NetworkMode::Allowlist,
         rules: vec![NetworkAccessRule {
             host: "127.0.0.1".into(),
@@ -115,13 +119,25 @@ async fn recovery(real_time: bool) {
         }],
         ..Default::default()
     })
-    .unwrap();
+    .unwrap()
+}
+
+#[rstest::fixture]
+fn proxy() -> (Router, Arc<AtomicUsize>, InterceptionMetrics) {
     let active = Arc::new(AtomicUsize::new(0));
-    let router = OverlayProxy::into_router(OverlayServerState::new(
+    let metrics = InterceptionMetrics::default();
+    let router = OverlayServerState::new(
         Arc::new(pvisor_core::PolicyControlController),
-        LocalSink(policy),
+        LocalSink(policy()),
         active.clone(),
-    ));
+    )
+    .with_interception_metrics(metrics.clone())
+    .into_router();
+    (router, active, metrics)
+}
+
+async fn recovery(real_time: bool) {
+    let (router, active, _) = proxy();
     let response = request(&router, "/fault").await;
     assert_eq!(response.status(), StatusCode::OK);
     let mut body = response.into_body();
@@ -183,9 +199,105 @@ async fn recovery(real_time: bool) {
     }
 }
 
+#[rstest::rstest]
 #[tokio::test(start_paused = true)]
 async fn delayed_body_error_and_cancelled_sibling_release_only_their_own_requests() {
     recovery(false).await;
+}
+
+#[derive(Clone, Copy, Debug)]
+enum Action {
+    Hold,
+    Cancel(usize),
+    Healthy,
+    Fail,
+}
+
+async fn assert_body_lifetimes(
+    (router, active, metrics): (Router, Arc<AtomicUsize>, InterceptionMetrics),
+    actions: &[Action],
+) {
+    let mut held = Vec::new();
+    let mut requests = 0;
+    for (step, action) in actions.iter().enumerate() {
+        match *action {
+            Action::Hold => {
+                let response = request(&router, "/pending").await;
+                assert_eq!(response.status(), StatusCode::OK);
+                held.push(response);
+                requests += 1;
+            }
+            Action::Cancel(index) => {
+                if !held.is_empty() {
+                    assert!(index < held.len(), "step={step}, actions={actions:?}");
+                    drop(held.swap_remove(index));
+                }
+            }
+            Action::Healthy => {
+                healthy(&router).await;
+                requests += 1;
+            }
+            Action::Fail => {
+                let response = request(&router, "/fault").await;
+                assert_eq!(response.status(), StatusCode::OK);
+                let mut body = response.into_body();
+                assert_eq!(
+                    body.frame().await.unwrap().unwrap().into_data().unwrap(),
+                    "prefix"
+                );
+                let mut remaining = Box::pin(body.collect());
+                assert!(poll!(remaining.as_mut()).is_pending());
+                assert_eq!(active.load(Ordering::Relaxed), held.len() + 1);
+                tokio::time::advance(Duration::from_secs(90)).await;
+                let error = tokio::time::timeout(Duration::from_secs(2), remaining)
+                    .await
+                    .unwrap()
+                    .unwrap_err();
+                assert!(error.to_string().contains("owned delayed body failure"));
+                requests += 1;
+            }
+        }
+        assert_eq!(
+            active.load(Ordering::Relaxed),
+            held.len(),
+            "step={step}, actions={actions:?}"
+        );
+        assert_eq!(
+            metrics.snapshot().requests_seen,
+            requests,
+            "step={step}, actions={actions:?}"
+        );
+    }
+    drop(held);
+    assert_eq!(active.load(Ordering::Relaxed), 0);
+    healthy(&router).await;
+    assert_eq!(active.load(Ordering::Relaxed), 0);
+}
+
+#[rstest::rstest]
+#[tokio::test(start_paused = true)]
+async fn short_body_lifetime_sequences_keep_independent_admission(
+    proxy: (Router, Arc<AtomicUsize>, InterceptionMetrics),
+    #[values(Action::Hold, Action::Cancel(0), Action::Healthy, Action::Fail)] first: Action,
+    #[values(Action::Hold, Action::Cancel(0), Action::Healthy, Action::Fail)] second: Action,
+    #[values(Action::Hold, Action::Cancel(0), Action::Healthy, Action::Fail)] third: Action,
+) {
+    assert_body_lifetimes(proxy, &[first, second, third]).await;
+}
+
+#[rstest::rstest]
+#[case::empty(&[])]
+#[case::independent_siblings(&[Action::Hold, Action::Hold, Action::Cancel(0), Action::Healthy, Action::Cancel(0)])]
+#[case::reverse_cancellation(&[Action::Hold, Action::Hold, Action::Hold, Action::Cancel(2), Action::Healthy, Action::Cancel(1), Action::Cancel(0)])]
+#[case::failure_after_cancel(&[Action::Hold, Action::Cancel(0), Action::Fail, Action::Healthy])]
+#[case::repeated_failures(&[Action::Hold, Action::Fail, Action::Fail, Action::Healthy, Action::Cancel(0)])]
+#[case::retained_bodies(&[Action::Hold; 31])]
+#[tokio::test(start_paused = true)]
+async fn body_lifetime_regressions_restore_service(
+    proxy: (Router, Arc<AtomicUsize>, InterceptionMetrics),
+    #[case] actions: &[Action],
+) {
+    assert_body_lifetimes(proxy, actions).await;
 }
 
 #[tokio::test]
@@ -194,4 +306,32 @@ async fn real_delayed_body_error_retains_admission_then_recovers() {
     tokio::time::timeout(Duration::from_secs(120), recovery(true))
         .await
         .unwrap();
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig {
+        failure_persistence: Some(Box::new(proptest::test_runner::FileFailurePersistence::Direct(
+            concat!(env!("CARGO_MANIFEST_DIR"), "/proptest-regressions/stream_recovery.txt")
+        ))),
+        ..ProptestConfig::default()
+    })]
+    #[test]
+    fn generated_body_lifetimes_preserve_independent_admission(
+        actions in prop::collection::vec(prop_oneof![
+            Just(Action::Hold), (0usize..128).prop_map(Action::Cancel),
+            Just(Action::Healthy), Just(Action::Fail),
+        ], 0..64),
+    ) {
+        let mut actions = actions;
+        let mut held = 0;
+        for action in &mut actions {
+            match action {
+                Action::Hold => held += 1,
+                Action::Cancel(index) if held > 0 => { *index %= held; held -= 1; }
+                _ => {}
+            }
+        }
+        tokio::runtime::Builder::new_current_thread().enable_all().start_paused(true).build().unwrap()
+            .block_on(async { assert_body_lifetimes(proxy(), &actions).await });
+    }
 }

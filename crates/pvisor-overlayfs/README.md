@@ -89,8 +89,30 @@ thread-safe sink; snapshots do not freeze the filesystem, retain at most 8192
 paths, and do not represent all host filesystem activity. See `src/api.rs` for
 field-level security, platform and ownership contracts.
 
-`tests/api_contract.rs` checks the syntax boundary and portable public behavior
-without mounting FUSE.
+`api.rs` doctests cover configuration/defaults, side-effect-free cache validation,
+rejection before mounting, and owned metric snapshots. Session consumption has a
+compile-fail example; the mount/unmount workflow is `no_run` because it requires
+working FUSE and caller-owned backing paths.
+
+External tests use bounded `proptest` inputs alongside fixed `rstest` regressions:
+`api_contract` generates ordered/duplicate lower paths, optional work paths,
+short/long declaration mismatches; snapshot isolation retains its fixed regression.
+`kernel_cache_contract` generates TTLs, lower counts, cache/read-only modes and
+missing ownership/observation/permission conditions. Rejection checks exercise
+both mount entry points and assert no preparation I/O; generated and fixed cases
+share the same assertions. Each draw and shrinking attempt owns fresh temporary
+paths and metrics. Default case/shrink settings are retained; failure seeds persist
+in `proptest-regressions/<test-binary>.txt` and should become fixed regressions.
+
+Syntax guards, precise TTL/error boundaries, protocol regressions and real-mount
+runners retain their assertions and capability requirements. Pure admission tests
+are not proof of kernel cache behavior or mount detachment. Run:
+
+```sh
+mise run test -- pvisor-overlayfs
+mise run test-doc -- pvisor-overlayfs
+RUSTDOCFLAGS='-D warnings' cargo doc --locked -p pvisor-overlayfs --no-deps
+```
 
 ## Read-only stage observers
 

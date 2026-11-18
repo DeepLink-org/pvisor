@@ -30,8 +30,9 @@ thiserror.workspace = true
 uuid = { workspace = true, features = ["v4"] }
 
 [dev-dependencies]
+proptest.workspace = true
+rstest.workspace = true
 syn = { version = "2", features = ["full", "visit"] }
 h2.workspace = true
-proptest.workspace = true
 tokio = { workspace = true, features = ["macros", "rt", "test-util"] }
 tower = { version = "0.5", features = ["util"] }

@@ -35,8 +35,11 @@ mod tests {
     use super::*;
     use pvisor_guest::api::SidecarProcess;
     use std::{collections::BTreeMap, path::Path};
-    #[test]
-    fn sidecars_validate_optionally_and_overlay_workload_environment() {
+    #[rstest::rstest]
+    #[case::empty("")]
+    #[case::ordinary("44772")]
+    #[case::literal("space ' quote \"\n$HOME; value")]
+    fn sidecars_validate_optionally_and_overlay_workload_environment(#[case] value: &str) {
         let mut config: GuestConfig =
             serde_json::from_str(r#"{"argv":["/bin/true"],"env":{},"cwd":"/"}"#).unwrap();
         assert!(
@@ -48,12 +51,10 @@ mod tests {
         );
         let definition = SidecarProcess {
             argv: vec!["/.payload".into(), "--serve".into()],
-            env: BTreeMap::from([("PAYLOAD_PORT".into(), "44772".into())]),
+            env: BTreeMap::from([("PAYLOAD_PORT".into(), value.into())]),
             log: "/.payload.log".into(),
         };
         config.sidecars = vec![definition.clone()];
-        // Validation rejects sidecars with no program, relative logs, NUL
-        // words and invalid environment names, like every other field.
         assert!(config.validate().is_ok());
         let encoded = serde_json::to_vec(&config).unwrap();
         let decoded: GuestConfig = serde_json::from_slice(&encoded).unwrap();
@@ -74,8 +75,6 @@ mod tests {
         foreign["sidecars"][0]["bogus"] = serde_json::json!(1);
         assert!(serde_json::from_value::<GuestConfig>(foreign).is_err());
 
-        // The sidecar command inherits the workload environment with its
-        // own entries winning on conflicts.
         config.env.insert("SHARED".into(), "workload".into());
         config.env.insert("PAYLOAD_PORT".into(), "1".into());
         let command = sidecar(&config, 0).unwrap();
@@ -99,17 +98,20 @@ mod tests {
             })
             .collect();
         assert_eq!(envs["SHARED"].as_deref(), Some("workload"));
-        assert_eq!(envs["PAYLOAD_PORT"].as_deref(), Some("44772"));
+        assert_eq!(envs["PAYLOAD_PORT"].as_deref(), Some(value));
     }
-    #[test]
-    fn launch_contract_preserves_values_and_rejects_invalid_input() {
+    #[rstest::rstest]
+    #[case::empty("")]
+    #[case::unicode("你好 🦀")]
+    #[case::literal("space ' quote \"\nnewline $HOME; $(false)")]
+    fn launch_contract_preserves_values_and_rejects_invalid_input(#[case] value: &str) {
         let config = GuestConfig {
             argv: vec![
                 "/bin/sh".into(),
                 "-c".into(),
                 "test -z \"${HOME+x}\" || exit 41; printf '%s' \"$COMPLEX\"; exit 7".into(),
             ],
-            env: BTreeMap::from([("COMPLEX".into(), "space ' quote \"\nnewline".into())]),
+            env: BTreeMap::from([("COMPLEX".into(), value.into())]),
             cwd: "/".into(),
             ..Default::default()
         };

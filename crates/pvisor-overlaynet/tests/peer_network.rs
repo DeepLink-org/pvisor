@@ -22,6 +22,7 @@ use pvisor_overlaynet::api::{
 use pvisor_overlaynet::api::{VmNetwork, VmNetworkConfig};
 use smoltcp::wire::{EthernetAddress, EthernetFrame, EthernetProtocol, IpProtocol, Ipv4Packet};
 
+#[rstest::fixture]
 fn directory() -> tempfile::TempDir {
     tempfile::Builder::new()
         .permissions(std::fs::Permissions::from_mode(0o700))
@@ -123,9 +124,10 @@ fn wait_until(mut check: impl FnMut() -> bool) {
     }
 }
 
-#[test]
-fn forwards_arp_tcp_udp_and_icmp_bidirectionally_without_proxy_flows() {
-    let root = directory();
+#[rstest::rstest]
+fn forwards_arp_tcp_udp_and_icmp_bidirectionally_without_proxy_flows(
+    #[from(directory)] root: tempfile::TempDir,
+) {
     let (a, mut sa, ma) = start(root.path(), 11);
     let (b, mut sb, mb) = start(root.path(), 12);
     for packet in [
@@ -156,9 +158,10 @@ fn forwards_arp_tcp_udp_and_icmp_bidirectionally_without_proxy_flows() {
     assert!(!root.path().join("12/peer.json").exists());
 }
 
-#[test]
-fn duplicate_address_fails_synchronously_and_restart_refreshes_generation() {
-    let root = directory();
+#[rstest::rstest]
+fn duplicate_address_fails_synchronously_and_restart_refreshes_generation(
+    #[from(directory)] root: tempfile::TempDir,
+) {
     let (a, mut sa, ma) = start(root.path(), 11);
     let (b, mut sb, _) = start(root.path(), 12);
     assert!(
@@ -184,9 +187,10 @@ fn duplicate_address_fails_synchronously_and_restart_refreshes_generation() {
     b.shutdown().unwrap();
 }
 
-#[test]
-fn rejects_unsafe_directories_invalid_addresses_and_restrictive_egress() {
-    let root = directory();
+#[rstest::rstest]
+fn rejects_unsafe_directories_invalid_addresses_and_restrictive_egress(
+    #[from(directory)] root: tempfile::TempDir,
+) {
     for last in [0, 1, 255] {
         assert!(support::start(config(root.path(), last)).is_err());
     }
@@ -215,9 +219,10 @@ fn rejects_unsafe_directories_invalid_addresses_and_restrictive_egress() {
     }
 }
 
-#[test]
-fn rejects_spoofing_fragments_and_unknown_peers_without_egress_fallback() {
-    let root = directory();
+#[rstest::rstest]
+fn rejects_spoofing_fragments_and_unknown_peers_without_egress_fallback(
+    #[from(directory)] root: tempfile::TempDir,
+) {
     let (a, mut sa, ma) = start(root.path(), 11);
     let (b, mut sb, mb) = start(root.path(), 12);
     let mut spoof = ip_frame(13, 12, IpProtocol::Udp);
@@ -241,9 +246,8 @@ fn rejects_spoofing_fragments_and_unknown_peers_without_egress_fallback() {
     b.shutdown().unwrap();
 }
 
-#[test]
-fn live_policy_replacement_closes_the_packet_gate() {
-    let root = directory();
+#[rstest::rstest]
+fn live_policy_replacement_closes_the_packet_gate(#[from(directory)] root: tempfile::TempDir) {
     let cfg = config(root.path(), 11);
     let egress = cfg.egress.clone();
     let ma = cfg.metrics.clone();
@@ -264,10 +268,12 @@ fn live_policy_replacement_closes_the_packet_gate() {
     b.shutdown().unwrap();
 }
 
-#[test]
-fn different_network_directories_do_not_discover_each_other() {
-    let one = directory();
-    let two = directory();
+#[rstest::rstest]
+fn different_network_directories_do_not_discover_each_other(
+    #[from(directory)] one: tempfile::TempDir,
+    #[from(directory)] two: tempfile::TempDir,
+) {
+    assert_ne!(one.path(), two.path());
     let (a, mut sa, ma) = start(one.path(), 11);
     let (b, _sb, mb) = start(two.path(), 12);
     send(&mut sa, &ip_frame(11, 12, IpProtocol::Udp));
@@ -301,9 +307,10 @@ fn worker(root: &Path, role: &str) -> Worker {
     )
 }
 
-#[test]
-fn separate_processes_exchange_frames_and_recover_after_crash() {
-    let root = directory();
+#[rstest::rstest]
+fn separate_processes_exchange_frames_and_recover_after_crash(
+    #[from(directory)] root: tempfile::TempDir,
+) {
     let mut receiver = worker(root.path(), "receiver");
     wait_until(|| root.path().join("ready").exists());
     let mut sender = worker(root.path(), "sender");
@@ -567,7 +574,7 @@ mod tcp_guests {
         next.unwrap_or(now)
     }
 
-    #[test]
+    #[rstest::rstest]
     fn guest_clock_drains_io_before_advancing_to_tcp_timer() {
         let (stream, mut backend) = UnixStream::pair().unwrap();
         let mut guest = Guest::new(stream, 11);
@@ -600,7 +607,7 @@ mod tcp_guests {
         assert_eq!(next_guest_tick(now, &mut [&mut guest]), timer);
     }
 
-    #[test]
+    #[rstest::rstest]
     fn guest_clock_does_not_advance_past_backpressured_output() {
         let (stream, _backend) = UnixStream::pair().unwrap();
         let mut guest = Guest::new(stream, 11);
@@ -628,7 +635,7 @@ mod tcp_guests {
         assert_eq!(guest.output.len(), 1);
     }
 
-    #[test]
+    #[rstest::rstest]
     fn tcp_handshake_and_bidirectional_bytes_cross_peer_network() {
         let root = directory();
         let (a, sa, ma) = start(root.path(), 11);
@@ -690,7 +697,7 @@ mod tcp_guests {
         b.shutdown().unwrap();
     }
 
-    #[test]
+    #[rstest::rstest]
     fn tcp_duplex_recovers_from_loss_duplication_and_reordering() {
         let root = directory();
         let (a, sa, ma) = start(root.path(), 11);
@@ -777,9 +784,10 @@ fn sequenced_frame(src: u8, dst: u8, length: usize, sequence: u64) -> Vec<u8> {
     frame
 }
 
-#[test]
-fn seeded_fragmented_streams_forward_concurrent_ring_without_corruption() {
-    let root = directory();
+#[rstest::rstest]
+fn seeded_fragmented_streams_forward_concurrent_ring_without_corruption(
+    #[from(directory)] root: tempfile::TempDir,
+) {
     let members: Vec<_> = (11..15).map(|last| start(root.path(), last)).collect();
     let completed = Arc::new([const { AtomicU64::new(0) }; 4]);
     let mut owners = Vec::new();
@@ -847,9 +855,10 @@ fn seeded_fragmented_streams_forward_concurrent_ring_without_corruption() {
     }
 }
 
-#[test]
-fn repeated_restart_recovers_both_directions_and_reclaims_sender_sockets() {
-    let root = directory();
+#[rstest::rstest]
+fn repeated_restart_recovers_both_directions_and_reclaims_sender_sockets(
+    #[from(directory)] root: tempfile::TempDir,
+) {
     let (a, mut sa, ma) = start(root.path(), 11);
     let (c, mut sc, _) = start(root.path(), 13);
     for cycle in 0..12 {
@@ -887,9 +896,10 @@ fn repeated_restart_recovers_both_directions_and_reclaims_sender_sockets() {
     }
 }
 
-#[test]
-fn a_stalled_guest_drops_packets_without_blocking_other_peers() {
-    let root = directory();
+#[rstest::rstest]
+fn a_stalled_guest_drops_packets_without_blocking_other_peers(
+    #[from(directory)] root: tempfile::TempDir,
+) {
     let (a, mut sa, ma) = start(root.path(), 11);
     let (b, _blocked_guest, _) = start(root.path(), 12);
     let (c, mut sc, mc) = start(root.path(), 13);
@@ -916,9 +926,10 @@ fn a_stalled_guest_drops_packets_without_blocking_other_peers() {
     c.shutdown().unwrap();
 }
 
-#[test]
-fn saturated_receiver_resumes_without_corruption_and_can_reply() {
-    let root = directory();
+#[rstest::rstest]
+fn saturated_receiver_resumes_without_corruption_and_can_reply(
+    #[from(directory)] root: tempfile::TempDir,
+) {
     let (a, mut sa, ma) = start(root.path(), 11);
     let (b, mut sb, mb) = start(root.path(), 12);
     const OFFERED: u64 = 4096;
@@ -955,7 +966,7 @@ fn saturated_receiver_resumes_without_corruption_and_can_reply() {
     b.shutdown().unwrap();
 }
 
-#[test]
+#[rstest::rstest]
 fn seeded_malformed_datagram_flood_does_not_poison_the_next_packet() {
     use std::os::unix::net::UnixDatagram;
     let root = directory();
@@ -1027,7 +1038,7 @@ fn seeded_malformed_datagram_flood_does_not_poison_the_next_packet() {
     b.shutdown().unwrap();
 }
 
-#[test]
+#[rstest::rstest]
 fn continuous_peer_flood_does_not_starve_router_dns_or_shutdown() {
     use std::os::unix::net::UnixDatagram;
     use std::sync::{
@@ -1065,9 +1076,10 @@ fn continuous_peer_flood_does_not_starve_router_dns_or_shutdown() {
     assert_eq!(metrics.snapshot().dns_answers, 1);
 }
 
-#[test]
-fn receiver_rejects_forged_generations_pathnames_and_oversized_datagrams() {
-    let root = directory();
+#[rstest::rstest]
+fn receiver_rejects_forged_generations_pathnames_and_oversized_datagrams(
+    #[from(directory)] root: tempfile::TempDir,
+) {
     let (a, _sa, _) = start(root.path(), 11);
     let (b, mut sb, mb) = start(root.path(), 12);
     let generation = |slot: &str| -> [u8; 16] {
@@ -1110,9 +1122,10 @@ fn receiver_rejects_forged_generations_pathnames_and_oversized_datagrams() {
     b.shutdown().unwrap();
 }
 
-#[test]
-fn peer_membership_requires_the_default_controller_constructor() {
-    let root = directory();
+#[rstest::rstest]
+fn peer_membership_requires_the_default_controller_constructor(
+    #[from(directory)] root: tempfile::TempDir,
+) {
     let mut cfg = config(root.path(), 11);
     cfg.egress = EgressRuntime::with_bandwidth_registry(
         NetworkPolicy::compile(&NetworkConfig::default()).unwrap(),
@@ -1128,7 +1141,7 @@ fn peer_membership_requires_the_default_controller_constructor() {
     );
 }
 
-#[test]
+#[rstest::rstest]
 fn peer_guest_address_keeps_the_existing_router_and_dns_path() {
     use smoltcp::wire::UdpPacket;
     let root = directory();
@@ -1178,9 +1191,10 @@ fn peer_guest_address_keeps_the_existing_router_and_dns_path() {
     network.shutdown().unwrap();
 }
 
-#[test]
-fn named_network_uses_its_subnet_gateway_and_live_container_dns() {
-    let root = directory();
+#[rstest::rstest]
+fn named_network_uses_its_subnet_gateway_and_live_container_dns(
+    #[from(directory)] root: tempfile::TempDir,
+) {
     let gateway: Ipv4Addr = "172.23.0.254".parse().unwrap();
     let address_a: Ipv4Addr = "172.23.0.11".parse().unwrap();
     let address_b: Ipv4Addr = "172.23.0.1".parse().unwrap();

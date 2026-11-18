@@ -1,3 +1,4 @@
+use proptest::prelude::*;
 use pvisor_guest::api::{
     EXIT_CLAIM_IOCTL, EXIT_REPORT_BYTES, EXIT_REPORT_IOCTL, EXIT_TOKEN_BYTES, GuestConfig,
     GuestExitReport, GuestFrameRead, GuestFrameWrite, GuestSignal, GuestValidation, MAX_FRAME,
@@ -312,4 +313,141 @@ fn exit_reports_keep_fixed_wire_bytes_and_validate_before_copying_a_token() {
         );
     }
     assert_eq!(token, [0xa5; 16]);
+}
+
+proptest! {
+    #[test]
+    fn generated_launch_values_survive_validation_and_nul_is_rejected(
+        args in prop::collection::vec("[^\0]{0,64}", 0..8),
+        key in "[A-Z][A-Z0-9_]{0,15}",
+        value in "[^\0]{0,64}",
+        directory in "[a-z]{1,16}",
+    ) {
+        let mut config = launch();
+        config.argv.extend(args);
+        config.env.insert(key.clone(), value);
+        config.cwd = format!("/guest/{directory}").into();
+        let before = serde_json::to_value(&config).unwrap();
+        config.validate().unwrap();
+        prop_assert_eq!(serde_json::to_value(&config).unwrap(), before);
+        let decoded: GuestConfig = serde_json::from_slice(&serde_json::to_vec(&config).unwrap()).unwrap();
+        decoded.validate().unwrap();
+        prop_assert_eq!(decoded.argv, config.argv.clone());
+        prop_assert_eq!(decoded.env, config.env.clone());
+        config.argv.push(format!("{directory}\0"));
+        prop_assert_eq!(config.validate().unwrap_err().kind(), io::ErrorKind::InvalidInput);
+        config.argv.pop();
+        config.env.insert(format!("{key}="), "value".into());
+        prop_assert_eq!(config.validate().unwrap_err().kind(), io::ErrorKind::InvalidInput);
+    }
+
+    #[test]
+    fn every_sidecar_is_validated_before_launch(
+        count in 1usize..5,
+        selected in any::<usize>(),
+        value in "[^\0]{0,64}",
+    ) {
+        let mut config = launch();
+        config.sidecars = (0..count).map(|index| SidecarProcess {
+            argv: vec!["/guest/helper".into(), value.clone()],
+            env: BTreeMap::new(),
+            log: format!("/guest/helper-{index}.log").into(),
+        }).collect();
+        config.validate().unwrap();
+        let index = selected % count;
+        config.sidecars[index].argv[1].push('\0');
+        let before = serde_json::to_value(&config).unwrap();
+        prop_assert_eq!(config.validate().unwrap_err().kind(), io::ErrorKind::InvalidInput);
+        prop_assert_eq!(serde_json::to_value(&config).unwrap(), before);
+    }
+
+    #[test]
+    fn resource_limit_order_determines_admission(soft in any::<u64>(), hard in any::<u64>()) {
+        let mut config = launch();
+        config.limits.insert("nofile".into(), (soft, hard));
+        let before = serde_json::to_value(&config).unwrap();
+        let result = config.validate();
+        prop_assert_eq!(result.is_ok(), soft <= hard);
+        if let Err(error) = result {
+            prop_assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        }
+        prop_assert_eq!(serde_json::to_value(&config).unwrap(), before);
+    }
+
+    #[test]
+    fn consecutive_frames_preserve_payloads_and_credit_ids(
+        id in any::<u64>(),
+        payload in prop::collection::vec(any::<u8>(), 0..1024),
+        cancel_id in any::<u64>(),
+    ) {
+        let frame = SerialHostFrame::Input(SerialInput {
+            input_id: id,
+            input: StdinFrame::Data { bytes: payload },
+        });
+        let json = serde_json::to_vec(&frame).unwrap();
+        let mut bytes = Vec::new();
+        bytes.write_frame(&frame).unwrap();
+        prop_assert_eq!(&bytes[..4], &(json.len() as u32).to_be_bytes());
+        prop_assert_eq!(&bytes[4..], &json);
+        let first_end = bytes.len();
+        bytes.write_frame(&SerialHostFrame::Cancel(SerialCancel { cancel_id })).unwrap();
+        let end = bytes.len();
+        let mut reader = Cursor::new(bytes);
+        let decoded: SerialHostFrame = reader.read_frame().unwrap();
+        prop_assert_eq!(serde_json::to_value(decoded).unwrap(), serde_json::to_value(frame).unwrap());
+        prop_assert_eq!(reader.position() as usize, first_end);
+        let decoded: SerialHostFrame = reader.read_frame().unwrap();
+        prop_assert_eq!(serde_json::to_value(decoded).unwrap(), serde_json::json!({"cancel_id": cancel_id}));
+        prop_assert_eq!(reader.position() as usize, end);
+    }
+
+    #[test]
+    fn truncated_frames_return_eof(value in ".{0,64}", selected in any::<usize>()) {
+        let mut bytes = Vec::new();
+        bytes.write_frame(&value).unwrap();
+        let cut = selected % bytes.len();
+        let mut reader = Cursor::new(&bytes[..cut]);
+        prop_assert_eq!(reader.read_frame::<String>().unwrap_err().kind(), io::ErrorKind::UnexpectedEof);
+        prop_assert_eq!(reader.position() as usize, cut);
+    }
+
+    #[test]
+    fn oversized_headers_never_consume_payload(
+        size in (MAX_FRAME as u32 + 1)..=u32::MAX,
+        payload in prop::collection::vec(any::<u8>(), 0..128),
+    ) {
+        let mut reader = Cursor::new([size.to_be_bytes().as_slice(), &payload].concat());
+        prop_assert_eq!(reader.read_frame::<Request>().unwrap_err().kind(), io::ErrorKind::InvalidData);
+        prop_assert_eq!(reader.position(), 4);
+    }
+
+    #[test]
+    fn numeric_signals_are_exactly_linux_range(number in prop_oneof![-128i32..=128, any::<i32>()]) {
+        let result = number.to_string().parse_signal();
+        if (1..=64).contains(&number) {
+            prop_assert_eq!(result.unwrap(), number);
+        } else {
+            prop_assert_eq!(result.unwrap_err().kind(), io::ErrorKind::InvalidInput);
+        }
+    }
+
+    #[test]
+    fn exit_report_preserves_any_token_and_rejects_invalid_codes(
+        token in any::<[u8; EXIT_TOKEN_BYTES]>(),
+        code in prop_oneof![0i32..=255, any::<i32>()],
+    ) {
+        let before = token;
+        match token.report(code) {
+            Ok(report) => {
+                prop_assert!((0..=255).contains(&code));
+                prop_assert_eq!(&report[..EXIT_TOKEN_BYTES], &token);
+                prop_assert_eq!(&report[EXIT_TOKEN_BYTES..], &(code as u32).to_le_bytes());
+            }
+            Err(error) => {
+                prop_assert!(!(0..=255).contains(&code));
+                prop_assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+            }
+        }
+        prop_assert_eq!(token, before);
+    }
 }

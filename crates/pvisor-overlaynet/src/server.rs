@@ -492,42 +492,52 @@ mod tests {
         fn cancel(&mut self) {}
     }
 
+    #[rstest::rstest]
     #[tokio::test]
     async fn connect_resume_failure_cancels_backpressured_upload_and_returns_admission() {
         connect_forwarding_ownership(true).await;
     }
 
+    #[rstest::rstest]
     #[tokio::test]
     async fn connect_half_close_drains_backpressured_response_and_returns_admission() {
         connect_forwarding_ownership(false).await;
     }
 
+    #[rstest::rstest]
+    #[case::download_eof("download_eof")]
+    #[case::upload_eof("upload_eof")]
     #[tokio::test]
-    async fn http2_connect_upstream_half_close_preserves_upload_and_admission() {
-        http2_connect_ownership("download_eof").await;
-        http2_connect_ownership("upload_eof").await;
+    async fn http2_connect_upstream_half_close_preserves_upload_and_admission(
+        #[case] phase: &'static str,
+    ) {
+        http2_connect_ownership(phase).await;
     }
 
+    #[rstest::rstest]
+    #[case::reset("reset")]
+    #[case::throttled_reset("throttled_reset")]
+    #[case::upload_eof("reset_after_upload_eof")]
+    #[case::download_eof("reset_after_download_eof")]
+    #[case::resume("reset_during_resume")]
     #[tokio::test]
-    async fn http2_reset_releases_tunnel_without_discarding_half_close() {
-        for phase in [
-            "reset",
-            "throttled_reset",
-            "reset_after_upload_eof",
-            "reset_after_download_eof",
-            "reset_during_resume",
-        ] {
-            http2_connect_ownership(phase).await;
-        }
+    async fn http2_reset_releases_tunnel_without_discarding_half_close(
+        #[case] phase: &'static str,
+    ) {
+        http2_connect_ownership(phase).await;
     }
 
+    #[rstest::rstest]
+    #[case::cancel_before_eof(h2::Reason::CANCEL, false)]
+    #[case::cancel_after_eof(h2::Reason::CANCEL, true)]
+    #[case::no_error_before_eof(h2::Reason::NO_ERROR, false)]
+    #[case::no_error_after_eof(h2::Reason::NO_ERROR, true)]
     #[tokio::test]
-    async fn http2_cancel_and_no_error_resets_release_before_and_after_upload_eof() {
-        for reason in [h2::Reason::CANCEL, h2::Reason::NO_ERROR] {
-            for after_eof in [false, true] {
-                http2_explicit_reset(reason, after_eof).await;
-            }
-        }
+    async fn http2_cancel_and_no_error_resets_release_before_and_after_upload_eof(
+        #[case] reason: h2::Reason,
+        #[case] after_eof: bool,
+    ) {
+        http2_explicit_reset(reason, after_eof).await;
     }
 
     async fn http2_explicit_reset(reason: h2::Reason, after_eof: bool) {
@@ -1005,6 +1015,7 @@ mod tests {
         assert_eq!(slots.available_permits(), 1);
     }
 
+    #[rstest::rstest]
     #[tokio::test]
     async fn overload_is_rejected_and_response_body_drop_returns_the_slot() {
         let state = OverlayServerState::new(
@@ -1080,7 +1091,7 @@ mod tests {
         }
     }
 
-    #[test]
+    #[rstest::rstest]
     fn response_body_owns_the_active_request_guard() {
         let counter = Arc::new(AtomicUsize::new(0));
         let guard = ActiveRequestGuard::new(Arc::clone(&counter));
@@ -1093,7 +1104,7 @@ mod tests {
         assert_eq!(counter.load(Ordering::Relaxed), 0);
     }
 
-    #[test]
+    #[rstest::rstest]
     fn active_request_guard_decrements_on_drop() {
         let counter = Arc::new(AtomicUsize::new(0));
         {
@@ -1103,7 +1114,7 @@ mod tests {
         assert_eq!(counter.load(Ordering::Relaxed), 0);
     }
 
-    #[test]
+    #[rstest::rstest]
     fn overlaynet_accepts_non_gateway_sink_implementations() {
         let accepted = Request::builder()
             .uri("http://collector.example/events/agent")
@@ -1173,7 +1184,7 @@ mod tests {
         }
     }
 
-    #[test]
+    #[rstest::rstest]
     fn denied_proxy_requests_update_interception_metrics() {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -1207,6 +1218,7 @@ mod tests {
         });
     }
 
+    #[rstest::rstest]
     #[tokio::test]
     async fn ipv6_connect_preserves_the_parsed_host_through_authorization() {
         let metrics = InterceptionMetrics::default();
@@ -1278,7 +1290,7 @@ mod tests {
         }
     }
 
-    #[test]
+    #[rstest::rstest]
     fn handler_turns_internal_failures_into_502_and_releases_active_count() {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -1312,7 +1324,7 @@ mod tests {
         });
     }
 
-    #[test]
+    #[rstest::rstest]
     fn malformed_connect_bracket_suffix_is_400_before_authorization() {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -1344,7 +1356,7 @@ mod tests {
         });
     }
 
-    #[test]
+    #[rstest::rstest]
     fn absolute_ipv6_uses_a_bare_ip_through_authorization_and_forwarding() {
         #[derive(Clone)]
         struct LiteralSink {
@@ -1493,7 +1505,7 @@ mod tests {
         });
     }
 
-    #[test]
+    #[rstest::rstest]
     fn malformed_absolute_url_cannot_dispatch_to_an_accepting_sink() {
         #[derive(Clone)]
         struct LocalSink;
@@ -1585,7 +1597,7 @@ mod tests {
         });
     }
 
-    #[test]
+    #[rstest::rstest]
     fn malformed_absolute_url_is_400_before_authorization() {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -1651,7 +1663,7 @@ mod tests {
         });
     }
 
-    #[test]
+    #[rstest::rstest]
     fn malformed_connect_is_400_and_never_reaches_policy() {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()

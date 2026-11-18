@@ -282,7 +282,7 @@ mod tests {
     use crate::api::BandwidthRegistry;
     use pvisor_core::network::NetworkBandwidthLimit;
 
-    #[test]
+    #[rstest::rstest]
     fn detects_explicit_proxy_requests() {
         let uri: Uri = "http://example.com/path".parse().unwrap();
         assert!(is_forward_proxy_request(&Method::GET, &uri));
@@ -292,31 +292,28 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn connect_target_defaults_to_https_port() {
+    #[rstest::rstest]
+    #[case::dns_default("example.com", "example.com", 443, "example.com:443")]
+    #[case::ipv6_default("[::1]", "::1", 443, "[::1]:443")]
+    #[case::dns_explicit("example.com:8443", "example.com", 8443, "example.com:8443")]
+    #[case::ipv6_explicit("[::1]:8443", "::1", 8443, "[::1]:8443")]
+    fn connect_target_defaults_to_https_port(
+        #[case] input: &str,
+        #[case] host: &str,
+        #[case] port: u16,
+        #[case] authority: &str,
+    ) {
         assert_eq!(
-            parse_connect_target("example.com").unwrap(),
+            parse_connect_target(input).unwrap(),
             ConnectTarget {
-                host: "example.com".into(),
-                port: 443,
-                authority: "example.com:443".into(),
+                host: host.into(),
+                port,
+                authority: authority.into(),
             }
         );
-        assert_eq!(
-            parse_connect_target("[::1]").unwrap(),
-            ConnectTarget {
-                host: "::1".into(),
-                port: 443,
-                authority: "[::1]:443".into(),
-            }
-        );
-        assert_eq!(parse_connect_target("example.com:8443").unwrap().port, 8443);
-        assert!(parse_connect_target(":443").is_err());
-        assert!(parse_connect_target("example.com:0").is_err());
-        assert!(parse_connect_target("user@example.com:443").is_err());
     }
 
-    #[test]
+    #[rstest::rstest]
     fn connect_bracket_suffix_must_not_be_discarded() {
         for authority in ["[::1]suffix:8443", "[2001:db8::1]443"] {
             assert!(
@@ -346,26 +343,24 @@ mod tests {
         }
     }
 
-    #[test]
-    fn rejects_malformed_connect_authorities() {
-        for authority in [
-            "",
-            ":443",
-            "example.com:0",
-            "example.com:65536",
-            "user@example.com:443",
-            "example.com/path",
-            "[::1",
-            "::1:443",
-            "example.com:443 extra",
-        ] {
-            assert!(
-                parse_connect_target(authority).is_err(),
-                "accepted malformed authority {authority:?}"
-            );
-        }
+    #[rstest::rstest]
+    #[case::empty("")]
+    #[case::missing_host(":443")]
+    #[case::zero_port("example.com:0")]
+    #[case::overflowing_port("example.com:65536")]
+    #[case::credentials("user@example.com:443")]
+    #[case::path("example.com/path")]
+    #[case::unclosed_ipv6("[::1")]
+    #[case::unbracketed_ipv6("::1:443")]
+    #[case::trailing_text("example.com:443 extra")]
+    fn rejects_malformed_connect_authorities(#[case] authority: &str) {
+        assert!(
+            parse_connect_target(authority).is_err(),
+            "accepted malformed authority {authority:?}"
+        );
     }
 
+    #[rstest::rstest]
     #[tokio::test(start_paused = true)]
     async fn limited_copy_delays_and_preserves_tunnel_bytes() {
         let registry = BandwidthRegistry::default();
@@ -453,6 +448,7 @@ mod download_wait_tests {
             },
         )
     }
+    #[rstest::rstest]
     #[tokio::test]
     async fn download_headers_and_body_cross_resume_barriers_and_drop_cleans_up() {
         let (request, target) = fixture().await;
@@ -484,6 +480,7 @@ mod download_wait_tests {
         assert_eq!(body.await.unwrap(), "abc");
         assert_eq!(cancelled.load(Ordering::SeqCst), 1);
     }
+    #[rstest::rstest]
     #[tokio::test]
     async fn tunnel_bytes_and_eof_wait_for_resume_and_cleanup() {
         let (mut upstream, reader) = tokio::io::duplex(64);
@@ -519,6 +516,7 @@ mod download_wait_tests {
         assert_eq!(downstream.read(&mut bytes).await.unwrap(), 0);
         assert_eq!(cancelled.load(Ordering::SeqCst), 1);
     }
+    #[rstest::rstest]
     #[tokio::test]
     async fn cancelled_download_header_resume_cleans_up_once() {
         let (request, target) = fixture().await;

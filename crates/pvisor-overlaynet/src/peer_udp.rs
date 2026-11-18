@@ -330,6 +330,7 @@ mod tests {
         arp.set_target_protocol_addr(&destination.octets());
         bytes
     }
+    #[rstest::rstest]
     #[tokio::test]
     async fn loopback_peers_fence_membership_generations_and_preserve_guest_packets() {
         let directory = tempfile::tempdir().unwrap();

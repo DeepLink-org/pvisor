@@ -291,6 +291,7 @@ impl EgressControl for EgressRuntime {
 mod tests {
     use crate::api::EgressControl;
 
+    #[rstest::rstest]
     #[tokio::test]
     async fn proxy_connect_uses_authorized_address_not_upstream_dns() {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -317,7 +318,7 @@ mod tests {
 
     use super::is_loopback_destination;
 
-    #[test]
+    #[rstest::rstest]
     fn loopback_destinations_bypass_the_host_proxy() {
         for host in ["127.0.0.1", "127.0.0.2", "::1", "localhost", "LOCALHOST."] {
             assert!(is_loopback_destination(host), "{host}");
@@ -327,6 +328,7 @@ mod tests {
         }
     }
 
+    #[rstest::rstest]
     #[tokio::test]
     async fn policy_replacement_takes_effect_for_new_flows() {
         use super::{DenyReason, NetworkPolicy};

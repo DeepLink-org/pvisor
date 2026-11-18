@@ -170,6 +170,26 @@ pub struct OverlayMountConfig {
 }
 
 /// Construction of mount configuration without I/O or validation.
+///
+/// Paths are retained in caller order; the last lower supplies the default apply target.
+/// This example creates no backing directories and needs no FUSE installation.
+///
+/// ```
+/// use pvisor_overlayfs::api::{OverlayConfiguration, OverlayMountConfig, KernelCachePolicy};
+/// use pvisor_overlay_core::LayerMutability;
+///
+/// let root = tempfile::tempdir()?;
+/// let lowers = vec![root.path().join("top"), root.path().join("base")];
+/// let config = OverlayMountConfig::new(lowers.clone(), root.path().join("upper"),
+///     Some(root.path().join("work")), root.path().join("merged"));
+/// assert_eq!(config.lower_dirs, lowers);
+/// assert_eq!(config.apply_target, Some(root.path().join("base")));
+/// assert_eq!(config.lower_mutability, vec![LayerMutability::Immutable; 2]);
+/// assert_eq!(config.kernel_cache.policy, KernelCachePolicy::Disabled);
+/// assert!(config.default_permissions && !config.read_only);
+/// assert!(std::fs::read_dir(root.path())?.next().is_none());
+/// # Ok::<(), anyhow::Error>(())
+/// ```
 pub trait OverlayConfiguration: Sized {
     /// Retain supplied paths; choose the last lower as apply target. Defaults:
     /// writable, immutable physical lowers (caller guarantees lifetime stability),
@@ -202,6 +222,34 @@ pub trait OverlayConfiguration: Sized {
     /// obligation still applies. EIO is not a general mount-detachment fence.
     /// Held descriptors must be released on failure; changes may remain in upper.
     /// Validation failure leaves configuration unchanged.
+    ///
+    /// Validation rejects an invalid TTL without changing configuration or preparing paths.
+    /// A complete enabled configuration is admitted only on the Linux HOST backend.
+    ///
+    /// ```
+    /// use std::time::Duration;
+    /// use pvisor_overlayfs::api::{OverlayConfiguration, OverlayMountConfig,
+    ///     KernelCacheConfig, KernelCachePolicy, OwnedViewContract, ReadObservationSemantics};
+    /// let root = tempfile::tempdir()?;
+    /// let mut config = OverlayMountConfig::new(vec![root.path().join("lower")],
+    ///     root.path().join("upper"), Some(root.path().join("work")), root.path().join("merged"));
+    /// config.backend = None;
+    /// config.kernel_cache = KernelCacheConfig {
+    ///     policy: KernelCachePolicy::Metadata, ttl: Duration::ZERO,
+    ///     owned_view: Some(OwnedViewContract {
+    ///         exclusive_upper_and_work: true, fixed_metadata_and_aliases: true,
+    ///     }),
+    ///     read_observation: ReadObservationSemantics::StableView,
+    /// };
+    /// assert!(config.validate_kernel_cache().unwrap_err().to_string().contains("TTL"));
+    /// assert_eq!(config.kernel_cache.ttl, Duration::ZERO);
+    /// config.kernel_cache.ttl = Duration::from_secs(60);
+    /// let result = config.validate_kernel_cache();
+    /// if cfg!(target_os = "linux") { result?; }
+    /// else { assert!(result.unwrap_err().to_string().contains("Linux HOST")); }
+    /// assert!(std::fs::read_dir(root.path())?.next().is_none());
+    /// # Ok::<(), anyhow::Error>(())
+    /// ```
     fn validate_kernel_cache(&self) -> anyhow::Result<()>;
 }
 
@@ -209,6 +257,20 @@ pub trait OverlayConfiguration: Sized {
 pub struct OverlayFs;
 
 /// Mount operations with identical signatures on Linux and macOS.
+///
+/// Empty lower lists fail before preparation in both entry points. Selecting no backend
+/// bypasses the macOS FSKit installation probe for this invalid-input example.
+///
+/// ```
+/// use pvisor_overlayfs::api::{OverlayConfiguration, OverlayMountConfig, OverlayFs, OverlayMounting};
+/// let root = tempfile::tempdir()?;
+/// let mut config = OverlayMountConfig::new(vec![], root.path().join("upper"), None, root.path().join("merged"));
+/// config.backend = None;
+/// assert_eq!(OverlayFs::mount(config.clone()).unwrap_err().to_string(), "lowerdir must list at least one path");
+/// assert_eq!(OverlayFs::run_foreground(config).unwrap_err().to_string(), "lowerdir must list at least one path");
+/// assert!(std::fs::read_dir(root.path())?.next().is_none());
+/// # Ok::<(), anyhow::Error>(())
+/// ```
 pub trait OverlayMounting {
     /// Consume configuration, prepare the overlay, mount it and start its request
     /// thread. The returned owner must outlive filesystem users. Invalid paths,
@@ -250,6 +312,31 @@ pub trait OverlayMounting {
 }
 
 /// Lifecycle control of an opaque, uniquely owned background mount.
+///
+/// The following workflow requires working host FUSE and valid caller-owned backing paths
+/// that satisfy the configuration's stability and exclusivity contracts. It is compiled,
+/// not executed by doctests; a successful unmount must precede backing-path cleanup.
+///
+/// ```no_run
+/// use pvisor_overlayfs::api::{OverlayFs, OverlayMountConfig, OverlayMounting, OverlaySessionControl};
+/// fn serve_owned_view(config: OverlayMountConfig) -> anyhow::Result<()> {
+///     let session = OverlayFs::mount(config)?;
+///     assert!(session.mountpoint().is_absolute());
+///     let _thread_finished = session.has_exited(); // This does not establish detachment.
+///     session.unmount()?;
+///     Ok(())
+/// }
+/// ```
+///
+/// Unmount consumes the session, including on error.
+///
+/// ```compile_fail,E0382
+/// use pvisor_overlayfs::api::{OverlaySession, OverlaySessionControl};
+/// fn unmount_twice(session: OverlaySession) {
+///     let _ = session.unmount();
+///     let _ = session.unmount();
+/// }
+/// ```
 pub trait OverlaySessionControl: Sized {
     /// Canonical mountpoint retained at mounting time; borrowed from this owner.
     fn mountpoint(&self) -> &Path;
@@ -272,6 +359,20 @@ pub trait OverlaySessionControl: Sized {
 }
 
 /// Diagnostic snapshots of requests that reached the mounted FUSE view.
+///
+/// Editing a snapshot does not edit the shared sink. Creating an independent sink
+/// or taking a snapshot does not install filesystem observation.
+///
+/// ```
+/// use pvisor_overlayfs::api::{FilesystemMetrics, FsMetrics};
+/// let metrics = FsMetrics::default();
+/// let shared = metrics.clone();
+/// let mut snapshot = metrics.snapshot();
+/// assert!(snapshot.paths.is_empty() && snapshot.rules.is_empty());
+/// snapshot.overflow_hits = 42;
+/// assert_eq!(shared.snapshot().overflow_hits, 0);
+/// assert_eq!(FsMetrics::default().snapshot().overflow_hits, 0);
+/// ```
 pub trait FilesystemMetrics {
     /// Clone counters under the shared sink's mutex, recovering poisoned locks.
     /// `Clone` shares the sink across threads (`Send + Sync`); `Default` creates

@@ -80,7 +80,7 @@ fn exchange(stream: &mut UnixStream, query: &[u8], rcode: u8, answers: u8) -> Ve
     reply.to_vec()
 }
 
-#[test]
+#[rstest::rstest]
 fn malformed_dns_and_wire_name_limit_do_not_poison_later_queries() {
     let policy = NetworkPolicy::compile(&NetworkConfig {
         mode: NetworkMode::NoNetwork,
@@ -143,7 +143,7 @@ fn malformed_dns_and_wire_name_limit_do_not_poison_later_queries() {
     assert_eq!(metrics.tcp_flows_opened, 0);
 }
 
-#[test]
+#[rstest::rstest]
 fn rejected_syn_headers_do_not_consume_the_only_flow_slot() {
     let policy = NetworkPolicy::compile(&NetworkConfig {
         mode: NetworkMode::NoNetwork,

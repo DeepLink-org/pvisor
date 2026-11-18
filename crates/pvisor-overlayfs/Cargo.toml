@@ -24,5 +24,7 @@ fuser = { workspace = true, default-features = false, features = ["abi-7-31"] }
 fuser = { workspace = true, features = ["abi-7-19", "libfuse"] }
 
 [dev-dependencies]
+proptest.workspace = true
+rstest.workspace = true
 tempfile.workspace = true
 syn = { version = "2", features = ["full", "visit"] }

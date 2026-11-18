@@ -2905,6 +2905,8 @@ version = "0.3.2"
 dependencies = [
  "flate2",
  "libc",
+ "proptest",
+ "rstest",
  "serde",
  "serde_json",
  "sha2 0.11.0",
@@ -2961,8 +2963,10 @@ dependencies = [
  "fuser",
  "libc",
  "log",
+ "proptest",
  "pvisor-core",
  "pvisor-overlay-core",
+ "rstest",
  "syn 2.0.117",
  "tempfile",
 ]
@@ -2985,6 +2989,7 @@ dependencies = [
  "proptest",
  "pvisor-core",
  "reqwest",
+ "rstest",
  "serde",
  "serde_json",
  "smoltcp",

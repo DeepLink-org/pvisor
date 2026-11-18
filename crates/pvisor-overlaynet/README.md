@@ -108,6 +108,36 @@ limits are recorded in [the network profile report](../../benchmark/network/PROF
 mise run test -- pvisor-overlaynet
 ```
 
+In-file implementation tests use `rstest`. `api.rs` provides runnable doctests
+for coverage/records, egress/configuration, worker startup/shutdown, header safety,
+proxy dispatch and download acknowledgements, plus a compile-fail ownership
+example. They require no VM, listener or external service.
+
+External contracts combine bounded `proptest` inputs with fixed `rstest`
+regressions. Both call the same contract assertions for adoption failures,
+malformed frames, alias rejection, peer-policy admission and bandwidth recovery.
+Each generated input, including shrinking attempts, owns fresh configuration,
+registries, counters and runtimes. Async lifecycle properties use paused Tokio
+time. An async fixture owns each local HTTP service and aborts it on drop.
+
+| Contract | Generated coverage and retained fixed checks |
+| --- | --- |
+| Header safety | Generated Connection tokens, casing, spacing and multi-value Upgrade lists; exact field-class and whole-token regressions |
+| Address authorization | In-file named IP spellings crossed with private-IP permission/denial; connector-range edges, deduplication and first-seen order |
+| Bandwidth | Generated cancellation stage, host rate and recovery count; exact stacked-budget deadlines and in-flight policy replacement |
+| Public API | Generated IPv4 MAC identities, missing/present nested counters, adoption diagnostics/capacities, invalid alias families, scoped peer policies and malformed frame lengths/prefix splits; exact wire/default/boundary cases |
+| Proxy observations | Generated destination traces with repeated hosts across cloned owners; fixed 255/256/257 inventory boundaries, callback failures, controller attribution/veto and resolved-address modes |
+| Download hooks | Fixed ready barriers before headers and EOF; cancellation at either barrier and completion each clean up exactly once |
+| Body ownership | Generated sequences of up to 63 operations with cancellation at different retained bodies; all 64 three-step combinations, named longer regressions and full 128-slot recovery |
+
+Expected bytes, ordering, counts and deadlines are independent of the
+implementation. Random exploration retains default Proptest case/shrink settings;
+failure seeds persist in `proptest-regressions/<test-binary>.txt`. Preserve seeds
+and promote minimized failures to fixed regressions. `PROPTEST_CASES` can expand
+local exploration without reducing CI defaults. Exact boundaries, architecture
+guards, the self-exec worker and the ignored real-timer runner remain intact.
+These tests do not boot a VM or establish KVM/HVF/WHP acceptance.
+
 `tests/stream_recovery.rs` uses the public router and an accepting in-memory
 sink, without opening sockets or contacting an upstream. A delayed body error,
 a separately cancelled pending body and intervening healthy requests must retain
@@ -167,9 +197,10 @@ Validation: `mise run test -- pvisor-overlaynet`,
 
 | Contract | External API coverage |
 | --- | --- |
-| Configuration/records | `api_contract`: defaults, old serialized records, addressing, peer authority and zero-capacity rejection before adoption |
-| Resource ownership | `api_contract`: failed transport adoption, endpoint release, explicit/drop shutdown and malformed-frame worker failure |
-| Proxy observations | `proxy_observation`: denial, dispatch, response and failure contents/order through the single observer |
+| Configuration/records | `api.rs` doctests and `api_contract`: complete profile capabilities/wire names, generated legacy counters and addressing, peer authority/replacement and zero-capacity rejection before adoption |
+| Resource ownership | `api.rs` runnable/compile-fail examples and `api_contract`: generated adoption/frame failures, endpoint release and explicit/drop shutdown |
+| Proxy and observations | `proxy_observation`: generated destination traces across cloned owners; fixed callback failures, controller attribution/veto, address constraints and complete outcome snapshots |
+| Download hooks | `proxy_observation`: local HTTP header/EOF ready barriers, completion and cancellation cleanup through the public router |
 | Forwarding/lifecycle | `stream_recovery`, `bandwidth_lifecycle`: admission permits, cancellation, body errors and shared budgets; Gateway integration tests cover protocol dispatch/download hooks |
 | Peer/DNS isolation | `peer_network`, `vm_dns`: unsafe membership, live policy replacement, framing, restart generations, process isolation and bounded failure recovery |
 | Exposure | `api_boundary`: exact behavior inventory, private state, no API bodies/conditionals, and declared imports across platform-specific callers |
