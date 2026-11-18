@@ -4,7 +4,7 @@
 
 **Contract**: Docker image help retains OCI pull/platform syntax and build keeps
 its OCI export spelling; daemon service help retains cache serving.
-Help and invalid local-base/backend combinations
+Help and invocations of the retired local base preparation commands
 do not initialize image, container, daemon or Session state or mutate inputs.
 
 **Prerequisites**: Matching executable `SUBJECT_BIN` and sibling `pvisor-daemon`,
@@ -24,9 +24,13 @@ $ python3 "$TESTDIR/../fixture.py" use S-LAZY-001 --timeout 30 <<'CASE'
 > grep -F -- '--cache' service-help
 > pvisor daemon serve --help > forwarded-help
 > cmp service-help forwarded-help
+> pvisor cache --help > cache-help
+> ! grep -Eq '^[[:space:]]+prepare-(rootfs|workspace)[[:space:]]' cache-help
 > mkdir input
 > printf 'untouched\n' > input/value
 > snapshot input input
+> expect_refused pvisor cache prepare-rootfs --rootfs "$WS/input" --base-store "$CASE_ROOT/bases"
+> expect_refused pvisor cache prepare-workspace --workspace "$WS/input" --base-store "$CASE_ROOT/bases"
 > expect_refused pvisor cache --backend filesystem --location "$CASE_ROOT/shared" prepare-rootfs --rootfs "$WS/input" --base-store "$CASE_ROOT/bases"
 > expect_refused pvisor cache --read-only prepare-workspace --workspace "$WS/input" --base-store "$CASE_ROOT/bases"
 > assert_unchanged input input

@@ -240,7 +240,7 @@ or a read-access heat detector, and does not promise production density.
 ### Sealed rootfs {#prepared-rootfs}
 
 `vm.prepared_rootfs` selects a physical base durably retained by
-`pvisor cache prepare-rootfs`. Set `[run] executor = "vm"`, provide `store` in
+`SnapshotStore::prepare_rootfs`. Set `[run] executor = "vm"`, provide `store` in
 `[vm.prepared_rootfs]`, and put the prepared result's `id` in
 `[vm.prepared_rootfs.base]`. The paired CLI overrides are
 `--rootfs-base-store STORE --rootfs-base ID`; see the

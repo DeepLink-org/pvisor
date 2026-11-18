@@ -1004,18 +1004,16 @@ deny-all 仍允许已配置的内部 Gateway 路由。各路径的范围见 [网
 
 #### 使用封存 rootfs {#prepared-rootfs}
 
-先将静止的独立 Linux rootfs 准备到私有 store，再用返回的 `base.id` 替换
-`BASE_ID`。store 应位于 workspace、stage、所有 guest 暴露路径及 VM 可写
-backing/control 路径之外。
+通过 Rust SDK 的 `SnapshotStore::prepare_rootfs` 将静止的独立 Linux rootfs
+封存到私有 store，用返回基底的 `reference().id` 替换 `BASE_ID`。store 应位于
+workspace、stage、所有 guest 暴露路径及 VM 可写 backing/control 路径之外。
 
 ```bash
-pvisor cache prepare-rootfs --rootfs /srv/linux-rootfs --base-store /srv/pvisor-bases
 pvisor spawn --vm --rootfs-base-store /srv/pvisor-bases --rootfs-base BASE_ID -- /bin/sh
 ```
 
-本地准备不使用缓存服务；成功输出包含 `schema_version`、`prepared_rootfs`
-（canonical `store` 与 `base.id`）及独立 `rootfs` 路径。首次准备包含复制、
-完整内容/元数据校验和持久 pin。后续普通 CLI 由 Session owner 认证该对象，
+首次准备包含复制、完整内容与元数据校验和持久 pin。
+后续普通 CLI 由 Session owner 认证该对象，
 取得运行期 lease 并接通 Immutable 物理 lower；不会每次重新封存。
 默认工作区保持 live；可显式选择[封存工作区](#prepared-workspace)。
 
@@ -1037,20 +1035,19 @@ rootfs 的 SDK 调用（包括仅以 `with_rootfs_base` 提供 owner），以及
 
 #### 使用封存工作区 {#prepared-workspace}
 
-将静止的项目准备到另一个私有 store，并在项目目录运行。`ROOTFS_ID` 来自
-上述 rootfs 准备命令，`WORKSPACE_ID` 来自工作区准备结果。
+通过 Rust SDK 的 `SnapshotStore::prepare_workspace` 将静止的项目封存到另一个
+私有 store，再从真实项目目录运行。用返回基底的 `reference().id` 替换
+`WORKSPACE_ID`，用封存 rootfs 的 ID 替换 `ROOTFS_ID`。
 
 ```bash
-pvisor cache prepare-workspace --workspace /srv/project --base-store /srv/pvisor-workspace-bases
 cd /srv/project
 pvisor spawn --vm --rootfs-base-store /srv/pvisor-bases --rootfs-base ROOTFS_ID \
   --workspace-base-store /srv/pvisor-workspace-bases --workspace-base WORKSPACE_ID \
   --stage /srv/pvisor-stages/review-1 -- /bin/sh
 ```
 
-准备结果包含 `schema_version`、`prepared_workspace`（canonical `store` 与
-`base.id`）和独立 `workspace` 路径。首次准备复制并校验内容与元数据，持久 pin
-跨命令退出和 GC 保留；后续 Session owner 重新认证 workspace catalog 并取得
+首次准备复制并校验内容与元数据，持久 pin
+跨进程退出和 GC 保留；后续 Session owner 重新认证 workspace catalog 并取得
 运行期 lease，无需重新封存。
 
 读取使用所选固定 generation，宿主项目的后续修改不会进入当前 Run 的快照读视图。

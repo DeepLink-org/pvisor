@@ -68,7 +68,7 @@ enum Command {
     Container(docker::DockerCommand),
     /// List runtime experiments.
     Feature(crate::cli::features::FeatureArgs),
-    /// Build, publish and query image, rootfs and workspace caches.
+    /// Prepare, publish and query shared image caches.
     Cache(cache::CacheArgs),
     #[command(about = run::RUN_COMMAND_ABOUT, long_about = run::RUN_COMMAND_LONG_ABOUT)]
     Spawn(Box<run::RunArgs>),

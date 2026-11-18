@@ -1867,11 +1867,10 @@ retains its owner through exit; its declaration preserves the lower stack's
 identity and order. Writable uppers retain their normal behavior.
 
 Ordinary VM CLI runs can select a durably prepared physical rootfs independently
-of the live workspace:
+of the live workspace. Prepare the base with `SnapshotStore::prepare_rootfs`
+and use the returned base's `reference().id` for `BASE_ID`.
 
 ```bash
-pvisor cache prepare-rootfs --rootfs /opt/rootfs-source --base-store /opt/pvisor-bases
-# Use the prepared_rootfs.base.id from the JSON result:
 pvisor spawn --vm --rootfs-base-store /opt/pvisor-bases --rootfs-base BASE_ID -- /bin/sh
 ```
 

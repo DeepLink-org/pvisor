@@ -134,6 +134,10 @@ remain legacy/diagnostic contracts while their user-facing workflow moves to
 image commands. Their removal needs explicit migration of their consumers;
 do not silently rewrite old shared-pool locations into bundle layouts.
 
+The CLI no longer prepares local VM baselines through `cache prepare-rootfs`
+or `cache prepare-workspace`. The Rust SDK can prepare either base, and VM
+launches can still select a prepared base by store and ID.
+
 ## pvisor-daemon image retirement
 
 | Legacy operation | Replacement |

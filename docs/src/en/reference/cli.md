@@ -1190,19 +1190,17 @@ scope of each path.
 
 #### Use a sealed rootfs {#prepared-rootfs}
 
-Prepare a quiescent, independent Linux rootfs into a private store, then replace
-`BASE_ID` with the returned `base.id`. Keep the store outside the workspace,
+Prepare a quiescent, independent Linux rootfs in a private store using the
+Rust SDK's `SnapshotStore::prepare_rootfs`. Set `BASE_ID` to the returned
+base's `reference().id`. Keep the store outside the workspace,
 stage, every guest-visible path and writable VM backing/control paths.
 
 ```bash
-pvisor cache prepare-rootfs --rootfs /srv/linux-rootfs --base-store /srv/pvisor-bases
 pvisor spawn --vm --rootfs-base-store /srv/pvisor-bases --rootfs-base BASE_ID -- /bin/sh
 ```
 
-Local preparation does not use a cache service. Successful output contains
-`schema_version`, `prepared_rootfs` (canonical `store` and `base.id`) and the
-independent `rootfs` path. Initial preparation includes copying, full content
-and metadata verification, and a persistent pin. Later ordinary CLI runs have
+Initial preparation copies and verifies contents and metadata, then commits a
+persistent pin. Later ordinary CLI runs have
 the Session owner authenticate the object, acquire a lifetime lease and attach
 the Immutable physical lower without sealing it again. The workspace remains
 live by default; an explicit [sealed workspace](#prepared-workspace) can select
@@ -1231,21 +1229,20 @@ default does not enable data-page caching, negative caching, WB or DAX.
 
 #### Use a sealed workspace {#prepared-workspace}
 
-Prepare a quiescent project into a separate private store, then run from the
-project directory. Use the rootfs preparation result for `ROOTFS_ID` and the
-workspace preparation result for `WORKSPACE_ID`.
+Prepare a quiescent project in a separate private store using the Rust SDK's
+`SnapshotStore::prepare_workspace`, then run from the live project directory.
+Set `WORKSPACE_ID` to the returned base's `reference().id` and `ROOTFS_ID` to
+the prepared rootfs ID.
 
 ```bash
-pvisor cache prepare-workspace --workspace /srv/project --base-store /srv/pvisor-workspace-bases
 cd /srv/project
 pvisor spawn --vm --rootfs-base-store /srv/pvisor-bases --rootfs-base ROOTFS_ID \
   --workspace-base-store /srv/pvisor-workspace-bases --workspace-base WORKSPACE_ID \
   --stage /srv/pvisor-stages/review-1 -- /bin/sh
 ```
 
-Preparation returns `schema_version`, `prepared_workspace` (canonical `store`
-and `base.id`) and an independent `workspace` path. Initial preparation copies
-and verifies contents and metadata. A persistent pin survives command exit and
+Initial preparation copies
+and verifies contents and metadata. A persistent pin survives process exit and
 GC; later Session owners authenticate the workspace catalog again and acquire a
 lifetime lease without sealing the source again.
 

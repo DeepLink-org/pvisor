@@ -231,7 +231,7 @@ VM executor 时启用实验性的 Linux x86_64 实例本地 live 压缩；
 
 ### 封存 rootfs {#prepared-rootfs}
 
-`vm.prepared_rootfs` 选择由 `pvisor cache prepare-rootfs` 持久保留的物理基底。
+`vm.prepared_rootfs` 选择由 `SnapshotStore::prepare_rootfs` 持久保留的物理基底。
 设置 `[run] executor = "vm"`，并在 `[vm.prepared_rootfs]` 中提供 `store`，
 在 `[vm.prepared_rootfs.base]` 中提供准备结果的 `id`。CLI 的成对覆盖参数为
 `--rootfs-base-store STORE --rootfs-base ID`。完整命令见

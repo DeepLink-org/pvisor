@@ -1154,16 +1154,10 @@ Per-generation control sockets live below an owned `0700`
 
 ## Prepared VM rootfs
 
-`pvisor cache prepare-rootfs --rootfs DIR --base-store STORE` is a local operation,
-independent of cache daemons, backends and registry access. The source must be
-quiescent; preparation copies/verifies it and commits a persistent store pin
-before printing `{schema_version, prepared_rootfs: {store, base: {id}}, rootfs}`.
-Cache backend/location/read-only/image-store options conflict with this command.
-The source and store must not contain one another. The private store must remain
-outside guest-visible or writable workspace/stage/mount trees and must not be
-modified manually. No prepared-entry removal command is provided.
-Both local source and destination are checked against canonical Host authority
-before initializing/copying, without contacting or changing a listener.
+Use the Rust SDK's `SnapshotStore::prepare_rootfs` to copy and verify a
+quiescent source and commit its persistent pin. Keep the store independent of
+the source, outside guest-visible or writable paths and private Host authority.
+Use the returned base's `reference().id` for `ID`.
 
 `pvisor spawn --vm --rootfs-base-store STORE --rootfs-base ID -- COMMAND` opens that
 catalog entry in the ordinary Session owner, before default host rootfs or
@@ -1194,18 +1188,16 @@ orphans. These paths require platform-specific integration coverage.
 ## Prepared VM workspace
 
 An explicit prepared workspace reads one fixed, owned generation while retaining
-the live caller workspace as the apply destination. Prepare it outside the Run:
+the live caller workspace as the apply destination. Prepare a quiescent source
+before the Run using the Rust SDK's `SnapshotStore::prepare_workspace`. Use the
+returned base's `reference().id` for `WORKSPACE_ID`.
 
 ```bash
-pvisor cache prepare-workspace --workspace /opt/workspace-source --base-store /opt/workspace-bases
 pvisor spawn --vm --rootfs-base-store /opt/rootfs-bases --rootfs-base ROOTFS_ID \
   --workspace-base-store /opt/workspace-bases --workspace-base WORKSPACE_ID -- /bin/sh
 ```
 
-The preparation command is local, with the same backend-option conflicts and
-canonical source/store/Host-authority checks as `prepare-rootfs`. It prints
-`{schema_version, prepared_workspace: {store, base: {id}}, workspace}` after the
-workspace-purpose catalog pin commits. A rootfs catalog record cannot substitute
+A rootfs catalog record cannot substitute
 for a workspace record. Preparation copies a quiescent source once; warm Runs
 authenticate the catalog and seal without reimporting the source or auditing the
 whole tree. The private store and generation must remain externally unmodified.

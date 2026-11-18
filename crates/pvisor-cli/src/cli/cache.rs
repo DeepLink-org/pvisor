@@ -33,24 +33,6 @@ pub(super) struct CacheArgs {
 
 #[derive(Debug, Subcommand)]
 enum CacheCommand {
-    /// Copy a quiescent local rootfs into a durable, private VM base catalog.
-    PrepareRootfs {
-        /// Independent source tree; never the live host root or the base store.
-        #[arg(long)]
-        rootfs: PathBuf,
-        /// Private SnapshotStore, separate from every guest-visible workspace.
-        #[arg(long)]
-        base_store: PathBuf,
-    },
-    /// Copy a quiescent local workspace into a durable private workspace catalog.
-    PrepareWorkspace {
-        /// Fixed read source; the future Run still applies to a live workspace.
-        #[arg(long)]
-        workspace: PathBuf,
-        /// Private SnapshotStore, independent of the rootfs store and Run backing.
-        #[arg(long)]
-        base_store: PathBuf,
-    },
     /// Resolve an image; print its manifest digest and immutable read handle.
     Prepare {
         image: String,
@@ -87,50 +69,6 @@ enum CacheCommand {
 }
 
 pub(super) fn run(args: CacheArgs) -> anyhow::Result<()> {
-    let prepared_source = match &args.command {
-        CacheCommand::PrepareRootfs { rootfs, base_store } => Some(("rootfs", rootfs, base_store)),
-        CacheCommand::PrepareWorkspace {
-            workspace,
-            base_store,
-        } => Some(("workspace", workspace, base_store)),
-        _ => None,
-    };
-    if let Some((purpose, source, base_store)) = prepared_source {
-        anyhow::ensure!(
-            args.backend.is_none()
-                && args.location.is_none()
-                && !args.read_only
-                && args.image_store.is_none(),
-            "prepare-{purpose} is local and cannot use cache backend/location/read-only/image-store options"
-        );
-        let source = source.canonicalize()?;
-        // Check before SnapshotStore::new creates/chmods directories.
-        let store_path = super::run::canonical_candidate(base_store)?;
-        super::host_service::reject_guest_exposure([source.clone(), store_path.clone()])?;
-        anyhow::ensure!(
-            !source.starts_with(&store_path) && !store_path.starts_with(&source),
-            "prepared {purpose} source and store must be independent trees"
-        );
-        let store = pvisor::environment_snapshot::SnapshotStore::new(&store_path)?;
-        let base = if purpose == "rootfs" {
-            store.prepare_rootfs(&source)?
-        } else {
-            store.prepare_workspace(&source)?
-        };
-        let selector = pvisor::PreparedBase {
-            store: store_path,
-            base: base.reference().clone(),
-        };
-        let mut output = serde_json::Map::new();
-        output.insert("schema_version".into(), 1.into());
-        output.insert(
-            format!("prepared_{purpose}"),
-            serde_json::to_value(selector)?,
-        );
-        output.insert(purpose.into(), serde_json::to_value(base.root())?);
-        println!("{}", serde_json::to_string_pretty(&output)?);
-        return Ok(());
-    }
     let config = CacheConfig::from_options(
         args.backend,
         args.location,
@@ -192,9 +130,6 @@ pub(super) fn run(args: CacheArgs) -> anyhow::Result<()> {
                 }
             }
             return Ok(());
-        }
-        CacheCommand::PrepareRootfs { .. } | CacheCommand::PrepareWorkspace { .. } => {
-            unreachable!()
         }
     };
     let (response, _) = client.request(request)?;

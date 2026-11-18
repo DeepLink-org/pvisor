@@ -420,7 +420,7 @@ metadata 第二、三轮在四臂仍各有2050个 workspace GETATTR；stream_wri
 
 普通 CLI 接通 rootfs 所有权后，live Mutable 工作区仍会保留读观察和重复查找。这个对照检验显式封存工作区能否在真实 `pvisor run`、Host 服务、stage/journal、VmExecutor 与 native runner 路径中进一步降低工具耗时。两组 rootfs 指向同一认证封存物理目录，均声明不支持 execution checkpoint；该值来自 Bundle 的 `executor_plan`，实际 native binding 未留存、值未知。工作区对照组读取新复制的 live lower，处理组读取持有 lease 的 workspace catalog 固定 generation，并保留独立 live apply target。
 
-公开 `pvisor-cache prepare-workspace` 在正式时钟外准备一次约 1.415 s；后续启动认证已保留的 generation，不重新封存。固定 generation 不会吸收宿主项目的后续修改；普通 apply 仍以 live 项目为目标，对所选写入路径检查基线冲突。入口条件和逻辑 checkpoint fork/恢复、execution checkpoint 捕获/恢复等限制见[CLI](../reference/cli.md#prepared-workspace)与[配置参考](../reference/config.md#prepared-workspace)。准备费用单列，不计入运行收益。
+该历史批次使用旧的工作区准备命令，在计时外准备一次约 1.415 s。新部署通过 `SnapshotStore::prepare_workspace` 准备基底。后续启动认证已保留的 generation，无需重新封存。固定 generation 不会吸收宿主项目的后续修改；普通 apply 仍以 live 项目为目标，对所选写入路径检查基线冲突。入口条件和逻辑 checkpoint fork/恢复、execution checkpoint 捕获/恢复等限制见[CLI](../reference/cli.md#prepared-workspace)与[配置参考](../reference/config.md#prepared-workspace)。准备费用单列，不计入运行收益。
 
 2026-10-17，B-FS-ENG 使用同一冻结 GNU release CLI 与 0047 固件。Linux x86_64/KVM，guest 2 vCPU/16 GiB，父预算 CPU 0/1、两核 quota、16 GiB、swap 0。guest cache=1、目录 FD 容量 256；WB、DAX、独立 lower DATA、只读 FLUSH 消除、标准负项 entry、两项 Core 缺失缓存和同次 OPEN 资格复用均为 0。工作区真实 Immutable 资格可以启用既有目录镜像；这里没有开启独立 lower 数据页缓存。
 
