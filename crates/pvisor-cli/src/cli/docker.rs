@@ -95,6 +95,12 @@ pub(super) enum DockerCommand {
 
 #[derive(Debug, Subcommand)]
 pub(super) enum ContainerCommand {
+    /// Fork an idle running VM, sharing one immutable RAM image.
+    Branch {
+        source: String,
+        #[arg(long, required=true, num_args=1..)]
+        names: Vec<String>,
+    },
     #[command(disable_help_flag = true)]
     Run(Box<Run>),
     Exec(Exec),
@@ -130,6 +136,7 @@ impl DockerCommand {
     fn ungroup(self) -> Self {
         match self {
             Self::Container { command } => match command {
+                command @ ContainerCommand::Branch { .. } => Self::Container { command },
                 ContainerCommand::Run(args) => Self::Run(args),
                 ContainerCommand::Exec(args) => Self::Exec(args),
                 ContainerCommand::Ls(args) => Self::Ps(args),
@@ -228,6 +235,9 @@ pub(super) struct Run {
     /// Disable the image's default health check.
     #[arg(long)]
     no_healthcheck: bool,
+    /// Permit a detached guest to fork into independent children.
+    #[arg(long)]
+    branchable: bool,
     /// Image followed by the optional command and its literal arguments.
     #[arg(required = true, num_args = 1.., trailing_var_arg = true, value_names = ["IMAGE", "COMMAND"])]
     invocation: Vec<String>,
@@ -480,6 +490,15 @@ pub(super) fn run(command: DockerCommand) -> anyhow::Result<i32> {
     if let DockerCommand::Images(args) = command {
         return query::images(args);
     }
+    if let DockerCommand::Container {
+        command: ContainerCommand::Branch { source, names },
+    } = &command
+    {
+        for child in Store::discover()?.fork_running(source, names)? {
+            println!("{}", child.name);
+        }
+        return Ok(0);
+    }
     if matches!(
         command,
         DockerCommand::Container { .. } | DockerCommand::Image { .. } | DockerCommand::Inspect(_)
@@ -582,6 +601,7 @@ pub(super) fn run(command: DockerCommand) -> anyhow::Result<i32> {
                     .context("stop timeout overflow")?,
                 healthcheck: None,
                 no_healthcheck: args.no_healthcheck,
+                branchable: args.branchable,
             };
             let instance = {
                 let mut display = progress::PullDisplay::new(&config.image);

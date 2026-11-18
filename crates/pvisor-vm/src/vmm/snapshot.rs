@@ -101,7 +101,12 @@ impl MachineRestore {
     /// file; guest/device writes become private COW pages, never snapshot writes.
     /// The caller must retain any pager serving `ram_file` for the VM lifetime.
     pub fn map_ram(&self, ranges: &[(GuestAddress, usize)]) -> Result<GuestMemoryMmap, String> {
-        crate::memory::map_snapshot_ram(&self.state.ram, self.ram_file.clone(), &self.ram_extents, ranges)
+        crate::memory::map_snapshot_ram(
+            &self.state.ram,
+            self.ram_file.clone(),
+            &self.ram_extents,
+            ranges,
+        )
     }
 }
 
@@ -118,6 +123,27 @@ impl Vmm {
         file: &File,
         baseline: Option<&RamDeltaSpec>,
     ) -> Result<(MachineSnapshot, Option<RamDeltaCapture>), String> {
+        self.capture_with_ram(
+            file,
+            |memory| ram::capture_ram_with_delta(memory, file, baseline),
+            true,
+        )
+    }
+
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    pub fn capture_branch_state(
+        &self,
+        file: &File,
+    ) -> Result<(MachineSnapshot, Option<Vec<crate::api::RamRestoreExtent>>), String> {
+        self.capture_with_ram(file, |memory| ram::capture_branch_ram(memory, file), false)
+    }
+
+    fn capture_with_ram<T>(
+        &self,
+        file: &File,
+        capture: impl FnOnce(&GuestMemoryMmap) -> Result<(Vec<RamMappingSnapshot>, T), String>,
+        durable: bool,
+    ) -> Result<(MachineSnapshot, T), String> {
         self.require_ram_quiesced()?;
         if !self.snapshot_devices_frozen {
             return Err("full machine freeze required".into());
@@ -131,8 +157,10 @@ impl Vmm {
         let kvm = Some(self.vm.save_state().map_err(|e| e.to_string())?);
         #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
         let pio_devices = self.pio_device_manager.io_bus.capture_snapshot_devices()?;
-        let (ram, delta) = ram::capture_ram_with_delta(&self.guest_memory, file, baseline)?;
-        file.sync_all().map_err(|e| e.to_string())?;
+        let (ram, delta) = capture(&self.guest_memory)?;
+        if durable {
+            file.sync_all().map_err(|e| e.to_string())?;
+        }
         Ok((
             MachineSnapshot {
                 version: 1,

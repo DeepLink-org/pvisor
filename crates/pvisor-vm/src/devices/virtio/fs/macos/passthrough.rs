@@ -1514,6 +1514,7 @@ impl FileSystem for PassthroughFs {
                 None
             };
             saved_inodes.push(InodeSnapshot {
+                object: None,
                 inode: data.inode,
                 refs: data.refcount.load(Ordering::Relaxed),
                 path: Some(relative.as_os_str().as_bytes().to_vec()),

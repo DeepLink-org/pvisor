@@ -15,11 +15,11 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, RwLock};
 use std::time::Duration;
 
-use pvisor_overlay_core::{BackingIdentity, BackingResolution, OverlayCore};
 use pvisor_overlay_core::{
     backend,
     service::{FilesystemService, OpenBacking, UpperNamespaceMutation},
 };
+use pvisor_overlay_core::{BackingIdentity, BackingResolution, OverlayCore};
 
 use super::super::linux_errno::linux_error;
 use super::bindings;
@@ -402,10 +402,30 @@ impl Nodes {
     }
 }
 
+// Transient fork snapshots can retain the identity selected by the frozen
+// merged namespace. Physical identities are meaningful only on the same host.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+struct ForkPathIdentity {
+    inode: u64,
+    device: u64,
+    native_inode: u64,
+    regular: bool,
+}
+
+fn fork_path_index_enabled() -> bool {
+    super::live_fork_scope()
+}
+
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct OverlaySnapshot {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    fork_path_index: Vec<ForkPathIdentity>,
     config: Config,
+    // Exact lower index and authenticated owner; lazy placeholders must never
+    // be restored as ordinary native files if their backend is absent.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    lazy_lower_bindings: Vec<(usize, String)>,
     hard_links: Vec<(u64, u64, Vec<PathBuf>)>,
     /// Physical lower identities must be relocated too: a future copy-up of a
     /// previously unvisited alias must join the already copied upper inode.
@@ -431,14 +451,43 @@ impl OverlaySnapshot {
         Ok(())
     }
 
+    fn refresh_lazy_bindings(&mut self) -> io::Result<()> {
+        use super::snapshot::invalid;
+        let mut seen = BTreeSet::new();
+        for (index, binding) in &self.lazy_lower_bindings {
+            let root = self
+                .config
+                .lower_dirs
+                .get(*index)
+                .ok_or_else(|| invalid("invalid lazy snapshot lower index"))?;
+            if !seen.insert(*index)
+                || self.config.lower_mutability.get(*index)
+                    != Some(&pvisor_overlay_core::LayerMutability::Immutable)
+            {
+                return Err(invalid("invalid lazy snapshot lower binding"));
+            }
+            self.layers
+                .get_mut(index + 1)
+                .ok_or_else(|| invalid("missing lazy snapshot layer"))?
+                .bind_lazy_projection(Path::new(root), binding, false)?;
+        }
+        Ok(())
+    }
+
     pub(super) fn verify_frozen_backing(&self) -> io::Result<()> {
-        for layer in &self.layers {
+        let mut copy = self.clone();
+        copy.refresh_lazy_bindings()?;
+        for layer in &copy.layers {
             layer.verify_frozen_backing()?;
         }
-        // Validate lower origin/upper alias topology too, without changing the
-        // saved snapshot or relaxing any ordinary copied-root checks.
-        let mut copy = self.clone();
-        copy.rebind_roots(|root| Ok(root.to_owned()), &[], true, &[])
+        // Private backing remains strict. Only authenticated lazy lowers may
+        // retain metadata changes caused by projecting another immutable name.
+        let retained = copy
+            .lazy_lower_bindings
+            .iter()
+            .map(|(index, _)| PathBuf::from(&copy.config.lower_dirs[*index]))
+            .collect::<Vec<_>>();
+        copy.rebind_roots(|root| Ok(root.to_owned()), &[], true, &retained)
     }
     pub(super) fn prepare_protected_workspace_seed(&mut self) -> io::Result<()> {
         use super::snapshot::invalid;
@@ -642,6 +691,21 @@ impl OverlaySnapshot {
             .iter()
             .map(|root| relocate(root))
             .collect::<io::Result<_>>()?;
+        for (index, binding) in &self.lazy_lower_bindings {
+            let old = self
+                .config
+                .lower_dirs
+                .get(*index)
+                .ok_or_else(|| invalid("invalid lazy snapshot lower index"))?;
+            if config.lower_dirs.get(*index) != Some(old)
+                || !retained.iter().any(|root| root == Path::new(old))
+                || backend::snapshot_binding(Path::new(old))?.as_ref() != Some(binding)
+            {
+                return Err(invalid(
+                    "lazy snapshot lower must retain its authenticated owner",
+                ));
+            }
+        }
         // Copies begin a new backing lifetime. Only explicitly retained, unchanged
         // lower owners may keep an existing stability promise.
         if !config.lower_mutability.is_empty() {
@@ -907,7 +971,10 @@ fn namespace_shard_index(parent: Option<&Path>) -> usize {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     std::hash::Hasher::write(
         &mut hasher,
-        parent.unwrap_or_else(|| Path::new("/")).as_os_str().as_bytes(),
+        parent
+            .unwrap_or_else(|| Path::new("/"))
+            .as_os_str()
+            .as_bytes(),
     );
     (std::hash::Hasher::finish(&hasher) as usize) % NAMESPACE_SHARDS
 }
@@ -1815,9 +1882,7 @@ impl OverlayFs {
                 .transpose()?,
             profile,
             operation_lock: RwLock::new(()),
-            namespace_shards: (0..NAMESPACE_SHARDS)
-                .map(|_| Mutex::new(()))
-                .collect(),
+            namespace_shards: (0..NAMESPACE_SHARDS).map(|_| Mutex::new(())).collect(),
             mutation_lock: Mutex::new(()),
             prepared_copy_up_enabled: false,
             logical_directory_cache_enabled: false,
@@ -2609,7 +2674,9 @@ impl OverlayFs {
                     continue;
                 }
                 match backend::stable_namespace(root)? {
-                    Some(lease) => { leases.insert(index + 1, lease); }
+                    Some(lease) => {
+                        leases.insert(index + 1, lease);
+                    }
                     None => {
                         eligible = false;
                         break;
@@ -3126,10 +3193,12 @@ impl OverlayFs {
         if self.lower_data_cache_active.load(Ordering::Relaxed)
             && readonly
             && !options.contains(OpenOptions::DIRECT_IO)
-            && (logical_regular || (immutable_regular && matches!(
-                backend::attributes(&self.roots[layer.0].join(&path)),
-                Ok(None)
-            )))
+            && (logical_regular
+                || (immutable_regular
+                    && matches!(
+                        backend::attributes(&self.roots[layer.0].join(&path)),
+                        Ok(None)
+                    )))
         {
             options |= OpenOptions::PVISOR_DATA_OBJECT;
         }
@@ -3191,10 +3260,13 @@ impl OverlayFs {
         let receipt = (|| {
             let lease = self.file_io_lease(handle).ok()?;
             let h = &lease.handle;
-            if h.overlay_inode != inode || h.layer.0 == 0 { return None; }
-            let logical = self.logical_data_cache
-                && self.stable_namespace_leases.contains_key(&h.layer.0);
-            if !logical && h.layer
+            if h.overlay_inode != inode || h.layer.0 == 0 {
+                return None;
+            }
+            let logical =
+                self.logical_data_cache && self.stable_namespace_leases.contains_key(&h.layer.0);
+            if !logical
+                && h.layer
                     .0
                     .checked_sub(1)
                     .and_then(|i| self.snapshot_config.lower_mutability.get(i))
@@ -3235,17 +3307,20 @@ impl OverlayFs {
                     None => {
                         self.profile.add("open_qualification_receipt_misses", 1);
                         self.layers[h.layer.0].lower_data_identity_profiled(
-                            h.inode, h.handle, &self.profile,
+                            h.inode,
+                            h.handle,
+                            &self.profile,
                         )?
                     }
                 };
                 LowerDataKey::Native((
-                h.layer.0,
-                identity.dev,
-                identity.ino,
-                identity.mount_id,
-                identity.size,
-            )) };
+                    h.layer.0,
+                    identity.dev,
+                    identity.ino,
+                    identity.mount_id,
+                    identity.size,
+                ))
+            };
             match self.lower_data_objects.lock().unwrap().register(key) {
                 Some((receipt, registered)) => {
                     self.profile.add(
@@ -3322,7 +3397,16 @@ impl FileSystem for OverlayFs {
             ));
         }
         self.core.sync_preimages()?;
-        for root in self.roots.iter().skip(1) {
+        let mut lazy_lower_bindings = Vec::new();
+        for (index, root) in self.roots.iter().skip(1).enumerate() {
+            if self.snapshot_config.lower_mutability.get(index)
+                == Some(&pvisor_overlay_core::LayerMutability::Immutable)
+            {
+                if let Some(binding) = backend::snapshot_binding(root)? {
+                    lazy_lower_bindings.push((index, binding));
+                    continue;
+                }
+            }
             backend::materialize_tree(root)?;
         }
         self.clear_directory_cache();
@@ -3440,16 +3524,48 @@ impl FileSystem for OverlayFs {
                 nodes.legacy_lookup_refs.iter().copied().collect(),
             )
         };
+        let mut fork_path_index = Vec::new();
+        if fork_path_index_enabled() && self.roots.len() == 2 && lazy_lower_bindings.len() == 1 {
+            let nodes = self.nodes.lock().unwrap();
+            let copied: BTreeSet<_> = hard_links.iter().map(|(d, i, _)| (*d, *i)).collect();
+            for (&inode, aliases) in &nodes.aliases {
+                if aliases.len() != 1 {
+                    continue;
+                }
+                let path = aliases.first().unwrap();
+                let Ok(Some(backing)) = self.core.metadata_for_backing_lookup_optional(path) else {
+                    continue;
+                };
+                let meta = &backing.entry.metadata;
+                if backing.entry.layer == 1
+                    && (meta.is_file() || meta.is_dir())
+                    && !copied.contains(&(meta.dev(), meta.ino()))
+                {
+                    fork_path_index.push(ForkPathIdentity {
+                        inode,
+                        device: meta.dev(),
+                        native_inode: meta.ino(),
+                        regular: meta.is_file(),
+                    });
+                }
+            }
+        }
+        let mut layers = self
+            .layers
+            .iter()
+            .map(|layer| layer.capture_state())
+            .collect::<io::Result<Vec<_>>>()?;
+        for (index, binding) in &lazy_lower_bindings {
+            layers[index + 1].bind_lazy_projection(&self.roots[index + 1], binding, true)?;
+        }
         Ok(super::snapshot::FsSnapshot::Overlay(Box::new(
             OverlaySnapshot {
                 config: self.snapshot_config.clone(),
+                fork_path_index,
+                lazy_lower_bindings,
                 hard_links,
                 hard_link_origins,
-                layers: self
-                    .layers
-                    .iter()
-                    .map(|layer| layer.capture_state())
-                    .collect::<io::Result<_>>()?,
+                layers,
                 nodes: saved_nodes,
                 node_aliases,
                 lookup_refs,
@@ -3484,10 +3600,12 @@ impl FileSystem for OverlayFs {
                 "cannot replace a negotiated read-only flush-elision session by restoring state",
             ));
         }
-        use super::snapshot::{FsSnapshot, invalid};
+        use super::snapshot::{invalid, FsSnapshot};
         let FsSnapshot::Overlay(state) = state else {
             return Err(invalid("overlay filesystem type mismatch"));
         };
+        let mut state = (**state).clone();
+        state.refresh_lazy_bindings()?;
         let _operation = self.write_operation().unwrap();
         if self.negative_entry_cache_seen.load(Ordering::Relaxed) {
             return Err(io::Error::new(
@@ -3652,7 +3770,41 @@ impl FileSystem for OverlayFs {
             })
             .collect::<io::Result<Vec<_>>>()?;
         self.core.restore_hard_link_sources(&sources)?;
+        let reuse_index = fork_path_index_enabled()
+            && self.roots.len() == 2
+            && state.lazy_lower_bindings.len() == 1;
+        let mut index = HashMap::new();
+        if reuse_index {
+            for hint in &state.fork_path_index {
+                if index.insert(hint.inode, hint).is_some() {
+                    return Err(invalid("duplicate fork path identity"));
+                }
+            }
+        }
+
         for (inode, aliases) in nodes.aliases.clone() {
+            // The sealed machine state identifies the frozen namespace. Only use
+            // the hint after binding the same immutable projection and observing
+            // the original native object. Other restores use full resolution.
+            if aliases.len() == 1 {
+                if let Some(hint) = index.get(&inode) {
+                    if let Ok(meta) =
+                        std::fs::symlink_metadata(self.roots[1].join(aliases.first().unwrap()))
+                    {
+                        if meta.dev() == hint.device
+                            && meta.ino() == hint.native_inode
+                            && ((hint.regular && meta.is_file())
+                                || (!hint.regular && meta.is_dir()))
+                        {
+                            if hint.regular {
+                                nodes.bind_object(inode, (1, meta.dev(), meta.ino()));
+                            }
+
+                            continue;
+                        }
+                    }
+                }
+            }
             let mut identity = None;
             for path in aliases {
                 let Some(backing) = self
@@ -3683,6 +3835,7 @@ impl FileSystem for OverlayFs {
                 }
             }
         }
+
         for (dev, ino, paths) in &state.hard_links {
             for path in paths {
                 let metadata = std::fs::symlink_metadata(self.roots[0].join(path))?;
@@ -5001,8 +5154,7 @@ impl FileSystem for OverlayFs {
                     .filter(|name| !name.is_empty())
                 {
                     let name = OsStr::from_bytes(name);
-                    if self.virtual_metadata
-                        && pvisor_overlay_core::is_private_metadata_xattr(name)
+                    if self.virtual_metadata && pvisor_overlay_core::is_private_metadata_xattr(name)
                     {
                         continue;
                     }
@@ -5732,7 +5884,7 @@ mod tests {
 
         #[test]
         fn private_symlink_chown_preserves_target_and_survives_rename_and_reopen() {
-            use std::os::unix::fs::{MetadataExt, symlink};
+            use std::os::unix::fs::{symlink, MetadataExt};
             let (temp, fs, root) = fixture(Some(b"0:0:040755"));
             let lower = temp.path().join("lower");
             let upper = temp.path().join("upper");
@@ -5788,10 +5940,9 @@ mod tests {
             );
             fs.rename(root, fuse::ROOT_ID, c"link", fuse::ROOT_ID, c"moved", 0)
                 .unwrap();
-            assert!(
-                fs.lookup(root, fuse::ROOT_ID, c".wh..pvisor-socket-metadata")
-                    .is_err()
-            );
+            assert!(fs
+                .lookup(root, fuse::ROOT_ID, c".wh..pvisor-socket-metadata")
+                .is_err());
             drop(fs);
             let reopened = OverlayFs::new(config, Arc::new(InodeAllocator::new())).unwrap();
             reopened.init(FsOptions::empty()).unwrap();
@@ -5871,10 +6022,9 @@ mod tests {
             );
             let name = c".wh..pvisor-socket-metadata";
             assert!(fs.lookup(root, fuse::ROOT_ID, name).is_err());
-            assert!(
-                fs.mkdir(root, fuse::ROOT_ID, name, 0o700, 0, Extensions::default())
-                    .is_err()
-            );
+            assert!(fs
+                .mkdir(root, fuse::ROOT_ID, name, 0o700, 0, Extensions::default())
+                .is_err());
             let handle = fs.opendir(root, fuse::ROOT_ID, 0).unwrap().0.unwrap();
             fs.readdir(root, fuse::ROOT_ID, handle, 4096, 0, |entry| {
                 assert!(!entry.name.starts_with(b".wh."));
@@ -7845,7 +7995,7 @@ mod tests {
         body: &[u8],
     ) -> (vm_memory::GuestMemoryMmap, vm_memory::GuestAddress, usize) {
         use super::super::descriptor_utils::{
-            DescriptorType, OwnedDescriptorChain, create_descriptor_chain,
+            create_descriptor_chain, DescriptorType, OwnedDescriptorChain,
         };
         use vm_memory::{Bytes, GuestAddress, GuestMemoryMmap};
         let mem = GuestMemoryMmap::from_ranges(&[(GuestAddress(0), 0x10000)]).unwrap();
@@ -8727,7 +8877,7 @@ mod tests {
         use pvisor_overlay_core::backend::{
             BackendAttachment, FileAttr, FileType, ReadOnlyBackend,
         };
-        use std::sync::mpsc::{Receiver, Sender, channel};
+        use std::sync::mpsc::{channel, Receiver, Sender};
         struct Source {
             root: PathBuf,
             entered: Sender<()>,
@@ -9371,9 +9521,8 @@ mod tests {
                 picked.push(candidate);
                 continue;
             }
-            let different = namespace_shard_index(Some(Path::new(&format!(
-                "/{candidate}"
-            )))) != namespace_shard_index(Some(Path::new(&format!("/{}", picked[0]))));
+            let different = namespace_shard_index(Some(Path::new(&format!("/{candidate}"))))
+                != namespace_shard_index(Some(Path::new(&format!("/{}", picked[0]))));
             if different {
                 picked.push(candidate);
                 break;
@@ -10186,17 +10335,27 @@ mod tests {
             let key = LowerDataKey::Native((1, 2, index as u64 + 3, 4, 5));
             assert_eq!(table.register(key).unwrap().0.id, index as u32 + 1);
         }
-        assert!(table.register(LowerDataKey::Native((2, 2, 3, 4, 5))).is_none());
+        assert!(table
+            .register(LowerDataKey::Native((2, 2, 3, 4, 5)))
+            .is_none());
         assert_eq!(table.register(first), Some((a, false))); // hit still works at limit
         assert_eq!(table.ids.len(), MAX_LOWER_DATA_OBJECTS);
         let mut layers = LowerDataObjects::default();
         assert_ne!(
             layers.register(first).unwrap().0.id,
-            layers.register(LowerDataKey::Native((2, 2, 3, 4, 5))).unwrap().0.id
+            layers
+                .register(LowerDataKey::Native((2, 2, 3, 4, 5)))
+                .unwrap()
+                .0
+                .id
         );
         assert_ne!(
             layers.register(first).unwrap().0.id,
-            layers.register(LowerDataKey::Native((1, 2, 3, 4, 6))).unwrap().0.id
+            layers
+                .register(LowerDataKey::Native((1, 2, 3, 4, 6)))
+                .unwrap()
+                .0
+                .id
         );
     }
 
@@ -10697,7 +10856,10 @@ mod tests {
         fs.init(FsOptions::empty()).unwrap();
         fs.core.observe_read(Path::new("file")).unwrap();
         let observations = pvisor_overlay_core::load_preimages(&source.join("journal")).unwrap();
-        let super::super::snapshot::FsSnapshot::Overlay(mut seed) = fs.capture_state().unwrap() else { panic!("overlay"); };
+        let super::super::snapshot::FsSnapshot::Overlay(mut seed) = fs.capture_state().unwrap()
+        else {
+            panic!("overlay");
+        };
         drop(fs);
         seed.prepare_protected_workspace_seed().unwrap();
         let baseline = source.join("lower");
@@ -10751,8 +10913,14 @@ mod tests {
         assert_eq!(std::fs::read(baseline.join("file")).unwrap(), b"original");
         assert!(!branches[1].0.join("upper/file").exists());
         branches[1].1.core.copy_up(Path::new("file")).unwrap();
-        assert_eq!(std::fs::read(branches[1].0.join("upper/file")).unwrap(), b"original");
-        assert_eq!(pvisor_overlay_core::load_preimages(&branches[1].0.join("journal")).unwrap(), observations);
+        assert_eq!(
+            std::fs::read(branches[1].0.join("upper/file")).unwrap(),
+            b"original"
+        );
+        assert_eq!(
+            pvisor_overlay_core::load_preimages(&branches[1].0.join("journal")).unwrap(),
+            observations
+        );
     }
 
     #[test]
@@ -10761,16 +10929,25 @@ mod tests {
         std::fs::create_dir(temp.path().join("lower")).unwrap();
         std::fs::write(temp.path().join("lower/file"), b"original").unwrap();
         let fs = parent_cache_fixture(temp.path());
-        let super::super::snapshot::FsSnapshot::Overlay(mut state) = fs.capture_state().unwrap() else { panic!("overlay"); };
+        let super::super::snapshot::FsSnapshot::Overlay(mut state) = fs.capture_state().unwrap()
+        else {
+            panic!("overlay");
+        };
         let baseline = state.config.lower_dirs[0].clone();
         state.config.apply_target = Some(baseline.clone());
         state.config.baseline_lower = Some(baseline.clone());
         state.prepare_protected_workspace_seed().unwrap();
-        state.validate_shared_readonly_layers(&[PathBuf::from(&baseline)]).unwrap();
+        state
+            .validate_shared_readonly_layers(&[PathBuf::from(&baseline)])
+            .unwrap();
         assert!(state.config.apply_target.is_none());
         assert!(state.config.baseline_lower.is_none());
-        assert_eq!(state.config.lower_dirs.as_slice(), std::slice::from_ref(&baseline));
-        state.config.apply_target = Some(temp.path().join("distinct").to_string_lossy().into_owned());
+        assert_eq!(
+            state.config.lower_dirs.as_slice(),
+            std::slice::from_ref(&baseline)
+        );
+        state.config.apply_target =
+            Some(temp.path().join("distinct").to_string_lossy().into_owned());
         let before = serde_json::to_value(&state).unwrap();
         assert!(state.prepare_protected_workspace_seed().is_err());
         assert_eq!(serde_json::to_value(&state).unwrap(), before);
@@ -10778,9 +10955,16 @@ mod tests {
         state.config.work_dir = Some(format!("{baseline}/work"));
         assert!(state.prepare_protected_workspace_seed().is_err());
         state.config.work_dir = None;
-        let super::super::snapshot::FsSnapshot::Passthrough(lower) = &mut state.layers[1] else { panic!("passthrough"); };
+        let super::super::snapshot::FsSnapshot::Passthrough(lower) = &mut state.layers[1] else {
+            panic!("passthrough");
+        };
         lower.handles.push(super::super::snapshot::HandleSnapshot {
-            handle: 42, inode: 1, flags: libc::O_RDWR, offset: 0, entries: vec![], directory_ready: false,
+            handle: 42,
+            inode: 1,
+            flags: libc::O_RDWR,
+            offset: 0,
+            entries: vec![],
+            directory_ready: false,
             #[cfg(target_os = "linux")]
             directory_entries: None,
         });
@@ -11388,9 +11572,166 @@ mod tests {
         }
     }
 
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn retained_lazy_snapshot_requires_owner_without_expanding_lower() {
+        use pvisor_overlay_core::backend::{
+            BackendAttachment, FileAttr, FileType, ReadOnlyBackend,
+        };
+        struct Lazy {
+            root: PathBuf,
+            binding: Mutex<Option<String>>,
+            expanded: AtomicU64,
+        }
+        impl ReadOnlyBackend for Lazy {
+            fn prepare_metadata(&self, _: &Path) -> io::Result<()> {
+                Ok(())
+            }
+            fn prepare_directory(&self, _: &Path) -> io::Result<()> {
+                Ok(())
+            }
+            fn attributes(&self, path: &Path) -> io::Result<FileAttr> {
+                let m = std::fs::symlink_metadata(self.root.join(path))?;
+                Ok(FileAttr {
+                    ino: m.ino(),
+                    size: m.len(),
+                    blocks: m.blocks(),
+                    atime: m.accessed()?,
+                    mtime: m.modified()?,
+                    ctime: std::time::UNIX_EPOCH,
+                    crtime: std::time::UNIX_EPOCH,
+                    kind: if m.is_dir() {
+                        FileType::Directory
+                    } else {
+                        FileType::RegularFile
+                    },
+                    perm: (m.mode() & 0o7777) as u16,
+                    uid: m.uid(),
+                    gid: m.gid(),
+                    nlink: m.nlink() as u32,
+                    rdev: 0,
+                    blksize: 4096,
+                    flags: 0,
+                })
+            }
+            fn read_at(&self, _: &Path, _: u64, _: u32) -> io::Result<Vec<u8>> {
+                Err(io::Error::from_raw_os_error(libc::EIO))
+            }
+            fn materialize_file(&self, _: &Path) -> io::Result<()> {
+                Ok(())
+            }
+            fn materialize_tree(&self, _: &Path) -> io::Result<()> {
+                self.expanded.fetch_add(1, Ordering::Relaxed);
+                Ok(())
+            }
+            fn snapshot_binding(&self) -> io::Result<Option<String>> {
+                let binding = self.binding.lock().unwrap().clone();
+                if binding.as_deref() == Some("invalid") {
+                    return Err(io::Error::from_raw_os_error(libc::EIO));
+                }
+                Ok(binding)
+            }
+        }
+        for (immutable, retained) in [(true, true), (true, false), (false, true)] {
+            let temp = tempfile::tempdir_in("/dev/shm").unwrap();
+            let lower = temp.path().join("lower");
+            std::fs::create_dir(&lower).unwrap();
+            std::fs::write(lower.join("referenced"), b"image bytes").unwrap();
+            let mut config = parent_cache_fixture(temp.path()).snapshot_config.clone();
+            config.lower_mutability = vec![if immutable {
+                pvisor_overlay_core::LayerMutability::Immutable
+            } else {
+                pvisor_overlay_core::LayerMutability::Mutable
+            }];
+            // This fixture models the OCI root, which permits image hardlinks.
+            // Protected-workspace denial policy is covered by separate tests.
+            config.access_policy = Default::default();
+            config.excluded_paths.clear();
+            let fs = OverlayFs::new(config, Arc::new(InodeAllocator::new())).unwrap();
+            fs.init(FsOptions::empty()).unwrap();
+            let inode = fs
+                .lookup(root_context(), fuse::ROOT_ID, c"referenced")
+                .unwrap()
+                .inode;
+            let _handle = fs
+                .open(root_context(), inode, false, libc::O_RDONLY as u32)
+                .unwrap()
+                .0
+                .unwrap();
+            std::fs::write(temp.path().join("upper/private"), b"private change").unwrap();
+            let backend = Arc::new(Lazy {
+                root: lower.clone(),
+                binding: Mutex::new(retained.then(|| "owner-v1".into())),
+                expanded: AtomicU64::new(0),
+            });
+            let attachment =
+                BackendAttachment::new_stable_namespace(&lower, backend.clone()).unwrap();
+            let snapshot = fs.capture_state().unwrap();
+            assert_eq!(
+                backend.expanded.load(Ordering::Relaxed),
+                u64::from(!(immutable && retained))
+            );
+            // Serialization must preserve the dependency; restore is never allowed
+            // to treat absent-backend placeholders as native file contents.
+            let wire = serde_json::to_vec(&snapshot).unwrap();
+            let snapshot: super::super::snapshot::FsSnapshot =
+                serde_json::from_slice(&wire).unwrap();
+            fs.restore_state(&snapshot).unwrap();
+            assert_eq!(
+                std::fs::read(temp.path().join("upper/private")).unwrap(),
+                b"private change"
+            );
+            if immutable && retained {
+                // A new lazy lookup in another branch changes native directory
+                // metadata but not the authenticated logical namespace.
+                std::fs::create_dir(lower.join("later-projected-directory")).unwrap();
+                std::fs::hard_link(lower.join("referenced"), lower.join("later-alias")).unwrap();
+                fs.restore_state(&snapshot).unwrap();
+                snapshot.verify_frozen_backing().unwrap();
+                *backend.binding.lock().unwrap() = Some("invalid".into());
+                assert!(fs.capture_state().is_err());
+                assert_eq!(backend.expanded.load(Ordering::Relaxed), 0);
+                *backend.binding.lock().unwrap() = Some("different-owner".into());
+                assert!(fs.restore_state(&snapshot).is_err());
+                *backend.binding.lock().unwrap() = Some("owner-v1".into());
+                let super::super::snapshot::FsSnapshot::Overlay(saved) = &snapshot else {
+                    panic!("overlay")
+                };
+                let mut changed = saved.clone();
+                assert!(changed
+                    .rebind_roots(|p| Ok(p.to_owned()), &[], false, &[])
+                    .is_err());
+                let mut changed = saved.clone();
+                changed
+                    .rebind_roots(|p| Ok(p.to_owned()), &[], true, &[lower.clone()])
+                    .unwrap();
+                let mut changed = saved.clone();
+                assert!(changed
+                    .rebind_roots(
+                        |p| Ok(if Path::new(p) == lower {
+                            format!("{p}-copy")
+                        } else {
+                            p.to_owned()
+                        }),
+                        &[],
+                        false,
+                        &[lower.clone()]
+                    )
+                    .is_err());
+                std::fs::write(lower.join("referenced"), b"bad content").unwrap();
+                assert!(fs.restore_state(&snapshot).is_err());
+                assert!(snapshot.verify_frozen_backing().is_err());
+                drop(attachment);
+                assert!(fs.restore_state(&snapshot).is_err());
+            }
+        }
+    }
+
     #[test]
     fn overlay_snapshot_preserves_the_unboxed_json_contract() {
         let state = OverlaySnapshot {
+            fork_path_index: vec![],
+            lazy_lower_bindings: vec![],
             config: Config {
                 lower_mutability: Vec::new(),
                 lower_dirs: vec!["/lower".into()],
@@ -12414,8 +12755,8 @@ mod tests {
             assert_eq!(entry.attr.st_gid, 2345);
             assert_eq!(entry.attr.st_mode as u32 & 0o7777, 0o755);
             fs.access(ctx, entry.inode, libc::X_OK as u32).unwrap();
-            assert!(
-                fs.access(
+            assert!(fs
+                .access(
                     Context {
                         uid: 3456,
                         gid: 3456,

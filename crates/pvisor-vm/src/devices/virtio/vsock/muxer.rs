@@ -100,7 +100,8 @@ pub fn push_packet(
     }
 }
 
-/// External sockets are deliberately excluded. Active proxies reject capture.
+/// External connections are excluded. Only validated idle configured listeners
+/// may be reconstructed from their port/path mapping; active proxies reject capture.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct VsockSnapshot {
@@ -108,6 +109,34 @@ pub struct VsockSnapshot {
     host_port_map: Option<HashMap<u16, u16>>,
     unix_ipc_port_map: Option<HashMap<u32, (PathBuf, bool)>>,
     tsi_flags: u32,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    // Connection ID and remaining quarantine time, independent of host clocks.
+    closed_reverse_ports: Vec<(u64, std::time::Duration)>,
+}
+
+impl VsockSnapshot {
+    pub(crate) fn rebind_listener(
+        &mut self,
+        port: u32,
+        source: &std::path::Path,
+        destination: &std::path::Path,
+    ) -> Result<bool, String> {
+        if self.tsi_flags != 0 || self.host_port_map.as_ref().is_some_and(|p| !p.is_empty()) {
+            return Err("branch listener requires plain AF_VSOCK without TSI".into());
+        }
+        let Some(mapping) = self
+            .unix_ipc_port_map
+            .as_mut()
+            .and_then(|p| p.get_mut(&port))
+        else {
+            return Ok(false);
+        };
+        if mapping.0 != source || !mapping.1 {
+            return Err("branch listener source mismatch".into());
+        }
+        mapping.0 = destination.to_owned();
+        Ok(true)
+    }
 }
 
 pub struct VsockMuxer {
@@ -131,6 +160,7 @@ pub struct VsockMuxer {
     interrupt: Option<InterruptTransport>,
     proxy_map: ProxyMap,
     reaper_sender: Option<Sender<u64>>,
+    restored_ports: Vec<(u64, std::time::Duration)>,
     unix_ipc_port_map: Option<HashMap<u32, (PathBuf, bool)>>,
     tsi_flags: TsiFlags,
 }
@@ -172,6 +202,7 @@ impl VsockMuxer {
             interrupt: None,
             proxy_map: Arc::new(RwLock::new(HashMap::new())),
             reaper_sender: None,
+            restored_ports: Vec::new(),
             unix_ipc_port_map,
             tsi_flags,
         }
@@ -202,6 +233,26 @@ impl VsockMuxer {
 
         let (sender, receiver) = unbounded();
 
+        let mut reaper = ReaperThread::new(receiver, self.proxy_map.clone(), self.stop.clone());
+        for (id, remaining) in self.restored_ports.drain(..) {
+            let proxy = UnixProxy::new_reverse(
+                id,
+                id as u32,
+                (id >> 32) as u32,
+                None,
+                super::proxy::ProxyGuest {
+                    cid: self.cid,
+                    mem: mem.clone(),
+                    queue: queue.clone(),
+                    rxq: self.rxq.clone(),
+                },
+            );
+            self.proxy_map
+                .write()
+                .unwrap()
+                .insert(id, Mutex::new(Box::new(proxy)));
+            reaper.reserve(id, remaining);
+        }
         let thread = MuxerThread::new(super::muxer_thread::MuxerThreadConfig {
             stop: self.stop.clone(),
             stopfd: self.stopfd.clone(),
@@ -217,11 +268,7 @@ impl VsockMuxer {
         });
         self.parked_worker = Some(thread);
         self.reaper_sender = Some(sender);
-        self.parked_reaper = Some(ReaperThread::new(
-            receiver,
-            self.proxy_map.clone(),
-            self.stop.clone(),
-        ));
+        self.parked_reaper = Some(reaper);
         if frozen {
             self.stop.store(true, Ordering::Release);
         } else {
@@ -274,7 +321,13 @@ impl VsockMuxer {
                 }
             };
         }
-        Ok(self.workers_stopped())
+        let stopped = self.workers_stopped();
+        if stopped {
+            if let Some(reaper) = &mut self.parked_reaper {
+                reaper.drain_releases();
+            }
+        }
+        Ok(stopped)
     }
 
     fn workers_stopped(&self) -> bool {
@@ -306,6 +359,109 @@ impl VsockMuxer {
         Ok(())
     }
 
+    /// Advisory while running; checked again after all workers are frozen.
+    /// Never consumes a response, accepts a connection or evicts a proxy.
+    pub(super) fn snapshot_blocker(&self) -> Result<Option<String>, String> {
+        if let Some(fault) = self.worker_fault {
+            return Err(fault.into());
+        }
+        let proxies = match self.proxy_map.try_read() {
+            Ok(proxies) => proxies,
+            Err(std::sync::TryLockError::WouldBlock) => return Ok(Some("proxy_map_busy".into())),
+            Err(_) => return Err("vsock proxy map poisoned".into()),
+        };
+        let mut active = 0;
+        let mut closed = 0;
+        let mut reserved = std::collections::HashSet::new();
+        let mut listeners = 0;
+        let mut pending_accepts = 0;
+        let mut unbound_listeners = 0;
+        for (&id, proxy) in proxies.iter() {
+            let proxy = match proxy.try_lock() {
+                Ok(proxy) => proxy,
+                Err(std::sync::TryLockError::WouldBlock) => return Ok(Some("proxy_busy".into())),
+                Err(_) => return Err("vsock proxy poisoned".into()),
+            };
+            if let Some((port, path)) = proxy.snapshot_listener() {
+                let expected_id = ((port as u64) << 32) | defs::TSI_PROXY_PORT as u64;
+                let bound = self.tsi_flags.is_empty()
+                    && id == expected_id
+                    && proxy.id() == id
+                    && self
+                        .unix_ipc_port_map
+                        .as_ref()
+                        .and_then(|m| m.get(&port))
+                        .is_some_and(|(configured, listen)| *listen && configured == path);
+                if !bound {
+                    unbound_listeners += 1;
+                    continue;
+                }
+                // A readable listening socket has an unaccepted external
+                // connection. Do not snapshot it or consume it to fake idle.
+                let mut fd = libc::pollfd {
+                    fd: proxy.as_raw_fd(),
+                    events: libc::POLLIN,
+                    revents: 0,
+                };
+                let result = unsafe { libc::poll(&mut fd, 1, 0) };
+                if result < 0 {
+                    let error = std::io::Error::last_os_error();
+                    if error.kind() == std::io::ErrorKind::Interrupted {
+                        return Ok(Some("listener_poll_interrupted".into()));
+                    }
+                    return Err(format!("vsock listener poll failed: {error}"));
+                }
+                if fd.fd < 0 || fd.revents & (libc::POLLERR | libc::POLLHUP | libc::POLLNVAL) != 0 {
+                    return Err("vsock listener invalid or closed".into());
+                }
+                if fd.revents != 0 {
+                    pending_accepts += 1;
+                }
+                listeners += 1;
+            } else if proxy.closed_reverse_unix() && self.configured_reverse_id(id) {
+                reserved.insert(id);
+            } else if proxy.status() == super::proxy::ProxyStatus::Closed {
+                closed += 1;
+            } else {
+                active += 1;
+            }
+        }
+        let rxq = match self.rxq.try_lock() {
+            Ok(rxq) => rxq,
+            Err(std::sync::TryLockError::WouldBlock) => return Ok(Some("responses_busy".into())),
+            Err(_) => return Err("vsock responses poisoned".into()),
+        };
+        let reaper_state = if self.parked_reaper.is_some() {
+            "parked"
+        } else if self.reaper.is_some() {
+            "running_counts_unavailable"
+        } else {
+            "inactive"
+        };
+        let (retiring, release_queue) = self.parked_reaper.as_ref().map_or((0, 0), |r| r.pending());
+        // The running probe cannot inspect the reaper. Frozen capture repeats
+        // this check with both workers parked and their release queue drained.
+        let reservations_match =
+            self.parked_reaper
+                .as_ref()
+                .map_or(self.reaper.is_some() || reserved.is_empty(), |r| {
+                    retiring == reserved.len()
+                        && r.reservations().all(|(id, _)| reserved.contains(&id))
+                });
+        if active + closed + pending_accepts + unbound_listeners + rxq.len() + release_queue != 0
+            || !reservations_match
+            || !rxq.is_synced()
+        {
+            return Ok(Some(format!(
+                "active={active} closed={closed} reserved={} configured_listeners={listeners} pending_accepts={pending_accepts} unbound_listeners={unbound_listeners} responses={} responses_synced={} reaper={reaper_state} retiring={retiring} release_queue={release_queue}",
+                reserved.len(),
+                rxq.len(),
+                rxq.is_synced()
+            )));
+        }
+        Ok(None)
+    }
+
     pub fn capture_state(&self) -> Result<VsockSnapshot, String> {
         if let Some(fault) = self.worker_fault {
             return Err(fault.into());
@@ -313,31 +469,33 @@ impl VsockMuxer {
         if self.mem.is_some() && (!self.stop.load(Ordering::Acquire) || !self.workers_stopped()) {
             return Err("vsock workers must be frozen".into());
         }
-        if !self
-            .proxy_map
-            .try_read()
-            .map_err(|_| "vsock proxies busy")?
-            .is_empty()
-            || !self
-                .rxq
-                .try_lock()
-                .map_err(|_| "vsock responses busy")?
-                .is_empty()
-            || self.parked_reaper.as_ref().is_some_and(|r| !r.is_idle())
-        {
-            return Err(
-                "vsock snapshot requires no connections, listeners or pending responses".into(),
-            );
+        if let Some(blocker) = self.snapshot_blocker()? {
+            return Err(format!("vsock snapshot not quiescent: {blocker}"));
         }
         Ok(VsockSnapshot {
             cid: self.cid,
             host_port_map: self.host_port_map.clone(),
             unix_ipc_port_map: self.unix_ipc_port_map.clone(),
             tsi_flags: self.tsi_flags.bits(),
+            closed_reverse_ports: self
+                .parked_reaper
+                .iter()
+                .flat_map(|r| r.reservations())
+                .collect(),
         })
     }
 
-    pub fn validate_state(&self, saved: &VsockSnapshot) -> Result<(), String> {
+    fn configured_reverse_id(&self, id: u64) -> bool {
+        self.tsi_flags.is_empty()
+            && (1024..u32::MAX).contains(&(id as u32))
+            && self
+                .unix_ipc_port_map
+                .as_ref()
+                .and_then(|m| m.get(&((id >> 32) as u32)))
+                .is_some_and(|(_, listen)| *listen)
+    }
+
+    pub fn restore_state(&mut self, saved: &VsockSnapshot) -> Result<(), String> {
         if self.mem.is_some()
             || self.cid != saved.cid
             || self.host_port_map != saved.host_port_map
@@ -346,6 +504,16 @@ impl VsockMuxer {
         {
             return Err("vsock configuration or lifecycle mismatch".into());
         }
+        let mut seen = std::collections::HashSet::new();
+        for &(id, remaining) in &saved.closed_reverse_ports {
+            if !self.configured_reverse_id(id)
+                || remaining > super::reaper::TIMEOUT
+                || !seen.insert(id)
+            {
+                return Err("invalid vsock closed port reservation".into());
+            }
+        }
+        self.restored_ports.clone_from(&saved.closed_reverse_ports);
         Ok(())
     }
 
@@ -914,5 +1082,290 @@ impl Drop for VsockMuxer {
         if let Some(timesync) = self.timesync.take() {
             let _ = timesync.join();
         }
+    }
+}
+
+#[cfg(test)]
+mod snapshot_channel_tests {
+    use super::super::proxy::{ProxyGuest, ProxyStatus};
+    use super::super::unix::UnixAcceptorProxy;
+    use super::*;
+    use std::os::unix::net::UnixStream;
+    use vm_memory::GuestAddress;
+
+    fn listener() -> (VsockMuxer, tempfile::TempDir, PathBuf) {
+        // Short path also fits macOS sockaddr_un.
+        let dir = tempfile::tempdir_in("/tmp").unwrap();
+        let path = dir.path().join("ctl.sock");
+        let port = 1025;
+        let id = ((port as u64) << 32) | defs::TSI_PROXY_PORT as u64;
+        let mux = VsockMuxer::new(
+            3,
+            None,
+            Some(HashMap::from([(port, (path.clone(), true))])),
+            TsiFlags::empty(),
+        );
+        mux.proxy_map.write().unwrap().insert(
+            id,
+            Mutex::new(Box::new(UnixAcceptorProxy::new(id, &path, port).unwrap())),
+        );
+        (mux, dir, path)
+    }
+
+    #[test]
+    fn snapshot_channel_keeps_only_bound_idle_listener_and_rebinds_child() {
+        let (mux, _dir, path) = listener();
+        assert!(mux.snapshot_blocker().unwrap().is_none());
+        let mut state = mux.capture_state().unwrap();
+        let child = path.with_file_name("child.sock");
+        assert!(state.rebind_listener(1025, &path, &child).unwrap());
+        let mut fresh = VsockMuxer::new(
+            3,
+            None,
+            Some(HashMap::from([(1025, (child, true))])),
+            TsiFlags::empty(),
+        );
+        fresh.restore_state(&state).unwrap();
+        // Capture did not close the source listener.
+        let _peer = UnixStream::connect(path).unwrap();
+        assert!(mux
+            .snapshot_blocker()
+            .unwrap()
+            .unwrap()
+            .contains("pending_accepts=1"));
+    }
+
+    #[test]
+    fn snapshot_channel_rejects_pending_accept_without_consuming_it() {
+        let (mux, _dir, path) = listener();
+        let _peer = UnixStream::connect(path).unwrap();
+        for _ in 0..2 {
+            assert!(mux
+                .capture_state()
+                .unwrap_err()
+                .contains("pending_accepts=1"));
+        }
+        assert_eq!(mux.proxy_map.read().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn snapshot_channel_rejects_unbound_and_wrong_identity_listener() {
+        let (mut mux, _dir, _path) = listener();
+        mux.unix_ipc_port_map
+            .as_mut()
+            .unwrap()
+            .get_mut(&1025)
+            .unwrap()
+            .1 = false;
+        assert!(mux
+            .capture_state()
+            .unwrap_err()
+            .contains("unbound_listeners=1"));
+        mux.unix_ipc_port_map
+            .as_mut()
+            .unwrap()
+            .get_mut(&1025)
+            .unwrap()
+            .1 = true;
+        let mut proxies = mux.proxy_map.write().unwrap();
+        let id = *proxies.keys().next().unwrap();
+        let proxy = proxies.remove(&id).unwrap();
+        proxies.insert(id + 1, proxy);
+        drop(proxies);
+        assert!(mux
+            .capture_state()
+            .unwrap_err()
+            .contains("unbound_listeners=1"));
+    }
+
+    #[test]
+    fn snapshot_channel_does_not_allow_tsi_or_changed_listener_path() {
+        let (mut mux, _dir, path) = listener();
+        mux.tsi_flags = TsiFlags::HIJACK_INET;
+        assert!(mux
+            .capture_state()
+            .unwrap_err()
+            .contains("unbound_listeners=1"));
+        mux.tsi_flags = TsiFlags::empty();
+        mux.unix_ipc_port_map
+            .as_mut()
+            .unwrap()
+            .get_mut(&1025)
+            .unwrap()
+            .0 = path.with_file_name("different.sock");
+        assert!(mux
+            .capture_state()
+            .unwrap_err()
+            .contains("unbound_listeners=1"));
+    }
+
+    #[test]
+    fn snapshot_channel_rejects_responses_and_release_queue() {
+        let (mut mux, _dir, _path) = listener();
+        mux.rxq.lock().unwrap().push(MuxerRx::Reset {
+            local_port: 1,
+            peer_port: 2,
+        });
+        assert!(mux.capture_state().unwrap_err().contains("responses=1"));
+        assert_eq!(mux.rxq.lock().unwrap().len(), 1);
+        mux.rxq.lock().unwrap().pop();
+        let (tx, rx) = unbounded();
+        tx.send(77).unwrap();
+        mux.parked_reaper = Some(ReaperThread::new(
+            rx,
+            mux.proxy_map.clone(),
+            mux.stop.clone(),
+        ));
+        assert!(mux.capture_state().unwrap_err().contains("release_queue=1"));
+    }
+
+    #[test]
+    fn snapshot_channel_restores_only_closed_reverse_port_reservations() {
+        use crate::devices::legacy::DummyIrqChip;
+        use std::time::Duration;
+
+        let (mut source, _dir, path) = listener();
+        let mem = GuestMemoryMmap::from_ranges(&[(GuestAddress(0), 65536)]).unwrap();
+        let queue = Arc::new(Mutex::new(VirtQueue::new(256)));
+        let guest = ProxyGuest {
+            cid: 3,
+            mem: mem.clone(),
+            queue: queue.clone(),
+            rxq: source.rxq.clone(),
+        };
+        let id = (1025_u64 << 32) | 4000;
+        let (socket, _peer) = UnixStream::pair().unwrap();
+        let mut proxy = UnixProxy::new_reverse(id, 4000, 1025, Some(socket.into()), guest);
+        proxy.status = ProxyStatus::Connected;
+        drop(proxy.release());
+        source
+            .proxy_map
+            .write()
+            .unwrap()
+            .insert(id, Mutex::new(Box::new(proxy)));
+        let (_tx, rx) = unbounded();
+        let mut reaper = ReaperThread::new(rx, source.proxy_map.clone(), source.stop.clone());
+        reaper.reserve(id + 1, Duration::from_secs(4));
+        source.parked_reaper = Some(reaper);
+        assert!(
+            source.capture_state().is_err(),
+            "reaper must own the same port"
+        );
+        let mut reaper =
+            ReaperThread::new(unbounded().1, source.proxy_map.clone(), source.stop.clone());
+        reaper.reserve(id, Duration::from_secs(4));
+        source.parked_reaper = Some(reaper);
+
+        let mut saved = source.capture_state().unwrap();
+        assert_eq!(saved.closed_reverse_ports.len(), 1);
+        let (saved_id, remaining) = saved.closed_reverse_ports[0];
+        assert_eq!(saved_id, id);
+        assert!(remaining > Duration::ZERO && remaining <= Duration::from_secs(4));
+        assert!(source.proxy_map.read().unwrap()[&id]
+            .lock()
+            .unwrap()
+            .closed_reverse_unix());
+
+        let child_path = path.with_file_name("child.sock");
+        saved.rebind_listener(1025, &path, &child_path).unwrap();
+        let mut child = VsockMuxer::new(
+            3,
+            None,
+            Some(HashMap::from([(1025, (child_path, true))])),
+            TsiFlags::empty(),
+        );
+        saved.closed_reverse_ports.push((id, remaining));
+        assert!(
+            child.restore_state(&saved).is_err(),
+            "duplicate reservation"
+        );
+        saved.closed_reverse_ports.pop();
+        child.restore_state(&saved).unwrap();
+        let interrupt = InterruptTransport::new(DummyIrqChip::new().into(), "test".into()).unwrap();
+        child.activate(mem.clone(), queue, interrupt, true);
+        // Replay late stream packets against both copies of the same closed ID.
+        use crate::devices::virtio::{Descriptor, DescriptorChain};
+        use vm_memory::Bytes;
+        mem.write_obj(
+            Descriptor {
+                addr: 4096,
+                len: 64,
+                flags: 0,
+                next: 0,
+            },
+            GuestAddress(0),
+        )
+        .unwrap();
+        let chain = DescriptorChain::checked_new(&mem, GuestAddress(0), 1, 0).unwrap();
+        let mut packet = VsockPacket::from_tx_virtq_head(&chain).unwrap();
+        packet
+            .set_src_port(1025)
+            .set_dst_port(4000)
+            .set_dst_cid(uapi::VSOCK_HOST_CID);
+        for mux in [&mut source, &mut child] {
+            for op in [
+                uapi::VSOCK_OP_REQUEST,
+                uapi::VSOCK_OP_RESPONSE,
+                uapi::VSOCK_OP_RW,
+                uapi::VSOCK_OP_CREDIT_UPDATE,
+                uapi::VSOCK_OP_SHUTDOWN,
+            ] {
+                packet.set_op(op);
+                mux.send_stream_pkt(&packet).unwrap();
+            }
+            assert!(!mux.has_pending_rx());
+        }
+
+        let map = child.proxy_map.read().unwrap();
+        let proxy = map[&id].lock().unwrap();
+        assert!(proxy.closed_reverse_unix());
+        assert_eq!(proxy.as_raw_fd(), -1);
+        drop(proxy);
+        drop(map);
+        let restored = child.capture_state().unwrap();
+        assert_eq!(restored.closed_reverse_ports[0].0, id);
+        assert!(restored.closed_reverse_ports[0].1 <= remaining);
+    }
+
+    #[test]
+    fn snapshot_channel_rejects_live_connections_and_closed_tombstones() {
+        let (mux, _dir, path) = listener();
+        let guest = ProxyGuest {
+            cid: 3,
+            mem: GuestMemoryMmap::from_ranges(&[(GuestAddress(0), 65536)]).unwrap(),
+            queue: Arc::new(Mutex::new(VirtQueue::new(256))),
+            rxq: mux.rxq.clone(),
+        };
+        let mut proxy = UnixProxy::new(77, 1026, 1025, guest, path).unwrap();
+        proxy.status = ProxyStatus::Connected;
+        mux.proxy_map
+            .write()
+            .unwrap()
+            .insert(77, Mutex::new(Box::new(proxy)));
+        assert!(mux.capture_state().unwrap_err().contains("active=1"));
+        mux.proxy_map.read().unwrap()[&77].lock().unwrap().release();
+        assert!(mux.capture_state().unwrap_err().contains("closed=1"));
+        // Simulate only the reaper's normal removal, not capture deleting it.
+        mux.proxy_map.write().unwrap().remove(&77);
+        assert!(mux.capture_state().is_ok());
+    }
+
+    #[test]
+    fn snapshot_channel_preserves_worker_and_lock_protection() {
+        let (mut mux, _dir, _path) = listener();
+        let guard = mux.rxq.lock().unwrap();
+        assert_eq!(
+            mux.snapshot_blocker().unwrap().as_deref(),
+            Some("responses_busy")
+        );
+        drop(guard);
+        mux.mem = Some(GuestMemoryMmap::from_ranges(&[(GuestAddress(0), 65536)]).unwrap());
+        assert_eq!(
+            mux.capture_state().unwrap_err(),
+            "vsock workers must be frozen"
+        );
+        mux.mem = None;
+        mux.worker_fault = Some("vsock muxer panicked");
+        assert!(mux.snapshot_blocker().unwrap_err().contains("panicked"));
     }
 }

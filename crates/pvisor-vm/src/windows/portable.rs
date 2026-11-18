@@ -101,7 +101,8 @@ impl VmConfiguration for VmBuilder {
             .virtual_file(tag, path, data.into(), mode, one_shot)
     }
     fn network(&mut self, stream: impl Into<NetworkStream>, mac: [u8; 6]) -> io::Result<()> {
-        self.inner.network(stream.into(), mac, NetworkOptions::default())
+        self.inner
+            .network(stream.into(), mac, NetworkOptions::default())
     }
     fn task_stdio(&mut self, stdin: i32, stdout: i32, stderr: i32) -> io::Result<()> {
         Err(unsupported("task_stdio"))
@@ -126,6 +127,9 @@ impl VmConfiguration for VmBuilder {
 }
 
 impl VmRuntime for VmBuilder {
+    fn run_live_fork(self, _: impl FnOnce(VmmHandle) -> io::Result<()>) -> io::Result<()> {
+        Err(unsupported("same-host OCI fork"))
+    }
     fn run(self, on_ready: impl FnOnce(VmmHandle) -> io::Result<()>) -> io::Result<()> {
         self.inner.run(on_ready)
     }
@@ -171,6 +175,12 @@ impl ColdRamControl for VmmHandle {
 }
 
 impl SnapshotCapture for FrozenMachine<'_> {
+    fn capture_branch_state(
+        &self,
+        _: &File,
+    ) -> Result<(MachineSnapshot, Option<Vec<crate::api::RamRestoreExtent>>), String> {
+        Err(unsupported("same-host OCI fork").to_string())
+    }
     fn capture_machine_state(&self, file: &File) -> Result<MachineSnapshot, String> {
         Err(unsupported("capture_machine_state").to_string())
     }
@@ -207,6 +217,15 @@ impl SnapshotState for MachineSnapshot {
     }
     fn cpu_count(&self) -> io::Result<usize> {
         Err(unsupported("cpu_count"))
+    }
+    /// Rebind a captured idle control listener to the child VM endpoint.
+    fn rebind_vsock_listener(
+        &mut self,
+        port: u32,
+        source: &Path,
+        destination: &Path,
+    ) -> io::Result<()> {
+        Err(unsupported("branch listener"))
     }
     fn has_kernel_layout(&self) -> io::Result<bool> {
         Err(unsupported("has_kernel_layout"))

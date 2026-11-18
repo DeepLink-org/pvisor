@@ -132,8 +132,14 @@ impl MuxerThread {
         let mut should_signal = update.signal_queue;
 
         if let Some((peer_port, accept_fd, family, proxy_type)) = update.new_proxy {
-            let local_port: u32 = thread_rng.random_range(1024..u32::MAX);
-            let new_id: u64 = ((peer_port as u64) << 32) | (local_port as u64);
+            let mut proxies = self.proxy_map.write().unwrap();
+            let (local_port, new_id) = loop {
+                let port: u32 = thread_rng.random_range(1024..u32::MAX);
+                let candidate = (u64::from(peer_port) << 32) | u64::from(port);
+                if !proxies.contains_key(&candidate) {
+                    break (port, candidate);
+                }
+            };
             let new_proxy: Box<dyn Proxy> = match proxy_type {
                 NewProxyType::Tcp => Box::new(TsiStreamProxy::new_reverse(
                     new_id,
@@ -153,7 +159,7 @@ impl MuxerThread {
                     new_id,
                     local_port,
                     peer_port,
-                    accept_fd,
+                    Some(accept_fd),
                     super::proxy::ProxyGuest {
                         cid: self.cid,
                         mem: self.mem.clone(),
@@ -162,10 +168,8 @@ impl MuxerThread {
                     },
                 )),
             };
-            self.proxy_map
-                .write()
-                .unwrap()
-                .insert(new_id, Mutex::new(new_proxy));
+            proxies.insert(new_id, Mutex::new(new_proxy));
+            drop(proxies);
             if let Some(proxy) = self.proxy_map.read().unwrap().get(&new_id) {
                 proxy.lock().unwrap().push_op_request();
             };

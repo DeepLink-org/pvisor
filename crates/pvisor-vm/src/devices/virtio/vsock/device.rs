@@ -191,6 +191,10 @@ impl Vsock {
 }
 
 impl VirtioDevice for Vsock {
+    fn snapshot_blocker(&self) -> Result<Option<String>, String> {
+        self.muxer.snapshot_blocker()
+    }
+
     fn freeze(&mut self) -> Result<bool, String> {
         self.frozen = true;
         self.muxer.freeze()
@@ -242,7 +246,7 @@ impl VirtioDevice for Vsock {
         let super::super::DeviceSnapshotState::Vsock(state) = state else {
             return Err("vsock state type mismatch".into());
         };
-        self.muxer.validate_state(state)?;
+        self.muxer.restore_state(state)?;
         self.frozen = true;
         Ok(())
     }

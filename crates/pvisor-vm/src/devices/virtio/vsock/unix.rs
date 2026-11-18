@@ -128,7 +128,7 @@ impl UnixProxy {
         id: u64,
         local_port: u32,
         peer_port: u32,
-        fd: OwnedFd,
+        fd: Option<OwnedFd>,
         guest: super::proxy::ProxyGuest,
     ) -> Self {
         let super::proxy::ProxyGuest {
@@ -144,8 +144,12 @@ impl UnixProxy {
             local_port,
             peer_port,
             control_port: 0,
-            fd: Some(fd),
-            status: ProxyStatus::ReverseInit,
+            status: if fd.is_some() {
+                ProxyStatus::ReverseInit
+            } else {
+                ProxyStatus::Closed
+            },
+            fd,
             mem,
             queue,
             rxq,
@@ -319,6 +323,13 @@ impl UnixProxy {
 }
 
 impl Proxy for UnixProxy {
+    fn closed_reverse_unix(&self) -> bool {
+        self.status == ProxyStatus::Closed
+            && self.fd.is_none()
+            && self.path.as_os_str().is_empty()
+            && self.id == (u64::from(self.peer_port) << 32 | u64::from(self.local_port))
+    }
+
     fn id(&self) -> u64 {
         self.id
     }
@@ -366,6 +377,9 @@ impl Proxy for UnixProxy {
     }
 
     fn confirm_connect(&mut self, pkt: &VsockPacket) -> Option<ProxyUpdate> {
+        if self.fd.is_none() {
+            return None;
+        }
         debug!(
             "confirm_connect: local_port={} peer_port={}, src_port={}, dst_port={}",
             pkt.dst_port(),
@@ -397,6 +411,9 @@ impl Proxy for UnixProxy {
     fn sendmsg(&mut self, pkt: &VsockPacket) -> ProxyUpdate {
         let mut update = ProxyUpdate::default();
 
+        if self.fd.is_none() {
+            return update;
+        }
         let ret = if let Some(buf) = pkt.buf() {
             #[cfg(target_os = "macos")]
             let flags = MsgFlags::empty();
@@ -653,6 +670,7 @@ impl AsRawFd for UnixProxy {
 }
 
 pub struct UnixAcceptorProxy {
+    path: PathBuf,
     id: u64,
     fd: OwnedFd,
     peer_port: u32,
@@ -674,11 +692,19 @@ impl UnixAcceptorProxy {
         .map_err(ProxyError::CreatingSocket)?;
         listen(&fd, Backlog::new(5).map_err(ProxyError::CreatingSocket)?)
             .map_err(ProxyError::CreatingSocket)?;
-        Ok(UnixAcceptorProxy { id, fd, peer_port })
+        Ok(UnixAcceptorProxy {
+            path: path.clone(),
+            id,
+            fd,
+            peer_port,
+        })
     }
 }
 
 impl Proxy for UnixAcceptorProxy {
+    fn snapshot_listener(&self) -> Option<(u32, &std::path::Path)> {
+        Some((self.peer_port, &self.path))
+    }
     fn id(&self) -> u64 {
         self.id
     }
@@ -770,7 +796,7 @@ mod tests {
             queue: Arc::new(Mutex::new(VirtQueue::new(256))),
             rxq: Arc::new(Mutex::new(MuxerRxQ::new())),
         };
-        let mut proxy = UnixProxy::new_reverse(1, 1026, 1025, host.into(), guest);
+        let mut proxy = UnixProxy::new_reverse(1, 1026, 1025, Some(host.into()), guest);
         proxy.status = ProxyStatus::Connected;
         let update = proxy.release();
         assert!(matches!(update.remove_proxy, ProxyRemoval::Deferred));

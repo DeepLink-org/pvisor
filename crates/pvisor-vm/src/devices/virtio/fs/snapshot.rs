@@ -60,6 +60,8 @@ pub(crate) struct InodeSnapshot {
     pub path: Option<Vec<u8>>,
     pub identity: FileIdentity,
     pub digest: Option<[u8; 32]>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub object: Option<ImageFileReference>,
     pub link_target: Option<Vec<u8>>,
 }
 #[cfg(target_os = "linux")]
@@ -345,10 +347,141 @@ impl ServerSnapshot {
     }
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ImageFileReference {
+    binding: String,
+    object_id: u64,
+    size: u64,
+}
+impl ImageFileReference {
+    pub(super) fn verify(&self, root: &Path, path: &Path) -> io::Result<()> {
+        use pvisor_overlay_core::backend;
+        if backend::snapshot_binding(root)?.as_deref() != Some(&self.binding)
+            || backend::immutable_file_object(root, path)? != Some((self.object_id, self.size))
+        {
+            return Err(invalid("immutable file object changed"));
+        }
+        Ok(())
+    }
+}
+
 impl FsSnapshot {
+    /// Only the overlay's persisted, authenticated lazy binding may use this
+    /// path. Projection metadata can grow; logical image contents cannot.
+    pub(super) fn bind_lazy_projection(
+        &mut self,
+        root: &Path,
+        binding: &str,
+        capture: bool,
+    ) -> io::Result<()> {
+        use pvisor_overlay_core::backend;
+        use std::os::unix::fs::OpenOptionsExt;
+        if backend::snapshot_binding(root)?.as_deref() != Some(binding) {
+            return Err(invalid("lazy snapshot owner missing or changed"));
+        }
+        self.validate_readonly_handles()?;
+        let Self::Passthrough(state) = self else {
+            return Err(unsupported(
+                "lazy snapshot requires a native projection layer",
+            ));
+        };
+        if state.root != root.as_os_str().as_bytes() {
+            return Err(invalid("lazy snapshot root mismatch"));
+        }
+        let mut inodes = state.inodes.clone();
+        for saved in &mut inodes {
+            let path = relative_path(
+                root,
+                saved
+                    .path
+                    .as_deref()
+                    .ok_or_else(|| invalid("missing lazy inode path"))?,
+            )?;
+            if capture
+                && cfg!(target_os = "linux")
+                && super::live_fork_scope()
+                && saved.digest.is_some()
+            {
+                if let Some((object_id, size)) = backend::immutable_file_object(root, &path)? {
+                    saved.object = Some(ImageFileReference {
+                        binding: binding.to_owned(),
+                        object_id,
+                        size,
+                    });
+                    saved.digest = None;
+                }
+            }
+            if let Some(reference) = &saved.object {
+                if reference.binding != binding || saved.digest.is_some() {
+                    return Err(invalid("inconsistent immutable file binding"));
+                }
+                reference.verify(root, &path)?;
+            } else if capture {
+                // Only referenced files, never the unvisited image tree.
+                backend::materialize_file(&path)?;
+            }
+            let file = pin_inode(&path)?;
+            let identity = FileIdentity::read(&file)?;
+            let old = &saved.identity;
+            #[allow(clippy::useless_conversion)]
+            // libc mode constants differ in width across hosts.
+            let (mask, directory_mode, regular_mode, symlink_mode) = (
+                u32::from(libc::S_IFMT),
+                u32::from(libc::S_IFDIR),
+                u32::from(libc::S_IFREG),
+                u32::from(libc::S_IFLNK),
+            );
+            let kind = identity.mode & mask;
+            let directory = kind == directory_mode;
+            let regular = kind == regular_mode;
+            let symlink = kind == symlink_mode;
+            // Adding a projected child/alias changes physical ctime/nlink (and
+            // directory size/mtime). The binding authenticates logical metadata;
+            // replacement inode, permissions and regular bytes still must match.
+            if identity.dev != old.dev
+                || identity.ino != old.ino
+                || identity.mode != old.mode
+                || identity.uid != old.uid
+                || identity.gid != old.gid
+                || identity.nlink == 0
+                || (!directory
+                    && (identity.size != old.size
+                        || identity.mtime != old.mtime
+                        || identity.mtime_nsec != old.mtime_nsec))
+                || regular != (saved.digest.is_some() || saved.object.is_some())
+                || symlink != saved.link_target.is_some()
+            {
+                return Err(invalid("lazy snapshot inode changed"));
+            }
+            if regular && saved.object.is_none() {
+                let digest = file_digest(
+                    &File::options()
+                        .read(true)
+                        .custom_flags(libc::O_NOFOLLOW)
+                        .open(&path)?,
+                )?;
+                if !capture && Some(digest) != saved.digest {
+                    return Err(invalid("lazy snapshot file content changed"));
+                }
+                saved.digest = Some(digest);
+            }
+            if symlink
+                && Some(std::fs::read_link(&path)?.as_os_str().as_bytes().to_vec())
+                    != saved.link_target
+            {
+                return Err(invalid("lazy snapshot symlink changed"));
+            }
+            saved.identity = identity;
+        }
+        state.inodes = inodes;
+        Ok(())
+    }
     pub(super) fn validate_writeback(&self, enabled: bool) -> io::Result<()> {
         match self {
-            Self::ReadOnly(inner) | Self::Augment { inner, .. } => inner.validate_writeback(enabled),
+            Self::ReadOnly(inner) | Self::Augment { inner, .. } => {
+                inner.validate_writeback(enabled)
+            }
             Self::Overlay(state) => state.validate_writeback(enabled),
             Self::Passthrough(state) if state.writeback == enabled => Ok(()),
             Self::Null if !enabled => Ok(()),
@@ -453,6 +586,14 @@ impl FsSnapshot {
                     let regular = kind == regular_mode;
                     let symlink = kind == symlink_mode;
                     let directory = kind == directory_mode;
+                    if let Some(reference) = &saved.object {
+                        if !retained || !regular || saved.digest.is_some() {
+                            return Err(invalid(
+                                "referenced file requires its retained immutable root",
+                            ));
+                        }
+                        reference.verify(&root, &path)?;
+                    }
                     if identity.mode != saved.identity.mode
                         || identity.uid != saved.identity.uid
                         || identity.gid != saved.identity.gid
@@ -467,7 +608,7 @@ impl FsSnapshot {
                         // still require their entire original identity.
                         || (!directory && identity.nlink != saved.identity.nlink)
                         || ((regular || symlink) && identity.size != saved.identity.size)
-                        || regular != saved.digest.is_some()
+                        || regular != (saved.digest.is_some() || saved.object.is_some())
                         || symlink != saved.link_target.is_some()
                     {
                         return Err(invalid(&format!(
@@ -478,6 +619,7 @@ impl FsSnapshot {
                         )));
                     }
                     if regular
+                        && saved.object.is_none()
                         && Some(file_digest(
                             &std::fs::OpenOptions::new()
                                 .read(true)
@@ -638,12 +780,18 @@ mod owned_copy_tests {
             let file = pin_inode(&path).unwrap();
             let pinned = file.metadata().unwrap();
             assert!(pinned.file_type().is_symlink());
-            assert_eq!((pinned.dev(), pinned.ino()), (original.dev(), original.ino()));
+            assert_eq!(
+                (pinned.dev(), pinned.ino()),
+                (original.dev(), original.ino())
+            );
             assert_eq!(std::fs::read_link(&path).unwrap(), Path::new(target));
             let flags = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GETFD) };
             assert!(flags >= 0 && flags & libc::FD_CLOEXEC != 0);
         }
-        assert_eq!(std::fs::read(root.path().join("target")).unwrap(), b"untouched");
+        assert_eq!(
+            std::fs::read(root.path().join("target")).unwrap(),
+            b"untouched"
+        );
     }
 
     fn fixture(path: &Path) -> (FsSnapshot, PathBuf, PathBuf) {
@@ -670,6 +818,7 @@ mod owned_copy_tests {
                 refs: 1,
                 path: Some(relative.as_bytes().to_vec()),
                 identity: FileIdentity::read(&file).unwrap(),
+                object: None,
                 digest: (!relative.is_empty()).then(|| file_digest(&file).unwrap()),
                 link_target: None,
             });
@@ -741,13 +890,11 @@ mod owned_copy_tests {
             )
             .unwrap();
         state.inodes[0].identity = FileIdentity::read(&File::open(&source).unwrap()).unwrap();
-        assert!(
-            snapshot
-                .rebind_owned_copy(&source, &destination)
-                .unwrap_err()
-                .to_string()
-                .contains("metadata mismatch")
-        );
+        assert!(snapshot
+            .rebind_owned_copy(&source, &destination)
+            .unwrap_err()
+            .to_string()
+            .contains("metadata mismatch"));
     }
 
     #[test]
@@ -762,13 +909,11 @@ mod owned_copy_tests {
                 FileTimes::new().set_modified(original.metadata().unwrap().modified().unwrap()),
             )
             .unwrap();
-        assert!(
-            snapshot
-                .rebind_owned_copy(&source, &destination)
-                .unwrap_err()
-                .to_string()
-                .contains("content mismatch")
-        );
+        assert!(snapshot
+            .rebind_owned_copy(&source, &destination)
+            .unwrap_err()
+            .to_string()
+            .contains("content mismatch"));
     }
 
     #[test]
@@ -779,12 +924,10 @@ mod owned_copy_tests {
             unreachable!()
         };
         state.inodes[0].identity.nlink += 3;
-        assert!(
-            snapshot
-                .retain_readonly_root(&source)
-                .unwrap_err()
-                .to_string()
-                .contains("retained immutable inode identity changed")
-        );
+        assert!(snapshot
+            .retain_readonly_root(&source)
+            .unwrap_err()
+            .to_string()
+            .contains("retained immutable inode identity changed"));
     }
 }

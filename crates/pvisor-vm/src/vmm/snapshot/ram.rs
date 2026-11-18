@@ -5,6 +5,190 @@ use std::{fs::File, os::unix::fs::FileExt};
 use vm_memory::{mmap::MmapRegionBuilder, FileOffset, GuestRegionMmap};
 use vm_memory::{Address, Bytes, GuestAddress, GuestMemory, GuestMemoryMmap, GuestMemoryRegion};
 
+// Query on an independent open description so lseek and readahead policy
+// cannot perturb another user of the live RAM backing.
+#[cfg(target_os = "linux")]
+fn capture_sparse_shared(
+    backing: &vm_memory::FileOffset,
+    len: u64,
+    mut write: impl FnMut(u64, &[u8]) -> std::io::Result<()>,
+    output_offset: u64,
+    buffer: &mut [u8],
+) -> std::io::Result<bool> {
+    use std::{io, os::fd::AsRawFd};
+    let start = backing.start();
+    let end = start
+        .checked_add(len)
+        .ok_or_else(|| io::Error::other("RAM range overflow"))?;
+    let metadata = backing.file().metadata()?;
+    if !metadata.is_file() || metadata.len() < end || end > i64::MAX as u64 {
+        return Ok(false);
+    }
+    let Ok(reader) = File::open(format!("/proc/self/fd/{}", backing.file().as_raw_fd())) else {
+        return Ok(false);
+    };
+    let fd = reader.as_raw_fd();
+    unsafe { libc::posix_fadvise(fd, 0, 0, libc::POSIX_FADV_RANDOM) };
+    let mut pos = start;
+    while pos < end {
+        let data = unsafe { libc::lseek(fd, pos as i64, libc::SEEK_DATA) };
+        if data < 0 {
+            let err = io::Error::last_os_error();
+            return match err.raw_os_error() {
+                Some(libc::ENXIO) => Ok(true),
+                Some(libc::EINVAL | libc::EOPNOTSUPP | libc::ENOSYS | libc::ENOTTY) => Ok(false),
+                _ => Err(err),
+            };
+        }
+        let data = data as u64;
+        if data >= end {
+            break;
+        }
+        let hole = unsafe { libc::lseek(fd, data as i64, libc::SEEK_HOLE) };
+        if hole < 0 {
+            let err = io::Error::last_os_error();
+            return match err.raw_os_error() {
+                Some(libc::EINVAL | libc::EOPNOTSUPP | libc::ENOSYS | libc::ENOTTY) => Ok(false),
+                _ => Err(err),
+            };
+        }
+        if data < pos || hole as u64 <= data {
+            return Err(io::Error::other("invalid backing extent"));
+        }
+        pos = data;
+        let limit = end.min(hole as u64);
+        while pos < limit {
+            let count = (limit - pos).min(buffer.len() as u64) as usize;
+            reader.read_exact_at(&mut buffer[..count], pos)?;
+            if buffer[..count].iter().any(|&b| b != 0) {
+                write(output_offset + (pos - start), &buffer[..count])?;
+            }
+            pos += count as u64;
+        }
+    }
+    Ok(true)
+}
+
+/// Try a compact layout for fresh shared RAM. If the backing cannot describe
+/// holes, or the resulting layout exceeds the restore limit, restart using
+/// the ordinary capture while the same freeze is held.
+#[cfg(any(target_os = "linux", test))]
+pub(super) fn capture_branch_ram(
+    memory: &GuestMemoryMmap,
+    file: &File,
+) -> Result<
+    (
+        Vec<RamMappingSnapshot>,
+        Option<Vec<crate::api::RamRestoreExtent>>,
+    ),
+    String,
+> {
+    use crate::api::RamRestoreExtent;
+    let mut mappings = Vec::new();
+    let mut extents: Vec<RamRestoreExtent> = Vec::new();
+    let mut logical = 0u64;
+    let mut packed = 0u64;
+    let mut buffer = vec![0; 1024 * 1024];
+    let mut supported = true;
+    let page = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+    for region in memory.iter() {
+        let len = region.len();
+        let write = |at: u64, bytes: &[u8]| -> std::io::Result<()> {
+            let size = bytes.len() as u64;
+            if !supported
+                || extents.len() >= 8190
+                || page <= 0
+                || at % page as u64 != 0
+                || size % page as u64 != 0
+            {
+                supported = false;
+                return Ok(());
+            }
+            let end = extents.last().map_or(0, |e| e.offset + e.length);
+            if at > end {
+                extents.push(RamRestoreExtent {
+                    offset: end,
+                    length: at - end,
+                    backing_offset: None,
+                });
+            }
+            file.write_all_at(bytes, packed)?;
+            if let Some(last) = extents.last_mut().filter(|e| e.backing_offset.is_some()) {
+                last.length += size;
+            } else {
+                extents.push(RamRestoreExtent {
+                    offset: at,
+                    length: size,
+                    backing_offset: Some(packed),
+                });
+            }
+            packed += size;
+            Ok(())
+        };
+        #[cfg(target_os = "linux")]
+        let shared = region
+            .file_offset()
+            .filter(|_| region.flags() & libc::MAP_SHARED != 0);
+        #[cfg(not(target_os = "linux"))]
+        let shared: Option<&vm_memory::FileOffset> = None;
+        let scanned = if let Some(backing) = shared {
+            #[cfg(target_os = "linux")]
+            {
+                capture_sparse_shared(backing, len, write, logical, &mut buffer)
+                    .map_err(|e| e.to_string())?
+            }
+            #[cfg(not(target_os = "linux"))]
+            {
+                let _ = backing;
+                false
+            }
+        } else {
+            // Private mappings can contain writes absent from the backing file.
+            let mut offset = 0;
+            let mut write = write;
+            while offset < len {
+                let n = (len - offset).min(buffer.len() as u64) as usize;
+                memory
+                    .read_slice(
+                        &mut buffer[..n],
+                        GuestAddress(region.start_addr().0 + offset),
+                    )
+                    .map_err(|e| e.to_string())?;
+                if buffer[..n].iter().any(|&b| b != 0) {
+                    write(logical + offset, &buffer[..n]).map_err(|e| e.to_string())?;
+                }
+                offset += n as u64;
+            }
+            true
+        };
+        if !scanned || !supported || page <= 0 || len % page as u64 != 0 {
+            supported = false;
+            break;
+        }
+        mappings.push(RamMappingSnapshot {
+            base: region.start_addr().raw_value(),
+            len,
+            file_offset: logical,
+        });
+        logical = logical
+            .checked_add(len)
+            .ok_or("RAM snapshot size overflow")?;
+    }
+    if !supported {
+        file.set_len(0).map_err(|e| e.to_string())?;
+        return capture_ram(memory, file).map(|ram| (ram, None));
+    }
+    let end = extents.last().map_or(0, |e| e.offset + e.length);
+    if end < logical {
+        extents.push(RamRestoreExtent {
+            offset: end,
+            length: logical - end,
+            backing_offset: None,
+        });
+    }
+    Ok((mappings, Some(extents)))
+}
+
 // The caller holds the full-machine freeze. Reading a shared backing file sees
 // guest writes without faulting untouched tmpfs holes into the live RAM map.
 // Private mappings must instead be read through memory to include COW writes.
@@ -23,14 +207,30 @@ pub(super) fn capture_ram(
             len,
             file_offset,
         });
+        let shared_backing = region.file_offset().filter(|_| {
+            region.flags() & libc::MAP_SHARED != 0 && region.flags() & libc::MAP_PRIVATE == 0
+        });
+        #[cfg(target_os = "linux")]
+        if let Some(backing) = shared_backing {
+            if capture_sparse_shared(
+                backing,
+                len,
+                |at, data| file.write_all_at(data, at),
+                file_offset,
+                &mut buffer,
+            )
+            .map_err(|e| e.to_string())?
+            {
+                file_offset = file_offset
+                    .checked_add(len)
+                    .ok_or("RAM snapshot size overflow")?;
+                continue;
+            }
+        }
         let mut offset = 0;
         while offset < len {
             let count = (len - offset).min(buffer.len() as u64) as usize;
-            if region.flags() & libc::MAP_SHARED != 0
-                && region.flags() & libc::MAP_PRIVATE == 0
-                && region.file_offset().is_some()
-            {
-                let backing = region.file_offset().unwrap();
+            if let Some(backing) = shared_backing {
                 let start = backing
                     .start()
                     .checked_add(offset)
@@ -298,6 +498,44 @@ mod tests {
         let mut expected = vec![0; size];
         expected[4096..4096 + 11].copy_from_slice(b"guest dirty");
         assert_eq!(bytes, expected);
+    }
+
+    #[test]
+    fn compact_branch_ram_restores_shared_bytes_and_isolates_writes() {
+        let source = Artifact::new();
+        let output = Artifact::new();
+        let size = 8 * 1024 * 1024;
+        let address = GuestAddress(0x1000);
+        source.1.set_len(size as u64).unwrap();
+        let memory = GuestMemoryMmap::from_ranges_with_files(&[(
+            address,
+            size,
+            Some(FileOffset::new(source.1.try_clone().unwrap(), 0)),
+        )])
+        .unwrap();
+        let data = GuestAddress(address.0 + 4 * 1024 * 1024);
+        memory.write_slice(b"original", data).unwrap();
+        let (ram, extents) = capture_branch_ram(&memory, &output.1).unwrap();
+        let extents = extents.unwrap();
+        let map = || {
+            crate::memory::map_snapshot_ram(
+                &ram,
+                std::sync::Arc::new(output.1.try_clone().unwrap()),
+                &extents,
+                &[(address, size)],
+            )
+            .unwrap()
+        };
+        let a = map();
+        let b = map();
+        let mut bytes = [0; 8];
+        a.read_slice(&mut bytes, data).unwrap();
+        assert_eq!(&bytes, b"original");
+        a.write_slice(b"modified", data).unwrap();
+        b.read_slice(&mut bytes, data).unwrap();
+        assert_eq!(&bytes, b"original");
+        b.read_slice(&mut bytes, address).unwrap();
+        assert_eq!(bytes, [0; 8]);
     }
 
     #[test]

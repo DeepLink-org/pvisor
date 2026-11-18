@@ -97,6 +97,7 @@ pub(super) fn capture(fs: &PassthroughFs) -> io::Result<FsSnapshot> {
             refs: data.refcount.load(Ordering::Relaxed),
             path: Some(relative.as_os_str().as_bytes().to_vec()),
             identity,
+            object: None,
             digest: if regular {
                 Some(snapshot::file_digest(
                     &std::fs::OpenOptions::new()
@@ -196,13 +197,20 @@ pub(super) fn restore(fs: &PassthroughFs, state: &FsSnapshot) -> io::Result<()> 
         let identity = FileIdentity::read(&file)?;
         let regular = identity.mode & libc::S_IFMT == libc::S_IFREG;
         let link = identity.mode & libc::S_IFMT == libc::S_IFLNK;
+        if let Some(reference) = &saved.object {
+            reference.verify(&root, &path)?;
+            if !regular || saved.digest.is_some() {
+                return Err(snapshot::invalid("invalid referenced inode"));
+            }
+        }
         if identity != saved.identity
-            || regular != saved.digest.is_some()
+            || regular != (saved.digest.is_some() || saved.object.is_some())
             || link != saved.link_target.is_some()
             || (link
                 && Some(std::fs::read_link(&path)?.as_os_str().as_bytes().to_vec())
                     != saved.link_target)
             || (regular
+                && saved.object.is_none()
                 && Some(snapshot::file_digest(
                     &std::fs::OpenOptions::new()
                         .read(true)

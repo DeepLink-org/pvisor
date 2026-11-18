@@ -399,6 +399,7 @@ mod tests {
             stop_timeout_ms: 10_000,
             healthcheck: None,
             no_healthcheck: false,
+            branchable: false,
         }
     }
 

@@ -431,14 +431,14 @@ fn copy_owned_tree_checked(
     destination: &Path,
     expected: Option<&TreeInventory>,
 ) -> anyhow::Result<TreeInventory> {
-    copy_tree::<false>(source, destination, expected, &[])
+    copy_tree::<false, true>(source, destination, expected, &[])
 }
 pub(crate) fn copy_guest_tree(
     source: &Path,
     destination: &Path,
     excluded: &[std::path::PathBuf],
 ) -> anyhow::Result<TreeInventory> {
-    copy_tree::<false>(source, destination, None, excluded)
+    copy_tree::<false, true>(source, destination, None, excluded)
 }
 
 /// Only a verified PublishedEnvironment may use this path, while retaining its
@@ -448,10 +448,16 @@ fn copy_sealed_tree(
     destination: &Path,
     expected: &TreeInventory,
 ) -> anyhow::Result<TreeInventory> {
-    copy_tree::<true>(source, destination, Some(expected), &[])
+    copy_tree::<true, true>(source, destination, Some(expected), &[])
 }
 
-fn copy_tree<const SEALED: bool>(
+/// Copy and verify the complete tree inside an ephemeral live-fork transaction.
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+pub(crate) fn copy_live_tree(source: &Path, destination: &Path) -> anyhow::Result<TreeInventory> {
+    copy_tree::<false, false>(source, destination, None, &[])
+}
+
+fn copy_tree<const SEALED: bool, const DURABLE: bool>(
     source: &Path,
     destination: &Path,
     expected: Option<&TreeInventory>,
@@ -494,7 +500,7 @@ fn copy_tree<const SEALED: bool>(
     fs::create_dir(destination)?;
     let result = (|| {
         #[allow(clippy::too_many_arguments)]
-        fn copy(
+        fn copy<const DURABLE: bool>(
             source: &Path,
             destination: &Path,
             metadata: &fs::Metadata,
@@ -528,7 +534,7 @@ fn copy_tree<const SEALED: bool>(
                     if metadata.is_dir() {
                         fs::create_dir(&target)?;
                     }
-                    copy(
+                    copy::<DURABLE>(
                         &source,
                         &target,
                         &metadata,
@@ -644,7 +650,9 @@ fn copy_tree<const SEALED: bool>(
             }
             if !metadata.file_type().is_symlink() {
                 let _span = profile.span("destination_sync");
-                sync_tree_entry(&File::open(destination)?)?;
+                if DURABLE {
+                    sync_tree_entry(&File::open(destination)?)?;
+                }
             }
             Ok(())
         }
@@ -653,7 +661,7 @@ fn copy_tree<const SEALED: bool>(
         let entry_span = profile.span("entry_metadata");
         let metadata = fs::symlink_metadata(&source)?;
         drop(entry_span);
-        copy(
+        copy::<DURABLE>(
             &source,
             destination,
             &metadata,
@@ -683,7 +691,9 @@ fn copy_tree<const SEALED: bool>(
         // On macOS sync_all is F_FULLFSYNC: one final device drain persists
         // those prior writes, instead of draining the same device per inode.
         let _span = profile.span("parent_sync");
-        File::open(&parent)?.sync_all()?;
+        if DURABLE {
+            File::open(&parent)?.sync_all()?;
+        }
         Ok(before)
     })();
     if result.is_err() {

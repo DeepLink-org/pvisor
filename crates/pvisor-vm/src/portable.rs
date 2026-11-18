@@ -82,10 +82,7 @@ fn capabilities() -> Capabilities {
         )) && !cfg!(any(feature = "tee", feature = "aws-nitro")),
         cold_ram_faults: cfg!(all(target_os = "macos", target_arch = "aarch64"))
             || (cfg!(all(target_os = "linux", target_arch = "x86_64"))
-                && !cfg!(any(
-                    feature = "tee",
-                    feature = "aws-nitro"
-                ))),
+                && !cfg!(any(feature = "tee", feature = "aws-nitro"))),
     }
 }
 #[cfg(all(test, target_os = "linux"))]
@@ -163,10 +160,7 @@ mod cold_ram_tests {
                 .unwrap_err();
             if cfg!(all(
                 target_arch = "x86_64",
-                not(any(
-                    feature = "tee",
-                    feature = "aws-nitro"
-                ))
+                not(any(feature = "tee", feature = "aws-nitro"))
             )) {
                 assert_eq!(error.kind(), io::ErrorKind::Other);
                 assert_eq!(error.to_string(), "VMM has stopped");
@@ -182,10 +176,7 @@ mod cold_ram_tests {
             VmPlatform::capabilities().cold_ram_faults,
             cfg!(all(
                 target_arch = "x86_64",
-                not(any(
-                    feature = "tee",
-                    feature = "aws-nitro"
-                ))
+                not(any(feature = "tee", feature = "aws-nitro"))
             ))
         );
         let activity = VmPlatform::cold_ram_activity();
@@ -495,6 +486,17 @@ impl VmConfiguration for VmBuilder {
 }
 
 impl VmRuntime for VmBuilder {
+    fn run_live_fork(self, on_ready: impl FnOnce(VmmHandle) -> io::Result<()>) -> io::Result<()> {
+        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+        {
+            crate::devices::virtio::fs::within_live_fork(|| self.run(on_ready))
+        }
+        #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+        {
+            let _ = on_ready;
+            Err(unsupported("same-host OCI fork"))
+        }
+    }
     fn run(self, on_ready: impl FnOnce(VmmHandle) -> io::Result<()>) -> io::Result<()> {
         self.inner.run(on_ready)
     }
@@ -627,6 +629,29 @@ impl SnapshotCapture for FrozenMachine<'_> {
             Err(unsupported("machine capture").to_string())
         }
     }
+    /// Capture an immutable RAM layer for same-host fork while CPU and devices are frozen.
+    fn capture_branch_state(
+        &self,
+        file: &File,
+    ) -> Result<(MachineSnapshot, Option<Vec<crate::api::RamRestoreExtent>>), String> {
+        #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+        {
+            let _ = file;
+            Err(unsupported("same-host OCI fork").to_string())
+        }
+        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+        {
+            let (state, extents) = crate::devices::virtio::fs::within_live_fork(|| {
+                self.inner.capture_branch_state(file)
+            })?;
+            Ok((
+                MachineSnapshot {
+                    state: serde_json::to_value(state).map_err(|e| e.to_string())?,
+                },
+                extents,
+            ))
+        }
+    }
     fn capture_machine_state_with_ram_delta(
         &self,
         file: &File,
@@ -715,6 +740,55 @@ impl SnapshotState for MachineSnapshot {
             )),
         }
     }
+    fn rebind_vsock_listener(
+        &mut self,
+        port: u32,
+        source: &Path,
+        destination: &Path,
+    ) -> io::Result<()> {
+        #[cfg(any(
+            all(target_os = "linux", target_arch = "x86_64"),
+            all(target_os = "macos", target_arch = "aarch64")
+        ))]
+        {
+            use crate::devices::snapshot::BusDeviceSnapshot;
+            if port == 0
+                || !source.is_absolute()
+                || !destination.is_absolute()
+                || source == destination
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "invalid branch listener paths",
+                ));
+            }
+            let mut state: crate::vmm::snapshot::MachineSnapshot =
+                serde_json::from_value(self.state.clone()).map_err(io::Error::other)?;
+            let mut matched = 0;
+            for device in &mut state.devices {
+                if let BusDeviceSnapshot::Virtio(mmio) = &mut device.device {
+                    matched += usize::from(
+                        mmio.rebind_vsock_listener(port, source, destination)
+                            .map_err(io::Error::other)?,
+                    );
+                }
+            }
+            if matched != 1 {
+                return Err(io::Error::other("expected exactly one branch listener"));
+            }
+            self.state = serde_json::to_value(state).map_err(io::Error::other)?;
+            Ok(())
+        }
+        #[cfg(not(any(
+            all(target_os = "linux", target_arch = "x86_64"),
+            all(target_os = "macos", target_arch = "aarch64")
+        )))]
+        {
+            let _ = (port, source, destination);
+            Err(unsupported("branch listener"))
+        }
+    }
+
     fn verify_frozen_filesystem_backing(&self, tag: &str) -> io::Result<usize> {
         #[cfg(any(
             all(target_os = "macos", target_arch = "aarch64"),
@@ -802,7 +876,9 @@ impl SnapshotState for MachineSnapshot {
             all(target_os = "linux", target_arch = "x86_64")
         ))]
         {
-            self.rebind(tag, |device, tag| device.prepare_protected_workspace_seed(tag))
+            self.rebind(tag, |device, tag| {
+                device.prepare_protected_workspace_seed(tag)
+            })
         }
         #[cfg(not(any(
             all(target_os = "macos", target_arch = "aarch64"),

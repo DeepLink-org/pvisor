@@ -565,7 +565,7 @@ fn serve_inner(mut stream: UnixStream, pool: Owner, max_references: usize) -> io
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-fn send_mapping_fd(stream: &UnixStream, fd: std::os::fd::RawFd) -> io::Result<()> {
+pub(crate) fn send_mapping_fd(stream: &UnixStream, fd: std::os::fd::RawFd) -> io::Result<()> {
     let mut marker = [0x46u8];
     let mut iov = libc::iovec {
         iov_base: marker.as_mut_ptr().cast(),
@@ -732,6 +732,11 @@ impl<'a> DeadlineStream<'a> {
         }
     }
 }
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+pub(crate) fn receive_fork_fd(stream: &mut UnixStream) -> io::Result<std::os::fd::OwnedFd> {
+    DeadlineStream::new(stream, Duration::from_secs(30))?.receive_mapping_fd()
+}
+
 impl Read for DeadlineStream<'_> {
     fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
         let count = self.io(libc::POLLIN, |stream| stream.read(bytes))?;
