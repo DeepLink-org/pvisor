@@ -784,7 +784,7 @@ fn plan_vm_shape(
             _ => {
                 return Err(PlanError::UnsupportedConstraint(format!(
                     "io.pvisor.vm.cpus: invalid value `{raw}` (expected 1-255)"
-                )))
+                )));
             }
         },
         None => {
@@ -810,12 +810,14 @@ fn plan_vm_shape(
             _ => {
                 return Err(PlanError::UnsupportedConstraint(format!(
                     "io.pvisor.vm.memory-mib: invalid value `{raw}` (expected a positive MiB count)"
-                )))
+                )));
             }
         },
         None => {
             if let Some(limit) = limits.memory_limit_mib {
-                config.ram_mib = limit.saturating_sub(VM_RAM_RESERVE_MIB).max(VM_RAM_RESERVE_MIB);
+                config.ram_mib = limit
+                    .saturating_sub(VM_RAM_RESERVE_MIB)
+                    .max(VM_RAM_RESERVE_MIB);
             }
         }
     }
@@ -2450,7 +2452,13 @@ mod tests {
         );
         let plan =
             build_plan(&spec, "c1", Path::new("/b"), vec![], IoPlan::default()).expect("plan");
-        assert_eq!(plan.vm_config(), VmConfig { cpus: 2, ram_mib: 1024 });
+        assert_eq!(
+            plan.vm_config(),
+            VmConfig {
+                cpus: 2,
+                ram_mib: 1024
+            }
+        );
         assert_eq!(plan.warnings.len(), 2);
         assert!(
             plan.warnings
