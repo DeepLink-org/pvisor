@@ -3,11 +3,11 @@ use pvisor_journal::api::{Journal, JournalStore};
 use std::path::Path;
 
 #[derive(Clone)]
-pub struct JournalRecording {
+pub(super) struct JournalRecording {
     pub journal: Journal,
 }
 impl JournalRecording {
-    pub fn open(destination: &Path) -> anyhow::Result<Self> {
+    pub(super) fn open(destination: &Path) -> anyhow::Result<Self> {
         let path = if destination.extension().is_some() {
             destination.to_path_buf()
         } else {
@@ -18,7 +18,7 @@ impl JournalRecording {
         })
     }
     /// Every accepted append already has a synced receipt.
-    pub fn finish(self) -> anyhow::Result<()> {
+    pub(super) fn finish(self) -> anyhow::Result<()> {
         Ok(())
     }
 }

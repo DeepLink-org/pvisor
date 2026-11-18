@@ -1,7 +1,19 @@
 //! Owner-process VM preflight. Never boots a guest or changes host permissions.
-use serde_json::json;
+#[derive(serde::Serialize)]
+struct Report {
+    schema_version: u32,
+    operation: &'static str,
+    platform: &'static str,
+    architecture: &'static str,
+    backend: &'static str,
+    can_create_vm: bool,
+    reason: String,
+    firmware: &'static str,
+    boot_verified: bool,
+    scope: &'static str,
+}
 
-pub(super) fn report() -> serde_json::Value {
+fn report() -> Report {
     let (backend, available, reason) = platform();
     #[cfg(not(all(target_os = "macos", target_arch = "x86_64")))]
     let firmware = {
@@ -16,13 +28,18 @@ pub(super) fn report() -> serde_json::Value {
     };
     #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
     let firmware = "unsupported";
-    json!({
-        "schema_version": 1, "operation": "vm-check",
-        "platform": std::env::consts::OS, "architecture": std::env::consts::ARCH,
-        "backend": backend, "can_create_vm": available, "reason": reason,
-        "firmware": firmware, "boot_verified": false,
-        "scope": "Empty VM creation only; firmware loading, rootfs, staging, guest tools and workflow capabilities are not verified"
-    })
+    Report {
+        schema_version: 1,
+        operation: "vm-check",
+        platform: std::env::consts::OS,
+        architecture: std::env::consts::ARCH,
+        backend,
+        can_create_vm: available,
+        reason,
+        firmware,
+        boot_verified: false,
+        scope: "Empty VM creation only; firmware loading, rootfs, staging, guest tools and workflow capabilities are not verified",
+    }
 }
 
 pub(super) fn print(json: bool) -> anyhow::Result<()> {
@@ -32,9 +49,7 @@ pub(super) fn print(json: bool) -> anyhow::Result<()> {
     } else {
         println!(
             "{}: {}; firmware: {}",
-            result["backend"].as_str().unwrap(),
-            result["reason"].as_str().unwrap(),
-            result["firmware"].as_str().unwrap()
+            result.backend, result.reason, result.firmware
         );
     }
     Ok(())
@@ -118,7 +133,7 @@ fn platform() -> (&'static str, bool, String) {
 mod tests {
     #[test]
     fn report_never_claims_a_booted_or_workflow_verified_guest() {
-        let value = super::report();
+        let value = serde_json::to_value(super::report()).unwrap();
         assert_eq!(value["schema_version"], 1);
         assert_eq!(value["operation"], "vm-check");
         assert_eq!(value["boot_verified"], false);

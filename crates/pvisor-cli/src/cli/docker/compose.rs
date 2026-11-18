@@ -236,7 +236,11 @@ pub(super) fn run(args: ComposeArgs) -> anyhow::Result<i32> {
                     println!(
                         "{}\t{}\t{}{health}\t{}",
                         instance.name,
-                        instance.compose.as_ref().unwrap().service,
+                        instance
+                            .compose
+                            .as_ref()
+                            .context("container has no Compose metadata")?
+                            .service,
                         instance.state,
                         instance.id
                     );
@@ -252,7 +256,11 @@ pub(super) fn run(args: ComposeArgs) -> anyhow::Result<i32> {
                     let store = &store;
                     let cancelled = &cancelled;
                     jobs.push(scope.spawn(move || {
-                        let service = &instance.compose.as_ref().unwrap().service;
+                        let service = &instance
+                            .compose
+                            .as_ref()
+                            .context("container has no Compose metadata")?
+                            .service;
                         let result = store.logs_until(
                             &instance.id,
                             follow,

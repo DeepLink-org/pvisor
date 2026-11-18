@@ -206,7 +206,7 @@ struct Run {
 
 /// Parse Windows commands after dispatching private owner/runner modes. Session,
 /// mount, port, build and Engine/Compose profiles are rejected.
-pub fn main() -> anyhow::Result<()> {
+pub(crate) fn main() -> anyhow::Result<()> {
     match Store::internal_if_requested() {
         Ok(true) => return Ok(()),
         Ok(false) => (),

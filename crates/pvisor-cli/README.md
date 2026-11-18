@@ -50,8 +50,14 @@ the updated native binary, not just an updated JavaScript plugin.
 ## Boundary
 
 Embed [`pvisor`](../pvisor/README.md) for `PVisor`, Session/Execution execution and
-`session_service::SessionService`. This application library exposes frontend
-modules, not a compatibility re-export of the runtime. Frontends call explicit
+`session_service::SessionService`. This application library exposes only `api`:
+the stateless `Application` and its `CommandLine` process-entry trait. Call
+`Application::run` or `Application::replay` once before creating threads or an
+async runtime. These entries consume process arguments/environment, own terminal
+and signal setup, and may replace or exit the process. They are not reentrant
+embedding APIs. Windows replay returns an explicit unsupported error. Public
+declarations are platform- and feature-independent; parsers, parameter records,
+companion discovery and terminal adapters remain private. Frontends call explicit
 runtime APIs and retain request-local cancellation, admission fences and terminal
 ownership. Managed startup consumes the runtime's admitted Session plan;
 executor wrappers forward the selected executor's continuation settings and
@@ -1215,7 +1221,9 @@ semantics. These interface changes do not establish a performance result.
 - `src/cli/cache.rs`: cache command parsing and rendering; cache storage,
   image preparation and authenticated server implementation remain in `pvisor`.
 - `src/companions.rs`: trusted same-installation companion discovery/dispatch.
-- `src/bin/pvisor-replay.rs`: replay argument parsing and managed-run frontend;
+- `src/api.rs`: uniform process-entry contracts; implementations live in
+  `src/application.rs`.
+- `src/replay.rs`: replay argument parsing and managed-run frontend;
   the independent replay engine remains in `pvisor-replay`.
 - `src/bin/`: executable entry points.
 - `tests/`: executable/frontend integration tests, including tests that combine
@@ -1243,6 +1251,14 @@ platform limits. Its command examples refer to these installed frontends.
 Use `mise run test -- pvisor-cli` for application tests and `mise run test -- pvisor` for
 runtime tests. Native VM and ignored environment-dependent gates retain their
 existing prerequisites; compile checks are not real-guest validation.
+`api_boundary` guards the single public module, declaration-only API and private
+implementation methods. `api_contract` checks the process contracts through the
+installed binary entries. Private parser/state tests stay inside the library;
+Docker and Compose executable regressions retain their feature-owned targets.
+Production builds deny Clippy's `unwrap_used` and `expect_used`; test assertions
+may still use them. Run `mise run test-doc -- pvisor-cli` for API doctests and
+`RUSTDOCFLAGS='-D warnings' mise exec -- cargo doc --locked --no-deps -p pvisor-cli`
+for strict public documentation checks.
 
 `command_extensions` checks executable help and dispatch. Select it with
 `mise run test -- pvisor-cli -- --test command_extensions`.

@@ -14,7 +14,7 @@ fn architecture() -> &'static str {
 }
 
 #[derive(Debug, Args)]
-pub struct CacheArgs {
+pub(super) struct CacheArgs {
     /// Cache backend: daemon, shared filesystem, or direct S3 object storage.
     #[arg(long, global = true, value_parser = super::values::cache_backend())]
     backend: Option<CacheBackend>,
@@ -86,7 +86,7 @@ enum CacheCommand {
     Read { digest: String, path: PathBuf },
 }
 
-pub fn run(args: CacheArgs) -> anyhow::Result<()> {
+pub(super) fn run(args: CacheArgs) -> anyhow::Result<()> {
     let prepared_source = match &args.command {
         CacheCommand::PrepareRootfs { rootfs, base_store } => Some(("rootfs", rootfs, base_store)),
         CacheCommand::PrepareWorkspace {

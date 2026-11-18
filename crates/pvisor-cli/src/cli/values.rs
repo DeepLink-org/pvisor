@@ -2,56 +2,48 @@
 use clap::builder::{PossibleValuesParser, TypedValueParser};
 
 pub(super) fn run_executor_kind() -> impl TypedValueParser<Value = pvisor::RunExecutorKind> {
-    PossibleValuesParser::new(["host", "container", "vm"]).map(|value| {
-        serde_json::from_value(serde_json::Value::String(value)).expect("runtime enum CLI choices")
-    })
+    PossibleValuesParser::new(["host", "container", "vm"])
+        .try_map(|value| serde_json::from_value(serde_json::Value::String(value)))
 }
 
 pub(super) fn filesystem_mode() -> impl TypedValueParser<Value = pvisor::FilesystemMode> {
-    PossibleValuesParser::new(["host", "sandbox"]).map(|value| {
-        serde_json::from_value(serde_json::Value::String(value)).expect("runtime enum CLI choices")
-    })
+    PossibleValuesParser::new(["host", "sandbox"])
+        .try_map(|value| serde_json::from_value(serde_json::Value::String(value)))
 }
 
 pub(super) fn run_stdio() -> impl TypedValueParser<Value = pvisor::RunStdio> {
-    PossibleValuesParser::new(["inherit", "capture"]).map(|value| {
-        serde_json::from_value(serde_json::Value::String(value)).expect("runtime enum CLI choices")
-    })
+    PossibleValuesParser::new(["inherit", "capture"])
+        .try_map(|value| serde_json::from_value(serde_json::Value::String(value)))
 }
 
 pub(super) fn container_network() -> impl TypedValueParser<Value = pvisor::ContainerNetwork> {
-    PossibleValuesParser::new(["host", "bridge", "none"]).map(|value| {
-        serde_json::from_value(serde_json::Value::String(value)).expect("runtime enum CLI choices")
-    })
+    PossibleValuesParser::new(["host", "bridge", "none"])
+        .try_map(|value| serde_json::from_value(serde_json::Value::String(value)))
 }
 
 pub(super) fn overlay_net_mode() -> impl TypedValueParser<Value = pvisor::OverlayNetMode> {
-    PossibleValuesParser::new(["auto", "off", "proxy"]).map(|value| {
-        serde_json::from_value(serde_json::Value::String(value)).expect("runtime enum CLI choices")
-    })
+    PossibleValuesParser::new(["auto", "off", "proxy"])
+        .try_map(|value| serde_json::from_value(serde_json::Value::String(value)))
 }
 
 pub(super) fn overlay_net_policy() -> impl TypedValueParser<Value = pvisor::OverlayNetPolicy> {
-    PossibleValuesParser::new(["public", "deny", "allowlist"]).map(|value| {
-        serde_json::from_value(serde_json::Value::String(value)).expect("runtime enum CLI choices")
-    })
+    PossibleValuesParser::new(["public", "deny", "allowlist"])
+        .try_map(|value| serde_json::from_value(serde_json::Value::String(value)))
 }
 
 pub(super) fn gateway_profile() -> impl TypedValueParser<Value = pvisor::GatewayProfile> {
-    PossibleValuesParser::new(["zcode-bigmodel"]).map(|value| {
-        serde_json::from_value(serde_json::Value::String(value)).expect("runtime enum CLI choices")
-    })
+    PossibleValuesParser::new(["zcode-bigmodel"])
+        .try_map(|value| serde_json::from_value(serde_json::Value::String(value)))
 }
 
 pub(super) fn gateway_mode() -> impl TypedValueParser<Value = pvisor::GatewayMode> {
-    PossibleValuesParser::new(["off", "capture"]).map(|value| {
-        serde_json::from_value(serde_json::Value::String(value)).expect("runtime enum CLI choices")
-    })
+    PossibleValuesParser::new(["off", "capture"])
+        .try_map(|value| serde_json::from_value(serde_json::Value::String(value)))
 }
 
 pub(super) fn cache_backend() -> impl TypedValueParser<Value = pvisor::cache::CacheBackend> {
     PossibleValuesParser::new(["server", "filesystem", "s3"])
-        .map(|value| value.parse().expect("cache backend CLI choices"))
+        .try_map(|value| value.parse::<pvisor::cache::CacheBackend>())
 }
 
 #[cfg(test)]

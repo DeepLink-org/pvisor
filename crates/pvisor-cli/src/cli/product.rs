@@ -15,7 +15,7 @@ const REVIEW_PATH_LIMIT: usize = 200;
 
 #[derive(Debug, Clone, Args, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct ReviewArgs {
+pub(crate) struct ReviewArgs {
     /// Session id, project workspace, run.json, a path inside the Session filesystem, or container name/id.
     pub selector: Option<PathBuf>,
     /// Select a container's exact staged bind guest path (never a Session selector).
@@ -46,7 +46,7 @@ pub struct ReviewArgs {
     pub max_diff_file_bytes: u64,
 }
 
-pub fn review(args: ReviewArgs) -> anyhow::Result<()> {
+pub(super) fn review(args: ReviewArgs) -> anyhow::Result<()> {
     let selector = super::stage_source::resolve(
         args.selector.as_deref(),
         &args.output_dir,
@@ -473,8 +473,7 @@ impl<'a> Handoff<'a> {
         if !result.classification_available {
             result.limitations.push("Project classification unavailable: requires a recorded non-root lexical absolute workspace matching the stage target or a root-stage prefix, and a complete manifest. Counts are unknown, not zero.");
             result.unclassified_changes.extend(&filesystem.changes);
-        } else {
-            let prefix = result.project_prefix.as_deref().expect("checked prefix");
+        } else if let Some(prefix) = result.project_prefix.as_deref() {
             for change in &filesystem.changes {
                 let path = change.relative_path();
                 if path.as_os_str().is_empty() || safe_change_path(&path).is_err() {
@@ -532,11 +531,12 @@ impl<'a> Handoff<'a> {
 
 fn print_project_results(handoff: &Handoff<'_>) {
     println!("\nProject results");
-    if handoff.classification_available {
-        println!(
-            "  project root: {}",
-            handoff.project_root.as_deref().unwrap().display()
-        );
+    if let (true, Some(root), Some(prefix)) = (
+        handoff.classification_available,
+        handoff.project_root.as_deref(),
+        handoff.project_prefix.as_deref(),
+    ) {
+        println!("  project root: {}", root.display());
         println!(
             "  {} project changes; {} currently unsupported for export",
             handoff.project_changes.len(),
@@ -544,9 +544,7 @@ fn print_project_results(handoff: &Handoff<'_>) {
         );
         for change in handoff.project_changes.iter().take(REVIEW_PATH_LIMIT) {
             let relative = change.relative_path();
-            let path = relative
-                .strip_prefix(handoff.project_prefix.as_deref().unwrap())
-                .unwrap_or(&relative);
+            let path = relative.strip_prefix(prefix).unwrap_or(&relative);
             let unsupported = handoff.unsupported_project_changes.contains(change);
             println!(
                 "  {:?} {}{}",

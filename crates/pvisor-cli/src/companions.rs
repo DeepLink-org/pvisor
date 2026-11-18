@@ -4,7 +4,7 @@ use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, serde::Serialize)]
-pub struct Companion {
+pub(crate) struct Companion {
     pub name: &'static str,
     pub description: &'static str,
 }
@@ -40,7 +40,10 @@ fn check_trust(metadata: &std::fs::Metadata) -> anyhow::Result<()> {
 fn installation_directory() -> anyhow::Result<PathBuf> {
     // macOS can report the Homebrew entry symlink rather than the installed binary.
     let executable = std::env::current_exe()?.canonicalize()?;
-    let directory = executable.parent().unwrap().to_path_buf();
+    let directory = executable
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("executable has no installation directory"))?
+        .to_path_buf();
     check_trust(&std::fs::symlink_metadata(&directory)?)?;
     Ok(directory)
 }
@@ -55,7 +58,7 @@ fn check_executable(path: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-pub fn find(name: &str) -> anyhow::Result<Option<(PathBuf, Companion)>> {
+pub(crate) fn find(name: &str) -> anyhow::Result<Option<(PathBuf, Companion)>> {
     let Some(command) = companion(name) else {
         return Ok(None);
     };
@@ -73,20 +76,20 @@ pub fn find(name: &str) -> anyhow::Result<Option<(PathBuf, Companion)>> {
     }
 }
 
-pub fn discover() -> anyhow::Result<Vec<(PathBuf, Companion)>> {
+pub(crate) fn discover() -> anyhow::Result<Vec<(PathBuf, Companion)>> {
     ROOT_COMMANDS
         .iter()
         .filter_map(|command| find(command.name).transpose())
         .collect()
 }
 
-pub fn core_executable() -> anyhow::Result<PathBuf> {
+pub(crate) fn core_executable() -> anyhow::Result<PathBuf> {
     let path = installation_directory()?.join("pvisor");
     check_executable(&path)?;
     Ok(path)
 }
 
-pub fn dispatch(name: &str, args: &[OsString]) -> anyhow::Result<()> {
+pub(crate) fn dispatch(name: &str, args: &[OsString]) -> anyhow::Result<()> {
     let (path, _) =
         find(name)?.ok_or_else(|| anyhow::anyhow!("pvisor-{name} companion is not installed"))?;
     execute(path, args)

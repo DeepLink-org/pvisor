@@ -1,12 +1,19 @@
 //! Application frontends for pVisor. Embed `pvisor` for runtime and Session APIs.
+#![deny(missing_docs)]
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
+
+pub mod api;
+mod application;
 #[cfg(not(windows))]
-pub mod cli;
+mod cli;
 #[cfg(windows)]
 #[path = "windows_cli.rs"]
-pub mod cli;
+mod cli;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_arch = "x86_64")))]
-pub mod companions;
+mod companions;
 mod container_args;
+#[cfg(unix)]
+mod replay;
 #[cfg(not(all(target_os = "macos", target_arch = "x86_64")))]
 mod vm_run;
 #[cfg(any(windows, test))]

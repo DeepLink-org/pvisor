@@ -48,13 +48,13 @@ pub(super) fn run(mut args: ApplyArgs) -> i32 {
     let result = (|| {
         args.selector =
             super::stage_source::resolve(Some(&args.selector), &args.store, args.mount.as_deref())?
-                .expect("explicit apply source");
+                .context("apply source is required")?;
         args.mount = None;
         if picker {
             interactive(&mut args)
         } else {
             request(&args, args.dry_run, None).and_then(|response| {
-                render(&response, args.json);
+                render(&response, args.json)?;
                 if args.diff && exit_code(&response) == 0 {
                     print_diff(&response)?;
                 }
@@ -121,16 +121,13 @@ fn exit_code(response: &ApplyCommandResponse) -> i32 {
     }
 }
 
-fn render(response: &ApplyCommandResponse, json: bool) {
+fn render(response: &ApplyCommandResponse, json: bool) -> anyhow::Result<()> {
     if json {
-        println!(
-            "{}",
-            serde_json::to_string(response).expect("apply response serialization")
-        );
+        println!("{}", serde_json::to_string(response)?);
         for blocker in &response.blockers {
             eprintln!("{blocker}");
         }
-        return;
+        return Ok(());
     }
     println!("apply: {}", response.status);
     println!("Source: {}", response.source.session_id);
@@ -189,6 +186,7 @@ fn render(response: &ApplyCommandResponse, json: bool) {
             "Apply succeeded. Tests were not run automatically. Apply is not a transaction across files; validate the result separately."
         );
     }
+    Ok(())
 }
 
 struct Terminal(libc::termios);
@@ -274,7 +272,7 @@ fn interactive(args: &mut ApplyArgs) -> anyhow::Result<i32> {
         let inventory = request(&inventory_args, true, None)?;
         args.selector = inventory.source.stage.clone();
         let Some(picker) = &inventory.picker else {
-            render(&inventory, false);
+            render(&inventory, false)?;
             return Ok(3);
         };
         for blocker in &inventory.blockers {
@@ -345,7 +343,7 @@ fn interactive(args: &mut ApplyArgs) -> anyhow::Result<i32> {
                         continue;
                     }
                     let mut preview = request(args, true, None)?;
-                    render(&preview, false);
+                    render(&preview, false)?;
                     if input == b'd' {
                         print_diff(&preview)?;
                     }
@@ -364,12 +362,12 @@ fn interactive(args: &mut ApplyArgs) -> anyhow::Result<i32> {
                             b'd' => print_diff(&preview)?,
                             b'a' if exit_code(&preview) == 0 && preview.plan.is_some() => {
                                 let execution = request(args, false, preview.plan.clone())?;
-                                render(&execution, false);
+                                render(&execution, false)?;
                                 if execution.status == "blocked" {
                                     // Never execute a changed plan without showing a fresh preview
                                     // and requiring another explicit keypress.
                                     preview = request(args, true, None)?;
-                                    render(&preview, false);
+                                    render(&preview, false)?;
                                 } else {
                                     return Ok(exit_code(&execution));
                                 }

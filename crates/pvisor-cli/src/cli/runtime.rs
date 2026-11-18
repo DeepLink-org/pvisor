@@ -18,7 +18,7 @@ pub(super) struct StatusCommandArgs {
 
 #[derive(Debug, Clone, Args, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct StatusArgs {
+pub(crate) struct StatusArgs {
     /// Session id, stage directory, upper directory, or workspace path.
     pub selector: Option<PathBuf>,
     #[arg(long, short = 'o', default_value = DEFAULT_STORAGE)]
@@ -43,7 +43,7 @@ pub struct StatusArgs {
 
 #[derive(Debug, Clone, Args, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct KillArgs {
+pub(crate) struct KillArgs {
     /// Live Session id, stage directory, or workspace path.
     pub selector: PathBuf,
     #[arg(long, short = 'o', default_value = DEFAULT_STORAGE)]
@@ -54,7 +54,7 @@ pub struct KillArgs {
 
 #[derive(Debug, Clone, Args, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct InspectArgs {
+pub(crate) struct InspectArgs {
     /// Session id, stage directory, upper directory, or workspace path.
     pub selector: Option<PathBuf>,
     #[arg(long, short = 'o', default_value = DEFAULT_STORAGE)]
@@ -69,7 +69,7 @@ pub struct InspectArgs {
 
 #[derive(Debug, Clone, Args, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct SelectArgs {
+pub(crate) struct SelectArgs {
     /// Session id, stage directory, workspace path, or container name/id.
     pub selector: PathBuf,
     /// Select a container's exact staged bind guest path (never a Session selector).
@@ -82,7 +82,7 @@ pub struct SelectArgs {
 
 #[derive(Debug, Clone, Args, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct ApplyArgs {
+pub(super) struct ApplyArgs {
     /// Session id, stage directory, workspace selector, or container name/id; internal stage paths are refused.
     #[arg(value_name = "SOURCE")]
     pub selector: PathBuf,
@@ -140,7 +140,7 @@ pub struct ApplyArgs {
     pub store: PathBuf,
 }
 
-pub fn status(args: StatusArgs) -> anyhow::Result<()> {
+pub(super) fn status(args: StatusArgs) -> anyhow::Result<()> {
     if args.review || args.diff {
         return super::product::review(super::product::ReviewArgs {
             selector: args.selector,
@@ -311,7 +311,7 @@ fn status_json(response: &pvisor::session_service::StatusResponse) -> serde_json
     })
 }
 
-pub fn kill(args: KillArgs) -> anyhow::Result<()> {
+pub(super) fn kill(args: KillArgs) -> anyhow::Result<()> {
     let record = selected(Some(&args.selector), &args.output_dir)?;
     super::host_service::check_record(&record)?;
     let endpoint = record
@@ -348,7 +348,7 @@ pub fn kill(args: KillArgs) -> anyhow::Result<()> {
         }
         anyhow::bail!("Session has no valid recorded owner; only its durable state is available");
     }
-    let endpoint = endpoint.unwrap();
+    let endpoint = endpoint.context("Session has no valid recorded owner")?;
     endpoint.exchange_checked(
         &record.run_id,
         record
@@ -373,7 +373,7 @@ pub fn kill(args: KillArgs) -> anyhow::Result<()> {
     Ok(())
 }
 
-pub fn inspect(args: InspectArgs) -> anyhow::Result<i32> {
+pub(super) fn inspect(args: InspectArgs) -> anyhow::Result<i32> {
     let selected = selected(args.selector.as_deref(), &args.output_dir)?;
     let endpoint = selected
         .live_control
@@ -593,14 +593,14 @@ impl Drop for InspectRoot {
     }
 }
 
-pub fn drop_overlay(mut args: SelectArgs) -> anyhow::Result<()> {
+pub(super) fn drop_overlay(mut args: SelectArgs) -> anyhow::Result<()> {
     use pvisor::session_service::{DropRequest, SessionService};
     args.selector = super::stage_source::resolve(
         Some(&args.selector),
         &args.output_dir,
         args.mount.as_deref(),
     )?
-    .expect("explicit drop source");
+    .context("drop source is required")?;
     args.mount = None;
     let response = SessionService::drop(
         &super::host::service_context(),

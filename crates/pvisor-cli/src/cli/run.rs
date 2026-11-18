@@ -122,7 +122,7 @@ fn announce_session_started(handle: &pvisor::RunHandle) {
 }
 
 mod lifecycle;
-pub use lifecycle::ForkArgs;
+pub(crate) use lifecycle::ForkArgs;
 use lifecycle::execution_store_location;
 pub(super) use lifecycle::{fork, resume_execution};
 
@@ -162,7 +162,7 @@ const DENY_ALL_HELP: &str = "Deny all OverlayNet egress; direct sockets remain o
 
 #[derive(Debug, Clone, Default, Args, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct RunArgs {
+pub(crate) struct RunArgs {
     #[arg(skip)]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     stage_launch: Option<StageLaunch>,
@@ -870,7 +870,7 @@ fn load_run_config(
     Ok(config)
 }
 
-pub async fn run(args: RunArgs) -> anyhow::Result<i32> {
+pub(super) async fn run(args: RunArgs) -> anyhow::Result<i32> {
     pvisor::startup_mark("cli.run_begin");
     anyhow::ensure!(
         args.spec.is_none() || args.config.is_none(),
@@ -1292,7 +1292,13 @@ async fn delegated_shutdown_signal() {
     #[cfg(unix)]
     {
         use tokio::signal::unix::{SignalKind, signal};
-        let mut terminate = signal(SignalKind::terminate()).expect("install SIGTERM handler");
+        let mut terminate = match signal(SignalKind::terminate()) {
+            Ok(signal) => signal,
+            Err(error) => {
+                eprintln!("cannot install SIGTERM handler: {error}");
+                return;
+            }
+        };
         tokio::select! {
             _ = tokio::signal::ctrl_c() => {}
             _ = terminate.recv() => {}
@@ -2920,7 +2926,11 @@ fn open_prepared_workspace(
     }
     // Preserve the live workspace/base for VM layout and apply. The runtime's
     // typed, leased fresh-stage entry selects this generation as read baseline.
-    config.overlayfs.as_mut().unwrap().prepared_workspace = Some(selected);
+    config
+        .overlayfs
+        .as_mut()
+        .context("prepared workspace requires OverlayFS settings")?
+        .prepared_workspace = Some(selected);
     Ok(Some(base))
 }
 
