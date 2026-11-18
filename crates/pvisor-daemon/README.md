@@ -222,7 +222,7 @@ origin's name index is queried in that configuration.
 
 Use `pvisor image push/pull` with an explicit prepared-template catalog for an
 S3-compatible bucket/prefix or a static mirror. Root `pvisor push` is equivalent
-to `pvisor image push`. No daemon service or IPFS node is required:
+to `pvisor image push`. No daemon service is required:
 
 ```sh
 # Publisher: host AWS credentials and region come from its environment.
@@ -241,7 +241,8 @@ pull imports or resolves a prepared template; replacing a local name requires
 survive import, while host paths are rebound. `prepare-image` and `registry`
 remain daemon commands.
 
-`pvisor-daemon image` and `pvisor daemon image` have been removed.
+`pvisor-daemon image`, `pvisor daemon image` and `serve --ipfs` have been
+removed. Rebuild or re-import former IPFS images from S3 or HTTP(S).
 See [the migration table](../../tests/spec/lazy-image/spec.md#pvisor-daemon-image-retirement).
 
 Use `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, optional `AWS_SESSION_TOKEN`,
@@ -339,42 +340,11 @@ the integration suite with a private fixture environment. These tests do not
 establish real cloud/CDN availability, actual vendor SigV4 interoperability,
 WAN performance or real VM startup; validate those in the target deployment.
 
-## IPFS service for existing image bindings (experimental)
-
-`pvisor-daemon serve --ipfs` starts Kubo from `PATH` for existing IPFS image
-bindings. It uses `.pvisor/images/.ipfs` by default. Use the same
-`--images-dir DIR` as the sandbox catalog to preserve the existing gateway.
-On first startup the daemon initializes an empty repository and persists
-distinct loopback API and gateway ports. Existing node configuration is
-validated and reused. Use Kubo directly to manage existing pins.
-New pVisor image publications use S3 or file staging.
-
-The daemon waits up to 30 seconds for Kubo readiness, fails on unexpected exit,
-and kills/reaps its owned process on orderly shutdown without deleting data.
-Abrupt daemon death can leave Kubo running; reconcile that process before
-restart. Existing same-user `start` does not manage IPFS. Detached VMs still
-need the node for lazy reads; stopping its owning `serve` can interrupt them.
-
-The reader disables HTTP proxies/redirects, bounds response sizes, validates
-exact Range responses, and retains V2 revision/frame/content authentication.
-There is no local-pool/registry/HTTP-origin fallback. Missing dependencies and
-gateway/network errors fail reads rather than becoming nonexistent files.
-The host-side network bridge preserves access across VM network isolation.
-IPFS uses the same bounded HTTP reader described above, restricted to its
-trusted local Kubo gateway; saturation fails explicitly.
-IPFS's UnixFS blocks need not align with V2 frames, so requested range bytes do
-not establish actual P2P bytes. Public-network success rates, NAT traversal,
-peer bandwidth contribution, WAN startup P50/P95 and transfer amplification
-still need real multi-host validation. The pvisor README documents an explicit
-two-node Kubo runner (validated with 0.34.1) that checks actual Bitswap transfer
-and lazy reads on an isolated loopback network. Neither that runner nor mock
-gateway tests establish public-network performance.
-
 ## Single-node ownership and deployment safety
 
 Both supported SDK profiles operate only on the receiving daemon's local
 sandboxes. Peer discovery, Home queues, owner routing and `/v1/cluster/*`
-extensions are unsupported. IPFS image distribution is independent.
+extensions are unsupported.
 
 When replacing a deployment with queued or remotely assigned work, stop new
 submissions and reconcile that work through the executable that owns it.

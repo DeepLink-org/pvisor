@@ -185,12 +185,10 @@ pub struct CachedImage {
     pub location: PathBuf,
     /// Authenticated immutable `pvisor-v2` metadata revision handle.
     pub handle: String,
-    /// Optional immutable V2 repository root: `s3://BUCKET/PREFIX`, HTTP/HTTPS,
-    /// or `ipfs+http://LOOPBACK:PORT/ipfs/CID`. Credentials belong to the host
-    /// environment, never this record or the guest. HTTP is read-only and uses
-    /// exact Range responses. Remote failures never fall back to local content.
-    /// IPFS requires a trusted Kubo throughout VM reads and provides no anonymity.
-    #[serde(default, alias = "ipfs", skip_serializing_if = "Option::is_none")]
+    /// Optional immutable V2 repository root: S3 or HTTP(S). Credentials belong
+    /// to the host environment. HTTP is read-only and uses exact Range responses.
+    /// Remote failures never fall back to local content.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub repository: Option<String>,
     /// Ordered fallback roots for the same hash-named publication as `repository`.
     /// Empty for local/single-source images. At most seven distinct S3/HTTP(S)

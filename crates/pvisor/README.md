@@ -1381,20 +1381,11 @@ fields and obsolete storage formats are rejected. Use a fresh store and re-pull
 or rebuild images; no compatibility reader or automatic migration is provided.
 Stop and clean up old containers through the old version before switching stores.
 
-Remote bindings set `CachedImage.repository` to an immutable
-`s3://BUCKET/PREFIX`, `http://`/`https://` static root, or
-`ipfs+http://127.0.0.1:PORT/ipfs/CID`. Old experimental `ipfs` JSON fields can
-still be read as this same repository field. The binding overrides the local pool for reads,
-without OCI-pull or local-pool fallback. Explicit pinned mirrors may serve the
-same publication. For IPFS, the gateway must be a trusted local Kubo:
-only literal-loopback HTTP is accepted, proxies and redirects are disabled,
-and range responses must match exactly. Kubo verifies the UnixFS DAG; V2 still
-authenticates revision metadata and content frames before decoding. Gateway
-failures, including missing dependencies, remain errors, not absent image files.
-The existing host network bridge keeps Kubo access outside the VM network
-namespace. Retain Kubo throughout VM access, including detached supervisors
-that survive daemon restart. The Kubo restriction applies only to IPFS:
-ordinary HTTP/HTTPS repositories can use public mirror/CDN hosts.
+Remote bindings set `CachedImage.repository` to an immutable S3 or HTTP(S)
+repository. The binding overrides the local pool; remote failures do not
+trigger an OCI pull or local-pool fallback. Explicit pinned mirrors may serve
+the same publication. Former IPFS bindings fail to open and must be rebuilt
+or imported from a supported repository.
 
 `ImageRegistry` describes ordered, credential-free roots and whether each is
 authorized to resolve names. `Store::resolve_image_repository` chooses the first
@@ -1450,20 +1441,6 @@ before copying data. This prevents exposing removed files from a private
 predecessor; such images need rebuilding into a fresh pool before publication.
 Treat the exported image, including its config/environment, as public. The
 destination must not exist; failure can leave a partial export.
-The daemon can serve existing IPFS bindings through its local Kubo node with
-`serve --ipfs`. IPFS chunk boundaries need not match V2 frames.
-
-The explicit Kubo runner uses two temporary loopback-only peers, disables
-bootstrap/mDNS/routing, removes the original local pool, and checks actual
-Bitswap reception, bounded working-set delivery and unchanged receiver pins:
-
-```sh
-PVISOR_TEST_IPFS=/absolute/path/to/ipfs \
-  mise run test -- pvisor -- --lib --run-ignored ignored-only real_kubo
-```
-
-The runner covers local P2P exchange and lazy gateway reads. Public DHT
-discovery, NAT traversal and VM boot performance need separate validation.
 
 Filesystem/S3 publish and writable prepare import OCI sources under a scoped
 `staging/.import-*` directory, removed on success and error after publication
@@ -1739,8 +1716,7 @@ explicit; a non-Unicode token is an error rather than an ignored credential.
 Attachment uses capabilities derived from the validated source, without
 reinterpreting address prefixes. Capability parsing starts no transport workers:
 the Linux runner creates the host-network bridge before constructing its final
-Unix client, preserving single-threaded namespace setup. IPFS and the pinned
-private-network bridge remain supported.
+Unix client, preserving single-threaded namespace setup.
 
 - Capable TCP/Unix services advertise optional `metadata_pages` in Prepared.
   The client loads authenticated directory radix frames, including permissions,

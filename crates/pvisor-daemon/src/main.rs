@@ -63,11 +63,7 @@ enum Command {
     },
     /// Run the selected shared-service components under one daemon lifecycle.
     #[command(group(clap::ArgGroup::new("state_service").args(["sandbox", "memory_pool"]).multiple(true)))]
-    #[command(group(clap::ArgGroup::new("image_service").args(["sandbox", "ipfs"]).multiple(true)))]
     Serve {
-        /// Enable public IPFS distribution using daemon-managed repository state.
-        #[arg(long)]
-        ipfs: bool,
         /// Enable the cache component (disabled by default).
         #[arg(long)]
         cache: bool,
@@ -92,7 +88,7 @@ enum Command {
         #[arg(long, default_value = ".pvisor/daemon", requires = "state_service")]
         state: PathBuf,
         /// Image repository; defaults to .pvisor/images, as in prepare-image.
-        #[arg(long, requires = "image_service")]
+        #[arg(long, requires = "sandbox")]
         images_dir: Option<PathBuf>,
         /// Existing delegated cgroup v2 subtree for per-sandbox process-tree limits.
         #[arg(long, requires = "sandbox")]
@@ -226,7 +222,6 @@ async fn run(command: Command) -> anyhow::Result<()> {
             NativeRuntime::run_supervisor(&sandbox_dir).await?;
         }
         Command::Serve {
-            ipfs,
             cache,
             cache_listen,
             cache_image_store,
@@ -245,8 +240,8 @@ async fn run(command: Command) -> anyhow::Result<()> {
             memory_pool_mode,
         } => {
             anyhow::ensure!(
-                cache || sandbox || memory_pool || ipfs,
-                "select at least one service: --cache, --memory-pool, --sandbox or --ipfs"
+                cache || sandbox || memory_pool,
+                "select at least one service: --cache, --memory-pool or --sandbox"
             );
             // Install handlers before publishing readiness or starting workers.
             // A manager stopped immediately after readiness must drain normally.
@@ -280,9 +275,6 @@ async fn run(command: Command) -> anyhow::Result<()> {
                 None
             };
             // Prepare sandbox resources before starting optional components.
-            let ipfs_images = images_dir
-                .clone()
-                .unwrap_or_else(|| image_repository::DEFAULT_IMAGES.into());
             let sandbox_service = if sandbox {
                 validate_listen(listen, allow_insecure_listen)?;
                 anyhow::ensure!(
@@ -297,7 +289,9 @@ async fn run(command: Command) -> anyhow::Result<()> {
                     !listen.ip().is_unspecified() || public_endpoint.is_some(),
                     "wildcard listen requires an explicit public endpoint"
                 );
-                let images_dir = ipfs_images.canonicalize()?;
+                let images_dir = images_dir
+                    .unwrap_or_else(|| image_repository::DEFAULT_IMAGES.into())
+                    .canonicalize()?;
                 let cgroup_root = cgroup_root
                     .ok_or_else(|| anyhow::anyhow!("sandbox requires --cgroup-root"))?
                     .canonicalize()?;
@@ -359,11 +353,6 @@ async fn run(command: Command) -> anyhow::Result<()> {
             } else {
                 None
             };
-            let mut ipfs = if ipfs {
-                Some(image_repository::start(&ipfs_images).await?)
-            } else {
-                None
-            };
             let maintenance = sandbox_service
                 .as_ref()
                 .map(|(daemon, _)| daemon.start_maintenance());
@@ -395,7 +384,6 @@ async fn run(command: Command) -> anyhow::Result<()> {
                 _ = &mut stop => (Ok(()), false),
                 result = &mut api => (result.and_then(|_| Err(anyhow::anyhow!("sandbox service exited unexpectedly"))), true),
                 result = cache_component::wait(&mut cache) => (result, false),
-                result = image_repository::wait(&mut ipfs) => (result, false),
                 result = wait_pool(standalone_pool) => (result, false),
             };
             let _ = api_stop.send(());
@@ -415,13 +403,7 @@ async fn run(command: Command) -> anyhow::Result<()> {
             } else {
                 Ok(())
             };
-            let ipfs_stopped = if let Some(mut service) = ipfs {
-                image_repository::stop(&mut service).await
-            } else {
-                Ok(())
-            };
             result?;
-            ipfs_stopped?;
             drained?;
             cache_stopped?;
         }
@@ -651,7 +633,6 @@ mod tests {
 
     #[test]
     fn retired_image_subcommand_is_rejected_and_services_still_parse() {
-        assert!(Args::try_parse_from(["pvisor-daemon", "serve", "--ipfs"]).is_ok());
         for options in [
             vec![],
             vec!["--public", "--to", "s3://images/releases"],
@@ -667,7 +648,12 @@ mod tests {
                 clap::error::ErrorKind::InvalidSubcommand,
             );
         }
-        assert!(Args::try_parse_from(["pvisor-daemon", "serve", "--ipfs-repo", "/repo"]).is_err());
+        for option in ["--ipfs", "--ipfs-repo"] {
+            let error = Args::try_parse_from(["pvisor-daemon", "serve", "--cache", option])
+                .err()
+                .unwrap();
+            assert_eq!(error.kind(), clap::error::ErrorKind::UnknownArgument);
+        }
         assert!(
             Args::try_parse_from([
                 "pvisor-daemon",

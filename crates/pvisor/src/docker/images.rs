@@ -171,8 +171,8 @@ impl Store {
         cache::publish_repository(&pool, destination, template)
     }
 
-    /// Fetch a bounded portable `image.json` from an S3, HTTP/HTTPS, or local
-    /// IPFS repository. This does not fetch image contents or install a record.
+    /// Fetch a bounded portable `image.json` from an S3 or HTTP(S) repository.
+    /// This does not fetch image contents or install a record.
     /// The caller must trust the selected publisher, deserialize/validate its
     /// launch contract, and pin its handle before VM access. Hash-named roots
     /// authenticate the template identity; transport failures remain errors.
@@ -312,6 +312,22 @@ mod tests {
     use super::*;
 
     use pvisor_overlay_core::backend;
+
+    #[test]
+    fn retired_ipfs_field_cannot_decode_as_a_local_image() {
+        let mut record = serde_json::json!({
+            "location": "/tmp/image-pool",
+            "handle": "pinned"
+        });
+        assert!(
+            serde_json::from_value::<CachedImage>(record.clone())
+                .unwrap()
+                .repository
+                .is_none()
+        );
+        record["ipfs"] = "ipfs+http://127.0.0.1:8080/ipfs/bafyobsolete".into();
+        assert!(serde_json::from_value::<CachedImage>(record).is_err());
+    }
 
     fn options(context: &Path, tag: &str) -> BuildOptions {
         BuildOptions {

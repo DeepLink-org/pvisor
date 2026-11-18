@@ -1,4 +1,4 @@
-//! Shared OCI cache with server, filesystem, S3, static HTTP/HTTPS and IPFS storage.
+//! Shared OCI cache with server, filesystem, S3 and static HTTP/HTTPS storage.
 //! See docs/src/zh/reference/shared-image-cache.md for storage layout and lifecycle.
 
 mod backend;

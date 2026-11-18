@@ -233,7 +233,7 @@ impl CacheClient {
         Self::from_config(CacheConfig::from_env()?)
     }
     /// Open ordered, read-only roots of one pinned publication. A single root
-    /// may be S3, HTTP(S) or local IPFS; multiple roots must all end in the same
+    /// may be S3 or HTTP(S); multiple roots must all end in the same
     /// publication SHA-256 and contain no credentials. At most eight roots.
     /// Verification happens per object/frame before failover is accepted; this
     /// does not resolve names or change the caller's pinned image handle.

@@ -151,9 +151,11 @@ service. `prepare-image`, `registry` and service start/status/stop/serve
 remain available.
 
 CID import, visibility policy and pin changes leave with the old command.
-Existing IPFS bindings can still use `serve --ipfs`; manage their pins in Kubo.
-Existing catalog records and V2 publications stay in place. Push and pull
-ignore old per-image policy records and create none.
+The daemon no longer accepts `serve --ipfs`. The cache rejects the old
+IPFS scheme and image records with the old `ipfs` field instead of falling
+back to a local pool. Rebuild or re-import those images from S3/HTTP(S).
+The removal does not delete existing catalog, publication or `.ipfs` files.
+Push and pull ignore old per-image policy records and create none.
 
 ## Executable evidence
 
@@ -164,7 +166,7 @@ ignore old per-image policy records and create none.
 | [S-LAZY-003](S-LAZY-003.md) | Equivalent push entry points, idempotence and explicit-target selection | PASS |
 | [S-LAZY-004](S-LAZY-004.md) | Lazy HTTP import, exact data and atomic failure | PASS |
 | [S-LAZY-005](S-LAZY-005.md) | Prepared native/E2B template publication and import | PASS; amd64 prerequisite |
-| [S-LAZY-006](S-LAZY-006.md) | Final direct/forwarded daemon image retirement | PASS |
+| [S-LAZY-006](S-LAZY-006.md) | Direct/forwarded daemon image and IPFS service retirement | PASS |
 | [S-LAZY-007](S-LAZY-007.md) | Legacy shared-pool readers, read-only behavior and corruption refusal | PASS |
 | [S-LAZY-008](S-LAZY-008.md) | Destination/source admission and no implicit S3 push | PASS |
 | [S-LAZY-009](S-LAZY-009.md) | Prepared publication, registry resolution and local queries | PASS |

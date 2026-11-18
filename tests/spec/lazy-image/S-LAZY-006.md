@@ -4,8 +4,8 @@
 
 **Contract**: Direct and forwarded daemon image commands fail with a
 `pvisor image` migration diagnostic before creating state.
-Ordinary daemon help omits image while preserving service management. Template
-preparation and registry configuration are not removed by this feature.
+Daemon help omits image and the IPFS service flag. Template preparation,
+registry configuration and cache serving remain available.
 
 **Prerequisites**: Executable `SUBJECT_BIN`, matching sibling `pvisor-daemon`,
 Python 3 and Bash. No workload or network service is started.
@@ -32,6 +32,13 @@ $ python3 "$TESTDIR/../fixture.py" use S-LAZY-006 --timeout 30 <<'CASE'
 >   assert_absent "$CASE_ROOT/old-target"
 >   "${executable[@]}" --help > daemon-help
 >   ! grep -Eq '^[[:space:]]+image[[:space:]]' daemon-help
+>   "${executable[@]}" serve --help > service-help
+>   grep -F -- '--cache' service-help
+>   ! grep -F -- '--ipfs' service-help
+>   expect_refused "${executable[@]}" serve --cache --ipfs --cache-listen "unix://$CASE_ROOT/cache.sock" > old.stdout 2> old.stderr
+>   test ! -s old.stdout
+>   grep -F -- '--ipfs' old.stderr
+>   assert_absent "$CASE_ROOT/cache.sock"
 >   "${executable[@]}" prepare-image --help
 >   "${executable[@]}" registry --help
 > done

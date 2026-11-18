@@ -71,11 +71,8 @@ impl ResolvedSource {
             super::storage::s3_location(address)?;
             return Ok(Self::S3);
         }
-        if address.starts_with("ipfs+")
-            || address.starts_with("http://")
-            || address.starts_with("https://")
-        {
-            ensure!(read_only, "HTTP/IPFS cache must be read-only");
+        if address.starts_with("http://") || address.starts_with("https://") {
+            ensure!(read_only, "HTTP cache must be read-only");
             super::http::Http::validate(address)?;
             return Ok(Self::Http);
         }
@@ -206,6 +203,7 @@ mod tests {
             "unix://relative",
             "tcp://192.0.2.1:1234",
             "unknown://source",
+            "ipfs+http://127.0.0.1:8080/ipfs/bafyobsolete",
         ] {
             assert!(
                 ResolvedSource::resolve(address, false, Some("token")).is_err(),
