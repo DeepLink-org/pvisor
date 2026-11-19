@@ -40,6 +40,8 @@ mod live_fork;
 mod metadata;
 mod session;
 pub use session::ContainerProfile;
+/// Opt-in host-only native controls for cooperative memory scheduling.
+pub mod managed;
 mod staging;
 mod volumes;
 pub use lifecycle::RestartPolicy;
@@ -313,6 +315,12 @@ pub struct Create {
     /// startup. On macOS pool loss terminates dependent VMs; no reconnect occurs.
     #[serde(default)]
     pub memory_pool: Option<PathBuf>,
+    /// Opt in to host-only native offload/resume and private raw RAM backing.
+    /// Linux x86-64 only; incompatible with memory pools/shared kernel RAM.
+    /// A cooperative owner must gate all guest requests through its scheduler.
+    /// False preserves ordinary launch behavior; this does not enable a timer.
+    #[serde(default)]
+    pub managed_memory: bool,
     /// Optional private shared boot-kernel directory on Apple Silicon macOS.
     /// Equal firmware bytes map one read-only inode with private COW writes.
     /// Canonicalized at creation, retained across start, and excluded from guest
@@ -915,6 +923,7 @@ impl Store {
         pinned: Option<Image>,
     ) -> anyhow::Result<Instance> {
         lifecycle::validate(&config)?;
+        managed::validate_config(&config)?;
         staging::validate_mounts(&mut config)?;
         if let Some(platform) = &config.platform {
             require_native_platform(platform)?;
@@ -2035,6 +2044,17 @@ fn settle_owner_generation(
     result: anyhow::Result<i32>,
     spawned: bool,
 ) -> anyhow::Result<()> {
+    // The native runner exits the process; Rust Drop is not its cleanup receipt.
+    // Reap first, then retire only this generation's host control endpoint.
+    let cleanup = if instance.config.managed_memory {
+        managed::retire(&managed::Target {
+            container_id: instance.id.clone(),
+            generation: instance.generation.clone(),
+        })
+    } else {
+        Ok(())
+    };
+    let result = result.and_then(|code| cleanup.map(|()| code));
     // ChildGuard has reaped the VMM before sealing any Session. A seal failure is
     // an instance failure, not permission to invent an uncommitted Session receipt.
     let result = if spawned {
@@ -2276,6 +2296,33 @@ fn run_vm<Backing>(
         vm.shared_kernel_base(directory.clone())?;
     }
     let directory = store.directory(&instance.id);
+    managed::validate_config(&instance.config)?;
+    let managed_ram = if instance.config.managed_memory {
+        let file = tempfile::tempfile_in(&directory)?;
+        vm.ram_backing(file.try_clone()?)?;
+        Some(file)
+    } else {
+        None
+    };
+    let mut managed_control = managed_ram
+        .as_ref()
+        .map(|file| {
+            managed::Endpoint::bind(
+                managed::Target {
+                    container_id: instance.id.clone(),
+                    generation: instance.generation.clone(),
+                },
+                {
+                    use std::os::fd::AsRawFd;
+                    PathBuf::from(format!(
+                        "/proc/{}/fd/{}",
+                        std::process::id(),
+                        file.as_raw_fd()
+                    ))
+                },
+            )
+        })
+        .transpose()?;
     // HVF cold blocks require a private file backing so discarded ranges can
     // be punched out. Linux's pager instead requires private anonymous RAM.
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
@@ -2485,6 +2532,7 @@ fn run_vm<Backing>(
     vm.vsock_port(control::CONTROL_PORT, endpoint, true)?;
     vm.task_stdio(-1, 1, 2)?;
     let ready = directory.join(format!("boot-{}", instance.generation));
+    let managed_control = &mut managed_control;
     let on_ready = move |handle: pvisor_vm::api::VmmHandle| {
         #[cfg(any(
             all(target_os = "macos", target_arch = "aarch64"),
@@ -2503,8 +2551,13 @@ fn run_vm<Backing>(
             }
             crate::executor::vm::start_diagnostics(&handle)?;
             if let Some(pager) = pager {
-                pager.start(handle)?;
+                pager.start(handle.clone())?;
             }
+        }
+        if let Some(endpoint) = managed_control.as_mut() {
+            endpoint
+                .start(std::sync::Arc::new(handle))
+                .map_err(io::Error::other)?;
         }
         fs::write(ready, b"ready")
     };
@@ -3513,6 +3566,7 @@ mod tests {
             cpus: 1,
             memory_mib: 128,
             memory_pool: None,
+            managed_memory: false,
             shared_kernel_base: None,
             auto_remove: false,
             interactive: false,
@@ -3654,6 +3708,7 @@ mod tests {
         let restored: Create = serde_json::from_value(legacy).unwrap();
         assert!(restored.shared_kernel_base.is_none());
         assert!(restored.memory_pool.is_none());
+        assert!(!restored.managed_memory);
     }
     #[test]
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]

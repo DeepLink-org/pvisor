@@ -11,6 +11,259 @@ expiration and API access for the single-node OpenSandbox and E2B profiles.
 Peer discovery, work stealing, owner routing, workflow scheduling, migration
 and cross-node recovery are not provided.
 
+## Opt-in pressure scheduling for ordinary OCI executions
+
+`pressure-serve` adds a cooperative scheduling endpoint in the daemon. It does
+**not** call `prepare-image`, launch a different runtime, change the OCI catalog,
+or choose another RAM backing. Existing OCI creation remains with the caller;
+the scheduler calls the existing authenticated HostVm offload (`file: null`)
+and resume operations on that same live Execution. Unsupported offload remains
+an explicit failure with retained ownership; it never falls back to templates,
+uncompressed backing or another executor.
+
+This is a separately selected **replay/owner integration API**, not automatic
+management of arbitrary `pvisor run` processes, and not an extension of the
+OpenSandbox/E2B prepared-template backend below. Ordinary OCI startup opts in explicitly with `--managed-memory`; see the
+container binding section below. All tools, health checks and file requests for an
+enrolled VM must pass through the trusted owner's scheduling boundary. Direct
+`exec`, automatic guest-idle control and another control authority must not race
+this owner. The owner must already provision an offload-capable VM using main's
+existing configuration; registration does not retrofit backing into a live VM.
+
+Example frozen configuration (byte counts, one existing delegated cgroup v2
+subtree; hard limits and process placement are still the launcher's job):
+
+```json
+{
+  "memory_bytes": 68719476736,
+  "high_bytes": 61847529062,
+  "low_bytes": 54975581388,
+  "max_writebacks": 16,
+  "cgroup_root": "/sys/fs/cgroup/my-replay.slice"
+}
+```
+
+```sh
+pvisor-daemon pressure-serve --state /run/user/1000/pv-pressure --config pressure.json
+# JSON requests use api::PressureEnvelope; response announces the instance.
+pvisor-daemon pressure-request --socket /run/user/1000/pv-pressure/pressure.sock \
+  --request request.json
+```
+
+The Linux-only service reads cgroup v2, never changes CPU/memory/swap limits,
+and never kills a VM. The same-user socket is private, mutations pin the fresh
+daemon instance, and the state directory is exclusively locked. An operator must
+assign one scheduling authority to each managed subtree. VM cgroups must be
+nonoverlapping canonical descendants, with hard memory limits no larger than
+their reservation and swap disabled. Limits, directory identity and parent/child
+accounting are rechecked; a missing/inconsistent sample suspends grants.
+
+The owner's request sequence is:
+
+1. `status` to pin `instance`; `reserve` a new UUID with a full memory allowance
+   including VMM/helpers. Poll until `admitted` with `error: null`, **then** use
+   the normal OCI startup path. Reservation queue time does not consume tool time.
+2. `bind` the normal HostVm socket, exact Session/Execution identity and private
+   cgroup. `binding` retains the reservation while the identity probe runs outside
+   the node lock. A failed probe retains the binding for independent cleanup.
+3. At a genuine model-wait boundary, after all tool/background work has stopped,
+   send `wait` (initial token null). Memory below the high watermark and no
+   blocked admission/recovery means **no offload**, however long the model wait.
+4. When a tool request arrives, keep it in the replay owner and send `acquire`
+   with a fresh UUID token. Poll for `ready` for that token in the same healthy
+   instance. Do not start the tool's execution timeout while queued or restoring.
+   `ready` confirms native resume, not application-service health: probe the
+   existing service before dispatch where that API requires it. A failed probe
+   must trigger owner cleanup, not a false successful tool result.
+5. Once the tool and all descendants have completed/been cleaned, `wait` with
+   its exact permit token returns to model wait. A lost response is reconciled
+   through status; never replay a tool simply because its permit reply was lost.
+6. After the original owner has reaped the VM/helpers and audited mounts, call
+   `release`. Bound resources additionally require the original cgroup identity,
+   recursive `populated 0`, empty `cgroup.procs` and empty `cgroup.threads`.
+   An unbound creation reservation may be released only after its trusted owner
+   has fenced/cancelled startup. The scheduler never infers exit from a timeout.
+
+Request schemas and ownership rules are in `api`. Queue timeouts and
+tool cleanup remain explicit owner decisions; this service neither retries a
+tool nor discards an expired queued request. On a disconnect the request stays
+owned, writeback continues, and no slot is released by dropping the client.
+
+The policy counts measured parent charge exactly once, including shared-pool,
+page-cache and offloaded-VM charges. A VM reclaim estimate is **not** an
+additional physical-memory credit. With the default `resident_memory_accounting:
+"reserved"` (also used when omitted) and omitted or null
+`waiting_memory_margin_bytes`, resident VMs retain their full reservation.
+
+### Measured resident accounting
+
+Set `resident_memory_accounting` to `"measured"` in the frozen pressure config
+to admit against actual node usage plus temporary startup/restore allowances.
+Leave `waiting_memory_margin_bytes` omitted or null; combining a wait margin
+with this mode is rejected. The mode is fixed at scheduler startup:
+
+- Admitted/Binding retain the full startup top-up. Only successful native
+  identity/readiness binding releases it; a low sample during boot is not enough.
+- Active/Ready/Waiting/Queued/Offloading/Offloaded/RestoreQueued count through
+  the measured parent charge, without a separate full resident reservation.
+  Resident Acquire needs no second full VM allowance and sends no native Resume.
+  It may pass a still-Offloading FIFO head when the measured budget, all existing
+  commitments and that head's full recovery top-up fit. Resident requests keep
+  their relative order; native restores remain FIFO. Restoring and uncertain
+  controls still fence subsequent queued requests.
+- Restoring reserves its full allowance until native acknowledgement; Failed
+  controls retain that allowance and stop grants until proven owner cleanup.
+- New creation waits behind pending requests and writebacks, respects the
+  high/low pressure latch, and preserves capacity for one offloaded VM to wake.
+  Simultaneous startups cannot spend the same headroom twice.
+
+For example, sixteen bound VMs configured for 5 GiB each can all obtain resident
+tool permits when their combined measured node usage is 5 GiB under a 40 GiB
+budget. They do not retain sixteen 5 GiB reservations. The scheduler uses the observed parent charge directly.
+High measured usage or an actual admission/restore shortage triggers bounded
+offload of safe waiters, never Active/Ready guests. An offload estimate is not
+proof of reclaimed capacity: admission still requires a fresh measurement.
+When pressure is not latched and successful completion of in-flight startup
+bindings alone would remove a commitment deficit, wait for those bindings
+instead of offloading bound peers. Startup reservations still count for every
+grant; only successful Bind releases them. Real pressure or a deficit that
+remains after startup still permits reclaim. A stuck startup must be handled by
+the owner's existing timeout and audited teardown, not by dropping its reservation.
+
+Before offloading a measured-mode waiter solely to fund new creation, check
+that the new VM's full allowance and the largest full recovery allowance
+(including the prospective victim and already offloading/offloaded VMs) can
+coexist within the budget. For example, unloading a 5.25 GiB VM cannot fund
+another 5.25 GiB startup under an 8 GiB budget while preserving recovery space.
+Such peers remain resident and can continue existing work; admission waits for
+fresh capacity or the owner's timeout. Smaller feasible victims can still be
+selected. Real high-watermark reclaim and FIFO restore-driven reclaim remain
+independent of this admission check. It is a necessary feasibility bound only:
+residual/cache charges can still prevent progress, and every grant retains the
+full allowance and requires fresh measured accounting. Reserved mode is unchanged.
+
+This is explicit memory overcommit. It does **not** guarantee simultaneous
+full-guest allocation or prevent every OOM: current tools and background growth
+cannot be reclaimed until the owner establishes safe Wait. Keep an external hard
+limit, fresh cgroup measurements, workload-growth headroom and independent exit
+audits. Recovery priority/headroom prevents new admissions from spending the
+last recovery allowance at the current sample; it cannot guarantee progress
+under unbounded growth. The same mode is supported with `max_writebacks: 0` for controls.
+
+### Bounded recovery reclaim (experimental)
+
+Set `recovery_reclaim: true` with measured resident accounting to attempt
+cgroup-local reclaim when the FIFO native-restore head cannot fit its full
+allowance and no safe waiter, startup or native control remains in flight.
+The default is false.
+It does not change reservations, queue order, hard limits or the high watermark.
+
+Each existing recovery permit may issue at most three `memory.reclaim` requests,
+at least one second apart, within a ten-second retry window. Each request is
+its current deficit plus 16 MiB, capped at 256 MiB. Only one write may be in flight
+per scheduler. The retry window does **not** cancel a kernel write or bound its
+wall time: a slow write retains its slot until completion. Reclaim runs outside
+the node mutex and async executor so status and owner teardown remain available.
+Actual reclaimed bytes may be larger or smaller than the request; this is a
+request budget, not a physical-memory cap or a promise of progress.
+
+The service pins and validates its original cgroup directory and writes
+`memory.reclaim` with `swappiness=0`; it never uses global `drop_caches`, changes
+limits or retries without that swap restriction. Kernels lacking the interface
+or parameter and insufficient delegation produce a bounded diagnostic error.
+Even a successful write grants nothing: the next ordinary accounting sample
+must satisfy the full reservation. EAGAIN can indicate partial reclamation,
+so errors also receive normal fresh accounting, never estimated savings credit.
+See the [kernel contract](https://docs.kernel.org/6.14/admin-guide/cgroup-v2.html#memory-interface-files).
+
+Status includes `recovery_blocked` (FIFO head, token, measured deficit and
+reclaim eligibility) and `recovery_reclaim` (latest permit, attempt count,
+requested bytes, in-flight state and last error). A blocked diagnostic is only
+valid when snapshot `error` is null. Attempt intent is persisted before the
+write, and an undrained restart still fails closed. Once the retry budget is
+exhausted, the owner must time out and safely terminate the failed batch;
+unreclaimable memory does not authorize a restore or dropping reservations.
+Owner cleanup must not wait a second full recovery timeout after such failure.
+
+Regression tests cover a stalled FIFO head with a fitting follower, fresh-sample
+recovery, retained in-flight restore allowance, disabled/invalid configuration,
+retry spacing/exhaustion, slow-write single-flight, and ordinary-file refusal.
+These tests do not establish real high-density VM performance.
+
+### Reserved resident accounting
+
+To opt into state-dependent reservations, set `waiting_memory_margin_bytes` to a
+positive byte allowance no larger than the node budget in the frozen startup
+configuration. For example, `268435456` reserves up to 256 MiB above each waiting
+VM's measured charge; this is an illustrative margin, not a validated production
+setting. No running scheduler can change modes. The accounting becomes:
+
+- Admitted/Binding/Active/Ready/Restoring/Failed: actual charge plus a top-up to
+  the full startup/execution allowance. Uncertain effects retain ownership.
+- Waiting/Queued/Offloading: actual charge plus the configured margin, capped at
+  the full allowance. Offloading keeps this margin until acknowledgement.
+- Offloaded/RestoreQueued: actual charge remains in the parent measurement.
+
+`wait` is an explicit trusted-owner assertion that tool/background work is
+finished and fenced; lower memory usage or elapsed model-wait time alone never
+releases execution capacity. It is not a guest freeze and the daemon does not
+independently inspect guest processes. Idle kernel/helper/cache growth can still
+occur, so margins, fresh measurements and an external parent hard limit remain
+necessary. Do not use this mode for ungated guest requests or background jobs.
+
+Every `acquire`, including a **resident** wake-up, must reacquire the full
+execution allowance before Ready. Requests remain FIFO and take priority over
+creation. Native resume additionally requires its acknowledgement. Multiple
+resident grants in one plan each consume capacity, protecting against concurrent
+COW/allocation bursts within each VM's full allowance. This increases potential
+waiting-VM density, not the number of fully reserved simultaneous tool executions.
+The same optional accounting works with offload disabled (`max_writebacks: 0`).
+
+Before new admission, retain the largest extra allowance needed to wake one
+quiescent VM (resident or offloaded); do not charge that headroom again on Acquire.
+This prevents admission from spending the last wake-up capacity at the current
+sample. It cannot guarantee progress under unbounded external/idle memory growth.
+Resident requests lacking capacity stay queued without necessarily being
+unloaded. If pressure or a blocked request/admission actually requires reclaim,
+safe Waiting/Queued followers may be selected; never Active/Ready VMs or the
+blocked resident FIFO head itself. Reclaiming that head cannot fund its own full
+execution allowance.
+
+Victim selection tracks physical and commitment deficits separately: current
+charge estimates physical relief, and charge plus the **state-specific** top-up
+estimates commitment relief. New and in-flight writes use the same estimates.
+Selection stops when both deficits are covered or no slot remains; estimates
+never grant memory before acknowledgement and fresh accounting. At most 16
+writebacks may run; 16 is a ceiling, not a target. High/low watermarks provide
+hysteresis.
+
+Control failures stop further grants/reclamation, retain reservations, and retain
+uncertain writeback slots until proven cleanup. State/transition intent is saved
+before grants and native effects. Storage uncertainty fails closed. This initial
+endpoint deliberately refuses restart with an undrained ledger: it does not adopt
+live VMs or reconstruct lost permits. Keep `pressure.json`, audit and clean the
+original resources; never delete the ledger and start another scheduler over
+them. Stop the manager only after draining. Neither API restart recovery nor
+automatic registration by the ordinary CLI is implemented here.
+
+Regression coverage includes pressure/no-pressure decisions, writeback ceiling,
+pending relief, restore reservation/FIFO and resident-follower reclamation,
+uncertain controls, stale request tokens, measurement and storage failures,
+durable admission, cgroup release checks, and same-user IPC/Execution identity.
+State-dependent tests also cover low-charge admission without offload, simultaneous
+resident wake-ups, FIFO handoff after Wait, wake headroom, COW growth reservations,
+and acknowledgement/measurement/failure fences.
+Measured-mode regressions additionally cover release at successful Bind rather
+than Wait, sixteen resident grants under a 40 GiB budget, concurrent startup
+reservations, actual-pressure reclamation, recovery acknowledgement/FIFO,
+parent-cache accounting, wake headroom and missing-sample/control failures.
+They also cover startup-only reclaim deferral, resident bypass of an Offloading
+head with retained recovery space, unchanged native restore order and strict
+Reserved-mode FIFO. This does not promise freedom from allocation-growth
+pressure or starvation under arbitrary workloads.
+These are policy and transport fixtures, not KVM density/performance evidence.
+An ordinary-OCI real-VM acceptance test is required before replaying a batch.
+
 ## Same-user discovery and on-demand startup
 
 The installed `pvisor` dispatches `pvisor daemon` to the trusted
@@ -1341,3 +1594,44 @@ directory, sets mode 0600, then atomically renames it to `control.sock`.
 Starters observe absence until publication; the published inode is already
 private. Startup locking still serializes starters, and unsafe existing
 endpoints remain fatal. Unpublished sockets are removed on setup failure.
+### Ordinary Docker-style OCI opt-in
+
+The pressure binding target accepts either the existing Session/Execution identity
+or `{ "container_id": "<64 hex>", "generation": "<32 hex>" }` for an ordinary
+`pvisor run --managed-memory IMAGE ...` launch. The latter uses its dedicated
+host-only socket at `/tmp/pvisor-host-<UID>/docker-<generation>.sock` (canonical
+`/tmp` on macOS); it never forges a Session identity. Socket inode, same UID and
+launch generation are checked, with the same uncertain-effect reservation rules.
+Linux container opt-in provisions raw file backing, not compressed backing or a
+template. Reserve before starting the ordinary CLI, bind after normal startup,
+and gate every tool through Wait/Acquire. After Ready, the replay owner still
+checks guest-channel readiness before starting the tool deadline. No permission
+is granted by a missing endpoint or an incompatible RAM-pool configuration.
+
+
+### Replay-owner checks and contained failures
+
+Process inspection is an owner operation, not a scheduler control timeout.
+Use one monotonic deadline across listing guest `/proc`, reading process
+identities and bounded retries for processes that disappear during inspection.
+The replay integration exercised a 30-second total window and recorded elapsed
+time above the former 3- and 9-second thresholds. Do not reset the window for
+each PID or treat an incomplete scan as proof that the guest is quiescent.
+This budget does not change the tool execution timeout or daemon control limits.
+
+A guest request timeout does not prove the request had no effect. Do not blindly
+retry a mutating tool request or return the VM to safe wait. An owner may contain
+a guest-local fault while keeping peer trajectories running only after proving
+that the affected VM cannot execute more work. In the Active/Ready states, fence
+further requests, terminate that VM, independently verify process/thread exit,
+retire its identity-pinned control socket and audit mounts. Retain the empty
+bound cgroup until `release` acknowledges the returned reservation; only then
+remove its unit/cgroup. Removing the cgroup first makes node accounting uncertain.
+An in-flight control transition, failed cleanup, lost scheduler or inconsistent
+accounting still requires a node-wide safety stop, with reservations retained.
+The daemon does not perform this owner-side isolation automatically.
+
+Report batch termination separately from success: failed, cancelled and unexecuted
+steps are not completed steps. A safely contained infrastructure failure is not
+a model-generated terminal reward. Tool-timeout continuation still requires
+confirmed descendant cleanup and a responsive environment.

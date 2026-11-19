@@ -213,6 +213,7 @@ fn public_behavior_has_one_canonical_surface() {
             vec!["new", "with_memory_pool", "run_supervisor"],
         ),
         ("MemoryPoolService", vec!["ensure_service", "run"]),
+        ("PressureService", vec!["serve", "exchange"]),
     ])
     .into_iter()
     .map(|(name, methods)| {
