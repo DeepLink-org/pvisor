@@ -1,0 +1,152 @@
+{
+  "uksm": {
+    "elapsed_s": 3590.1133339107037,
+    "sample_duration_s": 3590.111577034,
+    "cpu_core_s": 53619.853626,
+    "cpu_mean_cores": 14.935428182513055,
+    "memory_mean_gib": 34.33921526464104,
+    "memory_peak_gib": 45.856651306152344,
+    "memory_integral_gib_s": 123281.61426785045,
+    "peak_components_gib": {
+      "anon": 28.03695297241211,
+      "file": 14.205078125,
+      "kernel": 3.5478172302246094
+    },
+    "read_gib": 1.4548225402832031,
+    "write_gib": 8.158428192138672,
+    "peak_vms": 77,
+    "metrics": {
+      "queue": {
+        "mean": 14.5428004577875,
+        "max": 50.832961388
+      },
+      "init": {
+        "mean": 58.217209060175,
+        "max": 93.015193425
+      },
+      "span": {
+        "mean": 1869.2367806235875,
+        "max": 2544.363106405
+      },
+      "wait_extra": {
+        "mean": 249.1075338600483,
+        "max": 572.7159717037011
+      },
+      "tool_wall": {
+        "mean": 98.8327113309125,
+        "max": 219.802367264
+      },
+      "stop": {
+        "mean": 9.0140829533375,
+        "max": 15.514712533
+      }
+    },
+    "completed": {
+      "trajectories": 80,
+      "commands": 3007,
+      "timeouts": 31,
+      "finished_unix_ns": 1794474680082211282
+    },
+    "audit_safe": true
+  },
+  "agentenv": {
+    "elapsed_s": 2965.219342317432,
+    "sample_duration_s": 2965.217679465,
+    "cpu_core_s": 4742.410359,
+    "cpu_mean_cores": 1.5993464465838645,
+    "memory_mean_gib": 41.10094644493336,
+    "memory_peak_gib": 47.99990463256836,
+    "memory_integral_gib_s": 121873.25304126054,
+    "peak_components_gib": {
+      "anon": 6.179569244384766,
+      "file": 40.946598052978516,
+      "kernel": 0.8578224182128906
+    },
+    "read_gib": 5.298694610595703,
+    "write_gib": 5.168022155761719,
+    "peak_vms": 70,
+    "metrics": {
+      "queue": {
+        "mean": 11.002148990525,
+        "max": 26.278098877
+      },
+      "init": {
+        "mean": 0.7734998735375,
+        "max": 1.815750745
+      },
+      "span": {
+        "mean": 1458.6508470878625,
+        "max": 1758.953407867
+      },
+      "wait_extra": {
+        "mean": 1.5973786882358112,
+        "max": 3.664279203352862
+      },
+      "tool_wall": {
+        "mean": 26.1090893780375,
+        "max": 74.64455904
+      },
+      "stop": {
+        "mean": 0.1678709386875,
+        "max": 0.291306524
+      }
+    },
+    "completed": {
+      "trajectories": 80,
+      "commands": 3007,
+      "timeouts": 6,
+      "finished_unix_ns": 1794484210096635943
+    },
+    "audit_safe": true
+  },
+  "fixed": {
+    "elapsed_s": 3054.881434366107,
+    "sample_duration_s": 3054.878733841,
+    "cpu_core_s": 49655.365394,
+    "cpu_mean_cores": 16.25444730225565,
+    "memory_mean_gib": 29.57144175264912,
+    "memory_peak_gib": 45.829402923583984,
+    "memory_integral_gib_s": 90337.16853918563,
+    "peak_components_gib": {
+      "anon": 28.831573486328125,
+      "file": 13.202312469482422,
+      "kernel": 3.722179412841797
+    },
+    "read_gib": 0.4137687683105469,
+    "write_gib": 8.537036895751953,
+    "peak_vms": 74,
+    "metrics": {
+      "queue": {
+        "mean": 8.007162383425,
+        "max": 16.102050821
+      },
+      "init": {
+        "mean": 30.583714376975,
+        "max": 41.339881942
+      },
+      "span": {
+        "mean": 1533.206099081225,
+        "max": 1833.820518701
+      },
+      "wait_extra": {
+        "mean": 1.0157721098358194,
+        "max": 2.543409095352672
+      },
+      "tool_wall": {
+        "mean": 97.9595353063,
+        "max": 217.654739609
+      },
+      "stop": {
+        "mean": 7.0420319293375,
+        "max": 11.809901847
+      }
+    },
+    "completed": {
+      "trajectories": 80,
+      "commands": 3007,
+      "timeouts": 30,
+      "finished_unix_ns": 1794500215352597131
+    },
+    "audit_safe": true
+  }
+}
