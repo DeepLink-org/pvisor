@@ -2852,6 +2852,7 @@ dependencies = [
  "fs2",
  "futures-util",
  "libc",
+ "proptest",
  "pvisor",
  "pvisor-core",
  "pvisor-guest",

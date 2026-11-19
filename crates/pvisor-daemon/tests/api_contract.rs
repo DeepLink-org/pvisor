@@ -617,3 +617,30 @@ async fn reopen_preserves_durable_owner_live_identity_and_reservation() {
         StatusCode::NO_CONTENT
     );
 }
+
+proptest::proptest! {
+    #[test]
+    fn pressure_admission_wire_preserves_owner_identity(
+        id in "[a-z0-9]{1,32}", bytes in 1u64..u64::MAX,
+    ) {
+        use pvisor_daemon::api::{PressureEnvelope, PressureRequest};
+        let envelope = PressureEnvelope {
+            instance: Some("pinned-instance".into()),
+            request: PressureRequest::Reserve { id: id.clone(), memory_bytes: bytes },
+        };
+        let wire = serde_json::to_value(&envelope).unwrap();
+        proptest::prop_assert_eq!(&wire["request"]["operation"], "reserve");
+        let decoded: PressureEnvelope = serde_json::from_value(wire.clone()).unwrap();
+        proptest::prop_assert_eq!(decoded.instance.as_deref(), Some("pinned-instance"));
+        match decoded.request {
+            PressureRequest::Reserve { id: actual, memory_bytes } => {
+                proptest::prop_assert_eq!(actual, id);
+                proptest::prop_assert_eq!(memory_bytes, bytes);
+            }
+            _ => proptest::prop_assert!(false, "request variant changed"),
+        }
+        let mut unknown = wire;
+        unknown["request"]["unrecognized"] = serde_json::json!(true);
+        proptest::prop_assert!(serde_json::from_value::<PressureEnvelope>(unknown).is_err());
+    }
+}
