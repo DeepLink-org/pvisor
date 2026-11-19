@@ -11,6 +11,10 @@ mod cgroup;
 #[cfg(target_os = "linux")]
 mod child;
 #[cfg(any(target_os = "linux", test))]
+// Consumed by the VM feature path; kept compiled for tests without it.
+#[cfg_attr(not(feature = "vm"), allow(dead_code))]
+mod config;
+#[cfg(any(target_os = "linux", test))]
 mod device_policy;
 mod entry;
 #[cfg(target_os = "linux")]

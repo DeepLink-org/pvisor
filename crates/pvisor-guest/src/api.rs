@@ -361,6 +361,11 @@ pub enum Request {
     },
     /// Return guest launch binding and actual guest memory/CPU observations.
     Info {},
+    /// Report guest TCP listeners reachable through `Connect`: unique ports
+    /// bound to wildcard or loopback addresses (other local addresses cannot
+    /// be dialed through the 127.0.0.1 relay). Reply is `Value` carrying a
+    /// sorted port array. Observation only; no guest state changes.
+    Listeners {},
     /// Cooperatively inspect or trim a registered child's allocator.
     /// Requires ProcessConfig::allocator_reclaim at launch. Only host-CID peers
     /// may request this operation; no executable payload or address is accepted.

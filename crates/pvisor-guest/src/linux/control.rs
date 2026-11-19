@@ -21,6 +21,12 @@ use std::{
 
 type Input = Arc<Mutex<Option<Box<dyn Write + Send>>>>;
 
+/// Concurrent control connections admitted by the vsock adapter. Host-side
+/// port exposure forwards service traffic over `Connect` on this listener
+/// alongside exec and observation requests; the cap bounds PID-1 threads
+/// while leaving exec headroom under service load.
+const MAX_CONNECTIONS: usize = 256;
+
 pub(super) fn listener() -> io::Result<OwnedFd> {
     let fd = unsafe { libc::socket(libc::AF_VSOCK, libc::SOCK_STREAM | libc::SOCK_CLOEXEC, 0) };
     check(fd)?;
@@ -105,6 +111,12 @@ fn serve(
             &mut stream,
             &Reply::Value {
                 value: super::files::info(config)?,
+            },
+        ),
+        Request::Listeners {} => GuestFrameWrite::write_frame(
+            &mut stream,
+            &Reply::Value {
+                value: super::files::listeners()?,
             },
         ),
         Request::File { request } => super::files::serve(&mut stream, request),
@@ -356,7 +368,7 @@ pub(super) fn start(
             {
                 continue;
             }
-            if active.fetch_add(1, Ordering::AcqRel) >= 32 {
+            if active.fetch_add(1, Ordering::AcqRel) >= MAX_CONNECTIONS {
                 active.fetch_sub(1, Ordering::AcqRel);
                 continue;
             }
@@ -1471,6 +1483,42 @@ mod tests {
         }
         assert_eq!(actual, expected);
         application.join().unwrap();
+        handler.join().unwrap().unwrap();
+    }
+
+    #[test]
+    fn listeners_report_ports_reachable_through_the_connect_relay() {
+        let loopback = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let wildcard = std::net::TcpListener::bind("0.0.0.0:0").unwrap();
+        let loopback_port = loopback.local_addr().unwrap().port();
+        let wildcard_port = wildcard.local_addr().unwrap().port();
+        let (mut client, server) = UnixStream::pair().unwrap();
+        let handler = std::thread::spawn(move || {
+            serve(
+                server,
+                &GuestConfig::default(),
+                &Processes::default(),
+                0,
+                &Arc::new(Mutex::new(None)),
+            )
+        });
+        GuestFrameWrite::write_frame(&mut client, &Request::Listeners {}).unwrap();
+        let Reply::Value { value } = GuestFrameRead::read_frame::<Reply>(&mut client).unwrap()
+        else {
+            panic!("Listeners must reply with Value");
+        };
+        let ports: Vec<u16> = serde_json::from_value(value).unwrap();
+        // The table is the test process's own network namespace, so other
+        // listeners may appear; ours must be present, sorted and deduplicated.
+        assert!(
+            ports.contains(&loopback_port),
+            "missing {loopback_port} in {ports:?}"
+        );
+        assert!(
+            ports.contains(&wildcard_port),
+            "missing {wildcard_port} in {ports:?}"
+        );
+        assert!(ports.windows(2).all(|pair| pair[0] < pair[1]));
         handler.join().unwrap().unwrap();
     }
 
