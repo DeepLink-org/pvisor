@@ -2116,3 +2116,9 @@ For a same-host live fork, the VM owner captures branch state on Linux x86-64.
 The caller retains the RAM backing, binds each child's filesystem and guest
 control listener, and starts each child through the live-fork restore path.
 The caller must keep the immutable filesystem projection available to each child.
+
+`machine_restore_with_branch_offload` configures a Linux x86-64 restored
+VM with an exclusive sparse delta. Under the CPU and device barrier, offload
+classifies private pages, saves them before replacing the mappings, synchronizes
+previously mapped delta pages and drops resident mappings. The shared snapshot
+remains read-only. On transition failure the runner must terminate.

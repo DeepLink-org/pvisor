@@ -2082,6 +2082,7 @@ fn settle_owner_generation(
     let _ = fs::remove_file(socket(instance)?);
     if instance.config.branchable {
         let _ = fs::remove_file(socket(instance)?.with_extension("fork"));
+        let _ = fs::remove_file(socket(instance)?.with_extension("ram"));
     }
     if instance.config.auto_remove {
         store.remove_instance_files(instance, true)?;
@@ -2364,12 +2365,23 @@ fn run_vm<Backing>(
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     let mut source_endpoint = None;
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    let mut memory_endpoint = None;
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     let is_restored = if instance.config.branchable {
         live_fork::validate(&instance.config)?;
         vm.snapshot_profile()?;
         lower_mutability[0] = pvisor_overlay_core::LayerMutability::Immutable;
         if let Some(saved) = live_fork::load(&directory)? {
-            vm.machine_restore(saved.restore(&directory, &endpoint)?)?;
+            let restore = saved.restore(&directory, &endpoint)?;
+            if directory.join("offload-enabled").try_exists()? {
+                let delta = tempfile::tempfile_in(&directory)?;
+                vm.machine_restore_with_branch_offload(restore, delta)?;
+                memory_endpoint = Some(std::os::unix::net::UnixListener::bind(
+                    endpoint.with_extension("ram"),
+                )?);
+            } else {
+                vm.machine_restore(restore)?;
+            }
             true
         } else {
             let mut image_root = image_root;
@@ -2547,6 +2559,9 @@ fn run_vm<Backing>(
                 }
                 if is_restored {
                     handle.resume().map_err(io::Error::other)?;
+                    if let Some(listener) = memory_endpoint.take() {
+                        live_fork::serve_memory(listener, handle.clone())?;
+                    }
                 }
             }
             crate::executor::vm::start_diagnostics(&handle)?;
@@ -4236,6 +4251,19 @@ mod tests {
 
 #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
 impl Store {
+    /// Private branch offload requires Linux x86-64 and KVM.
+    pub fn set_branch_offloaded(&self, _: &str, _: bool) -> anyhow::Result<()> {
+        bail!("branch offload requires Linux x86-64")
+    }
+    /// Same-host fork with private delta backing requires Linux x86-64 and KVM.
+    pub fn fork_running_with_offload(
+        &self,
+        _: &str,
+        _: &[String],
+        _: bool,
+    ) -> anyhow::Result<Vec<Instance>> {
+        bail!("live OCI fork requires Linux x86-64")
+    }
     /// Same-host live VM fork requires Linux x86-64 and KVM.
     pub fn fork_running(&self, _: &str, _: &[String]) -> anyhow::Result<Vec<Instance>> {
         bail!("live OCI fork requires Linux x86-64")

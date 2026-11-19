@@ -483,6 +483,24 @@ impl VmConfiguration for VmBuilder {
             Err(unsupported("machine restore"))
         }
     }
+    fn machine_restore_with_branch_offload(
+        &mut self,
+        restore: MachineRestore,
+        delta: File,
+    ) -> io::Result<()> {
+        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+        {
+            crate::vmm::branch_ram::validate_delta(&delta, &restore.ram_file)?;
+            self.machine_restore(restore)?;
+            self.inner.set_branch_delta(delta);
+            Ok(())
+        }
+        #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+        {
+            let _ = (restore, delta);
+            Err(unsupported("branch RAM offload"))
+        }
+    }
 }
 
 impl VmRuntime for VmBuilder {

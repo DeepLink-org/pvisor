@@ -996,7 +996,22 @@ pub fn build_microvm_for_arch<A: crate::backend::Architecture>(
     let compact_restore_ram = vm_resources.machine_restore.as_ref().is_some_and(|restore| !restore.ram_extents.is_empty());
     #[cfg(not(any(all(target_os = "macos", target_arch = "aarch64"), all(target_os = "linux", target_arch = "x86_64"))))]
     let compact_restore_ram = false;
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    let branch_ram = vm_resources
+        .branch_delta
+        .as_ref()
+        .map(|delta| {
+            let restore = vm_resources
+                .machine_restore
+                .as_ref()
+                .ok_or("missing branch restore state")?;
+            super::branch_ram::BranchRam::new(&guest_memory, restore, delta.clone())
+        })
+        .transpose()
+        .map_err(|e| StartMicrovmError::Internal(Error::VcpuControl(e)))?;
     let mut vmm = Vmm {
+        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+        branch_ram,
         compact_restore_ram,
         device_memory_gate,
         guest_memory,

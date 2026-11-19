@@ -1006,6 +1006,9 @@ pub(crate) fn start<S: ColdRamStore + 'static>(
         let locked = vmm
             .lock()
             .map_err(|_| io::Error::other("VMM lock poisoned"))?;
+        if locked.has_branch_ram() {
+            return Err(io::Error::other("cold pager cannot replace branch delta mappings"));
+        }
         if locked.has_compact_restore_ram() || locked.is_paused()
             || locked.device_memory_gate().has_prepare()
             || locked.device_memory_gate().has_dedup_advice()
