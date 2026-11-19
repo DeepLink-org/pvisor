@@ -40,5 +40,11 @@ if not selected:
 (logs / "selected.txt").write_text("\n".join(selected) + "\n")
 (logs / "filter.txt").write_text("^(" + "|".join(selected) + ")$")
 PY
+  # Populate the shard's immutable image data once; each test gets a private catalog.
+  fixture=$(mktemp -d)
+  trap 'rm -rf "$fixture"' EXIT
+  export PVISOR_TEST_SEED_HOME="$fixture/seed"
+  export PVISOR_IMAGE_STORE="$fixture/images"
+  PVISOR_DOCKER_HOME="$PVISOR_TEST_SEED_HOME" "$PVISOR_BINARY" pull "${PVISOR_TEST_IMAGE:-docker.io/library/alpine:3.20}"
   go test -json -count=1 -timeout=20m -run "$(cat "$CONTRACT_LOGS/filter.txt")" tests/spec/docker-cli/regression/e2e/*.go 2>&1 | tee "$CONTRACT_LOGS/go.jsonl"
 fi
