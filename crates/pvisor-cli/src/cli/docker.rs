@@ -17,6 +17,7 @@ mod compose;
 mod network;
 mod progress;
 mod query;
+mod transfer;
 mod volume_cli;
 
 impl DockerCommand {
@@ -60,23 +61,10 @@ pub(super) enum DockerCommand {
     Network(network::NetworkArgs),
     /// Manage persistent local volumes.
     Volume(volume_cli::VolumeArgs),
-    /// Download an image from an OCI registry.
-    Pull {
-        /// Select an image platform; downloading does not enable CPU emulation.
-        #[arg(long, value_parser = ["linux/amd64", "linux/arm64", "linux/arm64/v8"])]
-        platform: Option<String>,
-        /// Registry username for authenticated pulls.
-        #[arg(long)]
-        username: Option<String>,
-        /// Registry password; prefer --password-stdin to keep it out of the
-        /// process list.
-        #[arg(long, requires = "username")]
-        password: Option<String>,
-        /// Read the registry password from stdin; requires --username.
-        #[arg(long, requires = "username", conflicts_with = "password")]
-        password_stdin: bool,
-        image: String,
-    },
+    /// Download an OCI image or import a pinned lazy publication.
+    Pull(transfer::Pull),
+    /// Publish a local image to an explicit S3 or file destination.
+    Push(transfer::Push),
     /// List locally pulled images.
     Images(ListImages),
     /// Remove one or more local image references.
@@ -107,6 +95,12 @@ pub(super) enum DockerCommand {
 
 #[derive(Debug, Subcommand)]
 pub(super) enum ContainerCommand {
+    /// Fork an idle running VM, sharing one immutable RAM image.
+    Branch {
+        source: String,
+        #[arg(long, required=true, num_args=1..)]
+        names: Vec<String>,
+    },
     #[command(disable_help_flag = true)]
     Run(Box<Run>),
     Exec(Exec),
@@ -127,17 +121,10 @@ pub(super) enum ContainerCommand {
 #[derive(Debug, Subcommand)]
 pub(super) enum ImageCommand {
     Build(Box<build::Build>),
-    Pull {
-        #[arg(long, value_parser = ["linux/amd64", "linux/arm64", "linux/arm64/v8"])]
-        platform: Option<String>,
-        #[arg(long)]
-        username: Option<String>,
-        #[arg(long, requires = "username")]
-        password: Option<String>,
-        #[arg(long, requires = "username", conflicts_with = "password")]
-        password_stdin: bool,
-        image: String,
-    },
+    /// Download an OCI image or import a pinned lazy publication.
+    Pull(transfer::Pull),
+    /// Publish a local image to an explicit S3 or file destination.
+    Push(transfer::Push),
     #[command(alias = "list")]
     Ls(ListImages),
     #[command(alias = "remove")]
@@ -149,6 +136,7 @@ impl DockerCommand {
     fn ungroup(self) -> Self {
         match self {
             Self::Container { command } => match command {
+                command @ ContainerCommand::Branch { .. } => Self::Container { command },
                 ContainerCommand::Run(args) => Self::Run(args),
                 ContainerCommand::Exec(args) => Self::Exec(args),
                 ContainerCommand::Ls(args) => Self::Ps(args),
@@ -166,19 +154,8 @@ impl DockerCommand {
             },
             Self::Image { command } => match command {
                 ImageCommand::Build(args) => Self::Build(*args),
-                ImageCommand::Pull {
-                    platform,
-                    username,
-                    password,
-                    password_stdin,
-                    image,
-                } => Self::Pull {
-                    platform,
-                    username,
-                    password,
-                    password_stdin,
-                    image,
-                },
+                ImageCommand::Pull(args) => Self::Pull(args),
+                ImageCommand::Push(args) => Self::Push(args),
                 ImageCommand::Ls(args) => Self::Images(args),
                 ImageCommand::Rm(args) => Self::Rmi(args),
                 ImageCommand::Inspect(args) => Self::Image {
@@ -231,6 +208,9 @@ pub(super) struct Run {
     /// Experimental shared pool: auto finds/starts the same-user daemon; a socket requires an existing pool.
     #[arg(long, value_name = "auto|SOCKET")]
     memory_pool: Option<PathBuf>,
+    /// Enable cooperative daemon memory controls (Linux); does not enable automatic offload.
+    #[arg(long, conflicts_with_all = ["memory_pool", "shared_memory_pool", "shared_kernel_base", "branchable"])]
+    managed_memory: bool,
     /// Use the same-user shared memory pool, starting its daemon if needed (--memory-pool auto).
     #[arg(short = 'M', conflicts_with = "memory_pool")]
     shared_memory_pool: bool,
@@ -258,6 +238,9 @@ pub(super) struct Run {
     /// Disable the image's default health check.
     #[arg(long)]
     no_healthcheck: bool,
+    /// Permit a detached guest to fork into independent children.
+    #[arg(long)]
+    branchable: bool,
     /// Image followed by the optional command and its literal arguments.
     #[arg(required = true, num_args = 1.., trailing_var_arg = true, value_names = ["IMAGE", "COMMAND"])]
     invocation: Vec<String>,
@@ -309,6 +292,9 @@ pub(super) struct List {
 }
 #[derive(Debug, Args)]
 pub(super) struct ListImages {
+    /// Query the prepared-template catalog instead of ordinary images.
+    #[arg(long)]
+    images_dir: Option<PathBuf>,
     #[arg(short, long)]
     quiet: bool,
     #[arg(long)]
@@ -327,6 +313,9 @@ pub(super) struct Logs {
 }
 #[derive(Debug, Args)]
 pub(super) struct Inspect {
+    /// Query a prepared template without resolving or downloading it.
+    #[arg(long, conflicts_with_all = ["files", "checkpoint", "command"])]
+    images_dir: Option<PathBuf>,
     #[arg(short = 'f', long)]
     format: Option<String>,
     #[arg(required_unless_present_any = ["files", "checkpoint", "command"], num_args = 1..)]
@@ -495,6 +484,24 @@ pub(super) fn run(command: DockerCommand) -> anyhow::Result<i32> {
     if let DockerCommand::Volume(args) = command {
         return volume_cli::run(args);
     }
+    if let DockerCommand::Push(args) = command {
+        return transfer::push(args);
+    }
+    if let DockerCommand::Pull(args) = command {
+        return transfer::pull(args);
+    }
+    if let DockerCommand::Images(args) = command {
+        return query::images(args);
+    }
+    if let DockerCommand::Container {
+        command: ContainerCommand::Branch { source, names },
+    } = &command
+    {
+        for child in Store::discover()?.fork_running(source, names)? {
+            println!("{}", child.name);
+        }
+        return Ok(0);
+    }
     if matches!(
         command,
         DockerCommand::Container { .. } | DockerCommand::Image { .. } | DockerCommand::Inspect(_)
@@ -505,7 +512,7 @@ pub(super) fn run(command: DockerCommand) -> anyhow::Result<i32> {
         return query::kill(args);
     }
     query::validate(&command)?;
-    let mut store = Store::discover()?;
+    let store = Store::discover()?;
     match command {
         DockerCommand::Build(_)
         | DockerCommand::Builder(_)
@@ -516,43 +523,11 @@ pub(super) fn run(command: DockerCommand) -> anyhow::Result<i32> {
         | DockerCommand::Image { .. } => {
             unreachable!()
         }
-        DockerCommand::Inspect(_) | DockerCommand::Kill(_) => unreachable!(),
-        DockerCommand::Pull {
-            image,
-            platform,
-            username,
-            password,
-            password_stdin,
-        } => {
-            if let Some(username) = username {
-                let password = if password_stdin {
-                    let mut secret = String::new();
-                    std::io::Read::read_to_string(&mut std::io::stdin(), &mut secret)
-                        .context("read registry password from stdin")?;
-                    secret.trim_end_matches(['\r', '\n']).to_string()
-                } else {
-                    password.context("registry --username needs --password or --password-stdin")?
-                };
-                store.set_registry_credentials(pvisor::docker::RegistryCredentials {
-                    username,
-                    password,
-                });
-            }
-            let image = {
-                let mut display = progress::PullDisplay::new(&image);
-                let mut progress = |event| display.update(event);
-                match platform {
-                    Some(platform) => {
-                        store.pull_for_platform_with_progress(&image, &platform, &mut progress)?
-                    }
-                    None => store.pull_with_progress(&image, &mut progress)?,
-                }
-            };
-            println!("Digest: {}\n{}", image.digest, image.reference);
-        }
-        DockerCommand::Images(args) => {
-            return query::images(&store, args);
-        }
+        DockerCommand::Inspect(_)
+        | DockerCommand::Kill(_)
+        | DockerCommand::Pull(_)
+        | DockerCommand::Push(_)
+        | DockerCommand::Images(_) => unreachable!(),
         DockerCommand::Rmi(args) => {
             return batch(&args.images, |selector| {
                 for tag in store.rmi(selector, args.force)? {
@@ -607,6 +582,7 @@ pub(super) fn run(command: DockerCommand) -> anyhow::Result<i32> {
                     .or_else(|| args.shared_memory_pool.then(|| PathBuf::from("auto")))
                     .map(super::daemon::resolve_pool)
                     .transpose()?,
+                managed_memory: args.managed_memory,
                 shared_kernel_base: args.shared_kernel_base,
                 auto_remove: args.rm,
                 interactive: args.interactive,
@@ -629,6 +605,7 @@ pub(super) fn run(command: DockerCommand) -> anyhow::Result<i32> {
                     .context("stop timeout overflow")?,
                 healthcheck: None,
                 no_healthcheck: args.no_healthcheck,
+                branchable: args.branchable,
             };
             let instance = {
                 let mut display = progress::PullDisplay::new(&config.image);
@@ -934,6 +911,34 @@ mod tests {
     }
 
     #[test]
+    fn managed_memory_is_explicit_and_conflicts_with_pager() {
+        use clap::Parser;
+        let parsed = crate::cli::Cli::try_parse_from([
+            "pvisor",
+            "run",
+            "--managed-memory",
+            "alpine",
+            "sleep",
+            "1",
+        ]);
+        assert!(parsed.is_ok());
+        assert!(
+            Cli::try_parse_from([
+                "pvisor",
+                "run",
+                "--branchable",
+                "--managed-memory",
+                "alpine"
+            ])
+            .is_err()
+        );
+        assert!(
+            crate::cli::Cli::try_parse_from(["pvisor", "run", "--managed-memory", "-M", "alpine"])
+                .is_err()
+        );
+    }
+
+    #[test]
     fn grouped_workload_arguments_and_exec_env_files_use_existing_contracts() {
         let parsed = Cli::try_parse_from([
             "pvisor",
@@ -1064,12 +1069,12 @@ mod tests {
             "harbor.internal/task:1",
         ])
         .unwrap();
-        let DockerCommand::Pull {
+        let DockerCommand::Pull(transfer::Pull {
             username,
             password_stdin,
             image,
             ..
-        } = parsed.command
+        }) = parsed.command
         else {
             panic!()
         };
@@ -1100,6 +1105,25 @@ mod tests {
             ])
             .is_err()
         );
+        for source in [
+            ["--from", "https://mirror.example/image"],
+            ["--images-dir", "catalog"],
+        ] {
+            assert!(
+                Cli::try_parse_from([
+                    "pvisor",
+                    "image",
+                    "pull",
+                    "--username",
+                    "deploy",
+                    "--password-stdin",
+                    source[0],
+                    source[1],
+                    "harbor.internal/task:1",
+                ])
+                .is_err()
+            );
+        }
         // Both grouped spellings route to the same command after ungrouping.
         let grouped = Cli::try_parse_from([
             "pvisor",
@@ -1114,11 +1138,11 @@ mod tests {
         .unwrap()
         .command
         .ungroup();
-        let DockerCommand::Pull {
+        let DockerCommand::Pull(transfer::Pull {
             username: grouped_user,
             image: grouped_image,
             ..
-        } = grouped
+        }) = grouped
         else {
             panic!()
         };
@@ -1130,12 +1154,12 @@ mod tests {
     fn docker_platform_options_precede_the_image_and_preserve_guest_flags() {
         let parsed =
             Cli::try_parse_from(["pvisor", "pull", "--platform=linux/amd64", "alpine"]).unwrap();
-        let DockerCommand::Pull {
+        let DockerCommand::Pull(transfer::Pull {
             platform,
             image,
             username,
             ..
-        } = parsed.command
+        }) = parsed.command
         else {
             panic!()
         };

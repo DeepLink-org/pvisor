@@ -29,7 +29,6 @@ jobs:
     uses: ./.github/workflows/ci.yml
 
   wheels:
-    needs: quality
     uses: ./.github/workflows/wheel.yml
     with:
       artifact_prefix: ${{ inputs.artifact_prefix }}-wheel
@@ -89,7 +88,7 @@ jobs:
           evidence="$RUNNER_TEMP/pvisor-release-acceptance"
           mkdir -p "$evidence"
           for wheel in dist/pvisor_sandbox-*.whl; do
-            python3 scripts/packaging/verify_wheel.py "$wheel" --install-smoke | tee "$evidence/install-smoke.log"
+            python3 scripts/packaging/verify_wheel.py "$wheel" --install-smoke --install-log "$evidence/result.json" | tee "$evidence/install-smoke.log"
           done
       - name: Retain acceptance evidence
         if: always()
@@ -97,12 +96,12 @@ jobs:
         with:
           name: ${{ inputs.artifact_prefix }}-acceptance-${{ matrix.platform }}
           path: ${{ runner.temp }}/pvisor-release-acceptance/
-          if-no-files-found: warn
+          if-no-files-found: error
           retention-days: 30
 
   verify:
     name: Verify release artifact set
-    needs: [wheels, acceptance]
+    needs: [quality, wheels, acceptance]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -126,6 +125,25 @@ jobs:
           pattern: firmware-source-${{ inputs.artifact_prefix }}-wheel-*
           merge-multiple: true
           path: dist
+
+      - name: Download Linux installed-wheel acceptance
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.artifact_prefix }}-acceptance-linux-x86_64
+          path: acceptance/linux-x86_64
+
+      - name: Download macOS installed-wheel smoke evidence
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.artifact_prefix }}-acceptance-macos-arm64
+          path: acceptance/macos-arm64
+
+      - name: Require acceptance bound to every distribution wheel
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          python3 scripts/ci/check_release_artifacts.py dist --version "$VERSION" \
+            --acceptance-directory acceptance --source-sha "$GITHUB_SHA"
 
       - name: Verify and prepare distribution set
         env:

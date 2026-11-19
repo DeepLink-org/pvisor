@@ -122,6 +122,7 @@ tests explicitly; broad `--run-ignored all` can select subprocess-only helpers.
 | `mise run test-isolation` | Linux user/mount/PID/network namespaces, read-write `/dev/fuse`, fusermount3; real Host isolation and prepared-rootfs admission |
 | `mise run test-macos-fuse` | macOS with working macFUSE; real staging, isolation and checkpoint workflows |
 | `test-hvf-cold-restore`, `test-vm-snapshot-state` | Apple Silicon HVF and signed probes; CPU/RAM and VMM-thread state |
+| `test-vm-lifecycle` | Linux x86_64/KVM or Apple Silicon/HVF, absolute `PVISOR_CASE_VM_FIRMWARE_PATH`; real 1/2-vCPU ready barrier and failed-start owner cleanup/retry, no prerequisite skips |
 | `test-linux-cold-restore`, `test-environment-snapshot` | Apple Silicon HVF, Linux guest and firmware; whole-machine and independent environment restoration |
 | `tests/vm_cli_contract.py` | KVM, HVF or WHP; shared guest workload, authenticated exit, read-only files and cleanup |
 | `tests/windows_container_contract.py` | Native Windows/WHP, matching firmware/template; container network, I/O, console and lifecycle |
@@ -130,6 +131,13 @@ Linux CI runs strict Host isolation and KVM workflows. Windows CI runs native
 contracts and WHP acceptance. Hosted macOS CI runs builds and conventional tests;
 real HVF and macFUSE acceptance needs a capable Mac. See
 [platform requirements](../docs/src/en/reference/platforms.md).
+
+The Linux `pvisor` shard also runs `test-vm-lifecycle` with repository-built
+native firmware and retains its native JUnit and task log. The task selects only
+the current platform's ready/abort targets, signs test binaries on macOS, and
+uses a two-minute per-test watchdog without retries. Missing firmware, unsupported
+hosts and an empty test selection fail. Hosted macOS does not run this hardware
+gate; invoke it explicitly on a capable Mac.
 
 The VM filesystem, VM terminal and ZCode Python regressions are opt-in through
 `PVISOR_TEST_GUEST_FS_DIRS`, `PVISOR_TEST_VM_BIN` and `PVISOR_TEST_ZCODE`.
@@ -212,6 +220,29 @@ scope, result, unresolved issues, cleanup and evidence location. Keep raw logs
 out of the repository root and tracked Markdown.
 Only maintainers may approve/revoke specifications or edit historical review
 ledgers and approved snapshots; see [the specification rules](spec/README.md).
+
+## Distribution acceptance
+
+Release and nightly distribution verification consumes per-platform receipts bound
+by SHA-256 to the exact wheels being published. Linux requires installed-product VM
+recovery acceptance; hosted macOS requires installation/dispatch smoke only and
+never claims HVF coverage. Missing, malformed, stale or wrong-coverage receipts
+stop distribution assembly. Starting a new attempt withdraws prior receipts at
+both selected log paths; failures retain only the current attempt's diagnostics.
+Per-run evidence is uploaded separately from binaries. CI also requires the receipt's
+`source_sha` to match the workflow's full `GITHUB_SHA`; local acceptance can set that
+environment variable explicitly. An unset source is recorded as unknown, never
+inferred from an unrelated checkout.
+For a combined Linux/KVM and macOS/HVF qualification, pass `--require-vm` to
+`check_release_artifacts.py` with `--acceptance-directory` and `--source-sha`;
+both exact wheels must then have `vm-recovery` receipts. Hosted macOS smoke alone
+cannot satisfy that stronger gate.
+
+Wheel builds can proceed alongside required CI; final distribution verification
+still requires both CI and installed-wheel acceptance to succeed.
+Manual `Publish Release` builds may validate a candidate branch without publishing.
+Stable tag pushes still require main ancestry; channel recovery still requires main
+and a previously accepted, unchanged stable tag run.
 
 ## Specialized workflows
 

@@ -255,6 +255,14 @@ pub struct Vmm {
 }
 
 impl Vmm {
+    #[cfg(any(
+        all(target_os = "linux", target_arch = "x86_64"),
+        all(target_os = "macos", target_arch = "aarch64")
+    ))]
+    pub(crate) fn snapshot_channel_blocker(&self) -> std::result::Result<Option<String>, String> {
+        self.mmio_device_manager.bus.snapshot_channel_blocker()
+    }
+
     /// Poll with the VMM lock released between calls and a caller-owned global
     /// deadline. CPU acknowledgement precedes worker shutdown; RAM gate closes
     /// only after every worker has returned ownership of its guest queues.

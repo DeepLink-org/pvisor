@@ -12,7 +12,7 @@
 //! ```
 //!
 use super::implant::OverlayHint;
-use super::registry::LEASE_FILENAME;
+use super::registry::{LEASE_FILENAME, LEASE_IDENTITY};
 use pvisor_core::overlay::OverlayConfig;
 pub use pvisor_core::overlay::{OverlayRecord, OverlayState, OverlayUpper};
 use pvisor_journal::api::{DurableFiles, Persistence};
@@ -295,16 +295,43 @@ pub fn lower_stack_from_config(
     Ok(lowers)
 }
 
-/// A run storage claims its directory with a lease before any other state.
-/// Sibling stages inside a workspace are pVisor-internal trees that mutate
-/// during concurrent prepares; they never belong in a workspace snapshot.
-/// A directory between creation and its lease is empty, so copying it is
-/// harmless.
-fn is_managed_stage(dir: &Path) -> bool {
-    dir.join(LEASE_FILENAME)
-        .symlink_metadata()
-        .map(|metadata| metadata.is_file())
-        .unwrap_or(false)
+// A filename alone cannot distinguish project data from runtime-owned storage.
+fn is_managed_stage(dir: &Path) -> io::Result<bool> {
+    use std::io::Read;
+    use std::os::unix::fs::MetadataExt;
+    use std::os::unix::fs::OpenOptionsExt;
+    let file = match fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(dir.join(LEASE_FILENAME))
+    {
+        Ok(file) => file,
+        Err(error) if matches!(error.raw_os_error(), Some(libc::ENOENT | libc::ELOOP)) => {
+            return Ok(false);
+        }
+        Err(error) => return Err(error),
+    };
+    let metadata = file.metadata()?;
+    if !metadata.is_file() {
+        return Ok(false);
+    }
+    let mut identity = Vec::new();
+    file.take(LEASE_IDENTITY.len() as u64 + 1)
+        .read_to_end(&mut identity)?;
+    if identity == LEASE_IDENTITY {
+        return Ok(metadata.uid() == unsafe { libc::geteuid() }
+            && metadata.nlink() == 1
+            && metadata.mode() & 0o777 == 0o600);
+    }
+    if !LEASE_IDENTITY.starts_with(&identity) {
+        return Ok(false);
+    }
+    let Ok(bytes) = super::completion::read_file(&dir.join(super::registry::RUN_META_FILENAME))
+    else {
+        return Ok(false);
+    };
+    Ok(serde_json::from_slice::<super::registry::RunRecord>(&bytes)
+        .is_ok_and(|record| record.validate_schema().is_ok() && record.stage_dir() == dir))
 }
 
 fn copy_tree(source: &Path, destination: &Path, excluded: &Path) -> std::io::Result<()> {
@@ -321,7 +348,7 @@ fn copy_tree(source: &Path, destination: &Path, excluded: &Path) -> std::io::Res
             Err(error) => return Err(error),
         };
         let from = entry.path();
-        if from.starts_with(excluded) || is_managed_stage(&from) {
+        if from.starts_with(excluded) {
             continue;
         }
         let to = destination.join(entry.file_name());
@@ -343,7 +370,13 @@ fn copy_tree(source: &Path, destination: &Path, excluded: &Path) -> std::io::Res
                 Err(error) => return Err(error),
             }
         } else if kind.is_dir() {
+            if is_managed_stage(&from)? {
+                continue;
+            }
             copy_tree(&from, &to, excluded)?;
+            if is_managed_stage(&from)? {
+                fs::remove_dir_all(&to)?;
+            }
         } else if kind.is_file() {
             match std::fs::copy(&from, &to) {
                 Ok(_) => match copy_host_metadata(&from, &to) {
@@ -758,20 +791,143 @@ mod tests {
         std::fs::write(workspace.path().join("user.txt"), b"data").unwrap();
         let sibling = workspace.path().join("sibling");
         std::fs::create_dir_all(&sibling).unwrap();
-        std::fs::write(sibling.join(LEASE_FILENAME), b"").unwrap();
+        let lease = super::super::registry::RunLease::acquire(&sibling).unwrap();
         std::fs::write(sibling.join("payload"), b"internal").unwrap();
         let own = workspace.path().join("own");
         std::fs::create_dir_all(&own).unwrap();
         std::fs::write(own.join("run.json"), b"{}").unwrap();
-        // A lone lock file is ordinary user content; only directories that
-        // carry a lease inside are managed stages.
         std::fs::write(workspace.path().join(LEASE_FILENAME), b"user lock file").unwrap();
-        let destination = tempdir().unwrap().path().join("snapshot");
+        let output = tempdir().unwrap();
+        let destination = output.path().join("snapshot");
         copy_tree(workspace.path(), &destination, &own).unwrap();
         assert!(destination.join("user.txt").is_file());
         assert!(destination.join(LEASE_FILENAME).is_file());
         assert!(!destination.join("sibling").exists());
         assert!(!destination.join("own").exists());
+        drop(lease);
+        assert!(is_managed_stage(&sibling).unwrap());
+    }
+
+    #[test]
+    fn workspace_snapshot_preserves_project_locks_and_symbolic_links() {
+        let workspace = tempdir().unwrap();
+        let output = tempdir().unwrap();
+        for (name, bytes) in [
+            ("empty", b"".as_slice()),
+            ("ordinary", b"project lock".as_slice()),
+        ] {
+            let dir = workspace.path().join(name);
+            fs::create_dir(&dir).unwrap();
+            fs::write(dir.join(LEASE_FILENAME), bytes).unwrap();
+            fs::write(dir.join("keep"), b"user data").unwrap();
+            std::os::unix::fs::symlink(name, workspace.path().join(format!("{name}-link")))
+                .unwrap();
+        }
+        let stage = workspace.path().join("managed");
+        std::os::unix::fs::symlink("keep", workspace.path().join("empty/run.json")).unwrap();
+        fs::write(workspace.path().join("ordinary/run.json"), b"{}").unwrap();
+        let checked_out = workspace.path().join("checked-out-marker");
+        fs::create_dir(&checked_out).unwrap();
+        fs::write(checked_out.join(LEASE_FILENAME), LEASE_IDENTITY).unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(
+            checked_out.join(LEASE_FILENAME),
+            fs::Permissions::from_mode(0o644),
+        )
+        .unwrap();
+        let _lease = super::super::registry::RunLease::acquire(&stage).unwrap();
+        std::os::unix::fs::symlink("managed", workspace.path().join("stage-link")).unwrap();
+        let destination = output.path().join("snapshot");
+        copy_tree(
+            workspace.path(),
+            &destination,
+            &output.path().join("excluded"),
+        )
+        .unwrap();
+        for name in ["empty", "ordinary"] {
+            assert_eq!(
+                fs::read(destination.join(name).join("keep")).unwrap(),
+                b"user data"
+            );
+            assert_eq!(
+                fs::read_link(destination.join(format!("{name}-link"))).unwrap(),
+                Path::new(name)
+            );
+        }
+        assert!(!destination.join("managed").exists());
+        assert_eq!(
+            fs::read(destination.join("checked-out-marker").join(LEASE_FILENAME)).unwrap(),
+            LEASE_IDENTITY
+        );
+        assert_eq!(
+            fs::read_link(destination.join("empty/run.json")).unwrap(),
+            Path::new("keep")
+        );
+        assert_eq!(
+            fs::read(destination.join("ordinary/run.json")).unwrap(),
+            b"{}"
+        );
+        assert_eq!(
+            fs::read_link(destination.join("stage-link")).unwrap(),
+            Path::new("managed")
+        );
+    }
+
+    #[test]
+    fn workspace_snapshot_excludes_a_sibling_during_prepare_and_after_release() {
+        let workspace = tempdir().unwrap();
+        let output = tempdir().unwrap();
+        let sibling = workspace.path().join("sibling");
+        let (ready, readiness) = std::sync::mpsc::sync_channel(1);
+        let (copied, completion) = std::sync::mpsc::sync_channel(1);
+        let wait = Duration::from_secs(5);
+        std::thread::scope(|scope| {
+            let sibling = &sibling;
+            scope.spawn(move || {
+                let _lease = super::super::registry::RunLease::acquire(sibling).unwrap();
+                ready.send(()).unwrap();
+                for index in 0..64 {
+                    let payload = sibling.join(format!("payload-{index}"));
+                    fs::write(&payload, b"internal").unwrap();
+                    fs::remove_file(payload).unwrap();
+                }
+                completion.recv_timeout(wait).unwrap();
+            });
+            readiness.recv_timeout(wait).unwrap();
+            let result = copy_tree(
+                workspace.path(),
+                &output.path().join("live"),
+                &output.path().join("excluded"),
+            );
+            copied.send(()).unwrap();
+            result.unwrap();
+        });
+        copy_tree(
+            workspace.path(),
+            &output.path().join("stopped"),
+            &output.path().join("excluded"),
+        )
+        .unwrap();
+        assert!(!output.path().join("live/sibling").exists());
+        assert!(!output.path().join("stopped/sibling").exists());
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn workspace_snapshot_preserves_generated_project_lock_content(
+            name in "[a-z]{1,16}", bytes in proptest::collection::vec(proptest::num::u8::ANY, 0..256),
+        ) {
+            let workspace = tempdir().unwrap();
+            let output = tempdir().unwrap();
+            let directory = workspace.path().join(&name);
+            fs::create_dir(&directory).unwrap();
+            fs::write(directory.join(LEASE_FILENAME), &bytes).unwrap();
+            fs::write(directory.join("keep"), b"user data").unwrap();
+            let destination = output.path().join("snapshot");
+            copy_tree(workspace.path(), &destination, &output.path().join("excluded")).unwrap();
+            proptest::prop_assert_eq!(fs::read(destination.join(&name).join(LEASE_FILENAME)).unwrap(), bytes);
+            proptest::prop_assert_eq!(fs::read(destination.join(&name).join("keep")).unwrap(), b"user data");
+        }
     }
 
     #[test]

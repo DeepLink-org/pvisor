@@ -31,7 +31,12 @@ Linux-only, and the binary exits 125 on unsupported hosts.
 | Private execution | Binary `command` tests retain literal argv, environment isolation, sidecar overlay, invalid selection and native shell behavior; Linux supervisor tests retain process ownership/reaping |
 | Exposure | `api_boundary`: sole public entry, pure/unconditional declarations, exact behavior inventory, private library implementations and platform-specific caller imports |
 
-Validate with `mise run test -- pvisor-guest` and strict rustdoc via
+Runnable `api.rs` doctests cover default rejection, valid launch construction,
+read-only validation, launch JSON round trips and consecutive frame ownership.
+Truncated frames are rejected; these examples use only in-memory transports.
+
+Validate with `mise run test -- pvisor-guest`, `mise run test-doc -- pvisor-guest`
+and strict rustdoc via
 `RUSTDOCFLAGS='-D warnings' cargo doc --locked -p pvisor-guest --no-deps`.
 
 Private command examples use `rstest` named cases. External `api_contract`

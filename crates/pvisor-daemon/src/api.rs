@@ -25,7 +25,103 @@ use std::{
 };
 
 pub use crate::daemon::Daemon;
+pub use crate::image_repository::PreparedCatalog;
 pub use crate::runtime::NativeRuntime;
+
+/// A change to the ordered prepared-template registry configuration.
+pub enum RegistryUpdate {
+    /// Append the supplied source at lowest priority. Its location must be unique.
+    Add(pvisor::docker::ImageRegistry),
+    /// Remove the named source from future resolution. Existing bindings stay pinned.
+    Remove(String),
+    /// Move an existing source to a position in the current order.
+    Move {
+        /// Existing source name.
+        name: String,
+        /// One-based priority in `1..=registry count`.
+        position: usize,
+    },
+}
+
+/// Prepared-template operations for a trusted, same-user catalog. No daemon service
+/// is needed. Mutations serialize per template name or registry configuration;
+/// queries read committed records without taking mutation locks.
+pub trait PreparedCatalogService: Sized {
+    /// Select a directory without accessing it. Relative paths use the process
+    /// working directory. The caller must control the catalog and its ancestors.
+    ///
+    /// ```
+    /// # fn main() -> anyhow::Result<()> {
+    /// use pvisor::docker::ImageRegistry;
+    /// use pvisor_daemon::api::{PreparedCatalog, PreparedCatalogService, RegistryUpdate};
+    /// let root = tempfile::tempdir()?;
+    /// let path = root.path().join("catalog");
+    /// let catalog = PreparedCatalog::new(path.clone());
+    /// assert!(catalog.list()?.is_empty());
+    /// assert!(catalog.inspect("../escape").is_err());
+    /// assert!(!path.exists());
+    /// let source = ImageRegistry {
+    ///     name: "origin".into(),
+    ///     location: "https://images.example.test/v2".into(),
+    ///     resolve: true,
+    /// };
+    /// catalog.update_registries(RegistryUpdate::Add(source))?;
+    /// assert!(catalog.update_registries(RegistryUpdate::Remove("missing".into())).is_err());
+    /// assert_eq!(catalog.registries()?[0].name, "origin");
+    /// # Ok(())
+    /// # }
+    /// ```
+    fn new(images: PathBuf) -> Self;
+
+    /// Read committed template names and pinned images in sorted order. An absent
+    /// directory is empty. Invalid records fail the query without making changes.
+    fn list(&self) -> Result<Vec<(String, pvisor::docker::Image)>>;
+
+    /// Read one template's local OCI metadata as a Docker inspect object with the
+    /// local name in `RepoTags`. Missing or invalid names or metadata fail locally.
+    fn inspect(&self, name: &str) -> Result<serde_json::Value>;
+
+    /// Publish an existing local template to S3 or an absolute `file://` directory.
+    /// Returns JSON with `source`, `image_handle`, `digest` and `platform`. The bundle
+    /// is immutable. The name index advances after upload if its pre-upload
+    /// version still matches or already points to the same publication. Failure
+    /// can leave unreferenced objects. The local template is unchanged.
+    fn push(&self, name: &str, destination: &str) -> Result<serde_json::Value>;
+
+    /// Import a template from S3 or HTTP(S), or resolve its name through configured
+    /// registries when `source` is absent. Only metadata is fetched at import.
+    /// Engine profiles and launch settings are validated before commit. Existing
+    /// names require `refresh`. Failure preserves their committed records;
+    /// directories and verified metadata may remain. Trust the selected publisher.
+    fn pull(
+        &self,
+        name: &str,
+        source: Option<&str>,
+        refresh: bool,
+    ) -> Result<pvisor::docker::Image>;
+
+    /// Build and atomically install a trusted local template. The callback receives
+    /// the canonical store path while the name is locked and must return a manifest
+    /// rooted at that path. Do not reenter a mutation of the same name. Errors leave
+    /// the previous manifest in place before commit. Prepared data may remain.
+    fn prepare(
+        &self,
+        name: &str,
+        build: impl FnOnce(PathBuf) -> Result<PreparedImage>,
+    ) -> Result<()>;
+
+    /// Read configured sources in priority order. An absent file is empty. Invalid
+    /// configurations fail without accessing the network or changing the catalog.
+    fn registries(&self) -> Result<Vec<pvisor::docker::ImageRegistry>>;
+
+    /// Apply a registry change under the configuration lock and return the new order.
+    /// Validation errors preserve the previous file. Already imported images keep
+    /// their fixed bindings. This operation can create private configuration state.
+    fn update_registries(
+        &self,
+        update: RegistryUpdate,
+    ) -> Result<Vec<pvisor::docker::ImageRegistry>>;
+}
 
 /// Operator-provisioned E2B template settings, retained with each native identity.
 /// These are not client-selected resources or a template build service.
@@ -291,3 +387,272 @@ pub trait MemoryPoolService: Sized {
     /// macOS compression). No mode reconnects or replaces live RAM ownership.
     fn run(directory: &Path) -> Result<()>;
 }
+
+/// Frozen policy for already bound resident VMs; never changes their hard limits.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PressureResidentMemoryAccounting {
+    /// Preserve full execution reservations, with optional smaller wait margins.
+    #[default]
+    Reserved,
+    /// After successful Bind, count resident VMs only through measured parent
+    /// charge. Startup, native restore and uncertain controls still reserve
+    /// capacity. This permits memory overcommit, not guaranteed burst capacity.
+    Measured,
+}
+
+/// Fixed startup policy; changing it requires draining this instance first.
+///
+/// Omitted accounting options retain full resident reservations:
+/// ```
+/// use pvisor_daemon::api::{PressureConfig, PressureResidentMemoryAccounting};
+/// let config: PressureConfig = serde_json::from_value(serde_json::json!({
+///     "memory_bytes": 1024, "high_bytes": 900, "low_bytes": 700,
+///     "max_writebacks": 2, "cgroup_root": "/sys/fs/cgroup/example"
+/// })).unwrap();
+/// assert_eq!(config.resident_memory_accounting, PressureResidentMemoryAccounting::Reserved);
+/// assert_eq!(config.waiting_memory_margin_bytes, None);
+/// assert!(!config.recovery_reclaim);
+/// ```
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PressureConfig {
+    /// Logical memory budget in bytes, including measured non-VM usage.
+    pub memory_bytes: u64,
+    /// Measured memory high watermark in bytes; must not exceed the budget.
+    pub high_bytes: u64,
+    /// Stop pressure reclamation at this watermark, strictly below high.
+    pub low_bytes: u64,
+    /// Maximum offload calls in flight, including uncertain acknowledgements.
+    /// Zero disables offload while keeping the same admission/request path.
+    pub max_writebacks: usize,
+    /// Defaults to Reserved for compatibility. Measured releases startup
+    /// top-ups after successful Bind and does not reacquire them for resident
+    /// tools. Cannot be combined with waiting_memory_margin_bytes. Requires
+    /// fresh cgroup samples, external hard limits and room for workload growth;
+    /// it does not guarantee that all guests can fill their configured memory.
+    #[serde(default)]
+    pub resident_memory_accounting: PressureResidentMemoryAccounting,
+    /// Reserved-mode opt-in allowance above measured charge for Waiting/Queued VMs
+    /// and their in-flight offloads, capped by each VM's full reservation.
+    /// Must be positive and no larger than the node budget. None (the default)
+    /// preserves full resident reservations in Reserved mode. With Some, the owner must
+    /// fence all guest work at Wait and reacquire a full execution permit even
+    /// for resident VMs. This is accounting headroom, not a cgroup limit or a
+    /// measured UKSM credit; uncooperative/background allocations remain unsafe.
+    #[serde(default)]
+    pub waiting_memory_margin_bytes: Option<u64>,
+    /// Opt-in Linux cgroup reclaim for a budget-blocked native restore in Measured
+    /// mode. Defaults false. At most three requests of at most 256 MiB per permit,
+    /// with no swap and no accounting credit; grants require a fresh sample.
+    #[serde(default)]
+    pub recovery_reclaim: bool,
+    /// Existing cgroup v2 subtree containing every managed VM and its helpers.
+    /// The service reads it; it never installs or changes resource limits.
+    pub cgroup_root: PathBuf,
+}
+
+/// An existing ordinary OCI execution, not instructions for creating a VM.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PressureBinding {
+    /// Existing authenticated Session or ordinary-container host socket.
+    pub socket: PathBuf,
+    /// Exact owner identity; container launches are never labeled Sessions.
+    pub target: PressureTarget,
+    /// Private VM subtree below PressureConfig::cgroup_root, including all helpers.
+    pub cgroup: PathBuf,
+}
+
+/// Native owner protocol selected by its exact identity, without changing startup.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum PressureTarget {
+    /// Existing Session/Execution HostVm protocol.
+    Session(pvisor_core::host_protocol::AgentCtlTarget),
+    /// Ordinary `pvisor run --managed-memory` launch generation.
+    Container(pvisor::docker::managed::Target),
+}
+
+/// Client requests are individually bounded. Poll queued requests instead of
+/// holding a tool HTTP request open; tool execution timeout starts after Ready.
+/// Tokens are fresh UUIDs chosen by the owner and never reused for another tool.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
+pub enum PressureRequest {
+    /// Queue before ordinary OCI creation. A repeated identical ID is idempotent.
+    Reserve {
+        #[doc = "Owner-selected execution identity, never reused after release."]
+        id: String,
+        #[doc = "Full startup allowance in bytes, including helper overhead."]
+        memory_bytes: u64,
+    },
+    /// Bind after admission and normal OCI startup; no image conversion occurs.
+    Bind {
+        #[doc = "Owner-selected execution identity, never reused after release."]
+        id: String,
+        #[doc = "Existing owner endpoint and independently bounded VM cgroup."]
+        binding: PressureBinding,
+    },
+    /// Assert no tool/background process can access the VM until the next permit.
+    /// Also finishes the previous Ready permit; stale tokens are rejected.
+    /// With waiting_memory_margin_bytes configured, relinquishes unused full
+    /// execution capacity in Reserved mode. A later Acquire must reserve it
+    /// again before Ready. Measured mode already released that top-up at Bind;
+    /// Wait still fences guest work and makes the VM eligible for offload.
+    Wait {
+        #[doc = "Owner-selected execution identity, never reused after release."]
+        id: String,
+        #[doc = "Owner-selected tool token; Wait may omit it before the first permit."]
+        token: Option<String>,
+    },
+    /// Queue an actual tool request; recovery has priority over new VM creation.
+    /// Measured-mode resident requests may pass an Offloading head if all
+    /// commitments plus its recovery allowance fit. Native restores remain FIFO;
+    /// Restoring/failed controls and missing measurements still fence grants.
+    Acquire {
+        #[doc = "Owner-selected execution identity, never reused after release."]
+        id: String,
+        #[doc = "Owner-selected tool token; Wait may omit it before the first permit."]
+        token: String,
+    },
+    /// Release only after externally owned teardown is independently proven.
+    /// The service checks the bound cgroup is empty, never kills or deletes it.
+    Release {
+        #[doc = "Owner-selected execution identity, never reused after release."]
+        id: String,
+    },
+    /// Read current states and the most recent accounting/control error.
+    Status {},
+}
+
+/// A Ready/Admitted permit is valid only when `error` is None and in this live
+/// daemon instance. The cooperative
+/// owner must stop sending requests on daemon loss, not create a new scheduler.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PressureSnapshot {
+    /// Fresh service lifetime identity; clients must pin it.
+    pub instance: String,
+    /// Entries retained until proven teardown; finished IDs cannot be reused.
+    pub entries: BTreeMap<String, PressureEntry>,
+    /// In-flight plus uncertain writeback reservations.
+    pub writebacks: usize,
+    /// Last valid parent cgroup charge; absent until a complete sample succeeds.
+    pub measured_bytes: Option<u64>,
+    /// Most recent sampled FIFO native-recovery shortage, not a grant.
+    #[serde(default)]
+    pub recovery_blocked: Option<PressureRecoveryBlocked>,
+    /// Latest bounded reclaim attempt, including errors and in-flight ownership.
+    #[serde(default)]
+    pub recovery_reclaim: Option<PressureRecoveryReclaim>,
+    /// Latest accounting error. Grants stop while measurement is unavailable.
+    pub error: Option<String>,
+}
+
+/// Public state, with logical reservations rather than claimed physical savings.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PressureEntry {
+    /// Full startup/restore allowance and per-VM hard-limit ceiling, including
+    /// VMM/helper overhead. Reserved mode also retains it for execution. Waiting
+    /// states may hold less when PressureConfig::waiting_memory_margin_bytes is set;
+    /// this does not change guest capacity or the externally installed hard limit.
+    pub memory_bytes: u64,
+    /// Current state; only Ready authorizes tool dispatch.
+    pub state: PressureState,
+    /// The single current request token, if any.
+    pub token: Option<String>,
+    /// Control failure retained without retry or fabricated cleanup.
+    pub error: Option<String>,
+}
+
+/// Startup reservations and recovery reservations are distinct from readiness.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PressureState {
+    /// Waiting for full creation capacity.
+    AdmissionQueued,
+    /// Owner may start its ordinary OCI VM using this reservation.
+    Admitted,
+    /// Identity probe in progress; no tool permit or release is allowed yet.
+    Binding,
+    /// Bound VM; initial startup request or a tool is owned by the caller.
+    Active,
+    /// Explicit safe model-wait boundary, eligible for pressure reclaim.
+    Waiting,
+    /// PressureRequest queued for a resident VM; safe to reclaim to unblock the head.
+    Queued,
+    /// Native writeback in progress; wake cannot interrupt it.
+    Offloading,
+    /// Acknowledged offload, no tool request pending.
+    Offloaded,
+    /// Acknowledged offload with a queued request.
+    RestoreQueued,
+    /// Full memory reserved; native resume is still in progress.
+    Restoring,
+    /// Resume acknowledged (or VM already resident); owner may dispatch token.
+    Ready,
+    /// Uncertain control; retains reservations and requires owner cleanup.
+    Failed,
+    /// Confirmed empty resources; ID remains fenced against reuse.
+    Released,
+}
+
+/// Response wrapper pins mutations to a live service instance. Status may omit
+/// instance; all mutations must echo PressureSnapshot::instance from that same service.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PressureEnvelope {
+    /// Expected service instance, mandatory for mutations.
+    pub instance: Option<String>,
+    /// Requested transition.
+    pub request: PressureRequest,
+}
+
+/// Sampled native recovery deficit. Invalid when the snapshot has an error.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PressureRecoveryBlocked {
+    /// FIFO head execution identity.
+    pub id: String,
+    /// Existing tool permit identity; recovery never creates a replacement token.
+    pub token: String,
+    /// Additional measured relief required to grant the full restore allowance.
+    pub deficit_bytes: u64,
+    /// Whether all native controls and startup reservations have finished and
+    /// no safe waiter remains available for offload.
+    pub reclaim_eligible: bool,
+}
+
+/// Diagnostic only; requested bytes never count as physical memory savings.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PressureRecoveryReclaim {
+    /// Execution whose recovery caused this attempt.
+    pub id: String,
+    /// Permit retained across retries.
+    pub token: String,
+    /// Attempts started for this permit (maximum three).
+    pub attempts: u8,
+    /// Bytes requested by the most recent attempt (maximum 256 MiB).
+    pub requested_bytes: u64,
+    /// True until the kernel write finishes; a slow write is never duplicated.
+    pub in_flight: bool,
+    /// Last write error. EAGAIN may still have reclaimed some memory.
+    pub error: Option<String>,
+}
+
+/// Same-user pressure scheduler transport.
+#[allow(clippy::double_must_use)]
+#[async_trait::async_trait]
+pub trait PressureService {
+    /// Serve a fresh private Linux state directory until shutdown. Refuses an
+    /// undrained ledger; on failure retain resources for independent cleanup.
+    async fn serve(directory: PathBuf, config: PressureConfig) -> anyhow::Result<()>;
+    /// Send one bounded request. Timeout leaves effects uncertain; query status
+    /// with the pinned instance before attempting further mutations.
+    async fn exchange(
+        socket: &std::path::Path,
+        envelope: &PressureEnvelope,
+    ) -> anyhow::Result<PressureSnapshot>;
+}
+
+/// Stateless transport entry point; scheduling ownership remains in the service.
+pub struct PressureScheduler;

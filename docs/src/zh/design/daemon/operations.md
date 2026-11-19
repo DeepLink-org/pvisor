@@ -1,6 +1,6 @@
 # Daemon 运维
 
-使用原生 VM 运行时、私有状态与显式资源容量运行单节点 sandbox 服务。直接调用 `pvisor-daemon`。它拥有 sandbox 服务及可选独立池组件；`pvisor cache` 提供缓存客户端命令，`pvisor-daemon serve --cache` 提供缓存服务。
+使用原生 VM 运行时、私有状态与显式资源容量运行单节点 sandbox 服务。直接调用 `pvisor-daemon`。它拥有 sandbox 服务及可选独立池组件；Rust CacheClient 提供程序化访问，`pvisor-daemon serve --cache` 提供缓存服务。
 
 ## 部署 {#deployment}
 

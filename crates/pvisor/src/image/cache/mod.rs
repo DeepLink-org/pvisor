@@ -1,4 +1,4 @@
-//! Shared OCI cache with server, filesystem, S3, static HTTP/HTTPS and IPFS storage.
+//! Shared OCI cache with server, filesystem, S3 and static HTTP/HTTPS storage.
 //! See docs/src/zh/reference/shared-image-cache.md for storage layout and lifecycle.
 
 mod backend;
@@ -45,15 +45,17 @@ fn architecture() -> &'static str {
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 pub use direct::DirectImage;
-pub(crate) use direct::{attach_runner_lowers, private_owner as direct_image_owner};
+pub(crate) use direct::{RetainedImage, attach_runner_lowers, private_owner as direct_image_owner};
 pub(crate) use network::run_internal_if_requested as run_image_access_internal;
 pub(crate) use pool::{open_local_image, publish_local_image, published_local_image};
 pub(crate) use portable::export_pool;
 pub(crate) use repository::{
-    publish_reference, resolve_repository, validate_name as validate_registry_name,
+    PublicationReference, resolve_repository, validate_name as validate_registry_name,
     validate_registries,
 };
-pub(crate) use repository::{publish_repository, read_repository_template, validate_destination};
+pub(crate) use repository::{
+    publish_repository, read_repository_config, read_repository_template, validate_destination,
+};
 mod repository;
 
 /// Serve until process termination, notifying the owner after binding and worker startup.

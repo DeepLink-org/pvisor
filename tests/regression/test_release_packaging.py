@@ -7,11 +7,57 @@ import subprocess
 import sys
 import unittest
 
+import yaml
+
 from tests.fixtures import ROOT, workspace
 from tests.packaging_fixtures import release_version, wheel_stage
 
 
 class ReleasePackagingTests(unittest.TestCase):
+    def test_candidate_build_validates_versions_without_relaxing_tag_ancestry(self):
+        jobs = yaml.safe_load((ROOT / ".github/workflows/release.yml").read_text())["jobs"]
+        steps = jobs["validate"]["steps"]
+        validate = next(step for step in steps if step.get("id") == "version")["run"]
+        fetch = next(step for step in steps if step.get("name") == "Fetch main release boundary")
+        self.assertEqual(fetch["if"], "github.event_name == 'push'")
+        for event, expected in (
+            ("workflow_dispatch", ["run", "check-release-version"]),
+            (
+                "push",
+                [
+                    "run",
+                    "check-release-version",
+                    "--",
+                    "--tag",
+                    "v1.2.3",
+                    "--main-ref",
+                    "origin/main",
+                ],
+            ),
+        ):
+            with self.subTest(event=event), workspace() as (root, _):
+                executable = root / "mise"
+                executable.write_text(
+                    '#!/bin/sh\nprintf "%s\\n" "$@" > "$ARGUMENTS"\nprintf "1.2.3\\n"\n'
+                )
+                executable.chmod(0o755)
+                arguments, output = root / "arguments", root / "output"
+                env = {
+                    **os.environ,
+                    "PATH": str(root) + os.pathsep + os.environ["PATH"],
+                    "EVENT": event,
+                    "RECOVERY": "false",
+                    "RELEASE_TAG": "",
+                    "GITHUB_REF_NAME": "v1.2.3",
+                    "GITHUB_OUTPUT": str(output),
+                    "ARGUMENTS": str(arguments),
+                }
+                subprocess.run(
+                    ["bash", "-euo", "pipefail", "-c", validate], env=env, check=True, timeout=10
+                )
+                self.assertEqual(arguments.read_text().splitlines(), expected)
+                self.assertIn("version=1.2.3", output.read_text())
+
     @unittest.skipIf(shutil.which("cargo") is None, "Cargo is needed to check lockfiles")
     def test_release_lockfile_rejects_stale_workspace_version(self):
         with workspace() as (tmp_path, resources):

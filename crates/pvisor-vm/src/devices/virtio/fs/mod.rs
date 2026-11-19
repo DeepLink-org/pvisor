@@ -5,8 +5,8 @@ mod device;
 #[allow(dead_code)]
 mod filesystem;
 pub mod fuse;
-mod guest_index;
 mod guest_exit;
+mod guest_index;
 mod inode_alloc;
 #[allow(dead_code)]
 mod multikey;

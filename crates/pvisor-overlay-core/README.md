@@ -515,6 +515,16 @@ races, composed lowers, remote backing and hardlink ordering.
 
 ## Apply inventory and publication
 
+Apply and recovery errors after allocating an intent identity carry
+`OverlayError::ApplyFailure`: `apply_id`, the last successfully written or
+recovery-read `ApplyRecordState`, and the original source error. `None` means
+intent persistence did not confirm success, not that no record is visible.
+Prepared can already have partial target effects; a failed stage update can
+already be visible. Retain the stage and reconcile through
+`recover_pending_applies` under exclusive ownership. Committed cleanup errors
+identify the completed apply and do not authorize replay over later host edits.
+Admission errors before allocating an identity retain their ordinary variants.
+
 Same-user apply processes use a common private lock directory beneath canonical
 `/tmp`, independent of each process's TMPDIR. Target identity selects the lock;
 directory/file ownership, modes, no-follow opens and unaliased files are checked
@@ -892,3 +902,7 @@ protocol ownership/security metadata; Core temporarily adds owner access to set
 opacity and restores the original native permissions. Fault tests cover EIO /
 ENOSPC after native creation, reopen, retry and unchanged lower contents. This
 does not promise crash-atomic directory creation or cleanup after a second error.
+
+Same-host fork restore can reuse immutable image-object bindings when the
+caller retains the corresponding image projection. Writable overlay state
+remains private to each restored guest.

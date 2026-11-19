@@ -150,7 +150,9 @@ pub struct ApplyCommandRemaining {
 pub struct ApplyCommandExecution {
     pub apply_id: Option<String>,
     pub applied: Option<usize>,
+    /// Retain and reconcile the stage; includes committed backup-cleanup failures.
     pub recovery_required: bool,
+    /// The matching attempt was read back from the durable ledger.
     pub ledger_confirmed: bool,
     pub error: Option<String>,
 }
@@ -466,13 +468,6 @@ fn command(
         .context("workspace generation exhausted")?;
     let before = core::load_apply_records(&overlay.stage_dir)?;
     response.remaining = ApplyCommandRemaining::default();
-    response.execution = Some(ApplyCommandExecution {
-        apply_id: None,
-        applied: None,
-        recovery_required: true,
-        ledger_confirmed: false,
-        error: None,
-    });
     let result = if let Some(boundary) = &boundary {
         core::apply_overlay_selected_scoped(&mut overlay, &lowers, &mapped, boundary)
     } else {
@@ -480,24 +475,11 @@ fn command(
     };
     // Observe durable evidence even when publication/pruning failed partway through.
     let ledger = core::load_apply_records(&overlay.stage_dir);
-    if let Ok(ledger) = &ledger {
-        let execution = response.execution.as_mut().unwrap();
-        if let Some(intent) = ledger
-            .iter()
-            .rev()
-            .find(|intent| !before.iter().any(|old| old.apply_id == intent.apply_id))
-        {
-            execution.apply_id = Some(intent.apply_id.clone());
-            execution.ledger_confirmed = true;
-            execution.recovery_required =
-                intent.state != pvisor_core::overlay::ApplyRecordState::Committed;
-            if !execution.recovery_required {
-                execution.applied = Some(intent.changes.len());
-            }
-        } else {
-            execution.recovery_required = false;
-        }
-    }
+    response.execution = Some(apply_execution_evidence(
+        &before,
+        ledger.as_ref().ok().map(Vec::as_slice),
+        result.as_ref().err(),
+    ));
     let outcome = result?;
     ledger.context("cannot confirm apply ledger after execution")?;
     set_remaining(response, &outcome.remaining, prefix);
@@ -510,6 +492,36 @@ fn command(
     response.status = "applied".into();
     Ok(())
 }
+fn apply_execution_evidence(
+    before: &[core::ApplyRecord],
+    ledger: Option<&[core::ApplyRecord]>,
+    error: Option<&core::OverlayError>,
+) -> ApplyCommandExecution {
+    let failure = match error {
+        Some(core::OverlayError::ApplyFailure(failure)) => Some(failure),
+        _ => None,
+    };
+    let intent = ledger.and_then(|records| {
+        records.iter().rev().find(|intent| match failure {
+            Some(failure) => intent.apply_id == failure.apply_id,
+            None => !before.iter().any(|old| old.apply_id == intent.apply_id),
+        })
+    });
+    let committed =
+        intent.filter(|intent| intent.state == pvisor_core::overlay::ApplyRecordState::Committed);
+    ApplyCommandExecution {
+        apply_id: failure
+            .map(|failure| failure.apply_id.clone())
+            .or_else(|| intent.map(|intent| intent.apply_id.clone())),
+        applied: committed.map(|intent| intent.changes.len()),
+        recovery_required: failure.is_some()
+            || ledger.is_none()
+            || (intent.is_some() && committed.is_none()),
+        ledger_confirmed: intent.is_some(),
+        error: None,
+    }
+}
+
 fn validate_apply_source(record: &RunRecord, selection: &SessionSelection) -> anyhow::Result<()> {
     let selector = selection.selector.as_deref();
     let implicit = selector.is_none() || selector == Some(Path::new("last"));
@@ -766,6 +778,63 @@ fn plan_token(
 
 #[cfg(test)]
 mod selection_contract_tests {
+    #[test]
+    fn typed_apply_failure_keeps_identity_and_requires_reconciliation() {
+        for (name, state, ledger_confirmed, applied_confirmed) in [
+            (
+                "committed cleanup",
+                Some(core::ApplyRecordState::Committed),
+                true,
+                true,
+            ),
+            ("unreadable ledger", None, false, false),
+            (
+                "uncommitted ledger",
+                Some(core::ApplyRecordState::Prepared),
+                true,
+                false,
+            ),
+        ] {
+            let mut intent: core::ApplyRecord = serde_json::from_value(serde_json::json!({
+                "schema_version":2,"apply_id":"cleanup-attempt","created_at_unix_ms":1,
+                "overlay_id":"overlay","target":"/target","selection":{},
+                "changes":[],"remaining_changes":0
+            }))
+            .unwrap();
+            intent.state = state.unwrap_or(core::ApplyRecordState::Committed);
+            let records = [intent];
+            let failure = core::OverlayError::ApplyFailure(core::ApplyFailure {
+                apply_id: "cleanup-attempt".into(),
+                last_confirmed: Some(core::ApplyRecordState::Committed),
+                source: Box::new(core::OverlayError::Io(std::io::Error::other(
+                    "cleanup failed",
+                ))),
+            });
+            // Recovery can fail on an old committed attempt before allocating a new one.
+            let execution = apply_execution_evidence(
+                &records,
+                state.map(|_| records.as_slice()),
+                Some(&failure),
+            );
+            assert_eq!(execution.apply_id.as_deref(), Some("cleanup-attempt"));
+            assert!(execution.recovery_required, "{name}");
+            assert_eq!(execution.ledger_confirmed, ledger_confirmed, "{name}");
+            assert_eq!(execution.applied, applied_confirmed.then_some(0), "{name}");
+            assert_eq!(
+                serde_json::to_value(execution).unwrap()["recovery_required"],
+                true
+            );
+        }
+    }
+
+    #[test]
+    fn pre_admission_failure_with_readable_empty_ledger_needs_no_recovery() {
+        let failure = core::OverlayError::Apply("validation failed".into());
+        let execution = apply_execution_evidence(&[], Some(&[]), Some(&failure));
+        assert!(execution.apply_id.is_none() && execution.applied.is_none());
+        assert!(!execution.recovery_required && !execution.ledger_confirmed);
+    }
+
     use super::*;
 
     #[test]

@@ -378,6 +378,9 @@ pub trait VmConfiguration: Sized {
 /// callback receives live control after installation and must return promptly.
 /// Normal guest shutdown exits the process; setup failure returns an error.
 pub trait VmRuntime: Sized {
+    /// Restore a same-host fork after the supervisor verifies its private tree
+    /// and binds the original immutable lower. Errors follow the run contract.
+    fn run_live_fork(self, on_ready: impl FnOnce(VmmHandle) -> io::Result<()>) -> io::Result<()>;
     /// Consume the builder and retain resources through the VM event loop.
     /// Invoke on_ready with all CPUs initially paused, before any guest instruction.
     /// It must return promptly. Fresh VMs resume after callback and worker setup
@@ -525,6 +528,11 @@ pub trait SnapshotCapture {
     /// state. Caller holds this freeze through filesystem capture and atomic
     /// publication; a failed write may leave partial destination bytes.
     fn capture_machine_state(&self, file: &File) -> Result<MachineSnapshot, String>;
+    /// Capture an immutable RAM layer for same-host fork while CPU and devices are frozen.
+    fn capture_branch_state(
+        &self,
+        file: &File,
+    ) -> Result<(MachineSnapshot, Option<Vec<RamRestoreExtent>>), String>;
     /// Capture all RAM, or changed blocks against the supervisor-bound immutable
     /// baseline. A delta inventory is an optimization, never restore authority.
     fn capture_machine_state_with_ram_delta(
@@ -627,6 +635,13 @@ pub trait FrozenMemory {
 pub trait SnapshotState {
     /// Return validated captured CPU count; malformed snapshot data is InvalidData.
     fn cpu_count(&self) -> io::Result<usize>;
+    /// Rebind a captured idle control listener to the child VM endpoint.
+    fn rebind_vsock_listener(
+        &mut self,
+        port: u32,
+        source: &Path,
+        destination: &Path,
+    ) -> io::Result<()>;
     /// Report whether a valid captured kernel layout is present; malformed state is an error.
     fn has_kernel_layout(&self) -> io::Result<bool>;
     /// Verify captured inode identities/content while every source writer is frozen.

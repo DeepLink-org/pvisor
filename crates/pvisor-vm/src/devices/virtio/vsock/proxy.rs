@@ -81,6 +81,14 @@ impl fmt::Display for ProxyError {
 }
 
 pub trait Proxy: Send + AsRawFd {
+    // Only configured host Unix acceptors may be reconstructed, never a live
+    // connection or TSI listener. The caller also checks binding and backlog.
+    fn snapshot_listener(&self) -> Option<(u32, &std::path::Path)> {
+        None
+    }
+    fn closed_reverse_unix(&self) -> bool {
+        false
+    }
     fn id(&self) -> u64;
     #[allow(dead_code)]
     fn status(&self) -> ProxyStatus;

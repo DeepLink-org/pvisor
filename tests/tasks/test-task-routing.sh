@@ -245,6 +245,27 @@ if grep -Fq $'cargo\tmetadata\t' "$PVISOR_TASK_TEST_LOG" || grep -Fq $'cargo\tne
   echo 'failed rootless preflight reached test discovery or execution' >&2
   exit 1
 fi
+# Hardware selection must fail before Cargo when its inputs are unusable.
+for firmware in "" relative.bin "$work/missing-firmware"; do
+  PVISOR_CASE_VM_FIRMWARE_PATH="$firmware" expect_failure test-vm-lifecycle
+  test ! -s "$PVISOR_TASK_TEST_LOG"
+done
+firmware="$work/local firmware.bin"
+touch "$firmware"
+case "$(uname -s)-$(uname -m)" in
+  Linux-x86_64) abort_test=ready_abort_kvm ;;
+  Darwin-arm64) abort_test=ready_abort_hvf ;;
+  *) abort_test= ;;
+esac
+if [[ -n "$abort_test" ]]; then
+  PVISOR_CASE_VM_FIRMWARE_PATH="$firmware" run test-vm-lifecycle
+  check_line cargo nextest run --locked -p pvisor-vm --test ready_before_execution --test "$abort_test" --profile vm-lifecycle --run-ignored only --no-tests fail --test-threads 1
+  PVISOR_CASE_VM_FIRMWARE_PATH="$firmware" PVISOR_TASK_TEST_BAD_NATIVE=1 expect_failure test-vm-lifecycle
+  PVISOR_CASE_VM_FIRMWARE_PATH="$firmware" expect_failure test-vm-lifecycle extra-filter
+  test ! -s "$PVISOR_TASK_TEST_LOG"
+else
+  PVISOR_CASE_VM_FIRMWARE_PATH="$firmware" expect_failure test-vm-lifecycle
+fi
 # One representative native usage route checks literal paths and failure
 # propagation; snapshot semantics belong to the real hardware TestCases.
 : > "$PVISOR_TASK_TEST_LOG"

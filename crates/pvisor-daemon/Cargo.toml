@@ -12,10 +12,12 @@ default-run = "pvisor-daemon"
 [[bin]]
 name = "pvisor-daemon"
 path = "src/main.rs"
+required-features = ["daemon-bin"]
 
 
 [features]
-default = []
+default = ["daemon-bin"]
+daemon-bin = []
 
 [dependencies]
 anyhow.workspace = true
@@ -42,6 +44,7 @@ url.workspace = true
 uuid = { workspace = true, features = ["v4", "serde"] }
 
 [dev-dependencies]
+proptest = { workspace = true }
 syn = { version = "2", features = ["full", "visit"] }
 tokio = { workspace = true, features = ["test-util"] }
 tower = { version = "0.5", features = ["util"] }

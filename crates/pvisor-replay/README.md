@@ -1,5 +1,9 @@
 # pvisor-replay
 
+Implementation guards scan every Rust source recursively and exempt only the
+crate-root `api.rs` and `lib.rs`. Negative fixtures verify that nested files
+with those names and newly added adapters cannot add public inherent methods.
+
 Replay preparation, tool execution and agent continuation for the
 `pvisor-replay` companion. The engine validates recorded trajectories and
 workspace boundaries before continuation; protocol-specific adapters remain
@@ -99,8 +103,14 @@ protocol-specific finish checks still decide continuation validity.
 
 ## Validation
 
+Runnable `api.rs` doctests cover configuration defaults and conflicting modes,
+JSON validation before publication, and local PrepareOnly execution with a
+recorded tool that must remain unexecuted. They require no agent SDK or model.
+
+
 ```sh
 mise run test -- pvisor-replay
+mise run test-doc -- pvisor-replay
 RUSTDOCFLAGS='-D warnings' mise exec -- cargo doc --locked -p pvisor-replay --no-deps
 ```
 
@@ -121,6 +131,11 @@ launches on hosted macOS can consume that setup budget. Their original execution
 deadlines and total completion bounds remain enforced, with retries disabled.
 The Bash fixture prints its PID and execs native `/bin/sleep`, then checks timeout
 classification, readiness, reaping and absence of the original process group.
+
+The OpenCode continuation failure/step-budget fixture also reserves all nextest
+slots: its 15-second upstream readiness deadline includes the child harness,
+shell probes and Python HTTP client startup. Its request deadline, failure-event
+assertions and step-budget checks remain unchanged; retries remain disabled.
 
 Stdin backpressure and early-close fixtures re-execute the native test binary,
 with an independent alarm to bound a broken supervisor. They do not launch a

@@ -1,6 +1,6 @@
 # 共享镜像缓存与存储后端
 
-`pvisor cache` 通过服务器、文件系统或 S3 复用 OCI 镜像内容。服务器模式的 `pvisor-daemon serve --cache` 自动准备 OCI 镜像并生成分页索引和内容对象，存放在 `<image-store>/pool-v2/`。三个后端共用不可变 revision、对象格式和镜像读取器。客户端使用 `image_handle` 查询，不接收宿主路径；文件查询不访问 registry。
+用 `pvisor push` 分发本地镜像，用 Rust 缓存客户端查询不可变镜像中的文件。`pvisor-daemon serve --cache` 为 VM 客户端准备 OCI 镜像，并将索引和内容写入本地 V2 池。文件查询使用固定的 `image_handle`，不会访问 OCI registry。
 
 ## 本地镜像目录 {#local-image-store}
 
@@ -41,62 +41,25 @@ Docker Hub 短名和完整名共用一个 canonical catalog 身份，pull/build 
 | `filesystem` | `PVISOR_CACHE_BACKEND=filesystem` 与 `PVISOR_CACHE_LOCATION=/absolute/directory` | 单机多个进程，或共享盘/NFS 上的缓存 |
 | `s3` | `PVISOR_CACHE_BACKEND=s3` 与 `PVISOR_CACHE_LOCATION=s3://BUCKET/PREFIX` | 多机器通过对象存储共享镜像，无需维护缓存服务 |
 
-命令行 `--backend`、`--location`、`--image-store` 优先于环境变量，在子命令前后都可使用。`--read-only` 或 `PVISOR_CACHE_READ_ONLY=true` 让共享后端只接受读取：准备未发布镜像和 `--refresh` 会明确失败，不访问 registry，不尝试写入后端。只读客户端仍可写自己的本地加速缓存。
+嵌入式客户端可设置 `PVISOR_CACHE_READ_ONLY=true` 进入只读模式。只读客户端不能刷新或补齐共享池中的镜像名，仍可维护私有加速缓存。
 
-### 文件系统：发布一次，独立进程读取
+### 发布本地镜像
 
-```sh
-pvisor cache --backend filesystem --location /mnt/pvisor-cache \
-  --image-store /tmp/pvisor-publish publish alpine:latest
-pvisor cache --backend filesystem --location /mnt/pvisor-cache \
-  --read-only prepare alpine:latest
-pvisor cache --backend filesystem --location /mnt/pvisor-cache \
-  --read-only read pvisor-v2:YOUR_IMAGE_KEY:linux-amd64:YOUR_REVISION etc/os-release
-```
-
-`--location` 选择共享存储；`--image-store` 或 `PVISOR_IMAGE_STORE` 选择有作用域的 `staging/.import-*` 导入目录的本地父目录。下载层、解包 root 和临时准备记录在成功或失败后清理，进程崩溃可能留下残余。发布后读取不依赖导入目录。共享目录中的对象默认私有，跨 UID 使用共享盘时需由存储管理员设置相应读取权限；只读模式不会创建缺失的共享目录。
-
-### S3：发布端有写权限，使用方只读
+在发布端配置 AWS 凭据和区域，并使用已有的 bucket。接收端使用发布回执中的 `source`。示例用 `jq` 提取该值。
 
 ```sh
-export AWS_DEFAULT_REGION=ap-southeast-1
-# Supply AWS credentials through environment variables or workload roles.
-export PVISOR_CACHE_BACKEND=s3
-export PVISOR_CACHE_LOCATION=s3://your-bucket/pvisor-cache
-pvisor cache --image-store /tmp/pvisor-publish publish alpine:latest
-
-# Native cache consumers only need GetObject access to this prefix.
-export PVISOR_CACHE_READ_ONLY=true
-pvisor cache prepare alpine:latest
-pvisor cache read pvisor-v2:YOUR_IMAGE_KEY:linux-amd64:YOUR_REVISION etc/os-release
-pvisor spawn --executor vm --rootfs image=alpine:latest -- /bin/sh
+pvisor pull alpine:3.20
+SOURCE=$(pvisor push alpine:3.20 --to s3://your-bucket/releases | jq -er .source)
+pvisor image pull alpine:published --from "$SOURCE"
 ```
 
-桶需要预先建立；pVisor 不创建桶。publish 和读写 prepare 都需要 s3:GetObject 与 s3:PutObject：读取 HEAD 的 CAS 令牌，并验证已存在的不可变对象。读取节点只需要 `s3:GetObject`，正常读写不需要 `ListBucket` 或 `DeleteObject`。S3 存储连接由宿主负责，新的缓存配置及其隐式 `AWS_*` 凭据不会投影到 guest；显式传给工作负载的环境变量仍由调用方决定。
+用 `--to file:///ABSOLUTE/PATH` 可将同一发布包写到本地目录，供静态 HTTP(S) 镜像站使用。接收端导入描述符、OCI 配置和根元数据，文件内容按需读取。发布使用本地构建或拉取时记录的平台。
 
-S3 使用 SigV4，默认 HTTPS。凭据支持 `AWS_ACCESS_KEY_ID`、`AWS_SECRET_ACCESS_KEY`、可选 `AWS_SESSION_TOKEN`，以及 EC2、ECS、Web Identity 工作负载角色；由 [object_store 的 S3 provider](https://docs.rs/object_store/0.13.2/object_store/aws/struct.AmazonS3Builder.html) 管理获取与续期。当前不直接读取 `~/.aws` profile/SSO 文件，可向进程提供导出的环境凭据或使用工作负载角色。区域用 `AWS_DEFAULT_REGION` 或 `AWS_REGION`。S3 兼容服务可设置 `AWS_ENDPOINT`（或 `AWS_ENDPOINT_URL_S3`）；下面的 HTTP 配置仅用于本机测试服务。
+S3 默认通过 HTTPS 使用 SigV4。发布需要 `s3:GetObject` 和 `s3:PutObject`，读取只需 `s3:GetObject`。认证由宿主环境凭据或工作负载角色提供。使用 S3 兼容服务时，配置 `AWS_ENDPOINT` 和区域。
 
-```sh
-export AWS_ENDPOINT=http://127.0.0.1:9000
-export AWS_ALLOW_HTTP=true
-export AWS_ACCESS_KEY_ID=YOUR_ACCESS_KEY
-export AWS_SECRET_ACCESS_KEY=YOUR_SECRET_KEY
-export PVISOR_CACHE_BACKEND=s3
-export PVISOR_CACHE_LOCATION=s3://your-bucket/pvisor-cache
-pvisor cache prepare alpine:latest
-```
+### 共享池布局
 
-### 镜像拆分与上传工具
-
-`pvisor cache publish IMAGE` 是显式发布入口：从 registry 拉取所选平台的 OCI manifest 和层，在本地应用层与 whiteout，遍历合并后的镜像文件，再上传文件索引和内容块。每次调用在 `--image-store` 或 `PVISOR_IMAGE_STORE` 下持有独立临时导入目录，直到发布结束；成功和失败后都清理 raw OCI 数据。宿主 registry TLS 可通过 `SSL_CERT_FILE` 加载额外 PEM CA bundle；文件不可读或无效时明确失败。
-
-```sh
-PVISOR_CACHE_READ_ONLY=false pvisor cache publish alpine:latest \
-  --backend s3 --location s3://your-bucket/pvisor-cache \
-  --architecture amd64 --image-store /tmp/pvisor-publish
-```
-
-`--architecture` 支持 `amd64`、`arm64`，默认取宿主架构。`publish` 每次都解析 registry，包括不指定 `--refresh` 时；临时准备记录不跨调用复用。可写 `prepare` 对可变标签复用共享 HEAD 五分钟，对不可变摘要则复用到显式 refresh。`publish` 总会执行拆分和上传，不根据远端 tag 记录跳过；已存在的不可变内容块通过条件创建复用，缺失的块会重新上传。只读模式和服务器后端不接受发布。命令成功时输出 JSON，包含 manifest 摘要、架构、COMMIT 摘要 `metadata_generation` 以及文件数/逻辑字节总量 `totals`；同时返回 image_handle=pvisor-v2:<image-key>:<platform>:<revision-hex>，list/stat/read 以这个句柄查询；digest 仅记录来源 manifest。
+已有共享池前缀仍可供 VM 缓存客户端和 Rust SDK 使用。共享池以可变 HEAD 记录解析名称。Push 生成带 `image.json` 描述符的独立发布包，使用返回的 source 导入。
 
 ```text
 s3://your-bucket/pvisor-cache/
@@ -138,7 +101,7 @@ S3 实际流量包括控制对象、元数据页和完整数据块。cache 接�
 
 实现位于 `crates/pvisor/src/image/cache/`：
 
-缓存命令解析位于 `crates/pvisor-cli/src/cli/cache.rs`。`pvisor-daemon serve --cache` 拥有服务入口；存储和协议实现保留在 runtime。
+`pvisor-daemon serve --cache` 提供服务入口。运行时导出 Rust 客户端。
 
 ```text
 cache/
@@ -167,18 +130,14 @@ cache/
 
 ## 用法
 
+启动缓存服务后，通过 Rust 客户端发送 Prepare 请求。源码示例 `cache_probe` 接收 JSON 请求，也可按句柄和路径读取完整文件。它使用 `CacheClient::from_env()`。自己的诊断工具可使用 `Request::List`、`Request::Stat` 和 `Request::Read`。
+
 ```sh
-# 终端 1：前台服务端，使用默认的按用户 Unix socket 与 OCI 存储
 pvisor-daemon serve --cache
 
-# 终端 2：使用同一个默认 socket
-pvisor cache prepare alpine:latest
-# Explicitly refresh a locally published tag from the registry:
-pvisor cache prepare alpine:latest --refresh
-# 从 JSON 结果复制 image_handle：
-pvisor cache list pvisor-v2:YOUR_IMAGE_KEY:linux-amd64:YOUR_REVISION
-pvisor cache stat pvisor-v2:YOUR_IMAGE_KEY:linux-amd64:YOUR_REVISION etc/os-release
-pvisor cache read pvisor-v2:YOUR_IMAGE_KEY:linux-amd64:YOUR_REVISION etc/os-release
+# From a checkout, in a separate terminal on an amd64 host:
+cargo run --locked -p pvisor --example cache_probe -- \
+  '{"op":"prepare","image":"alpine:3.20","architecture":"amd64"}'
 ```
 
 `PVISOR_CACHE_SERVER` 为客户端和服务端选择端点。服务端用 `pvisor-daemon serve --cache --cache-listen` 覆盖它。没有覆盖时端点为 `unix://<dirs::cache_dir()>/pvisor/cache.sock`：
@@ -202,7 +161,7 @@ VM 客户端将不可变只读 lower 直接接入 virtio-fs 文件服务，保�
 
 服务端在应答 `prepare` 前仍会完整准备未缓存的镜像，并在临时导入目录中生成索引和内容对象；成功或普通失败后删除该临时目录。这是客户端侧的懒加载，不是服务端的惰性 OCI 层解包。FUSE 适配器和现有 virtio-fs worker 目前同步处理请求：一次缓存未命中可能延迟无关的文件系统请求。不使用显式 vCPU 暂停。磁盘缓存配额/淘汰、原始 OCI xattr 和异步 virtio-fs 完成不在此实现中加入。
 
-公共 Rust 客户端是 `pvisor::cache::CacheClient::from_env()`，它是阻塞式的。`pvisor cache prepare/list/stat/read` 使用显式后端配置，不使用 VM 默认 socket 探测的本地回退策略。
+阻塞式 Rust 客户端直接使用已选后端。自动回退到本地池是 VM 镜像来源选择的一部分。
 
 Unix socket 权限为 0600，并要求两端为同一有效用户。锁可防止两个服务端占用同一 socket；重启时会回收陈旧 socket，但普通文件、符号链接或活跃监听者绝不会被移除。请把 socket 放在由服务用户拥有的目录中。用 Ctrl-C 停止前台服务端可能留下陈旧 socket；无需手工清理。
 
@@ -219,7 +178,8 @@ ssh -N -L 7447:127.0.0.1:7447 your-server
 # 客户端 shell，使用同一密钥：
 export PVISOR_CACHE_TOKEN='YOUR_RANDOM_SECRET'
 export PVISOR_CACHE_SERVER=tcp://127.0.0.1:7447
-pvisor cache prepare alpine:latest
+cargo run --locked -p pvisor --example cache_probe -- \
+  '{"op":"prepare","image":"alpine:3.20","architecture":"amd64"}'
 ```
 
 TCP 要求非空令牌，且只接受字面 loopback IP 端点。没有内置 TLS；请用 SSH 做传输加密。令牌授予所有缓存操作，包括准备新镜像，因此这是受信任的共享服务，不是公共多租户 API。若为 Unix 服务端配置了令牌，Unix 客户端也必须提供。
@@ -246,7 +206,7 @@ TCP 要求非空令牌，且只接受字面 loopback IP 端点。没有内置 TL
 | `open` | `handle`, `architecture` | `prepared` |
 | `metadata` | `handle`, `object_name`, `offset`, `length` | `data` + bytes |
 
-`prepare` 为客户端架构请求 Linux 镜像，与服务端架构无关。已发布的 V2 HEAD 记录平台摘要和启动配置，不依赖持久 raw 准备记录。本地池标签可离线使用到显式刷新或替换；可写文件系统/S3 后端对可变 HEAD 复用五分钟，对不可变摘要 HEAD 则复用到 refresh。`--refresh`（协议 `refresh: true`）强制 registry 解析。导入失败保留旧 HEAD，并清理临时目录。registry 连接超时为 10 秒，阻塞请求及 body 读取超时为 30 秒。瞬态 blob 传输失败用新临时文件重试一次；429/503 按不超过十秒的 Retry-After 重试一次；过期标签不会静默回退到陈旧数据。本地引用/平台锁串行化本地导入；远程 HEAD 通过条件更新发布。`read`、`stat`、`list` 要求已发布的不可变句柄，不隐式拉取镜像。
+`prepare` 为客户端架构请求 Linux 镜像，与服务端架构无关。已发布的 V2 HEAD 记录平台摘要和启动配置，不依赖持久 raw 准备记录。本地池标签可离线使用到显式刷新或替换；可写文件系统/S3 后端对可变 HEAD 复用五分钟，对不可变摘要 HEAD 则复用到 refresh。设 `refresh: true` 强制 registry 解析。导入失败保留旧 HEAD，并清理临时目录。registry 连接超时为 10 秒，阻塞请求及 body 读取超时为 30 秒。瞬态 blob 传输失败用新临时文件重试一次；429/503 按不超过十秒的 Retry-After 重试一次；过期标签不会静默回退到陈旧数据。本地引用/平台锁串行化本地导入；远程 HEAD 通过条件更新发布。`read`、`stat`、`list` 要求已发布的不可变句柄，不隐式拉取镜像。
 
 目录页包含与 `stat` 相同的属性，避免为每个子项单独请求。页最多 256 个条目，并会缩小以适应 JSON
 帧上限（含长字节数组名和符号链接目标）。目录属性为必填字段，仅包含名字的响应会被拒绝。持久化的页在多次挂载间保留其属性。
@@ -269,12 +229,13 @@ TCP 要求非空令牌，且只接受字面 loopback IP 端点。没有内置 TL
 
 ## 验证后端
 
-`mise run test -- pvisor pvisor-cli` 包含服务器兼容性、文件系统/S3 独立 CLI 读写、只读权限、损坏拒绝与配置优先级检查。S3 本地夹具独立验算 SigV4（包括临时会话令牌），不使用真实账号、公网请求或外部 daemon。
+`mise run test -- pvisor pvisor-cli` 包含服务器兼容性、独立 Rust 缓存客户端读写文件系统/S3、只读权限、损坏拒绝与配置优先级检查。S3 本地夹具独立验算 SigV4（包括临时会话令牌），不使用真实账号、公网请求或外部 daemon。
 
 有 KVM 与静态 musl guest target 的 Linux x86_64 主机可以执行真实 VM 验收：
 
 ```sh
-cargo nextest run --locked -p pvisor-cli --test cache_backends --run-ignored only
+cargo nextest run --locked -p pvisor-cli --test cache_backends --run-ignored only \
+  -E 'test(vm_reads_daemonless_filesystem_and_s3_images_without_projecting_storage_credentials)'
 ```
 
 此验收从两个后端启动 VM，删除发布端暂存目录后校验 guest 文件内容，并验证继承宿主环境时不会泄漏存储凭据。

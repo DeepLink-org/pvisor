@@ -46,9 +46,14 @@ impl Vm {
         source::verify_store(&config.store)?;
         let mut artifacts = BTreeMap::new();
         let mut libraries = BTreeMap::new();
-        for name in ["pvisor", "pvisor-daemon"] {
+        for name in ["pvisor", "pvisor-daemon", "cache_probe"] {
             let dest = output.join("frozen/bin").join(name);
-            let hash = source::freeze(&config.binary_dir.join(name), &dest)?;
+            let source = if name == "cache_probe" {
+                config.binary_dir.join("examples/cache_probe")
+            } else {
+                config.binary_dir.join(name)
+            };
+            let hash = source::freeze(&source, &dest)?;
             artifacts.insert(dest.display().to_string(), hash);
             let raw = process::command(
                 &strings(&[
@@ -467,7 +472,7 @@ fn containment(output: &Path) -> Result<Value> {
     fs::create_dir(&bin)?;
     fs::set_permissions(&bin, fs::Permissions::from_mode(0o700))?;
     let mut hashes = BTreeMap::new();
-    for name in ["pvisor", "pvisor-daemon"] {
+    for name in ["pvisor", "pvisor-daemon", "cache_probe"] {
         let dest = bin.join(name);
         let hash = source::freeze(&output.join("frozen/bin").join(name), &dest)?;
         fs::set_permissions(dest, fs::Permissions::from_mode(0o700))?;
@@ -820,10 +825,9 @@ pub(super) fn worker(output: &Path) -> Result<()> {
         let mut env = environment(&protocol, output);
         env.insert("PVISOR_CACHE_SERVER".into(), proxy.address());
         let mut cmd = process::clean_command(&strings(&[
-            "/tmp/lazy-binaries/pvisor",
-            "cache",
-            "prepare",
-            protocol["source"].as_str().unwrap(),
+            "/tmp/lazy-binaries/cache_probe",
+            &json!({"op":"prepare", "image":protocol["source"], "architecture":"amd64"})
+                .to_string(),
         ]))?;
         cmd.envs(env);
         let preparation = process::observe(

@@ -2002,7 +2002,7 @@ fn validate_owner(owner: &str) -> Result<()> {
     );
     Ok(())
 }
-fn validate_image_shape(image: &PreparedImage, state: &Path) -> Result<()> {
+pub(crate) fn validate_image_profile(image: &PreparedImage) -> Result<()> {
     ensure!(
         !image.native_guest || (!image.native_opensandbox && !image.native_e2b),
         "native guest requires an exclusive pooled engine profile"
@@ -2015,6 +2015,21 @@ fn validate_image_shape(image: &PreparedImage, state: &Path) -> Result<()> {
         !image.native_opensandbox || image.e2b.is_none(),
         "managed OpenSandbox requires a pooled non-E2B image"
     );
+    ensure!(
+        (image.native_guest && image.entrypoint.is_empty())
+            || (!image.entrypoint.is_empty() && image.entrypoint[0].starts_with('/')),
+        "prepared guest bootstrap must be absolute"
+    );
+    if let Some(template) = &image.e2b {
+        template.validate()?;
+    }
+    validate_argv_env(&image.entrypoint, &image.env)?;
+    validate_argv_env(&image.cmd, &BTreeMap::new())?;
+    Ok(())
+}
+
+fn validate_image_shape(image: &PreparedImage, state: &Path) -> Result<()> {
+    validate_image_profile(image)?;
     let pooled = &image.pooled_image;
     let cache = &pooled.cache;
     ensure!(
@@ -2038,13 +2053,6 @@ fn validate_image_shape(image: &PreparedImage, state: &Path) -> Result<()> {
             && !image.rootfs.starts_with(state),
         "prepared rootfs must be absolute and independent of host root and daemon state"
     );
-    ensure!(
-        (image.native_guest && image.entrypoint.is_empty())
-            || (!image.entrypoint.is_empty() && image.entrypoint[0].starts_with('/')),
-        "prepared guest bootstrap must be absolute"
-    );
-    validate_argv_env(&image.entrypoint, &image.env)?;
-    validate_argv_env(&image.cmd, &BTreeMap::new())?;
     if let Some(path) = &image.library_dir {
         ensure!(path.is_absolute(), "firmware directory must be absolute");
     }

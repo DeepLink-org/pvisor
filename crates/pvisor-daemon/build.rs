@@ -1,6 +1,9 @@
 // Compile the dependency-free vsock adapter for the Linux guest, including on
 // hosts whose ordinary Rust target uses a different C library.
 fn main() {
+    if std::env::var_os("CARGO_FEATURE_DAEMON_BIN").is_none() {
+        return;
+    }
     println!("cargo:rerun-if-changed=src/sandbox_init.rs");
     let arch = std::env::var("CARGO_CFG_TARGET_ARCH").unwrap();
     let target = format!("{arch}-unknown-linux-musl");

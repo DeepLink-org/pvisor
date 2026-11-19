@@ -94,6 +94,47 @@ def validate_artifacts(
     return found
 
 
+def validate_acceptance(
+    wheels: dict[str, Path],
+    version: str,
+    directory: Path,
+    source_sha: str | None = None,
+    *,
+    require_vm: bool = False,
+) -> None:
+    """Require successful platform receipts for these exact distribution bytes."""
+    if source_sha is not None and not re.fullmatch(r"[0-9a-f]{40}", source_sha):
+        raise ArtifactValidationError("source SHA must be a full lowercase commit ID")
+    for platform, wheel in wheels.items():
+        report = directory / platform / "result.json"
+        if report.is_symlink() or not report.is_file() or report.stat().st_size > 16 * 1024 * 1024:
+            raise ArtifactValidationError(f"{platform}: missing or invalid acceptance receipt")
+        try:
+            evidence = json.loads(report.read_text())
+        except (ValueError, UnicodeError) as error:
+            raise ArtifactValidationError(f"{platform}: invalid acceptance JSON") from error
+        expected_coverage = (
+            "vm-recovery" if require_vm or platform == "linux-x86_64" else "install-smoke"
+        )
+        with wheel.open("rb") as stream:
+            digest = hashlib.file_digest(stream, "sha256").hexdigest()
+        expected = {
+            "status": "PASS",
+            "version": version,
+            "wheel": wheel.name,
+            "wheel_sha256": digest,
+            "coverage": expected_coverage,
+        }
+        if source_sha is not None:
+            expected["source_sha"] = source_sha
+        if not isinstance(evidence, dict) or any(
+            evidence.get(key) != value for key, value in expected.items()
+        ):
+            raise ArtifactValidationError(
+                f"{platform}: acceptance does not match wheel, source and coverage"
+            )
+
+
 def validate_release_set(
     directory: Path, version: str, *, max_bytes: int = DEFAULT_MAX_BYTES
 ) -> dict[str, Path]:
@@ -213,7 +254,18 @@ def main() -> None:
     )
     parser.add_argument("--source-run", type=int, help="Restore a verified tag run's artifacts")
     parser.add_argument("--repository", help="Source owner/repository (required with --source-run)")
+    parser.add_argument(
+        "--acceptance-directory", type=Path, help="Require wheel-bound platform receipts"
+    )
+    parser.add_argument("--source-sha", help="Require acceptance at this full source commit")
+    parser.add_argument(
+        "--require-vm",
+        action="store_true",
+        help="Require real VM recovery receipts on both platforms",
+    )
     args = parser.parse_args()
+    if (args.source_sha is not None or args.require_vm) and args.acceptance_directory is None:
+        parser.error("--source-sha and --require-vm require --acceptance-directory")
     if args.source_run is not None and not args.repository:
         parser.error("--source-run requires --repository")
 
@@ -226,6 +278,14 @@ def main() -> None:
             else validate_artifacts
         )
         found = validate(args.directory, args.version, max_bytes=args.max_bytes)
+        if args.acceptance_directory is not None:
+            validate_acceptance(
+                found,
+                args.version,
+                args.acceptance_directory,
+                args.source_sha,
+                require_vm=args.require_vm,
+            )
     except ArtifactValidationError as error:
         print(f"release artifact validation failed: {error}", file=sys.stderr)
         raise SystemExit(1) from error

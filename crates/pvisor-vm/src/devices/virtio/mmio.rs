@@ -78,6 +78,18 @@ pub struct MmioSnapshot {
 }
 
 impl MmioSnapshot {
+    pub(crate) fn rebind_vsock_listener(
+        &mut self,
+        port: u32,
+        source: &std::path::Path,
+        destination: &std::path::Path,
+    ) -> Result<bool, String> {
+        if let super::DeviceSnapshotState::Vsock(vsock) = &mut self.device.state {
+            vsock.rebind_listener(port, source, destination)
+        } else {
+            Ok(false)
+        }
+    }
     /// Restore filesystem topology before registering queue kick eventfds.
     #[cfg(not(any(feature = "tee", feature = "aws-nitro")))]
     pub(crate) fn filesystem_request_queues(
@@ -212,7 +224,12 @@ impl MmioSnapshot {
     /// Normalize only the protected single-lower workspace seed profile.
     #[cfg(not(any(feature = "tee", feature = "aws-nitro")))]
     pub fn prepare_protected_workspace_seed(&mut self, tag: &[u8]) -> std::io::Result<bool> {
-        if let super::DeviceSnapshotState::Fs { tag: saved_tag, server, .. } = &mut self.device.state {
+        if let super::DeviceSnapshotState::Fs {
+            tag: saved_tag,
+            server,
+            ..
+        } = &mut self.device.state
+        {
             if saved_tag == tag {
                 server.prepare_protected_workspace_seed()?;
                 return Ok(true);
@@ -394,6 +411,15 @@ impl InterruptTransport {
 }
 
 impl MmioTransport {
+    /// Nonblocking pre-freeze channel probe while CPUs and workers run.
+    pub fn snapshot_blocker(&self) -> Result<Option<String>, String> {
+        match self.device.try_lock() {
+            Ok(device) => device.snapshot_blocker(),
+            Err(std::sync::TryLockError::WouldBlock) => Ok(Some("virtio_device_busy".into())),
+            Err(_) => Err("virtio device poisoned".into()),
+        }
+    }
+
     /// Requires a parked CPU and frozen backend. A busy worker is an error,
     /// never wait on its lock while the memory gate is closed.
     /// Keep polling with the VMM lock released between calls. Close the RAM

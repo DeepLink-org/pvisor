@@ -28,7 +28,11 @@ fn fixture() -> (tempfile::TempDir, PortableCache, ImageStore, PreparedImage) {
     (tmp, cache, store, image)
 }
 fn read_handle(cache: &PortableCache) -> String {
-    match cache.prepare("example:test", "amd64", false).unwrap().0 {
+    match cache
+        .prepare("example:test", "amd64", false, None)
+        .unwrap()
+        .0
+    {
         Response::Prepared {
             image_handle: handle,
             ..
@@ -1532,7 +1536,7 @@ fn removed_packed_layout_is_not_a_readable_cache() {
     let cache = PortableCache::new(storage, None, true);
     assert!(
         cache
-            .prepare("example:test", "amd64", false)
+            .prepare("example:test", "amd64", false, None)
             .unwrap_err()
             .to_string()
             .contains("image absent from read-only cache")

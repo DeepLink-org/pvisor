@@ -81,11 +81,18 @@ func newEngine(t *testing.T) *engine {
 			e.env = append(e.env, value)
 		}
 	}
-	e.env = append(e.env, "PVISOR_DOCKER_HOME="+filepath.Join(dir, "store"))
+	home := filepath.Join(dir, "store")
+	e.env = append(e.env, "PVISOR_DOCKER_HOME="+home)
 	t.Cleanup(func() {
 		e.cleanup(e.name)
 	})
-	e.want(0, "", "pull", e.image)
+	if seed := os.Getenv("PVISOR_TEST_SEED_HOME"); seed != "" {
+		if output, err := exec.Command("cp", "-R", "-p", seed, home).CombinedOutput(); err != nil {
+			t.Fatalf("copy test image catalog: %v: %s", err, output)
+		}
+	} else {
+		e.want(0, "", "pull", e.image)
+	}
 	return e
 }
 

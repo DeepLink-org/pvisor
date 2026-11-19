@@ -628,6 +628,27 @@ pub const EXIT_REPORT_BYTES: usize = EXIT_TOKEN_BYTES + 4;
 /// Pure portable validation of the whole Linux launch message.
 /// Successful validation neither creates commands/processes nor installs policy,
 /// filesystems or isolation; the Linux supervisor owns those operations.
+///
+/// Construct and validate a launch without starting a guest or accessing its paths:
+/// ```
+/// use pvisor_guest::api::{GuestConfig, GuestValidation};
+/// use std::io::ErrorKind;
+/// assert_eq!(GuestConfig::default().validate().unwrap_err().kind(), ErrorKind::InvalidInput);
+/// let mut launch = GuestConfig {
+///     argv: vec!["/bin/echo".into(), "$LITERAL".into()],
+///     cwd: "/work".into(),
+///     ..Default::default()
+/// };
+/// let before = serde_json::to_value(&launch)?;
+/// launch.validate()?;
+/// assert_eq!(serde_json::to_value(&launch)?, before);
+/// let decoded: GuestConfig = serde_json::from_slice(&serde_json::to_vec(&launch)?)?;
+/// decoded.validate()?;
+/// assert_eq!(decoded.argv, launch.argv);
+/// launch.cwd = "relative".into();
+/// assert_eq!(launch.validate().unwrap_err().kind(), ErrorKind::InvalidInput);
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
 pub trait GuestValidation {
     /// Reject invalid argv/environment, guest paths, reversed limits, identity/
     /// capability/PTY controls, shares, bridges, tmpfs and root-disk/layer inputs
@@ -639,6 +660,25 @@ pub trait GuestValidation {
 }
 
 /// Bounded frame reading on an exclusively borrowed synchronous input stream.
+///
+/// Each read consumes one frame. A truncated transport must be discarded:
+/// ```
+/// use pvisor_guest::api::{GuestFrameRead, GuestFrameWrite, Request};
+/// use std::io::ErrorKind;
+/// let mut wire = Vec::new();
+/// wire.write_frame(&Request::Ping {})?;
+/// assert_eq!(&wire[4..], br#"{"operation":"Ping"}"#);
+/// wire.write_frame(&Request::Ping {})?;
+/// let mut input = wire.as_slice();
+/// assert!(matches!(input.read_frame::<Request>()?, Request::Ping {}));
+/// assert!(!input.is_empty());
+/// assert!(matches!(input.read_frame::<Request>()?, Request::Ping {}));
+/// assert!(input.is_empty());
+/// let mut truncated = &wire[..wire.len() - 1];
+/// let _: Request = truncated.read_frame()?;
+/// assert_eq!(truncated.read_frame::<Request>().unwrap_err().kind(), ErrorKind::UnexpectedEof);
+/// # Ok::<(), std::io::Error>(())
+/// ```
 pub trait GuestFrameRead: Read {
     /// Consume one four-byte big-endian length and JSON payload of at most MAX_FRAME
     /// bytes. Oversized lengths return InvalidData after consuming only the header;

@@ -115,8 +115,22 @@ pub trait ReadOnlyBackend: Send + Sync {
     }
     /// Fill native bytes before code opens a backing file directly.
     fn materialize_file(&self, relative: &Path) -> io::Result<()>;
+    /// Logical regular-file object within this backend's authenticated image version.
+    fn immutable_file_object(&self, _relative: &Path) -> io::Result<Option<(u64, u64)>> {
+        Ok(None)
+    }
     /// An owned tree copy must include unvisited image objects too.
     fn materialize_tree(&self, relative: &Path) -> io::Result<()>;
+    /// Optional immutable snapshot owner binding for this exact registered root.
+    /// The producer must validate the retained directory identity and authenticated
+    /// revision on every call. It must keep storage alive beyond source teardown
+    /// and support reopening the same lazy backend before restoring the snapshot.
+    /// The opaque nonempty binding must change if that owner or revision changes.
+    /// Default None requires ordinary full materialization. Errors must propagate;
+    /// neither this capability nor namespace stability authorizes mutable lowers.
+    fn snapshot_binding(&self) -> io::Result<Option<String>> {
+        Ok(None)
+    }
 }
 
 struct Attachment {
@@ -411,6 +425,21 @@ pub fn direct_file_source(path: &Path) -> io::Result<Option<DirectFileSource>> {
     }))
 }
 
+/// Resolve only within the stable attachment registered at the supplied root.
+pub fn immutable_file_object(root: &Path, path: &Path) -> io::Result<Option<(u64, u64)>> {
+    let Some((owner, base)) = find(root)? else {
+        return Ok(None);
+    };
+    let Some((attachment, relative)) = find(path)? else {
+        return Ok(None);
+    };
+    if !base.as_os_str().is_empty() || !owner.stable_namespace || !Arc::ptr_eq(&owner, &attachment)
+    {
+        return Ok(None);
+    }
+    owner.backend.immutable_file_object(&relative)
+}
+
 pub fn materialize_file(path: &Path) -> io::Result<()> {
     if let Some((entry, relative)) = find(path)? {
         entry.backend.materialize_file(&relative)?;
@@ -423,6 +452,30 @@ pub fn materialize_tree(path: &Path) -> io::Result<()> {
         entry.backend.materialize_tree(&relative)?;
     }
     Ok(())
+}
+
+/// Validate an explicit retained snapshot owner on an exact stable registration.
+/// Returns None for native paths, nested paths and ordinary backend attachments.
+/// Does not materialize content. Consumers must persist the binding, prohibit
+/// relocating that lazy root, and require the same binding before restore.
+pub fn snapshot_binding(path: &Path) -> io::Result<Option<String>> {
+    let Some((entry, relative)) = find(path)? else {
+        return Ok(None);
+    };
+    if !relative.as_os_str().is_empty() || !entry.stable_namespace {
+        return Ok(None);
+    }
+    let binding = entry.backend.snapshot_binding()?;
+    if binding
+        .as_ref()
+        .is_some_and(|value| value.is_empty() || value.len() > 65536)
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "invalid snapshot owner binding",
+        ));
+    }
+    Ok(binding)
 }
 
 pub fn link_count(path: &Path, native: u64) -> io::Result<u64> {

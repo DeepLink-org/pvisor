@@ -1,5 +1,11 @@
 # pvisor-shim
 
+VM shape arithmetic covers the full parsed CPU quota/period and RAM annotation
+ranges without signed casts or overflowing additions. Planning tests retain
+explicit maximum-value regressions and compare generated resource combinations
+with an independent wider-integer oracle; these are not guest-boot acceptance.
+
+
 Guest launch/control/exit contracts come from `pvisor_guest::api`. Host code
 uses `GuestValidation` for admission; executable command construction stays in
 the guest supervisor.

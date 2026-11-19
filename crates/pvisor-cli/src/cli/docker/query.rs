@@ -1,5 +1,6 @@
 //! Bounded Docker formatting/filtering, validated before touching storage.
 use super::*;
+use pvisor_daemon::api::{PreparedCatalog, PreparedCatalogService};
 use serde_json::{Value, json};
 
 pub(super) fn labels(entries: &[String]) -> anyhow::Result<BTreeMap<String, String>> {
@@ -280,10 +281,6 @@ pub(super) fn validate(command: &DockerCommand) -> anyhow::Result<()> {
             Filters::parse(&args.filters, false)?;
             args.format.as_deref().map(Format::parse).transpose()?;
         }
-        DockerCommand::Images(args) => {
-            Filters::parse(&args.filters, true)?;
-            args.format.as_deref().map(Format::parse).transpose()?;
-        }
         DockerCommand::Run(args) => {
             labels(&args.labels)?;
             args.stop_signal
@@ -342,19 +339,33 @@ pub(super) fn inspect(command: DockerCommand) -> anyhow::Result<i32> {
         "conflicting inspect resource types"
     );
     let kind = forced.or(args.kind.as_deref());
+    ensure!(
+        args.images_dir.is_none() || kind != Some("container"),
+        "--images-dir selects images, not containers"
+    );
     let format = args.format.as_deref().map(Format::parse).transpose()?;
-    let store = Store::discover()?;
+    let catalog = args.images_dir.map(PreparedCatalog::new);
+    let store = if catalog.is_none() {
+        Some(Store::discover()?)
+    } else {
+        None
+    };
     let mut rows = vec![];
     let status = batch(&args.selectors, |selector| {
-        let row = match kind {
-            Some("image") => store.inspect_image(selector)?,
-            Some("container") => store.inspect_container(selector)?,
-            _ if store.find(selector)?.is_some() => store.inspect_container(selector)?,
-            _ if Path::new(selector).is_absolute() || Path::new(selector).exists() => {
-                inspect_task(selector, &args.output_dir)?
+        let row = if let Some(catalog) = &catalog {
+            catalog.inspect(selector)?
+        } else {
+            let store = store.as_ref().context("missing image store")?;
+            match kind {
+                Some("image") => store.inspect_image(selector)?,
+                Some("container") => store.inspect_container(selector)?,
+                _ if store.find(selector)?.is_some() => store.inspect_container(selector)?,
+                _ if Path::new(selector).is_absolute() || Path::new(selector).exists() => {
+                    inspect_task(selector, &args.output_dir)?
+                }
+                _ if store.image_id(selector)?.is_some() => store.inspect_image(selector)?,
+                _ => inspect_task(selector, &args.output_dir)?,
             }
-            _ if store.image_id(selector)?.is_some() => store.inspect_image(selector)?,
-            _ => inspect_task(selector, &args.output_dir)?,
         };
         if let Some(format) = &format {
             println!("{}", format.render(&row)?);
@@ -488,9 +499,18 @@ pub(super) fn containers(store: &Store, args: List) -> anyhow::Result<i32> {
     Ok(0)
 }
 
-pub(super) fn images(store: &Store, args: ListImages) -> anyhow::Result<i32> {
+pub(super) fn images(args: ListImages) -> anyhow::Result<i32> {
     let filters = Filters::parse(&args.filters, true)?;
     let format = args.format.as_deref().map(Format::parse).transpose()?;
+    let images: Vec<(String, docker::Image)> = if let Some(directory) = args.images_dir {
+        PreparedCatalog::new(directory).list()?
+    } else {
+        Store::discover()?
+            .images()?
+            .into_iter()
+            .map(|image| (image.reference.clone(), image))
+            .collect()
+    };
     if !args.quiet {
         if let Some(format) = &format {
             if let Some(header) = format.header() {
@@ -501,23 +521,23 @@ pub(super) fn images(store: &Store, args: ListImages) -> anyhow::Result<i32> {
         }
     }
     let mut ids = std::collections::BTreeSet::new();
-    for image in store.images()? {
-        let (repository, tag) = split_tag(&image.reference);
+    for (reference, image) in images {
+        let (repository, tag) = split_tag(&reference);
         if args
             .repository
             .as_ref()
-            .is_some_and(|filter| filter != &image.reference && filter != repository)
+            .is_some_and(|filter| filter != &reference && filter != repository)
         {
             continue;
         }
         let mut metadata = if args.format.is_some() || !args.filters.is_empty() {
-            store.inspect_image(&image.reference)?
+            image.inspect()?
         } else {
             Value::Null
         };
         if !metadata.is_null() {
             // Reference filters select individual catalog tags, not every alias of an ID.
-            metadata["RepoTags"] = json!([image.reference]);
+            metadata["RepoTags"] = json!([reference]);
         }
         if !filters.matches(&metadata, true)? {
             continue;
@@ -525,7 +545,7 @@ pub(super) fn images(store: &Store, args: ListImages) -> anyhow::Result<i32> {
         let id = if args.no_trunc {
             &image.id
         } else {
-            &image.id[7..19]
+            image.id.get(7..19).context("invalid image ID")?
         };
         if args.quiet {
             if ids.insert(id.to_owned()) {

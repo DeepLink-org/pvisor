@@ -764,6 +764,7 @@ impl Project {
             cpus: service.cpus.unwrap_or(2),
             memory_mib: parse_memory_limit(service.mem_limit.as_deref().unwrap_or("512m"))?,
             memory_pool: None,
+            managed_memory: false,
             shared_kernel_base: None,
             auto_remove: false,
             interactive: service.stdin_open,
@@ -796,6 +797,7 @@ impl Project {
                 .unwrap_or(10_000),
             healthcheck: None,
             no_healthcheck: false,
+            branchable: false,
         };
         staging::validate_mounts(&mut config)?;
         Ok(config)

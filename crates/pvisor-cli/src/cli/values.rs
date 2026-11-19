@@ -41,11 +41,6 @@ pub(super) fn gateway_mode() -> impl TypedValueParser<Value = pvisor::GatewayMod
         .try_map(|value| serde_json::from_value(serde_json::Value::String(value)))
 }
 
-pub(super) fn cache_backend() -> impl TypedValueParser<Value = pvisor::cache::CacheBackend> {
-    PossibleValuesParser::new(["server", "filesystem", "s3"])
-        .try_map(|value| value.parse::<pvisor::cache::CacheBackend>())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -74,6 +69,5 @@ mod tests {
         check(overlay_net_policy(), &["public", "deny", "allowlist"]);
         check(gateway_profile(), &["zcode-bigmodel"]);
         check(gateway_mode(), &["off", "capture"]);
-        check(cache_backend(), &["server", "filesystem", "s3"]);
     }
 }

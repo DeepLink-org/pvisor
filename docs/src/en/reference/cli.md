@@ -14,7 +14,7 @@ are in
 Root help (`pvisor` or `pvisor --help`) groups commands under **Commands**
 (Docker-compatible container commands), **Agent Commands** (`spawn`, `status`,
 `kill`, `review`, `apply`, `drop`, `inspect`, `checkpoint`, `suspend`, `resume`, `fork`) and **Tools**
-(installed `replay` companion, `cache`, `feature`, `help`). It shows a short
+(installed `daemon` and `replay` companions, `feature`, `help`). It shows a short
 run-review-apply example; use `pvisor help COMMAND` for detailed options.
 
 ```bash
@@ -178,9 +178,19 @@ accepted and every step runs.
 This is a Docker build subset: remote/stdin contexts, ADD, ONBUILD, heredocs,
 RUN mounts, secrets/SSH/cache mounts, named COPY owners, external-image COPY,
 extended substitutions, foreign execution, device nodes and file capabilities
-are rejected. COPY sources cannot traverse symlinks. Push, Docker archive output
+are rejected. COPY sources cannot traverse symlinks. OCI registry push, Docker archive output
 and multi-platform builds are not implemented. Apple Silicon/HVF has native
 acceptance coverage; Linux/KVM needs separate runtime acceptance.
+
+### Publish lazy images {#image-publication}
+
+Use `pvisor push IMAGE --to URI` or `pvisor image push` to publish a local
+image to S3 or an absolute `file:///` directory. The JSON receipt contains a
+pinned `source`. Import it with `pvisor image pull IMAGE --from SOURCE` using
+S3 or HTTP(S). Use explicit `--refresh` to replace an existing local name.
+Use `--images-dir DIR` to select prepared daemon templates. These commands
+access the catalog directly. See the [shared image cache guide](shared-image-cache.md)
+for an example.
 
 ## Session owners and durable operations {#host-agentctl}
 
@@ -230,16 +240,15 @@ Feature enables apply to `spawn` and feature queries. Other lifecycle commands r
 
 ## Daemon and cache commands {#service}
 
-`pvisor spawn` and subsequent Session commands provide native execution and review; container commands such as `pvisor run` manage independent VMs. Invoke `pvisor-daemon` directly to prepare templates and serve partial OpenSandbox/E2B profiles, or enable cache/pool components independently. `pvisor cache` is the cache client.
+`pvisor spawn` and subsequent Session commands provide native execution and review; container commands such as `pvisor run` manage independent VMs. Invoke `pvisor-daemon` directly to prepare templates and serve partial OpenSandbox/E2B profiles, or enable cache/pool components independently.
 
 ```bash
 pvisor-daemon prepare-image --help
 pvisor-daemon serve --help
 pvisor-daemon memory-pool --help
-pvisor cache --help
 ```
 
-Add `--memory-pool` to `pvisor-daemon serve --sandbox` to enable its default-off detached pool component. `pvisor cache prepare/publish/list/stat/read` are client commands; cache serving is an optional daemon component. Node runtime protocols serve native callers, without a daemon acquire/release adapter. NativeRuntime embeds VM execution; checkpoint/fork and stage/apply APIs are absent. See the [daemon guide](../guides/daemon/index.md) for ownership, installation and deployment boundaries.
+Add `--memory-pool` to `pvisor-daemon serve --sandbox` to enable its default-off detached pool component. `pvisor-daemon serve --cache` runs the optional cache service. Use the Rust client for file queries. Node runtime protocols serve native callers, without a daemon acquire/release adapter. NativeRuntime embeds VM execution; checkpoint/fork and stage/apply APIs are absent. See the [daemon guide](../guides/daemon/index.md) for ownership, installation and deployment boundaries.
 
 Other unknown names follow default execution rules. The `ctrl` name
 is an explicit exception: `pvisor ctrl`, `pvisor ctrl --help` and
@@ -1190,19 +1199,17 @@ scope of each path.
 
 #### Use a sealed rootfs {#prepared-rootfs}
 
-Prepare a quiescent, independent Linux rootfs into a private store, then replace
-`BASE_ID` with the returned `base.id`. Keep the store outside the workspace,
+Prepare a quiescent, independent Linux rootfs in a private store using the
+Rust SDK's `SnapshotStore::prepare_rootfs`. Set `BASE_ID` to the returned
+base's `reference().id`. Keep the store outside the workspace,
 stage, every guest-visible path and writable VM backing/control paths.
 
 ```bash
-pvisor cache prepare-rootfs --rootfs /srv/linux-rootfs --base-store /srv/pvisor-bases
 pvisor spawn --vm --rootfs-base-store /srv/pvisor-bases --rootfs-base BASE_ID -- /bin/sh
 ```
 
-Local preparation does not use a cache service. Successful output contains
-`schema_version`, `prepared_rootfs` (canonical `store` and `base.id`) and the
-independent `rootfs` path. Initial preparation includes copying, full content
-and metadata verification, and a persistent pin. Later ordinary CLI runs have
+Initial preparation copies and verifies contents and metadata, then commits a
+persistent pin. Later ordinary CLI runs have
 the Session owner authenticate the object, acquire a lifetime lease and attach
 the Immutable physical lower without sealing it again. The workspace remains
 live by default; an explicit [sealed workspace](#prepared-workspace) can select
@@ -1231,21 +1238,20 @@ default does not enable data-page caching, negative caching, WB or DAX.
 
 #### Use a sealed workspace {#prepared-workspace}
 
-Prepare a quiescent project into a separate private store, then run from the
-project directory. Use the rootfs preparation result for `ROOTFS_ID` and the
-workspace preparation result for `WORKSPACE_ID`.
+Prepare a quiescent project in a separate private store using the Rust SDK's
+`SnapshotStore::prepare_workspace`, then run from the live project directory.
+Set `WORKSPACE_ID` to the returned base's `reference().id` and `ROOTFS_ID` to
+the prepared rootfs ID.
 
 ```bash
-pvisor cache prepare-workspace --workspace /srv/project --base-store /srv/pvisor-workspace-bases
 cd /srv/project
 pvisor spawn --vm --rootfs-base-store /srv/pvisor-bases --rootfs-base ROOTFS_ID \
   --workspace-base-store /srv/pvisor-workspace-bases --workspace-base WORKSPACE_ID \
   --stage /srv/pvisor-stages/review-1 -- /bin/sh
 ```
 
-Preparation returns `schema_version`, `prepared_workspace` (canonical `store`
-and `base.id`) and an independent `workspace` path. Initial preparation copies
-and verifies contents and metadata. A persistent pin survives command exit and
+Initial preparation copies
+and verifies contents and metadata. A persistent pin survives process exit and
 GC; later Session owners authenticate the workspace catalog again and acquire a
 lifetime lease without sealing the source again.
 
@@ -1329,14 +1335,11 @@ retains compact Run/Overlay metadata, the apply ledger and capture artifacts.
 
 ### Shared image file cache
 
-`pvisor-daemon serve --cache` runs the independent OCI file service in the foreground;
-`pvisor cache prepare IMAGE`, `pvisor cache list DIGEST [PATH]`,
-`pvisor cache stat DIGEST PATH` and `pvisor cache read DIGEST PATH` reach it
-through `PVISOR_CACHE_SERVER`. `pvisor cache publish IMAGE` explicitly publishes
-to a writable filesystem/S3 backend. The default is
-the `pvisor/cache.sock` Unix socket under the user cache directory. The server
-accepts `--cache-image-store DIR` to name an existing OCI store. File reads support
-ranges and SHA-256 verification.
+`pvisor-daemon serve --cache` serves OCI image files on a Unix socket at
+`pvisor/cache.sock` in the user cache directory by default. Use
+`--cache-image-store DIR` for an existing OCI store. The Rust cache client uses
+`PVISOR_CACHE_SERVER` and verifies bounded reads with SHA-256. Publish portable
+images with `pvisor push --to`.
 
 VM image runs automatically probe the default socket; when the service is
 available they attach the remote image directly to the virtio-fs service as a

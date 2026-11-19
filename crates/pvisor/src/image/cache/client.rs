@@ -233,7 +233,7 @@ impl CacheClient {
         Self::from_config(CacheConfig::from_env()?)
     }
     /// Open ordered, read-only roots of one pinned publication. A single root
-    /// may be S3, HTTP(S) or local IPFS; multiple roots must all end in the same
+    /// may be S3 or HTTP(S); multiple roots must all end in the same
     /// publication SHA-256 and contain no credentials. At most eight roots.
     /// Verification happens per object/frame before failover is accepted; this
     /// does not resolve names or change the caller's pinned image handle.
@@ -400,18 +400,22 @@ impl CacheClient {
         self.request_timeout(request, TIMEOUT)
     }
 
-    /// Publish the local OCI image even when its remote reference already exists.
-    /// Only filesystem and S3 backends support publication without a daemon.
-    pub fn publish(
+    /// Prepare an OCI image in a writable filesystem cache using a trusted local
+    /// directory of config and layer blobs named by lowercase SHA-256. On a cache
+    /// miss the registry still resolves the manifest. Every needed blob must be
+    /// present and match its descriptor; no blob downloads occur. Keep the seed
+    /// files immutable for the duration of this call. Errors leave the prior
+    /// shared reference intact. The seed files are only read.
+    pub fn prepare_with_blobs(
         &self,
         image: &str,
         architecture: &str,
-        refresh: bool,
+        blobs: &std::path::Path,
     ) -> anyhow::Result<Response> {
-        match &self.transport {
-            CacheTransport::Objects(cache) => cache.publish_image(image, architecture, refresh),
-            CacheTransport::Server { .. } => bail!("publish requires a filesystem or S3 backend"),
-        }
+        let CacheTransport::Objects(cache) = &self.transport else {
+            bail!("seeded OCI preparation requires a writable filesystem cache");
+        };
+        Ok(cache.prepare(image, architecture, false, Some(blobs))?.0)
     }
 
     fn request_timeout(

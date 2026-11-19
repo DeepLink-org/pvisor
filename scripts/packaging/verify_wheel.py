@@ -441,7 +441,17 @@ fn main() {
                                 process.wait(timeout=15)
 
 
-def install_smoke(wheel: Path, version: str, acceptance_log: Path | None = None) -> None:
+def install_smoke(
+    wheel: Path,
+    version: str,
+    acceptance_log: Path | None = None,
+    install_log: Path | None = None,
+) -> None:
+    report = install_log or acceptance_log
+    for previous in (acceptance_log, install_log):
+        if previous is not None:
+            previous.unlink(missing_ok=True)
+    wheel_digest = hashlib.sha256(wheel.read_bytes()).hexdigest() if report else None
     with tempfile.TemporaryDirectory(prefix="pvisor-wheel-") as temporary:
         environment = Path(temporary) / "venv"
         venv.EnvBuilder(with_pip=True, symlinks=True).create(environment)
@@ -480,8 +490,8 @@ def install_smoke(wheel: Path, version: str, acceptance_log: Path | None = None)
 
         _run([str(scripts / "pvisor"), "run", "--help"], env=env)
         _run([str(scripts / "pvisor"), "spawn", "--help"], env=env)
-        for command in ("prepare", "publish", "read"):
-            _run([str(scripts / "pvisor"), "cache", command, "--help"], env=env)
+        for command in ("build", "pull", "push", "inspect"):
+            _run([str(scripts / "pvisor"), "image", command, "--help"], env=env)
         for command in ("replay",):
             _run([str(scripts / "pvisor"), command, "--help"], env=env)
 
@@ -494,6 +504,21 @@ def install_smoke(wheel: Path, version: str, acceptance_log: Path | None = None)
                 scripts / "pvisor", wheel, Path(temporary) / "acceptance", env, acceptance_log
             )
 
+    if report is not None:
+        if hashlib.sha256(wheel.read_bytes()).hexdigest() != wheel_digest:
+            raise RuntimeError("wheel changed during installation or acceptance")
+        evidence = json.loads(acceptance_log.read_text()) if acceptance_log else {}
+        evidence.update(
+            version=version,
+            source_sha=os.environ.get("GITHUB_SHA"),
+            wheel=wheel.name,
+            wheel_sha256=wheel_digest,
+            status="PASS",
+            coverage="vm-recovery" if acceptance_log else "install-smoke",
+        )
+        report.parent.mkdir(parents=True, exist_ok=True)
+        report.write_text(json.dumps(evidence, indent=2) + "\n", encoding="utf-8")
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
@@ -504,6 +529,7 @@ def main() -> None:
         type=Path,
         help="Require real VM cold restore, stage/apply and refusal acceptance",
     )
+    parser.add_argument("--install-log", type=Path, help="Write a wheel-bound install receipt")
     args = parser.parse_args()
     wheel = args.wheel.resolve()
     if not wheel.is_file():
@@ -512,9 +538,12 @@ def main() -> None:
     version, scripts, firmware = _wheel_contents(wheel)
     verify_native_payloads(wheel, scripts, firmware)
     print(f"wheel={wheel.name} version={version} scripts={','.join(sorted(scripts))} native=PASS")
-    if args.install_smoke or args.acceptance_log:
+    if args.install_smoke or args.acceptance_log or args.install_log:
         install_smoke(
-            wheel, version, args.acceptance_log.resolve() if args.acceptance_log else None
+            wheel,
+            version,
+            args.acceptance_log.resolve() if args.acceptance_log else None,
+            args.install_log.resolve() if args.install_log else None,
         )
         print("install=PASS versions=PASS dispatch=PASS")
 

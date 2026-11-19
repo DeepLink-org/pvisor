@@ -16,6 +16,7 @@ use pvisor_core::{ExecutorIdentity, ExecutorPlan, ResourceLimits};
 
 pub const RUN_META_FILENAME: &str = "run.json";
 pub const LEASE_FILENAME: &str = "lease.lock";
+pub(super) const LEASE_IDENTITY: &[u8] = b"pvisor-run-lease/v1\n";
 pub fn default_run_home() -> PathBuf {
     if let Some(root) = std::env::var_os("PVISOR_RUN_HOME") {
         return PathBuf::from(root);
@@ -495,17 +496,46 @@ impl RunLease {
     }
 
     pub fn acquire(stage_dir: &Path) -> anyhow::Result<Self> {
+        use std::io::{Read, Seek, Write};
+        use std::os::unix::fs::OpenOptionsExt;
         Persistence::create_dir_all_durable(stage_dir)?;
-        let file = OpenOptions::new()
+        let mut file = OpenOptions::new()
             .create(true)
             .read(true)
             .write(true)
             .truncate(false)
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC)
             .open(stage_dir.join(LEASE_FILENAME))?;
+        let metadata = file.metadata()?;
+        anyhow::ensure!(
+            metadata.is_file()
+                && metadata.uid() == unsafe { libc::geteuid() }
+                && metadata.nlink() == 1
+                && metadata.mode() & 0o022 == 0,
+            "Run lease must be an owned regular file without shared write access or hard links"
+        );
         let result = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
         if result != 0 {
             return Err(std::io::Error::last_os_error())
                 .with_context(|| format!("acquire Run storage lease: {}", stage_dir.display()));
+        }
+        let mut identity = Vec::new();
+        (&mut file)
+            .take(LEASE_IDENTITY.len() as u64 + 1)
+            .read_to_end(&mut identity)?;
+        anyhow::ensure!(
+            LEASE_IDENTITY.starts_with(&identity),
+            "unrecognized Run lease identity"
+        );
+        if !stage_dir.join(RUN_META_FILENAME).try_exists()?
+            && (identity != LEASE_IDENTITY || metadata.mode() & 0o777 != 0o600)
+        {
+            file.set_permissions(fs::Permissions::from_mode(0o600))?;
+            file.rewind()?;
+            file.write_all(LEASE_IDENTITY)?;
+            file.sync_all()?;
+            Persistence::sync_directory(stage_dir)?;
         }
         Ok(Self { file })
     }
@@ -1341,6 +1371,104 @@ mod tests {
         assert!(is_live(temp.path()).unwrap());
         drop(lease);
         assert!(!is_live(temp.path()).unwrap());
+    }
+
+    #[test]
+    fn lease_identity_recovers_interrupted_initialization_and_preserves_foreign_content() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join(LEASE_FILENAME);
+        for length in 0..=LEASE_IDENTITY.len() {
+            fs::write(&path, &LEASE_IDENTITY[..length]).unwrap();
+            let lease = RunLease::acquire(temp.path()).unwrap();
+            assert_eq!(fs::read(&path).unwrap(), LEASE_IDENTITY);
+            assert!(RunLease::acquire(temp.path()).is_err());
+            drop(lease);
+            assert!(!is_live(temp.path()).unwrap());
+            drop(RunLease::acquire(temp.path()).unwrap());
+        }
+        fs::write(&path, b"foreign lease").unwrap();
+        assert!(RunLease::acquire(temp.path()).is_err());
+        assert_eq!(fs::read(&path).unwrap(), b"foreign lease");
+    }
+
+    #[test]
+    fn lease_identity_refuses_linked_files_without_changing_the_target() {
+        let temp = tempfile::tempdir().unwrap();
+        let target = temp.path().join("project-file");
+        fs::write(&target, b"").unwrap();
+        let stage = temp.path().join("stage");
+        fs::create_dir(&stage).unwrap();
+        let lease = stage.join(LEASE_FILENAME);
+        std::os::unix::fs::symlink(&target, &lease).unwrap();
+        assert!(RunLease::acquire(&stage).is_err());
+        assert!(fs::read(&target).unwrap().is_empty());
+        fs::remove_file(&lease).unwrap();
+        fs::hard_link(&target, &lease).unwrap();
+        assert!(RunLease::acquire(&stage).is_err());
+        assert!(fs::read(&target).unwrap().is_empty());
+    }
+
+    #[test]
+    fn lease_identity_preserves_initialized_legacy_records_on_repeated_admission() {
+        let temp = tempfile::tempdir().unwrap();
+        let stage = temp.path().join("stage");
+        fs::create_dir_all(&stage).unwrap();
+        record(temp.path(), &stage, &stage.join("upper"))
+            .write()
+            .unwrap();
+        let path = stage.join(LEASE_FILENAME);
+        fs::write(&path, b"").unwrap();
+        let before = fs::metadata(&path).unwrap();
+        for _ in 0..3 {
+            drop(RunLease::acquire(&stage).unwrap());
+            let after = fs::metadata(&path).unwrap();
+            assert!(fs::read(&path).unwrap().is_empty());
+            assert_eq!(
+                (after.dev(), after.ino(), after.mode()),
+                (before.dev(), before.ino(), before.mode())
+            );
+            assert_eq!(
+                (
+                    after.mtime(),
+                    after.mtime_nsec(),
+                    after.ctime(),
+                    after.ctime_nsec()
+                ),
+                (
+                    before.mtime(),
+                    before.mtime_nsec(),
+                    before.ctime(),
+                    before.ctime_nsec()
+                )
+            );
+        }
+    }
+
+    #[test]
+    fn workspace_snapshot_recognizes_legacy_records_without_a_lease_marker() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = temp.path().join("project");
+        let stage = workspace.join("legacy");
+        fs::create_dir_all(&stage).unwrap();
+        let legacy = record(&workspace, &stage, &stage.join("upper"));
+        legacy.write().unwrap();
+        fs::write(stage.join(LEASE_FILENAME), b"").unwrap();
+        fs::write(workspace.join("keep"), b"user data").unwrap();
+        let storage = workspace.join("current");
+        let mut current = record(&workspace, &storage, &storage.join("upper"))
+            .overlay
+            .unwrap();
+        current.target = workspace.clone();
+        let config = pvisor_core::overlay::OverlayConfig {
+            target: Some(workspace.display().to_string()),
+            ..Default::default()
+        };
+        let lowers =
+            super::super::overlay::lower_stack_from_config(&config, &storage, &mut current, true)
+                .unwrap();
+        let snapshot = lowers.last().unwrap();
+        assert_eq!(fs::read(snapshot.join("keep")).unwrap(), b"user data");
+        assert!(!snapshot.join("legacy").exists());
     }
 
     #[test]

@@ -113,6 +113,12 @@ pub enum DeviceSnapshotState {
 /// during activation, transferring ownership. After reset, the transport recreates queues
 /// from queue_config() for the next negotiation cycle.
 pub trait VirtioDevice: AsAny + Send {
+    /// Pre-freeze channel drain probe; no mutation and no worker shutdown.
+    /// Only channel-owning devices need an extra running-state gate.
+    fn snapshot_blocker(&self) -> Result<Option<String>, String> {
+        Ok(None)
+    }
+
     /// Poll a request-boundary freeze without blocking the event loop. The
     /// memory gate must remain open until all workers have returned true.
     fn freeze(&mut self) -> Result<bool, String> {

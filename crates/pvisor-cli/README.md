@@ -1,5 +1,9 @@
 # pVisor application frontends
 
+Implementation guards scan every Rust source recursively and exempt only the
+crate-root `api.rs` and `lib.rs`. Negative fixtures verify that nested files
+with those names and newly added adapters cannot add public inherent methods.
+
 Guest launch/control/exit contracts come from `pvisor_guest::api`. Host code
 uses `GuestValidation` for admission; executable command construction stays in
 the guest supervisor.
@@ -66,7 +70,10 @@ state is read through immutable accessors, and native checkpoint deletion delega
 to the runtime service with the same request-local admission hooks. VM launch options are assembled through
 `VmExecutionInputs`; RunSpec's existing wire encoding remains compatible, while
 runtime admission validates the typed inputs before starting any drivers. Each running Session owns its recorded private control socket; stopped Session operations
-run directly in the caller. Embedded execution publishes the same discovery record.
+run directly in the caller. Stopped `status` and `review` retain exclusive Session
+locking and owner validation without rewriting the diagnostic lock owner or syncing
+it on acquisition/release. Required completion reconciliation remains durable.
+Embedded execution publishes the same discovery record.
 Execution-state fork may branch a running source from an immutable checkpoint.
 The runtime's execution-operation lease fences source identity, checkpoint
 references and request replay; the source retains its live Execution lease.
@@ -86,8 +93,8 @@ references remain protected. Workspace checkpoint deletion still requires a
 stopped source and its Execution lease.
 
 The separate `pvisor-daemon` owns shared services, including the cache server and memory pool.
-Use `pvisor cache` to build, publish and query caches; invoke `pvisor-daemon serve --cache`
-to serve them. `pvisor daemon start/status/stop` dispatch to the same-installation
+Use `pvisor push` to publish images and the Rust cache client to query files.
+`pvisor-daemon serve --cache` serves the shared pool. `pvisor daemon start/status/stop` dispatch to the same-installation
 daemon companion. Replay is also a root companion. Use `pvisor -- COMMAND`
 for explicit workload execution.
 
@@ -108,10 +115,10 @@ durable stage preparation uses its `Persistence` and `DurableFiles` contracts.
 
 ## Command help and live VM controls
 
-Root help starts with **Commands** (container `run`, `build`, `pull`, `images`, `rmi`,
+Root help starts with **Commands** (container `run`, `build`, `pull`, `push`, `images`, `rmi`,
 `exec`, `ps`, `start`, `stop`, `rm`, `logs`), **Agent Commands** (Session `spawn`, `stage`,
 `status`, `kill`, `review`, `apply`, `drop`, `inspect`, `checkpoint`, `suspend`,
-`resume`, `fork`) and **Tools** (installed `daemon`/`replay` companions, `cache`, `feature`,
+`resume`, `fork`) and **Tools** (installed `daemon`/`replay` companions, `feature`,
 `help`). It includes the run-review-apply examples; use `pvisor help COMMAND`
 for command options.
 
@@ -432,6 +439,17 @@ applies to the real host root.
 The full profile in this section applies to Linux and Apple Silicon macOS.
 Windows currently provides the separate native WHP subset
 documented under [Windows container commands](#windows-container-commands).
+On Linux x86-64, `pvisor run --managed-memory IMAGE ...` opts the ordinary
+container VM into host-only native offload/resume controls with private raw RAM
+backing. This does not start a pressure scheduler, import templates, change OCI
+cache lookup, or trigger offload merely because a VM is idle. A cooperative
+replay owner reserves/binds it through `pvisor-daemon pressure-serve`, reports
+safe waits and obtains a request permit before using the existing guest exec
+channel. Do not mix direct interactive/exec/background access with those waits.
+The flag conflicts with `--memory-pool`, `-M` and `--shared-kernel-base`; omission
+preserves ordinary main startup. This backing is uncompressed, not the historical
+compressed replay runtime. See the runtime's independent-container contract.
+
 
 `pvisor run` creates a container, optionally with Linux staged binds as described
 below; `spawn` retains its existing Session stage/review/apply semantics.
@@ -545,11 +563,11 @@ the native platform, including for cached images. Each local reference holds one
 platform; pulling the same tag for another platform replaces that reference,
 while existing containers keep their pinned images.
 
-The registered commands are `run`, `build`, `pull`, `images`, `rmi`, `exec`,
+The registered commands are `run`, `build`, `pull`, `push`, `images`, `rmi`, `exec`,
 `ps`, `start`, `stop`, `restart`, `wait`, `cp`, `rm`, `logs`, `network`, `volume`,
 `builder` and `compose`. Docker's grouped
 spellings are also accepted: `container run/exec/ls/start/stop/restart/wait/cp/rm/logs/inspect` and
-`image build/pull/ls/rm/inspect`; `ls` accepts `list` (`container ls` also accepts `ps`)
+`image build/pull/push/ls/rm/inspect`; `ls` accepts `list` (`container ls` also accepts `ps`)
 and `rm` accepts `remove`. These dispatch to the same implementations and retain
 the same options and exit codes. Unsupported grouped commands fail during parsing,
 without falling back to Session execution.
@@ -581,8 +599,9 @@ escalation. Values below `-1` are rejected before contacting a container.
 | --- | --- |
 | `run` | `--platform`, `--name`, `--rm`, `-d`, `-i`, `-t`, `-e`, `--env-file`, `-w`, `-u`, `--entrypoint`, `-v`, `-p`, `--cpus`, `-m/--memory`, `-M`, `--memory-pool`, `--shared-kernel-base`, `--network`/`--net bridge/none/NAME`, `--ip`, `-l/--label`, `--restart`, `--stop-signal`, `--stop-timeout` |
 | `build` | Local context, `-f`, repeated `-t`/`--build-arg`, `--target`, `--platform`, `--pull`, `--no-cache`, `-q`, `--iidfile`, `-o type=oci,dest=PATH`, `--network default/none`, `--cpus`, `-m`, `--timeout`, `--progress auto/plain` |
-| `pull` | `--platform`, one public OCI image reference |
-| `images` | Optional repository, `-q`, `--no-trunc`, `-f/--filter`, `--format` |
+| `pull` | `--platform` and `--username` with `--password-stdin` or `--password` for OCI; `--from` for a fixed S3/HTTP(S) publication, `--refresh`, `--images-dir` |
+| `push`, `image push` | Local image, explicit `--to s3://BUCKET/PREFIX` or `file:///ABSOLUTE/PATH`, optional `--images-dir` |
+| `images` | Optional repository, `-q`, `--no-trunc`, `-f/--filter`, `--format`, `--images-dir` |
 | `rmi` | Multiple references/IDs, `-f` |
 | `exec` | `-i`, `-t`, `-e`, `--env-file`, `-w`, `-u`, command and arguments |
 | `ps` | `-a`, `-q`, `--no-trunc`, `-f/--filter`, `--format` |
@@ -592,9 +611,36 @@ escalation. Values below `-1` are rejected before contacting a container.
 | `logs` | One container, `-f` |
 | `network` | `create --driver bridge --subnet --gateway`, `ls -q --no-trunc`, `inspect`, `rm -f` |
 | `volume` | `create [-d local] [NAME]`, `ls [-q] [--format]`, `inspect [-f/--format] NAME...`, `rm NAME...` |
-| `container inspect`, `image inspect` | Multiple selectors, `-f/--format`; default JSON array |
+| `container inspect`, `image inspect` | Multiple selectors, `-f/--format`; default JSON array; image queries also accept `--images-dir` |
 | `restart`, `wait` | Multiple container selectors; restart has `-t/--timeout` |
 | `cp` | `HOST_PATH CONTAINER:PATH` or the reverse; files/directories in live or stopped containers, bounded below |
+
+Publish a local build or pulled image without another conversion command:
+
+```sh
+pvisor build -t app:local .
+pvisor push app:local --to s3://bucket/releases
+# Equivalent: pvisor image push app:local --to s3://bucket/releases
+pvisor image pull app:local --from https://mirror.example/releases/PUBLICATION_SHA256
+pvisor image inspect app:local
+```
+
+Push requires an explicit destination; ordinary OCI registry push is not
+implemented. It snapshots an existing local revision, retains its platform and
+never pulls a missing source. Ambient cache settings cannot select the target.
+The JSON receipt contains `source`, `image_handle`, `digest` and `platform`.
+Import reads the descriptor, original OCI config and V2 root metadata, leaving
+file contents remote. It preserves labels, health checks and build defaults;
+existing names require `--refresh`, and a failed refresh leaves the prior
+catalog record intact. Inspect retains its Docker array and adds
+`Pvisor.Source/ImageHandle/Digest/Platform` for remote bindings.
+
+`--images-dir DIR` explicitly selects the daemon's prepared-template catalog.
+Push, pull, ls and inspect access that catalog from the `pvisor` process.
+Pull without `--from` resolves the catalog's configured V2 registries; ordinary
+pulls use OCI. Queries never resolve missing names. For file-level diagnostics
+use the Rust cache client. See the [lazy-image specification](../../tests/spec/lazy-image/spec.md)
+and [daemon migration](../pvisor-daemon/README.md#s3-and-httphttps-lazy-image-repositories).
 
 The first profile supports Apple Silicon macOS/HVF and Linux x86_64/KVM;
 Linux runtime acceptance must be validated separately. macOS binaries require
@@ -1107,7 +1153,7 @@ Pool revisions remain pinned in container records across tag replacement/removal
 Short and fully qualified Docker Hub references address the same catalog tag.
 Replacing or removing it through any alias affects that one identity; existing
 containers and distinct tags retain their pinned revisions.
-Filesystem/S3 publishers use `--image-store` as the parent of scoped
+Writable filesystem/S3 cache preparation uses `PVISOR_IMAGE_STORE` as the parent of scoped
 `staging/.import-*` directories, removed after success or error. No raw OCI
 directory is retained. `SSL_CERT_FILE` can supply a host registry CA bundle.
 Socket clients and the VM bridge require protocol V2; unsupported peers fail
@@ -1125,16 +1171,10 @@ Per-generation control sockets live below an owned `0700`
 
 ## Prepared VM rootfs
 
-`pvisor cache prepare-rootfs --rootfs DIR --base-store STORE` is a local operation,
-independent of cache daemons, backends and registry access. The source must be
-quiescent; preparation copies/verifies it and commits a persistent store pin
-before printing `{schema_version, prepared_rootfs: {store, base: {id}}, rootfs}`.
-Cache backend/location/read-only/image-store options conflict with this command.
-The source and store must not contain one another. The private store must remain
-outside guest-visible or writable workspace/stage/mount trees and must not be
-modified manually. No prepared-entry removal command is provided.
-Both local source and destination are checked against canonical Host authority
-before initializing/copying, without contacting or changing a listener.
+Use the Rust SDK's `SnapshotStore::prepare_rootfs` to copy and verify a
+quiescent source and commit its persistent pin. Keep the store independent of
+the source, outside guest-visible or writable paths and private Host authority.
+Use the returned base's `reference().id` for `ID`.
 
 `pvisor spawn --vm --rootfs-base-store STORE --rootfs-base ID -- COMMAND` opens that
 catalog entry in the ordinary Session owner, before default host rootfs or
@@ -1165,18 +1205,16 @@ orphans. These paths require platform-specific integration coverage.
 ## Prepared VM workspace
 
 An explicit prepared workspace reads one fixed, owned generation while retaining
-the live caller workspace as the apply destination. Prepare it outside the Run:
+the live caller workspace as the apply destination. Prepare a quiescent source
+before the Run using the Rust SDK's `SnapshotStore::prepare_workspace`. Use the
+returned base's `reference().id` for `WORKSPACE_ID`.
 
 ```bash
-pvisor cache prepare-workspace --workspace /opt/workspace-source --base-store /opt/workspace-bases
 pvisor spawn --vm --rootfs-base-store /opt/rootfs-bases --rootfs-base ROOTFS_ID \
   --workspace-base-store /opt/workspace-bases --workspace-base WORKSPACE_ID -- /bin/sh
 ```
 
-The preparation command is local, with the same backend-option conflicts and
-canonical source/store/Host-authority checks as `prepare-rootfs`. It prints
-`{schema_version, prepared_workspace: {store, base: {id}}, workspace}` after the
-workspace-purpose catalog pin commits. A rootfs catalog record cannot substitute
+A rootfs catalog record cannot substitute
 for a workspace record. Preparation copies a quiescent source once; warm Runs
 authenticate the catalog and seal without reimporting the source or auditing the
 whole tree. The private store and generation must remain externally unmodified.
@@ -1218,8 +1256,6 @@ semantics. These interface changes do not establish a performance result.
   safe Agent presets, terminal adapters and output rendering.
 - `src/cli/features.rs`: runtime feature listing frontend; registry/settings
   remain in `pvisor::features`.
-- `src/cli/cache.rs`: cache command parsing and rendering; cache storage,
-  image preparation and authenticated server implementation remain in `pvisor`.
 - `src/companions.rs`: trusted same-installation companion discovery/dispatch.
 - `src/api.rs`: uniform process-entry contracts; implementations live in
   `src/application.rs`.
@@ -1419,7 +1455,7 @@ at most the target (integer bytes or decimal KB/MB/GB); protected or age-filtere
 records can leave usage above it. The report counts logical file bytes, not
 guaranteed filesystem free space. Repeated prune is safe. This command does not
 prune containers, volumes, image pool content, abandoned build workspaces, or
-the separate `pvisor cache` service.
+the shared image cache service.
 
 Tags are published after the shared content and immutable index are committed. A failed
 step leaves existing tags unchanged. OCI output must name a new file and contains

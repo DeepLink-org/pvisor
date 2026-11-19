@@ -35,9 +35,13 @@ mod file_bind;
 pub mod health;
 mod images;
 mod lifecycle;
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+mod live_fork;
 mod metadata;
 mod session;
 pub use session::ContainerProfile;
+/// Opt-in host-only native controls for cooperative memory scheduling.
+pub mod managed;
 mod staging;
 mod volumes;
 pub use lifecycle::RestartPolicy;
@@ -185,12 +189,10 @@ pub struct CachedImage {
     pub location: PathBuf,
     /// Authenticated immutable `pvisor-v2` metadata revision handle.
     pub handle: String,
-    /// Optional immutable V2 repository root: `s3://BUCKET/PREFIX`, HTTP/HTTPS,
-    /// or `ipfs+http://LOOPBACK:PORT/ipfs/CID`. Credentials belong to the host
-    /// environment, never this record or the guest. HTTP is read-only and uses
-    /// exact Range responses. Remote failures never fall back to local content.
-    /// IPFS requires a trusted Kubo throughout VM reads and provides no anonymity.
-    #[serde(default, alias = "ipfs", skip_serializing_if = "Option::is_none")]
+    /// Optional immutable V2 repository root: S3 or HTTP(S). Credentials belong
+    /// to the host environment. HTTP is read-only and uses exact Range responses.
+    /// Remote failures never fall back to local content.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub repository: Option<String>,
     /// Ordered fallback roots for the same hash-named publication as `repository`.
     /// Empty for local/single-source images. At most seven distinct S3/HTTP(S)
@@ -313,6 +315,12 @@ pub struct Create {
     /// startup. On macOS pool loss terminates dependent VMs; no reconnect occurs.
     #[serde(default)]
     pub memory_pool: Option<PathBuf>,
+    /// Opt in to host-only native offload/resume and private raw RAM backing.
+    /// Linux x86-64 only; incompatible with memory pools/shared kernel RAM.
+    /// A cooperative owner must gate all guest requests through its scheduler.
+    /// False preserves ordinary launch behavior; this does not enable a timer.
+    #[serde(default)]
+    pub managed_memory: bool,
     /// Optional private shared boot-kernel directory on Apple Silicon macOS.
     /// Equal firmware bytes map one read-only inode with private COW writes.
     /// Canonicalized at creation, retained across start, and excluded from guest
@@ -364,6 +372,9 @@ pub struct Create {
     /// Explicitly disable an image check for ordinary container admission.
     #[serde(default)]
     pub no_healthcheck: bool,
+    /// Enable live, same-host copy-on-write forks on Linux x86-64.
+    #[serde(default)]
+    pub branchable: bool,
 }
 
 /// Read-only compatibility snapshot of a container-profile Session. This value
@@ -912,6 +923,7 @@ impl Store {
         pinned: Option<Image>,
     ) -> anyhow::Result<Instance> {
         lifecycle::validate(&config)?;
+        managed::validate_config(&config)?;
         staging::validate_mounts(&mut config)?;
         if let Some(platform) = &config.platform {
             require_native_platform(platform)?;
@@ -1135,6 +1147,12 @@ impl Store {
                 });
             }
         }
+        if config.branchable {
+            #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+            live_fork::validate(&config)?;
+            #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+            bail!("live OCI fork requires Linux x86-64");
+        }
         staging::validate_mounts(&mut config)?;
         config
             .mounts
@@ -1232,6 +1250,10 @@ impl Store {
                     !self.active(&instance)?,
                     "container is already running or starting"
                 );
+                ensure!(
+                    !self.directory(&instance.id).join("fork.json").is_file(),
+                    "a stopped live-fork child requires a new fork from its source"
+                );
                 let _stages = staging::lock_previous(self, &instance, false)?;
                 // Claim admission while the catalog excludes another start or
                 // removal. Observation briefly locks this same file; wait for
@@ -1246,27 +1268,7 @@ impl Store {
                 instance.exit_code = None;
                 instance.restart_count = 0;
                 self.save(&instance)?;
-                let spawn = (|| -> anyhow::Result<()> {
-                    let mut command = Command::new(std::env::current_exe()?);
-                    command
-                        .arg("--pvisor-internal-docker-owner")
-                        .arg(&self.root)
-                        .arg(&instance.id)
-                        .arg(&instance.generation)
-                        .stdin(Stdio::from(owner_lease))
-                        .stdout(Stdio::null())
-                        .stderr(Stdio::from(self.diagnostic(&instance)?));
-                    unsafe {
-                        command.pre_exec(|| {
-                            if libc::setsid() < 0 {
-                                return Err(io::Error::last_os_error());
-                            }
-                            Ok(())
-                        });
-                    }
-                    command.spawn()?;
-                    Ok(())
-                })();
+                let spawn = self.spawn_owner(&instance, owner_lease, None);
                 if let Err(error) = spawn {
                     let error = match staging::failed_admission(self, &instance) {
                         Ok(()) => error,
@@ -1279,6 +1281,39 @@ impl Store {
                 }
             }
         }
+        self.wait_for_start(instance)
+    }
+
+    fn spawn_owner(
+        &self,
+        instance: &Instance,
+        owner_lease: File,
+        fork_ram: Option<&File>,
+    ) -> anyhow::Result<()> {
+        let mut command = Command::new(std::env::current_exe()?);
+        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+        live_fork::pass_ram(&mut command, fork_ram);
+        command
+            .arg("--pvisor-internal-docker-owner")
+            .arg(&self.root)
+            .arg(&instance.id)
+            .arg(&instance.generation)
+            .stdin(Stdio::from(owner_lease))
+            .stdout(Stdio::null())
+            .stderr(Stdio::from(self.diagnostic(instance)?));
+        unsafe {
+            command.pre_exec(|| {
+                if libc::setsid() < 0 {
+                    return Err(io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+        command.spawn()?;
+        Ok(())
+    }
+
+    fn wait_for_start(&self, instance: Instance) -> anyhow::Result<Instance> {
         let deadline = Instant::now() + Duration::from_secs(30);
         let ready = self
             .directory(&instance.id)
@@ -1455,7 +1490,13 @@ impl Store {
                 }
             }
         }
+        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+        let projections = live_fork::unreferenced_images(self, &self.directory(&instance.id))?;
         fs::remove_dir_all(self.directory(&instance.id))?;
+        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+        for directory in projections {
+            fs::remove_dir_all(directory)?;
+        }
         Ok(())
     }
     /// Open one current-generation guest control connection.
@@ -1709,6 +1750,14 @@ pub fn internal_if_requested() -> anyhow::Result<bool> {
     if mode.ends_with("-owner") {
         owner(&store, instance)?;
     } else {
+        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+        let fork = live_fork::load(&store.directory(&instance.id))?;
+        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+        let lower = match fork {
+            Some(saved) => saved.open_image()?,
+            None => store.open_image(&instance.image)?,
+        };
+        #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
         let lower = store.open_image(&instance.image)?;
         run_vm(&store, instance, lower)?;
     }
@@ -1877,7 +1926,7 @@ fn run_owner_generation(store: &Store, instance: &mut Instance) -> anyhow::Resul
             port.host = listener.local_addr()?.port();
             listeners.push((listener, port.guest));
         }
-        {
+        if !instance.config.ports.is_empty() || !instance.config.branchable {
             let _guard = store.lock()?;
             store.save(instance)?;
         }
@@ -1892,7 +1941,12 @@ fn run_owner_generation(store: &Store, instance: &mut Instance) -> anyhow::Resul
             .mode(0o600)
             .open(directory.join("stderr.log"))?;
         let stderr_offset = stderr.metadata()?.len();
-        let child = Command::new(std::env::current_exe()?)
+        let mut command = Command::new(std::env::current_exe()?);
+        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+        let ram = live_fork::inherited_ram(&directory)?;
+        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+        live_fork::pass_ram(&mut command, ram.as_ref());
+        let child = command
             .arg("--pvisor-internal-docker-vm")
             .arg(&store.root)
             .arg(&instance.id)
@@ -1907,6 +1961,12 @@ fn run_owner_generation(store: &Store, instance: &mut Instance) -> anyhow::Resul
         // Close and join listeners before committing completion/releasing the
         // owner lease. Stop must not acknowledge while a listener is still live.
         let mut publications = PublishedListeners::start(listeners, &endpoint)?;
+        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+        let mut prepared_running = if ram.is_some() {
+            Some(live_fork::RunningRecord::prepare(store, instance)?)
+        } else {
+            None
+        };
         let mut health = None;
         loop {
             publications.check()?;
@@ -1930,13 +1990,27 @@ fn run_owner_generation(store: &Store, instance: &mut Instance) -> anyhow::Resul
             {
                 instance.state = "running".into();
                 running_since = Some(Instant::now());
-                let _guard = store.lock()?;
-                store.save(instance)?;
+                #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+                let published = if let Some(prepared) = prepared_running.take() {
+                    prepared.publish(store, &directory)?;
+                    true
+                } else {
+                    false
+                };
+                #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+                let published = false;
+                let guard = if published {
+                    None
+                } else {
+                    let guard = store.lock()?;
+                    store.save(instance)?;
+                    Some(guard)
+                };
                 fs::write(
                     directory.join(format!("ready-{}", instance.generation)),
                     b"ready",
                 )?;
-                drop(_guard);
+                drop(guard);
                 if let Some(check) = instance.config.healthcheck.clone() {
                     health = Some(health::Monitor::start(
                         store.clone(),
@@ -1970,6 +2044,17 @@ fn settle_owner_generation(
     result: anyhow::Result<i32>,
     spawned: bool,
 ) -> anyhow::Result<()> {
+    // The native runner exits the process; Rust Drop is not its cleanup receipt.
+    // Reap first, then retire only this generation's host control endpoint.
+    let cleanup = if instance.config.managed_memory {
+        managed::retire(&managed::Target {
+            container_id: instance.id.clone(),
+            generation: instance.generation.clone(),
+        })
+    } else {
+        Ok(())
+    };
+    let result = result.and_then(|code| cleanup.map(|()| code));
     // ChildGuard has reaped the VMM before sealing any Session. A seal failure is
     // an instance failure, not permission to invent an uncommitted Session receipt.
     let result = if spawned {
@@ -1995,6 +2080,9 @@ fn settle_owner_generation(
     let _guard = store.lock()?;
     finish_instance(store, instance, code, error)?;
     let _ = fs::remove_file(socket(instance)?);
+    if instance.config.branchable {
+        let _ = fs::remove_file(socket(instance)?.with_extension("fork"));
+    }
     if instance.config.auto_remove {
         store.remove_instance_files(instance, true)?;
     }
@@ -2208,6 +2296,33 @@ fn run_vm<Backing>(
         vm.shared_kernel_base(directory.clone())?;
     }
     let directory = store.directory(&instance.id);
+    managed::validate_config(&instance.config)?;
+    let managed_ram = if instance.config.managed_memory {
+        let file = tempfile::tempfile_in(&directory)?;
+        vm.ram_backing(file.try_clone()?)?;
+        Some(file)
+    } else {
+        None
+    };
+    let mut managed_control = managed_ram
+        .as_ref()
+        .map(|file| {
+            managed::Endpoint::bind(
+                managed::Target {
+                    container_id: instance.id.clone(),
+                    generation: instance.generation.clone(),
+                },
+                {
+                    use std::os::fd::AsRawFd;
+                    PathBuf::from(format!(
+                        "/proc/{}/fd/{}",
+                        std::process::id(),
+                        file.as_raw_fd()
+                    ))
+                },
+            )
+        })
+        .transpose()?;
     // HVF cold blocks require a private file backing so discarded ranges can
     // be punched out. Linux's pager instead requires private anonymous RAM.
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
@@ -2241,6 +2356,32 @@ fn run_vm<Backing>(
         };
         lower_mutability.insert(0, resolver_mutability);
     }
+    #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+    ensure!(
+        !instance.config.branchable,
+        "live OCI fork requires Linux x86-64"
+    );
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    let mut source_endpoint = None;
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    let is_restored = if instance.config.branchable {
+        live_fork::validate(&instance.config)?;
+        vm.snapshot_profile()?;
+        lower_mutability[0] = pvisor_overlay_core::LayerMutability::Immutable;
+        if let Some(saved) = live_fork::load(&directory)? {
+            vm.machine_restore(saved.restore(&directory, &endpoint)?)?;
+            true
+        } else {
+            let mut image_root = image_root;
+            vm.ram_backing(live_fork::memory_file()?)?;
+            source_endpoint = Some(live_fork::Source::new(store, &instance, &mut image_root)?);
+            // Keep the attached backend in the VMM for its entire lifetime.
+            source_endpoint.as_mut().unwrap().keep_image(image_root);
+            false
+        }
+    } else {
+        false
+    };
     vm.overlay(
         "/dev/root",
         OverlayConfig {
@@ -2391,19 +2532,40 @@ fn run_vm<Backing>(
     vm.vsock_port(control::CONTROL_PORT, endpoint, true)?;
     vm.task_stdio(-1, 1, 2)?;
     let ready = directory.join(format!("boot-{}", instance.generation));
-    vm.run(move |handle| {
+    let managed_control = &mut managed_control;
+    let on_ready = move |handle: pvisor_vm::api::VmmHandle| {
         #[cfg(any(
             all(target_os = "macos", target_arch = "aarch64"),
             all(target_os = "linux", target_arch = "x86_64")
         ))]
         {
+            #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+            {
+                use pvisor_vm::api::VmControl;
+                if let Some(source) = source_endpoint.take() {
+                    source.serve(handle.clone())?;
+                }
+                if is_restored {
+                    handle.resume().map_err(io::Error::other)?;
+                }
+            }
             crate::executor::vm::start_diagnostics(&handle)?;
             if let Some(pager) = pager {
-                pager.start(handle)?;
+                pager.start(handle.clone())?;
             }
         }
+        if let Some(endpoint) = managed_control.as_mut() {
+            endpoint
+                .start(std::sync::Arc::new(handle))
+                .map_err(io::Error::other)?;
+        }
         fs::write(ready, b"ready")
-    })?;
+    };
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    if is_restored {
+        return Ok(vm.run_live_fork(on_ready)?);
+    }
+    vm.run(on_ready)?;
     Ok(())
 }
 
@@ -3404,6 +3566,7 @@ mod tests {
             cpus: 1,
             memory_mib: 128,
             memory_pool: None,
+            managed_memory: false,
             shared_kernel_base: None,
             auto_remove: false,
             interactive: false,
@@ -3418,6 +3581,7 @@ mod tests {
             stop_timeout_ms: 10_000,
             healthcheck: None,
             no_healthcheck: false,
+            branchable: false,
         }
     }
     #[test]
@@ -3544,6 +3708,7 @@ mod tests {
         let restored: Create = serde_json::from_value(legacy).unwrap();
         assert!(restored.shared_kernel_base.is_none());
         assert!(restored.memory_pool.is_none());
+        assert!(!restored.managed_memory);
     }
     #[test]
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
@@ -4066,5 +4231,13 @@ mod tests {
                 .len()
                 < 100
         );
+    }
+}
+
+#[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+impl Store {
+    /// Same-host live VM fork requires Linux x86-64 and KVM.
+    pub fn fork_running(&self, _: &str, _: &[String]) -> anyhow::Result<Vec<Instance>> {
+        bail!("live OCI fork requires Linux x86-64")
     }
 }

@@ -120,12 +120,20 @@ manifest = json.dumps(
 objects = {f"/v2/example/manifests/{tag}": manifest for tag in ("test", digest(manifest))}
 objects.update({f"/v2/example/blobs/{digest(data)}": data for data in (layer, config)})
 
+blobs = root / "blobs"
+blobs.mkdir()
+for data in (layer, config):
+    (blobs / digest(data).removeprefix("sha256:")).write_bytes(data)
+
 
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *args):
         pass
 
     def do_GET(self):
+        if "/blobs/" in self.path and (root / "deny-blobs").exists():
+            self.send_error(403)
+            return
         body = objects.get(self.path)
         if body is None or ((root / "fail").exists() and self.path.endswith(digest(layer))):
             self.send_error(503)

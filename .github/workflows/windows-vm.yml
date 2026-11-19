@@ -173,6 +173,11 @@ jobs:
         with:
           name: windows-vm-firmware
           path: whp-run
+      - name: Freeze candidate input identities before acceptance
+        shell: pwsh
+        run: |
+          python scripts/ci/windows_vm_acceptance.py snapshot --inputs whp-run --source-sha "${{ github.sha }}" --output "$env:WHP_EVIDENCE/inputs.json"
+          if ($LASTEXITCODE -ne 0) { throw "Cannot freeze candidate identities: $LASTEXITCODE" }
       - name: Record runner and enable Windows Hypervisor Platform
         shell: pwsh
         run: |
@@ -256,6 +261,12 @@ jobs:
             $left | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
             throw "Acceptance left $($left.Count) runner processes; diagnostics saved and processes stopped"
           }
+      - name: Confirm suite, cleanup and unchanged candidate bytes
+        if: ${{ success() }}
+        shell: pwsh
+        run: |
+          python scripts/ci/windows_vm_acceptance.py record --inputs whp-run --source-sha "${{ github.sha }}" --suite "${{ matrix.suite }}" --evidence "$env:WHP_EVIDENCE" --output "$env:WHP_EVIDENCE/acceptance.json"
+          if ($LASTEXITCODE -ne 0) { throw "WHP acceptance receipt failed: $LASTEXITCODE" }
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -269,5 +280,35 @@ jobs:
             ${{ env.WHP_EVIDENCE }}/containers-*/*.stderr
             ${{ env.WHP_EVIDENCE }}/containers-*/*.conpty
             ${{ env.WHP_EVIDENCE }}/containers-*/diagnostics
+          if-no-files-found: error
+          retention-days: 7
+
+
+  qualified:
+    name: Qualify exact Windows candidate
+    needs: [native, firmware, whp]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-vm-runner
+          path: candidate/inputs
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-vm-firmware
+          path: candidate/inputs
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: windows-vm-whp-*
+          path: candidate/evidence
+      - name: Rehash original inputs and require all three suite receipts
+        run: |
+          python3 scripts/ci/windows_vm_acceptance.py qualify --inputs candidate/inputs --source-sha "${{ github.sha }}" --evidence candidate/evidence --output candidate/qualification.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-vm-qualified-candidate
+          path: candidate
           if-no-files-found: error
           retention-days: 7

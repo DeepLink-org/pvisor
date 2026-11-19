@@ -3,6 +3,8 @@
 
 pub mod api;
 mod daemon;
+mod image_repository;
 mod memory_pool;
 mod native;
+mod pressure;
 mod runtime;

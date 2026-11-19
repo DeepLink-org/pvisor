@@ -695,6 +695,7 @@ impl Stage {
             cpus: options.cpus,
             memory_mib: options.memory_mib,
             memory_pool: None,
+            managed_memory: false,
             shared_kernel_base: None,
             auto_remove: false,
             interactive: false,
@@ -709,6 +710,7 @@ impl Stage {
             stop_timeout_ms: 10_000,
             healthcheck: None,
             no_healthcheck: false,
+            branchable: false,
         };
         let instance = Instance {
             schema: 1,

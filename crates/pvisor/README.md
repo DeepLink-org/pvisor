@@ -1,5 +1,17 @@
 # PolicyVisor (pVisor)
 
+OCI registry requests and token realms require HTTPS, including redirects.
+Unsafe realms are rejected before attaching credentials or dispatching a request.
+
+Workspace snapshots distinguish Run storage by a versioned lease marker, not
+by the `lease.lock` filename. Acquisition writes the marker before native work;
+interrupted marker writes can be retried under the same exclusive lock. Legacy
+empty leases require a valid Run record bound to that directory for exclusion.
+Opening an initialized legacy Run preserves its lease bytes, permissions and timestamps.
+Ordinary project locks and symbolic links remain in the snapshot. The marker
+identifies internal storage; it is not authority against another same-UID process.
+
+
 Guest launch/control/exit contracts come from `pvisor_guest::api`. Host code
 uses `GuestValidation` for admission; executable command construction stays in
 the guest supervisor.
@@ -88,9 +100,8 @@ reads and validates the recorded Bundle; this is not an O(1) history index.
 owns Session lifecycle, scheduling, policy adaptation and execution. The
 `pvisor-cli` application owns Session lifecycle commands, the per-Session owner
 bootstrap, terminal/rendering code and companion discovery.
-Cache storage and the optional node resource client remain runtime components; cache
-argument parsing lives under `pvisor cache` in the app; `pvisor-daemon serve --cache`
-owns the server entry point.
+Cache storage, CacheClient and the optional node resource client remain runtime
+components. `pvisor-daemon serve --cache` owns the server entry point.
 Dockerfile builds have a separate, user-private RUN checkpoint cache under
 `PVISOR_DOCKER_HOME/build-cache-v1`. Its identity includes the native base digest,
 instruction prefix, in-scope arguments, selected COPY inputs, execution settings,
@@ -98,7 +109,7 @@ and preceding RUN output digests. Successful checkpoints are sealed OCI layers;
 metadata-only publication reuses the sealed filesystem. Build-wide shared leases
 and per-key exclusive locks coordinate concurrent builds with `builder prune`.
 Pruning takes an exclusive lease, waits for builds, and never removes published
-image pool data. This is not the distributed `pvisor cache` service. See the
+image pool data. This is not the shared image cache service. See the
 [build command profile](../pvisor-cli/README.md#vm-isolated-image-builds-experimental)
 for invalidation, cleanup controls and compatibility limits.
 Native Sessions and Docker-style VM launches authenticate and negotiate a selected
@@ -345,7 +356,10 @@ The schema-1 `ApplyCommandResponse` is serializable JSON:
   candidate-only preview leaves the starting counts unchanged;
 - `execution: Option<ApplyCommandExecution>` contains `apply_id`, `applied`,
   `recovery_required`, `ledger_confirmed`, and `error`. Counts come only from
-  confirmed committed ledger intent, including when Run publication later fails;
+  confirmed committed ledger intent, including when Run publication later fails.
+  A typed apply failure retains its attempt ID and requires stage reconciliation
+  even after Committed when backup cleanup remains. `ledger_confirmed` requires
+  reading the matching record, never just the error's last-confirmed phase;
 - `plan: Option<String>` is a confirmation token bound to source, generation,
   target identity, candidate inventory and upper contents. Preview a candidate
   universe, then submit explicit picker paths with its token. A changed plan
@@ -580,7 +594,11 @@ Checkpoint restoration/fork starts a new owner directly. Durable operations take
 exclusive `flock` on the Session root's `session.lock`: same UID, `0600`, one hard link,
 no symlink. Its diagnostic record names the lock protocol, PID and operation;
 unknown disk schemas refuse mutation. Different compatible binaries share this
-lock. Residual lock metadata is cleared only after its process has died and no
+lock. Stopped status/review use `SessionDirectoryLock::acquire_read`: the same
+exclusive lock and owner validation, but no diagnostic owner write, truncate or
+fsync. A missing legacy lock inode may be initialized. Existing residual owner
+bytes are preserved, and required completion reconciliation remains durable.
+Residual lock metadata is cleared only after its process has died and no
 valid live owner remains. Apply/drop refuse a valid owner that still holds stage;
 the Execution lease remains an additional fence. Read-only inspect uses the stage's
 ordered lower-mutability declaration; absent or rebound declarations use Mutable.
@@ -1148,7 +1166,7 @@ Python script/rootfs, conflicts with `--libraries` and does not attach a DAX
 window. This exercises the physical pager's successful-file-READ hints through
 the normal rootfs path, with full payload and private-write validation.
 
-`pvisor cache` provides `prepare`, `publish`, `list`, `stat` and `read`;
+The Rust `pvisor::cache::CacheClient` exposes the cache protocol, and
 `pvisor-daemon serve --cache` serves the cache. The optional `vm.node_socket`
 connects to a caller-provided same-host resource service; the runtime retains its
 client protocol and connection pins for restored RAM. No node server, owner
@@ -1200,6 +1218,29 @@ OpenSandbox/E2B core flows; see its README for exact coverage. Full SDK conforma
 and production density remain unvalidated.
 
 ## Independent container VM lifecycle
+
+`docker::Create.managed_memory` is an explicit Linux x86-64 opt-in for a
+cooperative pressure scheduler. It preserves ordinary OCI image resolution,
+V2 caches, overlays, guest exec and the existing per-container owner. It adds a
+private raw (uncompressed) RAM file and a same-UID host-only control socket for
+that exact container ID/launch generation. `docker::managed` exposes Status,
+Offload-with-existing-backing and Resume using the existing `VmControl`; it
+neither invents a Session nor converts the image to a template. Omission leaves
+the ordinary anonymous-RAM launch unchanged. Pools/shared kernel RAM conflict.
+The private backing is an unlinked SSD file retained by live VM descriptors;
+process exit releases it even without Rust destructors. Its `/proc/PID/fd/N`
+report is a live diagnostic locator, never a reusable checkpoint. The owner
+retires the generation control socket only after reaping its VMM.
+
+This is cooperative: an external owner must reserve memory before launch, bind
+the exact generation and cgroup, declare only process-clean safe waits, and keep
+all tool/attachment/background traffic behind scheduler permits. No timer or
+automatic enrollment is enabled by the flag alone. Native Resume acknowledgement
+is not guest-service readiness: check the existing guest control channel before
+dispatch. Control loss or native failure is uncertain, with no automatic retry;
+retain capacity until independent VM/cgroup/mount teardown. Ordinary direct
+`exec` must not bypass the cooperative owner during a managed wait.
+
 
 On Apple Silicon, a daemon started with `--memory-pool-mode physical-pages`
 provides native 16 KiB physical slots through the same pool socket. The runner
@@ -1381,20 +1422,11 @@ fields and obsolete storage formats are rejected. Use a fresh store and re-pull
 or rebuild images; no compatibility reader or automatic migration is provided.
 Stop and clean up old containers through the old version before switching stores.
 
-Remote bindings set `CachedImage.repository` to an immutable
-`s3://BUCKET/PREFIX`, `http://`/`https://` static root, or
-`ipfs+http://127.0.0.1:PORT/ipfs/CID`. Old experimental `ipfs` JSON fields can
-still be read as this same repository field. The binding overrides the local pool for reads,
-without OCI-pull or local-pool fallback. Explicit pinned mirrors may serve the
-same publication. For IPFS, the gateway must be a trusted local Kubo:
-only literal-loopback HTTP is accepted, proxies and redirects are disabled,
-and range responses must match exactly. Kubo verifies the UnixFS DAG; V2 still
-authenticates revision metadata and content frames before decoding. Gateway
-failures, including missing dependencies, remain errors, not absent image files.
-The existing host network bridge keeps Kubo access outside the VM network
-namespace. Retain Kubo throughout VM access, including detached supervisors
-that survive daemon restart. The Kubo restriction applies only to IPFS:
-ordinary HTTP/HTTPS repositories can use public mirror/CDN hosts.
+Remote bindings set `CachedImage.repository` to an immutable S3 or HTTP(S)
+repository. The binding overrides the local pool; remote failures do not
+trigger an OCI pull or local-pool fallback. Explicit pinned mirrors may serve
+the same publication. Former IPFS bindings fail to open and must be rebuilt
+or imported from a supported repository.
 
 `ImageRegistry` describes ordered, credential-free roots and whether each is
 authorized to resolve names. `Store::resolve_image_repository` chooses the first
@@ -1419,6 +1451,19 @@ repositories must be trusted by the caller; V2 handles authenticate subsequent
 metadata/content, not publisher identity. Failed uploads can leave unreachable
 objects and there is no automatic remote GC.
 
+`Store::push_image` selects one local catalog snapshot and publishes its portable
+`Image` descriptor through that same exporter; it never pulls a missing source
+or changes the catalog. `Store::pull_image_repository` authenticates that
+descriptor, the original OCI config and the pinned root before atomically
+installing a reference. Existing names require explicit refresh; failed imports
+leave their previous record unchanged. Original configs travel as bounded,
+digest-checked `configs/SHA256.json` assets, so inspect, health checks and later
+builds retain the OCI defaults. `Image::inspect` reads only local metadata and
+exposes remote source/handle/digest/platform under `Pvisor`. Prepared templates
+retain their existing descriptor schema; `Store::import_image_config` also
+accepts older prepared publications without that optional asset, for runtime
+compatibility. Those older imports cannot supply full OCI metadata to inspect.
+
 Generic clients select `CacheBackend::Http` with a read-only HTTP/HTTPS location
 (`PVISOR_CACHE_BACKEND=http`, `PVISOR_CACHE_LOCATION=https://...`); HTTP defaults
 to read-only, and explicit writable mode is rejected. S3 uses the existing host
@@ -1437,35 +1482,15 @@ before copying data. This prevents exposing removed files from a private
 predecessor; such images need rebuilding into a fresh pool before publication.
 Treat the exported image, including its config/environment, as public. The
 destination must not exist; failure can leave a partial export.
-IPFS does not supply anonymity, publisher authentication, access control or
-permanent retention. The daemon manages its node inside the local image
-repository: `serve --ipfs`, `image NAME --public/--private`, and
-`image NAME --from CID`. It selects ports and records publication CIDs without
-separate repository/output/gateway arguments. IPFS chunk boundaries need not match V2 frames;
-WAN performance and transfer amplification are not yet established.
 
-The explicit Kubo runner uses two temporary loopback-only peers, disables
-bootstrap/mDNS/routing, removes the original local pool, and checks actual
-Bitswap reception, bounded working-set delivery and unchanged receiver pins:
-
-```sh
-mise exec -- cargo build --locked -p pvisor-daemon
-PVISOR_TEST_IPFS=/absolute/path/to/ipfs \
-  PVISOR_TEST_DAEMON="$PWD/target/debug/pvisor-daemon" \
-  mise run test -- pvisor -- --lib --run-ignored ignored-only real_kubo
-```
-
-This runner has been exercised with Kubo 0.34.1. It validates real local P2P
-exchange, daemon publication/import, seed pinning and gateway range compatibility,
-not public DHT discovery, NAT traversal or VM boot performance. Set
-`PVISOR_TEST_DAEMON` to the actual build output when not using the default target
-directory.
-
-Filesystem/S3 publish and writable prepare import OCI sources under a scoped
+Writable filesystem/S3 cache preparation imports OCI sources under a scoped
 `staging/.import-*` directory, removed on success and error after publication
 finishes. They retain no raw OCI layers, extracted roots or prepared records.
 Read-only preparation needs no local import directory. Registry TLS can add a
 PEM CA bundle through the host-only `SSL_CERT_FILE`; invalid bundles fail closed.
+For writable filesystem caches, `CacheClient::prepare_with_blobs` resolves the
+manifest through OCI and reads the config and layers from a supplied, immutable
+SHA-256 directory. Missing or corrupt seed blobs fail preparation.
 
 Pool, filesystem and S3 stores use one V2 physical format. All filesystem
 metadata is inline in independently compressed directory radix frames, routed by
@@ -1735,8 +1760,7 @@ explicit; a non-Unicode token is an error rather than an ignored credential.
 Attachment uses capabilities derived from the validated source, without
 reinterpreting address prefixes. Capability parsing starts no transport workers:
 the Linux runner creates the host-network bridge before constructing its final
-Unix client, preserving single-threaded namespace setup. IPFS and the pinned
-private-network bridge remain supported.
+Unix client, preserving single-threaded namespace setup.
 
 - Capable TCP/Unix services advertise optional `metadata_pages` in Prepared.
   The client loads authenticated directory radix frames, including permissions,
@@ -1887,11 +1911,10 @@ retains its owner through exit; its declaration preserves the lower stack's
 identity and order. Writable uppers retain their normal behavior.
 
 Ordinary VM CLI runs can select a durably prepared physical rootfs independently
-of the live workspace:
+of the live workspace. Prepare the base with `SnapshotStore::prepare_rootfs`
+and use the returned base's `reference().id` for `BASE_ID`.
 
 ```bash
-pvisor cache prepare-rootfs --rootfs /opt/rootfs-source --base-store /opt/pvisor-bases
-# Use the prepared_rootfs.base.id from the JSON result:
 pvisor spawn --vm --rootfs-base-store /opt/pvisor-bases --rootfs-base BASE_ID -- /bin/sh
 ```
 
@@ -2601,3 +2624,24 @@ Execution preparation binds VM Gateway proxies to Core's VM resolved-address
 constraints, even when LLM Gateway dispatch is disabled. Injected HTTP/HTTPS/ALL
 proxy routes therefore cannot widen direct VM egress to link-local metadata or
 IPv6 destinations. Host execution keeps the host proxy's address policy.
+
+### Fork a running OCI Session on one host
+
+On Linux x86-64 with KVM, start a detached source using a cached OCI image, then
+fork while the guest control channel is idle. Each child resumes the source's
+processes and open files with private writable memory and filesystem state.
+
+```sh
+pvisor run -d --name source --branchable --network none --entrypoint /bin/sh "$IMAGE" -c 'sleep 600'
+pvisor container branch source --names child-a child-b child-c child-d
+pvisor stop source
+pvisor rm source
+pvisor exec child-a /bin/sh -c 'echo ready'
+```
+
+The branch command waits for the guest control channel in every named child.
+The source and children share an immutable image projection. The children also
+share the sealed captured RAM backing until they write individual pages. Each
+child holds its own references and can continue after source removal. Stop and
+remove child Sessions normally. Fork children are one-shot. Use a source with
+networking disabled, no additional mounts, and no restart policy or health check.

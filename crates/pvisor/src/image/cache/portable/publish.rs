@@ -28,25 +28,6 @@ fn publication_workers(value: Option<&std::ffi::OsStr>) -> anyhow::Result<usize>
 }
 
 impl PortableCache {
-    pub(in crate::image::cache) fn publish_image(
-        &self,
-        image: &str,
-        architecture: &str,
-        refresh: bool,
-    ) -> anyhow::Result<Response> {
-        ensure!(!self.read_only, "read-only cache cannot publish images");
-        let platform = platform(architecture)?;
-        let (canonical, _) = crate::image::oci::cache_reference(image)?;
-        // Observe before resolving the source, never after uploading it.
-        let observed = self.observe(&canonical, platform)?;
-        let local = crate::image::store::LocalStore::discover(self.local_store.clone())?;
-        let staging = local.staging()?;
-        let store = ImageStore::new(Some(staging.path().to_owned()))?;
-        let prepared = store.prepare_with_refresh(image, architecture, refresh)?;
-        Ok(self
-            .publish_observed(&store, &prepared, architecture, &canonical, observed)?
-            .0)
-    }
     #[cfg(test)]
     pub(in crate::image::cache) fn publish(
         &self,

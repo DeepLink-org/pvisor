@@ -307,7 +307,20 @@ PVISOR_CASE_VM_FIRMWARE_PATH=/absolute/path/to/libkrunfw.so.5.6.2 \
 ```
 
 该用例要求真实 KVM 权限和已有本地固件，不下载依赖；不代表完整 Linux guest
-成功运行。它是显式 ignored 的手动硬件检查，目前并未由 CI 自动启用。
+成功运行。统一资格入口同时执行 ready 屏障与失败清理回归：
+
+```sh
+PVISOR_CASE_VM_FIRMWARE_PATH=/absolute/path/to/libkrunfw.so.5.6.2 \
+  mise run test-vm-lifecycle
+```
+
+Linux x86_64 选择 `ready_before_execution` 与 `ready_abort_kvm`；Apple Silicon
+选择 `ready_before_execution` 与 `ready_abort_hvf`，使用本机可信 `.dylib` 固件。
+固件必须是已有绝对文件路径。入口只执行这些 ignored 硬件用例，串行运行，
+没有选中测试、固件缺失或 hypervisor 不可用都失败，不以跳过代替资格通过。
+Linux CI 的 pvisor shard 自动调用此入口，并保留生命周期日志；其他分组不承担
+这个硬件门禁。macOS 托管 runner 的编译/普通契约不证明真实 HVF 可用，HVF
+生命周期资格仍须在具有权限的 Apple Silicon 主机运行同一入口。
 私有 KVM microtests 另外覆盖无定时器 idle、claimed 后 wake 和双 CPU standby
 的有界回收；这不是完整 SMP guest 验收，也不覆盖卡住的宿主内核/设备 I/O、
 冷 RAM pager 或其他平台。
@@ -2098,3 +2111,8 @@ namespace admission through opacity/identity publication; fresh directories keep
 disjoint-parent creation concurrency. Native security contexts, guest ownership,
 umask and setgid handling stay in the adapter. No guest entry is published by the
 creating request until Core completes directory initialization.
+
+For a same-host live fork, the VM owner captures branch state on Linux x86-64.
+The caller retains the RAM backing, binds each child's filesystem and guest
+control listener, and starts each child through the live-fork restore path.
+The caller must keep the immutable filesystem projection available to each child.
