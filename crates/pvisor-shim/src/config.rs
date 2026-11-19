@@ -87,7 +87,7 @@ mod tests {
         let path = directory.path().join("config.json");
         std::fs::write(&path, contents).unwrap();
         // Keep the file after the handle drops: load_from only needs the path.
-        directory.keep();
+        let _ = directory.keep();
         path
     }
 

@@ -267,10 +267,10 @@ fn listening_ports(tcp: &str, tcp6: &str) -> Vec<u16> {
             if !reachable(address) {
                 continue;
             }
-            if let Ok(port) = u16::from_str_radix(port, 16) {
-                if port != 0 {
-                    ports.insert(port);
-                }
+            if let Ok(port) = u16::from_str_radix(port, 16)
+                && port != 0
+            {
+                ports.insert(port);
             }
         }
     }

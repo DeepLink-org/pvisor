@@ -2954,9 +2954,7 @@ mod tests {
         let mut client = std::net::TcpStream::connect(service.local_addr().unwrap()).unwrap();
         let (server_stream, _) = service.accept().unwrap();
         let control_path = control.to_str().unwrap().to_string();
-        let relay = std::thread::spawn(move || {
-            forward_control(server_stream, &control_path, 8080).map(|()| ())
-        });
+        let relay = std::thread::spawn(move || forward_control(server_stream, &control_path, 8080));
         client.write_all(b"ping").unwrap();
         // The client half-close still receives the guest's complete reply.
         client.shutdown(std::net::Shutdown::Write).unwrap();
