@@ -1663,3 +1663,8 @@ silently falling back to host execution. See the
 See the [platform matrix](../../docs/src/en/reference/platforms.md),
 [binary inventory and implementation comparison](../../docs/src/en/reference/platforms.md#binaries)
 and [shared real-VM test driver](../../tests/vm_cli_contract.py).
+
+On Linux x86-64, `pvisor container branch SOURCE --offload --names a b`
+enables explicit memory management for the two children. At an idle command
+boundary, use `pvisor container offload a` and wait for its acknowledgement;
+use `pvisor container resume a` before sending the next guest command.

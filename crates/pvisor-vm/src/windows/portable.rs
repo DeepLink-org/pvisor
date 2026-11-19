@@ -124,6 +124,13 @@ impl VmConfiguration for VmBuilder {
     fn machine_restore(&mut self, restore: MachineRestore) -> io::Result<()> {
         Err(unsupported("machine_restore"))
     }
+    fn machine_restore_with_branch_offload(
+        &mut self,
+        _: MachineRestore,
+        _: File,
+    ) -> io::Result<()> {
+        Err(unsupported("branch RAM offload"))
+    }
 }
 
 impl VmRuntime for VmBuilder {

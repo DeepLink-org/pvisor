@@ -370,11 +370,79 @@ impl Drop for NewDirectory {
     }
 }
 
+/// Serve control on the child generation's host-only socket.
+pub(super) fn serve_memory(listener: UnixListener, handle: VmmHandle) -> io::Result<()> {
+    use pvisor_vm::api::VmControl;
+    std::thread::Builder::new()
+        .name("fork-memory".into())
+        .spawn(move || {
+            let mut offloaded = false;
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { break };
+                if crate::host_transport::authorize_host_peer_sync(&stream).is_err()
+                    || stream
+                        .set_read_timeout(Some(Duration::from_secs(5)))
+                        .is_err()
+                    || stream
+                        .set_write_timeout(Some(Duration::from_secs(5)))
+                        .is_err()
+                {
+                    continue;
+                }
+                let mut op = [0];
+                if stream.read_exact(&mut op).is_err() {
+                    continue;
+                }
+                let result = match op[0] {
+                    b'O' if !offloaded => handle.offload_ram().map(|_| {
+                        offloaded = true;
+                    }),
+                    b'R' if offloaded => handle.resume().map(|_| {
+                        offloaded = false;
+                    }),
+                    b'O' if offloaded => Ok(()),
+                    b'R' if !offloaded => Ok(()),
+                    _ => Err("invalid branch memory request".into()),
+                };
+                let failed_transition = result.is_err() && matches!(op[0], b'O' | b'R');
+                let _ = serde_json::to_writer(&mut stream, &result);
+                if failed_transition {
+                    // A partial writeback/remap must never be followed by a resume.
+                    std::process::exit(1);
+                }
+            }
+        })?;
+    Ok(())
+}
+
 impl Store {
+    /// Reclaim a running fork child's RAM or resume it from its private delta.
+    pub fn set_branch_offloaded(&self, selector: &str, offload: bool) -> anyhow::Result<()> {
+        let child = self.resolve(selector)?;
+        ensure!(
+            self.directory(&child.id).join("offload-enabled").is_file() && self.active(&child)?,
+            "expected an active fork child created with --offload"
+        );
+        let mut stream = UnixStream::connect(socket(&child)?.with_extension("ram"))?;
+        stream.write_all(if offload { b"O" } else { b"R" })?;
+        let response: Result<(), String> = serde_json::from_reader(stream)?;
+        response.map_err(anyhow::Error::msg)
+    }
+
     /// Fork a quiescent branchable Linux OCI VM and wait for every child to answer Ping.
     /// Children retain private CPU/device state and disk writes, and map one sealed
     /// RAM object privately. This live generation cannot be restarted after it exits.
     pub fn fork_running(&self, selector: &str, names: &[String]) -> anyhow::Result<Vec<Instance>> {
+        self.fork_running_with_offload(selector, names, false)
+    }
+
+    /// Fork children with optional host-controlled private delta offload.
+    pub fn fork_running_with_offload(
+        &self,
+        selector: &str,
+        names: &[String],
+        offload: bool,
+    ) -> anyhow::Result<Vec<Instance>> {
         ensure!(
             !names.is_empty()
                 && names.iter().all(|n| valid_name(n))
@@ -434,6 +502,9 @@ impl Store {
                 );
             }
             fs::hard_link(stage.path().join("fork.json"), dir.join("fork.json"))?;
+            if offload {
+                File::create_new(dir.join("offload-enabled"))?;
+            }
             register_image(&dir, &saved.image)?;
             staged.push(guard);
             children.push(child);

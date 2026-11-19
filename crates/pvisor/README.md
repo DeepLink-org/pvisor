@@ -2618,3 +2618,11 @@ share the sealed captured RAM backing until they write individual pages. Each
 child holds its own references and can continue after source removal. Stop and
 remove child Sessions normally. Fork children are one-shot. Use a source with
 networking disabled, no additional mounts, and no restart policy or health check.
+
+Use `pvisor container branch source --offload --names a b c d` to enable
+manual RAM offload for those children. Once a child's guest commands finish,
+`pvisor container offload a` parks it and writes private pages to its own sparse
+file in the Session directory. Use `pvisor container resume a` before issuing
+the next guest command. Each child retains the sealed shared base across cycles
+and after the parent exits. Use a disk-backed Session directory to reclaim
+host memory. The private delta lasts for the running Session.

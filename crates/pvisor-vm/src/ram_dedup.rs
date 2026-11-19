@@ -14,6 +14,9 @@ impl RamDedupControl for VmmHandle {
             .map_err(|_| "VM transition lock poisoned")?;
         let vmm = self.vmm.upgrade().ok_or("VMM has stopped")?;
         let locked = vmm.lock().map_err(|_| "VMM lock poisoned")?;
+        if locked.has_branch_ram() {
+            return Err("branch RAM offload excludes dedup advice".into());
+        }
         let cold = self
             .cold_pager_started
             .load(std::sync::atomic::Ordering::Acquire);

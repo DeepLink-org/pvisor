@@ -57,6 +57,9 @@ impl VmmHandle {
             .ok_or("invalid snapshot timeout")?;
         {
             let locked = vmm.lock().map_err(|_| "VMM lock poisoned")?;
+            if locked.has_branch_ram() {
+                return Err("snapshot capture cannot use live branch delta mappings".into());
+            }
             if (resume_source && locked.is_paused())
                 || locked.device_memory_gate().has_prepare()
                 || self

@@ -372,6 +372,15 @@ pub trait VmConfiguration: Sized {
     /// snapshot profile. Writable RAM backing and unsupported device/build profiles
     /// reject restoration; a successfully restored machine starts paused.
     fn machine_restore(&mut self, restore: MachineRestore) -> io::Result<()>;
+    /// Linux x86-64 restore with a branch-private sparse delta. The caller must
+    /// supply an exclusive, empty read/write regular file and keep it private
+    /// for the VM lifetime. Offload parks CPUs and devices before writing COW
+    /// pages. Resume faults from this delta and the original immutable RAM.
+    fn machine_restore_with_branch_offload(
+        &mut self,
+        restore: MachineRestore,
+        delta: File,
+    ) -> io::Result<()>;
 }
 
 /// Consume configuration and run one VM in its dedicated runner process. The

@@ -10,6 +10,8 @@
 //! machine (microVM).
 //#![deny(missing_docs)]
 
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+pub(crate) mod branch_ram;
 /// Handles setup and initialization a `Vmm` object.
 pub mod builder;
 pub(crate) mod device_manager;
@@ -216,6 +218,8 @@ pub struct Vmm {
     // Mixed anonymous/file reservations cannot be classified from vm-memory's
     // region-level file_offset alone. Retain explicit restore ownership.
     compact_restore_ram: bool,
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    branch_ram: Option<branch_ram::BranchRam>,
     arch_memory_info: ArchMemoryInfo,
 
     kernel_cmdline: KernelCmdline,
@@ -482,12 +486,15 @@ impl Vmm {
 
     /// Pause and flush/reclaim file-backed RAM. Host device mappings stay valid.
     pub fn offload_ram(&mut self) -> Result<ram::RamReclaim> {
-        if self.compact_restore_ram {
+        let is_branch = self.has_branch_ram();
+        if self.compact_restore_ram && !is_branch {
             return Err(Error::VcpuControl(
                 "offload cannot discard private snapshot RAM; save a new snapshot instead".into(),
             ));
         }
-        ram::check_reclaim(&self.guest_memory).map_err(Error::VcpuControl)?;
+        if !is_branch {
+            ram::check_reclaim(&self.guest_memory).map_err(Error::VcpuControl)?;
+        }
         if self.device_memory_gate.has_prepare() {
             return Err(Error::VcpuControl(
                 "whole-VM offload is incompatible with experimental RAM preparation".into(),
@@ -503,10 +510,11 @@ impl Vmm {
                 "device RAM access must be quiesced before offload".into(),
             ));
         }
-        if !self
-            .guest_memory
-            .iter()
-            .any(|region| region.file_offset().is_some())
+        if !is_branch
+            && !self
+                .guest_memory
+                .iter()
+                .any(|region| region.file_offset().is_some())
         {
             return Err(Error::VcpuControl("VM has no file-backed RAM".into()));
         }
@@ -528,6 +536,16 @@ impl Vmm {
             }
             self.ram_unmapped = true;
         }
+        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+        let backed_bytes = if let Some(branch) = &mut self.branch_ram {
+            // CPUs are parked, device writers drained, and the gate stays closed until resume.
+            unsafe { branch.offload() }
+                .map_err(Error::VcpuControl)?
+                .logical_bytes
+        } else {
+            ram::reclaim(&self.guest_memory).map_err(Error::VcpuControl)?
+        };
+        #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
         let backed_bytes = ram::reclaim(&self.guest_memory).map_err(Error::VcpuControl)?;
         let after = ram::residency(&self.guest_memory);
         self.control_failed = false;
@@ -720,6 +738,13 @@ impl Vmm {
         }
 
         Ok(())
+    }
+
+    pub(crate) fn has_branch_ram(&self) -> bool {
+        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+        { self.branch_ram.is_some() }
+        #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+        { false }
     }
 
     /// Returns a reference to the inner `GuestMemoryMmap` object if present, or `None` otherwise.

@@ -832,6 +832,10 @@ impl<B: crate::backend::SnapshotBackend> Builder<B> {
         self.resources.snapshot_profile = true;
         Ok(())
     }
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    pub(crate) fn set_branch_delta(&mut self, delta: File) {
+        self.resources.branch_delta = Some(Arc::new(delta));
+    }
     pub fn machine_restore(
         &mut self,
         restore: crate::vmm::snapshot::MachineRestore,
@@ -852,6 +856,10 @@ impl<B: crate::backend::SnapshotBackend> Builder<B> {
             ));
         }
         self.snapshot_profile()?;
+        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+        {
+            self.resources.branch_delta = None;
+        }
         self.resources.machine_restore = Some(Arc::new(restore));
         Ok(())
     }

@@ -98,8 +98,19 @@ pub(super) enum ContainerCommand {
     /// Fork an idle running VM, sharing one immutable RAM image.
     Branch {
         source: String,
+        /// Allow each child to offload private RAM to its own sparse backing.
+        #[arg(long)]
+        offload: bool,
         #[arg(long, required=true, num_args=1..)]
         names: Vec<String>,
+    },
+    /// Park a fork child and reclaim its RAM until an explicit resume.
+    Offload {
+        child: String,
+    },
+    /// Resume an offloaded fork child.
+    Resume {
+        child: String,
     },
     #[command(disable_help_flag = true)]
     Run(Box<Run>),
@@ -136,7 +147,9 @@ impl DockerCommand {
     fn ungroup(self) -> Self {
         match self {
             Self::Container { command } => match command {
-                command @ ContainerCommand::Branch { .. } => Self::Container { command },
+                command @ (ContainerCommand::Branch { .. }
+                | ContainerCommand::Offload { .. }
+                | ContainerCommand::Resume { .. }) => Self::Container { command },
                 ContainerCommand::Run(args) => Self::Run(args),
                 ContainerCommand::Exec(args) => Self::Exec(args),
                 ContainerCommand::Ls(args) => Self::Ps(args),
@@ -490,14 +503,29 @@ pub(super) fn run(command: DockerCommand) -> anyhow::Result<i32> {
     if let DockerCommand::Images(args) = command {
         return query::images(args);
     }
-    if let DockerCommand::Container {
-        command: ContainerCommand::Branch { source, names },
-    } = &command
-    {
-        for child in Store::discover()?.fork_running(source, names)? {
-            println!("{}", child.name);
+    if let DockerCommand::Container { command } = &command {
+        match command {
+            ContainerCommand::Branch {
+                source,
+                names,
+                offload,
+            } => {
+                for child in
+                    Store::discover()?.fork_running_with_offload(source, names, *offload)?
+                {
+                    println!("{}", child.name);
+                }
+                return Ok(0);
+            }
+            ContainerCommand::Offload { child } | ContainerCommand::Resume { child } => {
+                Store::discover()?.set_branch_offloaded(
+                    child,
+                    matches!(command, ContainerCommand::Offload { .. }),
+                )?;
+                return Ok(0);
+            }
+            _ => {}
         }
-        return Ok(0);
     }
     if matches!(
         command,
