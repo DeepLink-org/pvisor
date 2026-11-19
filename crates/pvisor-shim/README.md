@@ -202,7 +202,9 @@ VM egress networking (feature `vm`): the single `io.pvisor.vm.network`
 annotation selects the task's network posture — `off`/unset (default: no
 network device at all), `public`, or `allowlist=<entries>` where entries
 are comma-separated `host[:port]` (exact hostname, `*.suffix`, IP literal
-or CIDR). The data plane treats every allowed target uniformly; the only
+or CIDR). An absent annotation falls back to the node config's
+`vm.default_network` (same value syntax) before staying `off`; the
+annotation always wins. The data plane treats every allowed target uniformly; the only
 entry-level distinction is the optional `private:` prefix on a HOSTNAME
 entry, which opts that name into private-space DNS resolutions — by
 default a hostname whose resolution lands in private space is rejected as
@@ -367,6 +369,70 @@ Semantics by design:
 
 Injection applies to the init task only; exec processes and pod sandbox
 holders never inject.
+
+## Automatic port exposure (container-tier parity)
+
+The node config's `vm.auto_expose` (see below) lets VM-tier tasks match the
+container-tier experience: a service that starts listening inside the guest
+becomes reachable at `podIP:port` without any per-pod declaration. The VM
+runner polls the guest control channel's `Listeners` observation (every
+500 ms) and keeps one exposure proxy per reported TCP port — the proxy
+joins the pod network namespace, listens on `0.0.0.0:<port>` and relays
+each connection through the control channel's `Connect` request, which
+dials the guest's `127.0.0.1:<port>`. The guest's PID 1 supervisor answers
+from its `/proc/net/tcp` view; user images and entrypoints stay unaware.
+
+Semantics:
+
+- **Reported ports only**: wildcard (`0.0.0.0`/`::`) and loopback
+  (`127.0.0.1`) binds — the addresses a `Connect` relay can dial. A service
+  bound only to a specific interface stays unreachable; bind `0.0.0.0`.
+- **TCP only**, like everything riding the control channel. UDP and ICMP
+  are not covered by this mechanism.
+- **Injection bridges win**: ports bridged by payload catalogue entries
+  (e.g. execd's 44772) keep their boot-time vsock proxies; the poller never
+  duplicates them.
+- **Budget**: at most `vm.expose_budget` proxies per task (default 64);
+  further listeners are skipped (logged at debug). A proxy whose bind failed
+  stays retired until its port leaves the report, so failures do not
+  respawn every tick. When the guest stops reporting a port its proxy is
+  stopped — the port then behaves like a closed container port.
+- **Advisory**: exposure needs a pod network namespace (CRI pods) and the
+  control channel (`io.pvisor.vm.exec` not `off`); without either the
+  poller stays idle and the task runs normally. A plain `ctr` task without
+  a netns never exposes anything — it never listens on the host network.
+- **No added authentication or encryption**, exactly like the payload
+  bridges: everyone who can reach `podIP:<port>` reaches the guest service,
+  which is the exposure a container-tier workload has. Reachability policy
+  belongs to Kubernetes NetworkPolicy and, for outbound flows, to the
+  egress posture above.
+
+## Node config
+
+`/etc/pvisor-shim/config.json` (env override `PVISOR_SHIM_CONFIG`) holds
+node-level defaults, re-read at every Create like the injection catalogue —
+edits apply to the next task without a restart:
+
+```json
+{"vm": {
+  "default_network": "public",
+  "auto_expose": true,
+  "expose_budget": 64
+}}
+```
+
+- `vm.default_network`: egress posture for VM tasks without an
+  `io.pvisor.vm.network` annotation (same value syntax: `off`, `public`,
+  `allowlist=<entries>` with per-entry `private:` prefixes). Unset keeps
+  `off`. A cluster-only posture can use
+  `"allowlist=private:10.0.0.0/8,private:172.16.0.0/12,private:192.168.0.0/16"`
+  or the pod CIDR actually in use.
+- `vm.auto_expose` + `vm.expose_budget`: enable automatic port exposure and
+  its per-task proxy budget (nonzero).
+- An absent file is the all-defaults config (nothing enabled). A present
+  but unreadable, malformed or zero-budget file **fails Create** with
+  `INVALID_ARGUMENT` — a typo never silently widens or narrows a node's
+  posture. Unknown fields are rejected for the same reason.
 
 ## Upstream OpenSandbox contract exceptions
 

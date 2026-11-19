@@ -129,7 +129,7 @@ impl VmNetworkAttachment {
     /// Compile the task's network plan and start the backend. Returns `None`
     /// when the task did not opt into egress.
     pub(crate) fn start(plan: &ContainerPlan) -> anyhow::Result<Option<Self>> {
-        let network = plan.vm_network_plan().map_err(anyhow::Error::msg)?;
+        let network = plan.vm_network.clone();
         if network.mode == VmNetworkMode::Off {
             return Ok(None);
         }

@@ -229,6 +229,61 @@ pub(super) fn info(config: &GuestConfig) -> io::Result<Value> {
     )
 }
 
+/// Sorted unique listening TCP ports reachable through the control adapter's
+/// 127.0.0.1 relay. `/proc/net/tcp6` is optional: kernels without IPv6 omit it.
+pub(super) fn listeners() -> io::Result<Value> {
+    let tcp = fs::read_to_string("/proc/net/tcp")?;
+    let tcp6 = fs::read_to_string("/proc/net/tcp6").unwrap_or_default();
+    Ok(json!(listening_ports(&tcp, &tcp6)))
+}
+
+/// Parse `/proc/net/tcp` and `/proc/net/tcp6` tables, keeping LISTEN sockets
+/// whose local address the relay can dial: IPv4 wildcard (`00000000`) and
+/// loopback (`0100007F`), plus the IPv6 wildcard `::` (dual-stack under the
+/// default `bindv6only=0`). Address-specific and IPv6-loopback-only binds
+/// stay unreachable through `Connect` and are dropped.
+fn listening_ports(tcp: &str, tcp6: &str) -> Vec<u16> {
+    fn visit(
+        table: &str,
+        reachable: fn(&str) -> bool,
+        ports: &mut std::collections::BTreeSet<u16>,
+    ) {
+        for line in table.lines() {
+            let mut fields = line.split_whitespace();
+            let _sl = fields.next();
+            let Some(address) = fields.next() else {
+                continue;
+            };
+            let _remote = fields.next();
+            let Some(state) = fields.next() else {
+                continue;
+            };
+            if state != "0A" {
+                continue;
+            }
+            let Some((address, port)) = address.split_once(':') else {
+                continue;
+            };
+            if !reachable(address) {
+                continue;
+            }
+            if let Ok(port) = u16::from_str_radix(port, 16) {
+                if port != 0 {
+                    ports.insert(port);
+                }
+            }
+        }
+    }
+    let mut ports = std::collections::BTreeSet::new();
+    visit(tcp, |a| a == "00000000" || a == "0100007F", &mut ports);
+    visit(
+        tcp6,
+        |a| a.len() == 32 && a.bytes().all(|b| b == b'0'),
+        &mut ports,
+    );
+    ports.into_iter().collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -279,5 +334,22 @@ mod tests {
         assert_eq!(stat(&link).unwrap()["isSymlink"], true);
         assert!(path(Path::new("relative")).is_err());
         assert!(mode(0o10000).is_err());
+    }
+
+    #[test]
+    fn listening_ports_filters_state_and_relay_reachable_addresses() {
+        let tcp = "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n\
+                   0: 0100007F:1F90 00000000:0000 0A 00000000:00000000 00:00000000 00000000  1000        0 12345 1\n\
+                   1: 00000000:0050 00000000:0000 0A 00000000:00000000 00:00000000 00000000     0        0 12346 1\n\
+                   2: 0A000001:0051 00000000:0000 0A 00000000:00000000 00:00000000 00000000     0        0 12347 1\n\
+                   3: 0100007F:1F91 00000000:0000 01 00000000:00000000 00:00000000 00000000     0        0 12348 1\n";
+        let tcp6 = "  sl  local_address                         rem_address   st\n\
+                    0: 00000000000000000000000000000000:0050 00000000000000000000000000000000:0000 0A\n\
+                    1: 00000000000000000000000001000000:0052 00000000000000000000000000000000:0000 0A\n";
+        // 127.0.0.1:8080 and 0.0.0.0:80 from tcp; :: :80 deduplicates with the
+        // IPv4 wildcard; 10.0.0.1:81 (address-specific) and the ESTABLISHED
+        // row stay out, as does the ::1-only bind.
+        assert_eq!(listening_ports(tcp, tcp6), vec![80, 8080]);
+        assert_eq!(listening_ports(tcp, ""), vec![80, 8080]);
     }
 }

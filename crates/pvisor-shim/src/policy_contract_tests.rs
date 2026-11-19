@@ -202,6 +202,11 @@ fn vm_network_annotation_rejects_explicit_zero_ports() {
         let mut input = base();
         input["annotations"] = json!({"io.pvisor.executor":"vm",
             "io.pvisor.vm.network":"allowlist", "io.pvisor.vm.network.allow":target});
-        assert!(plan(input).unwrap().vm_network_plan().is_err());
+        let planned = plan(input).unwrap();
+        let annotation = planned
+            .annotations
+            .get("io.pvisor.vm.network")
+            .map(String::as_str);
+        assert!(crate::plan::vm_network_plan(annotation, None).is_err());
     }
 }

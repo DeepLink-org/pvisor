@@ -83,6 +83,15 @@ pub(crate) const ENV_BRIDGE_SOCKET: &str = "PVISOR_SHIM_BRIDGE_SOCKET";
 /// Bridge proxy: TCP port to listen on inside the pod netns.
 #[cfg(feature = "vm")]
 pub(crate) const ENV_BRIDGE_PORT: &str = "PVISOR_SHIM_BRIDGE_PORT";
+/// CLI argument that turns the shim binary into an exposure proxy: join the
+/// pod network namespace, listen on the exposed port, and relay every
+/// connection to the guest through the control channel's `Connect` request
+/// (VM tier only; spawned by the runner's expose poller).
+#[cfg(feature = "vm")]
+pub(crate) const INTERNAL_EXPOSE_ARG: &str = "--pvisor-shim-internal-expose";
+/// Exposure proxy: guest control socket carrying the `Connect` relay.
+#[cfg(feature = "vm")]
+pub(crate) const ENV_EXPOSE_CONTROL: &str = "PVISOR_SHIM_EXPOSE_CONTROL";
 /// Path of the serialized [`crate::plan::SandboxPlan`].
 pub(crate) const ENV_SANDBOX_PLAN: &str = "PVISOR_SHIM_SANDBOX_PLAN";
 /// Pid of the pod sandbox holder; container runners join its namespaces.
@@ -556,6 +565,10 @@ pub(crate) fn run_internal_if_requested() -> Result<bool> {
     #[cfg(feature = "vm")]
     if args.iter().any(|arg| arg == INTERNAL_BRIDGE_ARG) {
         return bridge_proxy_main().map(|()| true);
+    }
+    #[cfg(feature = "vm")]
+    if args.iter().any(|arg| arg == INTERNAL_EXPOSE_ARG) {
+        return expose_proxy_main().map(|()| true);
     }
     if args.iter().any(|arg| arg == INTERNAL_SANDBOX_ARG) {
         return run_sandbox_holder_requested();
@@ -1039,6 +1052,13 @@ fn vm_runner_main() -> Result<i32> {
     // instead of silently listening on the host network.
     spawn_bridge_proxies(&plan)?;
 
+    // Automatic exposure (node `auto_expose`): the poller watches the guest's
+    // listening TCP ports and keeps one relay proxy per port in the pod netns.
+    // It stays idle without a pod netns; the VM boots regardless.
+    if plan.expose.is_some() {
+        spawn_expose_poller(&plan);
+    }
+
     // Task stdio travels the named console ports bound to the task's own
     // descriptors (passed to boot_vm explicitly), so this process's stderr
     // is free for VMM diagnostics: the `io.pvisor.vm.log` annotation (a
@@ -1143,9 +1163,7 @@ fn vm_runner_main() -> Result<i32> {
     #[cfg(feature = "vm")]
     let network = if let Some(attachment) = gated_attachment.as_ref() {
         attachment.guest_stream().ok()
-    } else if plan.vm_network_plan().map_err(anyhow::Error::msg)?.mode
-        != crate::plan::VmNetworkMode::Off
-    {
+    } else if plan.vm_network.mode != crate::plan::VmNetworkMode::Off {
         let fd = fd_from_env(ENV_VM_NET_FD)?;
         Some(unsafe { crate::network::stream_from_fd(fd) })
     } else {
@@ -2292,6 +2310,30 @@ fn spawn_bridge_proxies(plan: &ContainerPlan) -> Result<()> {
     Ok(())
 }
 
+/// Join the pod network namespace and bind `0.0.0.0:port`, retrying the
+/// transient EADDRINUSE a sibling proxy or an init-container task in the
+/// same pod leaves behind. Callers arm `PR_SET_PDEATHSIG` before joining.
+#[cfg(feature = "vm")]
+fn join_pod_netns_and_listen(netns: &str, port: u16, role: &str) -> Result<std::net::TcpListener> {
+    setns_by_path(netns, NamespaceKind::Network)
+        .with_context(|| format!("{role}: join pod network namespace"))?;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        match std::net::TcpListener::bind(("0.0.0.0", port)) {
+            Ok(listener) => return Ok(listener),
+            Err(error)
+                if error.kind() == std::io::ErrorKind::AddrInUse
+                    && std::time::Instant::now() < deadline =>
+            {
+                std::thread::sleep(std::time::Duration::from_millis(200));
+            }
+            Err(error) => {
+                return Err(error).with_context(|| format!("{role}: listen 0.0.0.0:{port}"));
+            }
+        }
+    }
+}
+
 /// Bridge proxy entry: join the pod netns, listen on the bridged port, and
 /// pump every TCP connection to the vsock-backed unix socket. Never returns
 /// while the parent (VM runner) lives; `PR_SET_PDEATHSIG` reaps it after.
@@ -2309,28 +2351,7 @@ fn bridge_proxy_main() -> Result<()> {
             return Err(std::io::Error::last_os_error()).context("PR_SET_PDEATHSIG");
         }
     }
-    setns_by_path(&netns, NamespaceKind::Network).context("join pod network namespace")?;
-
-    // Init-container tasks in the same pod bridge the same port before the
-    // main container starts; retry until their proxy exits instead of dying
-    // on the transient EADDRINUSE.
-    let listener = {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-        loop {
-            match std::net::TcpListener::bind(("0.0.0.0", port)) {
-                Ok(listener) => break listener,
-                Err(error)
-                    if error.kind() == std::io::ErrorKind::AddrInUse
-                        && std::time::Instant::now() < deadline =>
-                {
-                    std::thread::sleep(std::time::Duration::from_millis(200));
-                }
-                Err(error) => {
-                    return Err(error).with_context(|| format!("bridge listen 0.0.0.0:{port}"));
-                }
-            }
-        }
-    };
+    let listener = join_pod_netns_and_listen(&netns, port, "bridge")?;
     for stream in listener.incoming() {
         let stream = match stream {
             Ok(stream) => stream,
@@ -2371,6 +2392,251 @@ fn pump_bridge(stream: std::net::TcpStream, socket: &str) -> Result<()> {
     let _ = up.join();
     let _ = tcp_write.shutdown(Shutdown::Both);
     Ok(())
+}
+
+/// Interval between guest-listener polls; port-exposure latency is bounded by it.
+#[cfg(feature = "vm")]
+const EXPOSE_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// Read timeout for one listener poll round trip.
+#[cfg(feature = "vm")]
+const EXPOSE_POLL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Keep one exposure proxy per guest-listening TCP port alive in the pod
+/// network namespace (container-tier parity: a service that starts listening
+/// becomes reachable at `podIP:port`). The guest's `Listeners` report drives
+/// the diff; ports bridged by injections keep their boot-time proxies, and a
+/// missing pod netns leaves exposure idle instead of failing the task.
+/// Proxies die with the runner through `PR_SET_PDEATHSIG`; the thread ends
+/// with the runner process.
+#[cfg(feature = "vm")]
+fn spawn_expose_poller(plan: &ContainerPlan) {
+    let Some(budget) = plan.expose else {
+        return;
+    };
+    // Exposure rides the control channel; without it there is nothing to
+    // poll and the loop would retry a socket that never appears.
+    if !crate::plan::vm_exec_enabled(&plan.annotations) {
+        debug!(
+            "task {}: exec control disabled; automatic port exposure stays idle",
+            plan.id
+        );
+        return;
+    }
+    let Some(netns) = plan
+        .namespaces
+        .iter()
+        .find(|ns| ns.kind == NamespaceKind::Network)
+        .and_then(|ns| ns.path.clone())
+    else {
+        debug!(
+            "task {}: no pod network namespace; automatic port exposure stays idle",
+            plan.id
+        );
+        return;
+    };
+    let control = crate::sockets::control_socket_path(&plan.id);
+    let bridged: Vec<u16> = plan
+        .injections
+        .iter()
+        .filter_map(|injection| injection.bridge)
+        .collect();
+    let id = plan.id.clone();
+    let exposed: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<u16, Child>>> =
+        std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
+    std::thread::Builder::new()
+        .name("pvisor-expose".into())
+        .spawn(move || loop {
+            std::thread::sleep(EXPOSE_POLL_INTERVAL);
+            // A failing poll (booting VM, exec disabled, teardown) retries
+            // on the next tick; exposure is advisory.
+            let Ok(reported) = query_guest_listeners(&control) else {
+                continue;
+            };
+            let mut exposed = exposed.lock().unwrap();
+            let current: std::collections::BTreeSet<u16> =
+                exposed.keys().copied().collect();
+            let (add, remove) = expose_delta(&reported, &bridged, &current, budget);
+            for port in remove {
+                if let Some(mut child) = exposed.remove(&port) {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    debug!("task {id}: stopped exposing guest port {port}");
+                }
+            }
+            for port in add {
+                match spawn_expose_proxy(&netns, &control, port) {
+                    Ok(child) => {
+                        exposed.insert(port, child);
+                        log::info!(
+                            "task {id}: exposing guest port {port} in the pod network namespace"
+                        );
+                    }
+                    Err(error) => {
+                        debug!(
+                            "task {id}: exposure proxy for port {port} failed to spawn: {error:#}"
+                        );
+                    }
+                }
+            }
+        })
+        .expect("spawn expose poller");
+}
+
+/// Diff one listener report against the running exposure proxies: ports to
+/// spawn (skipping injection-bridged ports and stopping at the budget) and
+/// ports whose proxy to stop. A proxy that exited stays listed until its
+/// port leaves the report, so a failed bind does not respawn every tick.
+#[cfg(feature = "vm")]
+fn expose_delta(
+    reported: &[u16],
+    bridged: &[u16],
+    current: &std::collections::BTreeSet<u16>,
+    budget: usize,
+) -> (Vec<u16>, Vec<u16>) {
+    let add = reported
+        .iter()
+        .copied()
+        .filter(|port| !bridged.contains(port) && !current.contains(port))
+        .take(budget.saturating_sub(current.len()))
+        .collect();
+    let remove = current
+        .iter()
+        .copied()
+        .filter(|port| !reported.contains(port))
+        .collect();
+    (add, remove)
+}
+
+/// One `Listeners` request over the task's control socket. Failing while the
+/// VM boots, exec is disabled or the socket is gone is expected; the caller
+/// retries on the next tick.
+#[cfg(feature = "vm")]
+fn query_guest_listeners(control: &Path) -> Result<Vec<u16>> {
+    use pvisor_guest::api::{GuestFrameRead, GuestFrameWrite, Reply, Request};
+
+    let mut stream = std::os::unix::net::UnixStream::connect(control)?;
+    stream.set_read_timeout(Some(EXPOSE_POLL_TIMEOUT))?;
+    GuestFrameWrite::write_frame(&mut stream, &Request::Listeners {})?;
+    match GuestFrameRead::read_frame::<Reply>(&mut stream)? {
+        Reply::Value { value } => serde_json::from_value(value).context("parse Listeners reply"),
+        Reply::Error { message } => anyhow::bail!("Listeners rejected: {message}"),
+        Reply::Failure { message, .. } => anyhow::bail!("Listeners failed: {message}"),
+        reply => anyhow::bail!("unexpected Listeners reply: {reply:?}"),
+    }
+}
+
+/// Re-exec this binary as one exposure proxy for `port` in the pod netns.
+#[cfg(feature = "vm")]
+fn spawn_expose_proxy(netns: &Path, control: &Path, port: u16) -> Result<Child> {
+    let exe = std::env::current_exe().context("current exe")?;
+    Command::new(exe)
+        .arg(INTERNAL_EXPOSE_ARG)
+        .env(ENV_BRIDGE_NETNS, netns)
+        .env(ENV_EXPOSE_CONTROL, control)
+        .env(ENV_BRIDGE_PORT, port.to_string())
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .with_context(|| format!("spawn exposure proxy for port {port}"))
+}
+
+/// Exposure proxy entry: join the pod netns, listen on the port, and relay
+/// every connection through the guest control channel's `Connect` request
+/// (one control connection per accepted TCP connection). Never returns while
+/// the parent (VM runner) lives; `PR_SET_PDEATHSIG` reaps it after.
+#[cfg(feature = "vm")]
+fn expose_proxy_main() -> Result<()> {
+    let netns = std::env::var(ENV_BRIDGE_NETNS).context("expose netns")?;
+    let control = std::env::var(ENV_EXPOSE_CONTROL).context("expose control socket")?;
+    let port: u16 = std::env::var(ENV_BRIDGE_PORT)
+        .context("expose port")?
+        .parse()
+        .context("parse expose port")?;
+
+    unsafe {
+        if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL, 0, 0, 0) != 0 {
+            return Err(std::io::Error::last_os_error()).context("PR_SET_PDEATHSIG");
+        }
+    }
+    let listener = join_pod_netns_and_listen(&netns, port, "expose")?;
+    for stream in listener.incoming() {
+        let stream = match stream {
+            Ok(stream) => stream,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(error).context("expose accept"),
+        };
+        let control = control.clone();
+        std::thread::spawn(move || {
+            if let Err(error) = forward_control(stream, &control, port) {
+                log::debug!("expose connection ended: {error:#}");
+            }
+        });
+    }
+    Ok(())
+}
+
+/// Relay one accepted TCP connection to the guest service on `port` through
+/// the control channel: each connection is one `Connect` request, framed
+/// `StdinFrame` upstream (an orderly half-close still allows the guest's
+/// reply) and `Reply::Output` downstream until `Reply::Exit`.
+#[cfg(feature = "vm")]
+fn forward_control(mut client: std::net::TcpStream, control: &str, port: u16) -> Result<()> {
+    use pvisor_guest::api::{GuestFrameRead, GuestFrameWrite, Reply, Request, StdinFrame};
+    use std::io::Read;
+
+    let mut stream = std::os::unix::net::UnixStream::connect(control)?;
+    stream
+        .set_read_timeout(Some(std::time::Duration::from_secs(10)))
+        .context("expose control timeout")?;
+    GuestFrameWrite::write_frame(&mut stream, &Request::Connect { port })?;
+    anyhow::ensure!(
+        matches!(
+            GuestFrameRead::read_frame::<Reply>(&mut stream)?,
+            Reply::Ready
+        ),
+        "guest connection refused"
+    );
+    stream.set_read_timeout(None)?;
+    let mut input = client.try_clone().context("clone expose client")?;
+    let mut writer = stream.try_clone().context("clone expose control stream")?;
+    let upstream = std::thread::spawn(move || -> std::io::Result<()> {
+        let result = (|| {
+            let mut bytes = [0; 16384];
+            loop {
+                let size = input.read(&mut bytes)?;
+                if size == 0 {
+                    return GuestFrameWrite::write_frame(&mut writer, &StdinFrame::Eof {});
+                }
+                GuestFrameWrite::write_frame(
+                    &mut writer,
+                    &StdinFrame::Data {
+                        bytes: bytes[..size].to_vec(),
+                    },
+                )?;
+            }
+        })();
+        if result.is_err() {
+            // RST and failed input writes must wake the downstream reader
+            // now instead of occupying a control connection until timeout.
+            let _ = writer.shutdown(std::net::Shutdown::Both);
+        }
+        result
+    });
+    let result = (|| -> Result<()> {
+        loop {
+            match GuestFrameRead::read_frame::<Reply>(&mut stream)? {
+                Reply::Output { stream: 1, bytes } => client.write_all(&bytes)?,
+                Reply::Exit { .. } => return Ok(()),
+                _ => anyhow::bail!("invalid guest TCP tunnel response"),
+            }
+        }
+    })();
+    let _ = client.shutdown(std::net::Shutdown::Both);
+    let _ = stream.shutdown(std::net::Shutdown::Both);
+    let _ = upstream.join();
+    result
 }
 
 #[cfg(test)]
@@ -2602,5 +2868,102 @@ mod tests {
         .unwrap();
         plan.process.user.gid = unsafe { libc::getegid() }.wrapping_add(1);
         assert!(apply_process_identity(&plan.process).is_err());
+    }
+
+    #[cfg(feature = "vm")]
+    fn ports(values: &[u16]) -> std::collections::BTreeSet<u16> {
+        values.iter().copied().collect()
+    }
+
+    #[cfg(feature = "vm")]
+    #[test]
+    fn expose_delta_skips_bridges_respects_the_budget_and_follows_reports() {
+        // Injection-bridged ports keep their boot-time proxies; reported
+        // ports beyond the budget wait; proxies disappear only once the
+        // guest stops reporting their port.
+        let (add, remove) = expose_delta(&[80, 443, 8080], &[443], &ports(&[80]), 4);
+        assert_eq!(add, vec![8080]);
+        assert!(remove.is_empty());
+        let (add, remove) = expose_delta(&[80, 443], &[443], &ports(&[22, 53, 80, 8080]), 4);
+        assert!(add.is_empty());
+        assert_eq!(remove, vec![22, 53, 8080]);
+        // A map at the budget admits nothing new even among reported ports.
+        let (add, remove) = expose_delta(&[80, 443, 8080], &[], &ports(&[22, 53]), 2);
+        assert!(add.is_empty());
+        assert_eq!(remove, vec![22, 53]);
+    }
+
+    #[cfg(feature = "vm")]
+    #[test]
+    fn expose_query_parses_listener_replies() {
+        use pvisor_guest::api::{GuestFrameRead, GuestFrameWrite, Reply, Request};
+
+        let directory = tempfile::tempdir().unwrap();
+        let control = directory.path().join("control.sock");
+        let listener = std::os::unix::net::UnixListener::bind(&control).unwrap();
+        let guest = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            assert!(matches!(
+                GuestFrameRead::read_frame::<Request>(&mut stream).unwrap(),
+                Request::Listeners {}
+            ));
+            GuestFrameWrite::write_frame(
+                &mut stream,
+                &Reply::Value {
+                    value: serde_json::json!([80u16, 443u16]),
+                },
+            )
+            .unwrap();
+        });
+        assert_eq!(query_guest_listeners(&control).unwrap(), vec![80, 443]);
+        guest.join().unwrap();
+        assert!(query_guest_listeners(&control).is_err());
+    }
+
+    #[cfg(feature = "vm")]
+    #[test]
+    fn expose_forward_relays_through_the_control_connect_request() {
+        use pvisor_guest::api::{GuestFrameRead, GuestFrameWrite, Reply, Request, StdinFrame};
+        use std::io::{Read, Write};
+
+        let directory = tempfile::tempdir().unwrap();
+        let control = directory.path().join("control.sock");
+        let listener = std::os::unix::net::UnixListener::bind(&control).unwrap();
+        let guest = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            match GuestFrameRead::read_frame::<Request>(&mut stream).unwrap() {
+                Request::Connect { port: 8080 } => {}
+                other => panic!("{other:?}"),
+            }
+            GuestFrameWrite::write_frame(&mut stream, &Reply::Ready).unwrap();
+            match GuestFrameRead::read_frame::<StdinFrame>(&mut stream).unwrap() {
+                StdinFrame::Data { bytes } => assert_eq!(bytes, b"ping"),
+                other => panic!("{other:?}"),
+            }
+            GuestFrameWrite::write_frame(
+                &mut stream,
+                &Reply::Output {
+                    stream: 1,
+                    bytes: b"pong".to_vec(),
+                },
+            )
+            .unwrap();
+            GuestFrameWrite::write_frame(&mut stream, &Reply::Exit { code: 0 }).unwrap();
+        });
+        let service = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut client = std::net::TcpStream::connect(service.local_addr().unwrap()).unwrap();
+        let (server_stream, _) = service.accept().unwrap();
+        let control_path = control.to_str().unwrap().to_string();
+        let relay = std::thread::spawn(move || {
+            forward_control(server_stream, &control_path, 8080).map(|()| ())
+        });
+        client.write_all(b"ping").unwrap();
+        // The client half-close still receives the guest's complete reply.
+        client.shutdown(std::net::Shutdown::Write).unwrap();
+        let mut response = Vec::new();
+        client.read_to_end(&mut response).unwrap();
+        assert_eq!(response, b"pong");
+        relay.join().unwrap().unwrap();
+        guest.join().unwrap();
     }
 }

@@ -969,17 +969,28 @@ impl Task for PvisorTask {
         #[cfg(feature = "vm")]
         {
             plan.egress_gate = egress_gate;
-            if wants_vm
-                && plan.egress_gate.is_none()
-                && matches!(
-                    plan.vm_network_plan(),
-                    Ok(posture) if posture.mode == crate::plan::VmNetworkMode::Off
+            if wants_vm {
+                // Node defaults (crate::config), re-read per Create like the
+                // injection catalogue; an invalid file fails the task instead
+                // of guessing a posture. The annotation still wins.
+                let node = crate::config::load()
+                    .map_err(|error| rpc_error(Code::INVALID_ARGUMENT, error))?;
+                plan.vm_network = crate::plan::vm_network_plan(
+                    plan.annotations
+                        .get("io.pvisor.vm.network")
+                        .map(String::as_str),
+                    node.vm.default_network.as_deref(),
                 )
-            {
-                warn!(
-                    "task {}: VM has no network source (no egress policy, no io.pvisor.vm.network annotation); booting without a network device",
-                    req.id
-                );
+                .map_err(|error| rpc_error(Code::INVALID_ARGUMENT, error.to_string()))?;
+                plan.expose = node.vm.auto_expose.then_some(node.vm.expose_budget);
+                if plan.egress_gate.is_none()
+                    && plan.vm_network.mode == crate::plan::VmNetworkMode::Off
+                {
+                    warn!(
+                        "task {}: VM has no network source (no egress policy, no io.pvisor.vm.network annotation, no node default_network); booting without a network device",
+                        req.id
+                    );
+                }
             }
         }
         #[cfg(not(feature = "vm"))]

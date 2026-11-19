@@ -357,6 +357,18 @@ pub(crate) struct ContainerPlan {
     #[cfg(any(feature = "vm", test))]
     #[serde(default)]
     pub(crate) vm_shape: VmConfig,
+    /// VM tier: egress posture resolved once at Create from the
+    /// `io.pvisor.vm.network` annotation or the node default (see
+    /// [`ContainerPlan::vm_network_plan`]); serialized for the runner.
+    #[cfg(any(feature = "vm", test))]
+    #[serde(default)]
+    pub(crate) vm_network: VmNetworkPlan,
+    /// VM tier: exposure budget for guest TCP listeners in the pod network
+    /// namespace (node `auto_expose`/`expose_budget` defaults; `None`
+    /// disables). The runner's poller owns the per-port proxies.
+    #[cfg(any(feature = "vm", test))]
+    #[serde(default)]
+    pub(crate) expose: Option<usize>,
     /// Non-fatal gaps recorded while planning (surfaced in shim logs).
     pub(crate) warnings: Vec<String>,
 }
@@ -857,51 +869,72 @@ impl ContainerPlan {
     pub(crate) fn vm_config(&self) -> VmConfig {
         self.vm_shape
     }
+}
 
-    /// VM egress posture from the single `io.pvisor.vm.network` annotation:
-    /// `off`/unset (no device), `public`, or `allowlist=<entries>` where
-    /// entries are comma-separated `host[:port]` and an optional `private:`
-    /// prefix opts that entry into private-space resolutions (intranet
-    /// mirrors). Errors on unknown values or malformed entries so a typo
-    /// cannot silently disable policy.
-    #[cfg(any(feature = "vm", test))]
-    pub(crate) fn vm_network_plan(&self) -> Result<VmNetworkPlan, PlanError> {
-        let Some(mode) = self
-            .annotations
-            .get(format!("{ANNOTATION_PREFIX}vm.network").as_str())
-        else {
-            return Ok(VmNetworkPlan::default());
-        };
-        let mode = mode.trim();
-        if mode == "off" || mode == "none" {
-            return Ok(VmNetworkPlan::default());
-        }
-        if mode == "public" {
-            return Ok(VmNetworkPlan {
-                mode: VmNetworkMode::Public,
-                allow: Vec::new(),
-            });
-        }
-        let Some(entries) = mode.strip_prefix("allowlist=") else {
-            return Err(PlanError::UnsupportedConstraint(format!(
-                "unsupported io.pvisor.vm.network value `{mode}` (off, public, allowlist=<entries>)"
-            )));
-        };
-        let allow = entries
-            .split(',')
-            .filter(|entry| !entry.trim().is_empty())
-            .map(parse_allow_entry)
-            .collect::<Result<Vec<_>, _>>()?;
-        if allow.is_empty() {
-            return Err(PlanError::UnsupportedConstraint(
-                "io.pvisor.vm.network=allowlist requires at least one host entry".into(),
-            ));
-        }
-        Ok(VmNetworkPlan {
-            mode: VmNetworkMode::Allowlist,
-            allow,
-        })
+/// Resolve the VM egress posture: the `io.pvisor.vm.network` annotation
+/// value wins (`off`/unset, `public`, or `allowlist=<entries>` where entries
+/// are comma-separated `host[:port]` and an optional `private:` prefix opts
+/// that entry into private-space resolutions — intranet mirrors), an absent
+/// annotation falls back to the node-level default (same value syntax), and
+/// both absent stays `off` (no network device). Errors on unknown values or
+/// malformed entries so a typo cannot silently disable policy; node-default
+/// failures are relabeled to name their own source.
+#[cfg(any(feature = "vm", test))]
+pub(crate) fn vm_network_plan(
+    annotation: Option<&str>,
+    node_default: Option<&str>,
+) -> Result<VmNetworkPlan, PlanError> {
+    match annotation.map(str::trim) {
+        Some(value) => parse_vm_network_value(value),
+        None => match node_default.map(str::trim) {
+            Some(value) => parse_vm_network_value(value).map_err(relabel_node_default),
+            None => Ok(VmNetworkPlan::default()),
+        },
     }
+}
+
+/// Prefix parse failures that came from the node config instead of the
+/// annotation; the value syntax and every inner message are shared.
+#[cfg(any(feature = "vm", test))]
+fn relabel_node_default(error: PlanError) -> PlanError {
+    match error {
+        PlanError::UnsupportedConstraint(message) => {
+            PlanError::UnsupportedConstraint(format!("node default_network {message}"))
+        }
+        other => other,
+    }
+}
+
+#[cfg(any(feature = "vm", test))]
+fn parse_vm_network_value(mode: &str) -> Result<VmNetworkPlan, PlanError> {
+    if mode == "off" || mode == "none" {
+        return Ok(VmNetworkPlan::default());
+    }
+    if mode == "public" {
+        return Ok(VmNetworkPlan {
+            mode: VmNetworkMode::Public,
+            allow: Vec::new(),
+        });
+    }
+    let Some(entries) = mode.strip_prefix("allowlist=") else {
+        return Err(PlanError::UnsupportedConstraint(format!(
+            "unsupported io.pvisor.vm.network value `{mode}` (off, public, allowlist=<entries>)"
+        )));
+    };
+    let allow = entries
+        .split(',')
+        .filter(|entry| !entry.trim().is_empty())
+        .map(parse_allow_entry)
+        .collect::<Result<Vec<_>, _>>()?;
+    if allow.is_empty() {
+        return Err(PlanError::UnsupportedConstraint(
+            "io.pvisor.vm.network=allowlist requires at least one host entry".into(),
+        ));
+    }
+    Ok(VmNetworkPlan {
+        mode: VmNetworkMode::Allowlist,
+        allow,
+    })
 }
 
 /// Parse one `io.pvisor.vm.network` allowlist entry: `[private:]host[:port]`.
@@ -1611,6 +1644,11 @@ pub(crate) fn build_plan(
     } else {
         VmConfig::default()
     };
+    // The service resolves the egress posture and exposure budget from the
+    // annotations plus node config after build_plan (see service.rs Create);
+    // the plan literal carries the all-off defaults for every other consumer.
+    #[cfg(any(feature = "vm", test))]
+    let (vm_network, expose) = (VmNetworkPlan::default(), None);
 
     Ok(ContainerPlan {
         id: id.to_string(),
@@ -1647,6 +1685,10 @@ pub(crate) fn build_plan(
         synthetic,
         #[cfg(any(feature = "vm", test))]
         vm_shape,
+        #[cfg(any(feature = "vm", test))]
+        vm_network,
+        #[cfg(any(feature = "vm", test))]
+        expose,
         warnings,
     })
 }
@@ -2706,46 +2748,21 @@ mod tests {
 
     #[test]
     fn vm_network_annotation_parses_modes_and_entries() {
-        let plan = |annotations: &[(&str, &str)]| {
-            let mut spec = serde_json::to_value(minimal_spec()).unwrap();
-            spec["annotations"] = serde_json::json!(
-                annotations
-                    .iter()
-                    .map(|(k, v)| (k.to_string(), v.to_string()))
-                    .collect::<std::collections::HashMap<_, _>>()
-            );
-            let spec: Spec = serde_json::from_value(spec).unwrap();
-            build_plan(&spec, "c", Path::new("/b"), vec![], IoPlan::default()).unwrap()
-        };
+        let annotation = |value: Option<&str>| vm_network_plan(value, None);
 
         // Absent, explicit off and none all keep egress disabled.
-        assert_eq!(plan(&[]).vm_network_plan().unwrap(), Default::default());
-        assert_eq!(
-            plan(&[("io.pvisor.vm.network", "off")])
-                .vm_network_plan()
-                .unwrap(),
-            Default::default()
-        );
-        assert_eq!(
-            plan(&[("io.pvisor.vm.network", "none")])
-                .vm_network_plan()
-                .unwrap(),
-            Default::default()
-        );
+        assert_eq!(annotation(None).unwrap(), Default::default());
+        assert_eq!(annotation(Some("off")).unwrap(), Default::default());
+        assert_eq!(annotation(Some("none")).unwrap(), Default::default());
 
         assert_eq!(
-            plan(&[("io.pvisor.vm.network", "public")])
-                .vm_network_plan()
-                .unwrap()
-                .mode,
+            annotation(Some("public")).unwrap().mode,
             VmNetworkMode::Public
         );
 
-        let allowlist = plan(&[(
-            "io.pvisor.vm.network",
+        let allowlist = annotation(Some(
             "allowlist=pypi.example.com, registry.internal:443 ,private:mirrors.corp, 10.0.0.0/8",
-        )])
-        .vm_network_plan()
+        ))
         .unwrap();
         assert_eq!(allowlist.mode, VmNetworkMode::Allowlist);
         assert_eq!(
@@ -2777,45 +2794,43 @@ mod tests {
         );
 
         // Unknown values and malformed ports are rejected, never downgraded.
-        assert!(
-            plan(&[("io.pvisor.vm.network", "open")])
-                .vm_network_plan()
-                .is_err()
-        );
-        assert!(
-            plan(&[("io.pvisor.vm.network", "allowlist=host:notaport")])
-                .vm_network_plan()
-                .is_err()
-        );
+        assert!(annotation(Some("open")).is_err());
+        assert!(annotation(Some("allowlist=host:notaport")).is_err());
         // The prefix is meaningless on an address grant; rejecting it beats
         // silently ignoring an explicit operator request.
-        assert!(
-            plan(&[("io.pvisor.vm.network", "allowlist=private:10.0.0.0/8")])
-                .vm_network_plan()
-                .is_err()
-        );
-        assert!(
-            plan(&[("io.pvisor.vm.network", "allowlist=private:10.1.2.3")])
-                .vm_network_plan()
-                .is_err()
-        );
+        assert!(annotation(Some("allowlist=private:10.0.0.0/8")).is_err());
+        assert!(annotation(Some("allowlist=private:10.1.2.3")).is_err());
         // An explicit zero port must never widen into an all-port grant.
-        assert!(
-            plan(&[("io.pvisor.vm.network", "allowlist=example.com:0")])
-                .vm_network_plan()
-                .is_err()
-        );
+        assert!(annotation(Some("allowlist=example.com:0")).is_err());
         // Allowlist without entries would deny everything silently;
         // reject it so the operator notices.
-        assert!(
-            plan(&[("io.pvisor.vm.network", "allowlist=")])
-                .vm_network_plan()
-                .is_err()
+        assert!(annotation(Some("allowlist=")).is_err());
+        assert!(annotation(Some("allowlist")).is_err());
+    }
+
+    #[test]
+    fn vm_network_node_default_applies_only_without_annotation() {
+        // The annotation wins over the node default; both absent stays off.
+        assert_eq!(
+            vm_network_plan(Some("off"), Some("public")).unwrap().mode,
+            VmNetworkMode::Off
         );
-        assert!(
-            plan(&[("io.pvisor.vm.network", "allowlist")])
-                .vm_network_plan()
-                .is_err()
+        assert_eq!(
+            vm_network_plan(None, Some("public")).unwrap().mode,
+            VmNetworkMode::Public
         );
+        assert_eq!(
+            vm_network_plan(None, None).unwrap().mode,
+            VmNetworkMode::Off
+        );
+        let plan = vm_network_plan(None, Some("allowlist=example.com:443")).unwrap();
+        assert_eq!(plan.mode, VmNetworkMode::Allowlist);
+        assert_eq!(plan.allow[0].host, "example.com");
+        assert_eq!(plan.allow[0].port, 443);
+        // An invalid node default fails closed and names its own source.
+        let error = vm_network_plan(None, Some("bogus"))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("node default_network"), "{error}");
     }
 }

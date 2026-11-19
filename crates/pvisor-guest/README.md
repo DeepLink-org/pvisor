@@ -245,9 +245,14 @@ Serial devices are opened before launch,
 masked from workload paths and protected by the launch capability bounding set.
 
 `GuestConfig.control` enables a vsock listener on port 1025; omission starts no
-listener. The adapter accepts only host-CID peers. Bounded
-frames support ping, main stdin attachment, process-group signals, exec and
-TCP tunnels to guest loopback services. Exec inherits launch environment and
+listener. The adapter accepts only host-CID peers (at most 256 concurrent
+connections — TCP-tunnel traffic from host-side port exposure shares this
+listener with exec). Bounded
+frames support ping, main stdin attachment, process-group signals, exec,
+TCP tunnels to guest loopback services and `Listeners` observation, which
+reports the sorted unique TCP ports currently listening on wildcard or
+loopback addresses — the binds a `Connect` relay can dial — so a host
+supervisor can expose services without guest-side configuration. Exec inherits launch environment and
 working directory unless overridden, keeps stdout/stderr separate without a
 PTY, and reports 126/127 for execution errors. TTY mode combines output on the
 PTY and supports initial dimensions; tracked native execs support live resizing through the PID-fenced registry.
