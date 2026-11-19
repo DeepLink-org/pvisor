@@ -74,7 +74,7 @@ jobs:
           setup: none
 
       - name: Fetch main release boundary
-        if: steps.mode.outputs.recovery != 'true'
+        if: github.event_name == 'push'
         run: git fetch --no-tags origin main:refs/remotes/origin/main
 
       - name: Validate tag, versions, and lockfile
@@ -90,11 +90,11 @@ jobs:
             echo "tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          args=(--main-ref origin/main)
           if [[ "$EVENT" == "push" ]]; then
-            args+=(--tag "${GITHUB_REF_NAME}")
+            version="$(mise run check-release-version -- --tag "$GITHUB_REF_NAME" --main-ref origin/main)"
+          else
+            version="$(mise run check-release-version)"
           fi
-          version="$(mise run check-release-version -- "${args[@]}")"
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "tag=$GITHUB_REF_NAME" >> "$GITHUB_OUTPUT"
 

@@ -58,6 +58,71 @@ def accepted_run():
 
 
 class NativeReleaseTests(unittest.TestCase):
+    def test_acceptance_receipts_bind_each_wheel_and_its_platform_coverage(self):
+        with workspace() as (root, _):
+            wheels = {platform: wheel(root, platform) for platform in checker.PLATFORM_PATTERNS}
+            evidence = root / "evidence"
+            receipts = {}
+            for platform, path in wheels.items():
+                report = evidence / platform / "result.json"
+                report.parent.mkdir(parents=True)
+                receipts[platform] = {
+                    "status": "PASS",
+                    "version": "0.3.0",
+                    "source_sha": "a" * 40,
+                    "wheel": path.name,
+                    "wheel_sha256": assets.digest(path),
+                    "coverage": "vm-recovery" if platform == "linux-x86_64" else "install-smoke",
+                }
+                report.write_text(json.dumps(receipts[platform]))
+            checker.validate_acceptance(wheels, "0.3.0", evidence, "a" * 40)
+            with self.assertRaises(checker.ArtifactValidationError):
+                checker.validate_acceptance(wheels, "0.3.0", evidence, "a" * 40, require_vm=True)
+            mac_report = evidence / "macos-arm64" / "result.json"
+            mac_report.write_text(
+                json.dumps({**receipts["macos-arm64"], "coverage": "vm-recovery"})
+            )
+            checker.validate_acceptance(wheels, "0.3.0", evidence, "a" * 40, require_vm=True)
+            for field, value in (("source_sha", "b" * 40), ("wheel_sha256", "0" * 64)):
+                mac_report.write_text(
+                    json.dumps({**receipts["macos-arm64"], "coverage": "vm-recovery", field: value})
+                )
+                with self.assertRaises(checker.ArtifactValidationError):
+                    checker.validate_acceptance(
+                        wheels, "0.3.0", evidence, "a" * 40, require_vm=True
+                    )
+            mac_report.write_text(json.dumps(receipts["macos-arm64"]))
+            for invalid_sha in ("b" * 40, "short", "A" * 40):
+                with self.assertRaises(checker.ArtifactValidationError):
+                    checker.validate_acceptance(wheels, "0.3.0", evidence, invalid_sha)
+            for platform in wheels:
+                report = evidence / platform / "result.json"
+                original = receipts[platform]
+                for key, value in (
+                    ("source_sha", None),
+                    ("source_sha", "b" * 40),
+                    ("status", "FAIL"),
+                    ("version", "0.4.0"),
+                    ("wheel", "other.whl"),
+                    ("wheel_sha256", "0" * 64),
+                    ("coverage", "install-smoke" if platform == "linux-x86_64" else "vm-recovery"),
+                ):
+                    with self.subTest(platform=platform, field=key):
+                        report.write_text(json.dumps({**original, key: value}))
+                        with self.assertRaises(checker.ArtifactValidationError):
+                            checker.validate_acceptance(wheels, "0.3.0", evidence, "a" * 40)
+                for invalid in ("[]", "{truncated"):
+                    report.write_text(invalid)
+                    with self.assertRaises(checker.ArtifactValidationError):
+                        checker.validate_acceptance(wheels, "0.3.0", evidence, "a" * 40)
+                report.unlink()
+                with self.assertRaises(checker.ArtifactValidationError):
+                    checker.validate_acceptance(wheels, "0.3.0", evidence, "a" * 40)
+                report.write_text(json.dumps(original))
+            wheels["linux-x86_64"].write_bytes(b"changed after acceptance")
+            with self.assertRaises(checker.ArtifactValidationError):
+                checker.validate_acceptance(wheels, "0.3.0", evidence, "a" * 40)
+
     def test_recovery_source_requires_original_tag_and_successful_distribution(self):
         repository = "owner/repo"
         sha = "a" * 40

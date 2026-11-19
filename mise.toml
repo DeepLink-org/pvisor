@@ -778,6 +778,26 @@ export PVISOR_VM_PROBE_REPORT="${usage_report:-$CARGO_TARGET_DIR/vm-validation/v
 python3 -m unittest -v tests.hardware.vm_snapshot_state
 '''
 
+[tasks.test-vm-lifecycle]
+description = "真实 KVM/HVF ready 屏障、失败清理与同进程重试；缺前提失败"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ $# -gt 0 ]]; then echo "test-vm-lifecycle does not accept filters" >&2; exit 2; fi
+case "$(uname -s)-$(uname -m)" in
+  Linux-x86_64) abort_test=ready_abort_kvm ;;
+  Darwin-arm64) abort_test=ready_abort_hvf ;;
+  *) echo "requires Linux x86_64/KVM or Apple Silicon/HVF" >&2; exit 2 ;;
+esac
+firmware="${PVISOR_CASE_VM_FIRMWARE_PATH:?set an absolute trusted local firmware path}"
+if [[ "$firmware" != /* || ! -f "$firmware" ]]; then
+  echo "PVISOR_CASE_VM_FIRMWARE_PATH must name an existing absolute firmware file" >&2
+  exit 2
+fi
+mise run test -- pvisor-vm -- --test ready_before_execution --test "$abort_test" \
+  --profile vm-lifecycle --run-ignored only --no-tests fail --test-threads 1
+'''
+
 [tasks.vm-case-driver]
 description = "vm-case-driver"
 hide = true

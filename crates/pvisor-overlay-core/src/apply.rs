@@ -52,6 +52,47 @@ pub enum OverlayError {
     Persist(String),
     #[error("io: {0}")]
     Io(#[from] std::io::Error),
+    /// A failed apply attempt with its last confirmed ledger stage.
+    #[error(transparent)]
+    ApplyFailure(#[from] ApplyFailure),
+}
+
+/// Failure after an apply identity has been allocated or recovered.
+///
+/// `last_confirmed` is the last successful ledger write, or the state read at
+/// recovery admission. It is not a claim about the current disk state. A failed write may already be visible;
+/// Prepared may already have partial target effects. Retain the stage and use
+/// `recover_pending_applies` under exclusive ownership before further mutation.
+/// Even Committed can require retrying backup cleanup; it does not authorize
+/// replaying changes over later host edits. Admission errors before allocating
+/// an identity retain their ordinary `OverlayError` variants.
+#[derive(Debug, thiserror::Error)]
+#[error(
+    "apply {apply_id} failed after confirmed {last_confirmed:?}; reconcile retained stage: {source}"
+)]
+pub struct ApplyFailure {
+    /// Stable ledger identity for this attempt, including uncertain intent writes.
+    pub apply_id: String,
+    /// Last confirmed ledger state, or None if intent persistence failed.
+    pub last_confirmed: Option<ApplyRecordState>,
+    /// Original error, preserving its kind and source chain.
+    #[source]
+    pub source: Box<OverlayError>,
+}
+
+fn apply_attempt<T>(
+    apply_id: &str,
+    mut confirmed: Option<ApplyRecordState>,
+    action: impl FnOnce(&mut Option<ApplyRecordState>) -> Result<T, OverlayError>,
+) -> Result<T, OverlayError> {
+    action(&mut confirmed).map_err(|source| {
+        ApplyFailure {
+            apply_id: apply_id.to_owned(),
+            last_confirmed: confirmed,
+            source: Box::new(source),
+        }
+        .into()
+    })
 }
 
 #[derive(Debug, Clone)]
@@ -938,44 +979,49 @@ fn apply_overlay_selected_for_target(
     }
     let (plan, preimages) = prepare_overlay_apply(record, lower_dirs, selection, target_kind)?;
     let apply_id = uuid::Uuid::new_v4().to_string();
-    append_apply_record(
-        record,
-        ApplyRecord {
-            schema_version: APPLY_LEDGER_SCHEMA_VERSION,
+    apply_attempt(&apply_id, None, |confirmed| {
+        append_apply_record(
+            record,
+            ApplyRecord {
+                schema_version: APPLY_LEDGER_SCHEMA_VERSION,
+                apply_id: apply_id.clone(),
+                created_at_unix_ms: pvisor_core::unix_now_ms(),
+                overlay_id: record.id.clone(),
+                overlay_generation: record.generation,
+                target: record.target.clone(),
+                selection: selection.clone(),
+                changes: plan.selected.clone(),
+                planned_paths: plan.selected_paths.iter().cloned().collect(),
+                preimages: preimages.clone(),
+                state: ApplyRecordState::Prepared,
+                remaining_changes: 0,
+            },
+        )?;
+        *confirmed = Some(ApplyRecordState::Prepared);
+        apply_prepared_target(
+            record,
+            &plan.selected_paths,
+            &preimages,
+            &plan.selected,
+            selection,
+            false,
+            ApplyTarget {
+                apply_id: &apply_id,
+                kind: target_kind,
+            },
+        )?;
+        mark_apply_target_applied(record, &apply_id)?;
+        *confirmed = Some(ApplyRecordState::TargetApplied);
+        let remaining = complete_target_applied(record, lower_dirs, &plan.selected_paths)?;
+        consume_applied_preimages(record, &plan.selected_paths, &plan.selected)?;
+        mark_apply_committed(record, &apply_id, remaining.len())?;
+        *confirmed = Some(ApplyRecordState::Committed);
+        cleanup_apply_backups(record, &apply_id, target_kind)?;
+        Ok(ApplyOutcome {
             apply_id: apply_id.clone(),
-            created_at_unix_ms: pvisor_core::unix_now_ms(),
-            overlay_id: record.id.clone(),
-            overlay_generation: record.generation,
-            target: record.target.clone(),
-            selection: selection.clone(),
-            changes: plan.selected.clone(),
-            planned_paths: plan.selected_paths.iter().cloned().collect(),
-            preimages: preimages.clone(),
-            state: ApplyRecordState::Prepared,
-            remaining_changes: 0,
-        },
-    )?;
-    apply_prepared_target(
-        record,
-        &plan.selected_paths,
-        &preimages,
-        &plan.selected,
-        selection,
-        false,
-        ApplyTarget {
-            apply_id: &apply_id,
-            kind: target_kind,
-        },
-    )?;
-    mark_apply_target_applied(record, &apply_id)?;
-    let remaining = complete_target_applied(record, lower_dirs, &plan.selected_paths)?;
-    consume_applied_preimages(record, &plan.selected_paths, &plan.selected)?;
-    mark_apply_committed(record, &apply_id, remaining.len())?;
-    cleanup_apply_backups(record, &apply_id, target_kind)?;
-    Ok(ApplyOutcome {
-        apply_id,
-        applied: plan.selected,
-        remaining,
+            applied: plan.selected,
+            remaining,
+        })
     })
 }
 
@@ -1022,7 +1068,9 @@ fn recover_pending_applies_for_target(
             && apply.target == record.target
             && !ledger.project_boundaries.contains_key(&apply.apply_id)
         {
-            cleanup_apply_backups(record, &apply.apply_id, target_kind)?;
+            apply_attempt(&apply.apply_id, Some(ApplyRecordState::Committed), |_| {
+                cleanup_apply_backups(record, &apply.apply_id, target_kind)
+            })?;
         }
     }
     let pending = records
@@ -1046,44 +1094,48 @@ fn recover_pending_applies_for_target(
                 record.target.display()
             )));
         }
-        if let Some(boundary) = ledger.project_boundaries.get(&apply.apply_id) {
-            recover_project_apply(record, lower_dirs, &apply, boundary)?;
-            recovered.push(apply.apply_id);
-            continue;
-        }
-        // Older Prepared/TargetApplied records are not authority to perform
-        // unsupported root mutations, restore backups, or prune their upper.
-        target_kind.validate_changes(&apply.changes)?;
-        let selected_paths = apply
-            .planned_paths
-            .iter()
-            .map(|path| normalize_selection_path(path))
-            .collect::<Result<BTreeSet<_>, _>>()?;
-        if selected_paths.is_empty() && !apply.changes.is_empty() {
-            return Err(OverlayError::InvalidState(format!(
-                "prepared apply {} has changes but no recovery paths",
-                apply.apply_id
-            )));
-        }
-        if apply.state == ApplyRecordState::Prepared {
-            apply_prepared_target(
-                record,
-                &selected_paths,
-                &apply.preimages,
-                &apply.changes,
-                &apply.selection,
-                true,
-                ApplyTarget {
-                    apply_id: &apply.apply_id,
-                    kind: target_kind,
-                },
-            )?;
-            mark_apply_target_applied(record, &apply.apply_id)?;
-        }
-        let remaining = complete_target_applied(record, lower_dirs, &selected_paths)?;
-        consume_applied_preimages(record, &selected_paths, &apply.changes)?;
-        mark_apply_committed(record, &apply.apply_id, remaining.len())?;
-        cleanup_apply_backups(record, &apply.apply_id, target_kind)?;
+        apply_attempt(&apply.apply_id, Some(apply.state), |confirmed| {
+            if let Some(boundary) = ledger.project_boundaries.get(&apply.apply_id) {
+                recover_project_apply(record, lower_dirs, &apply, boundary, confirmed)?;
+                return Ok(());
+            }
+            // Older Prepared/TargetApplied records are not authority to perform
+            // unsupported root mutations, restore backups, or prune their upper.
+            target_kind.validate_changes(&apply.changes)?;
+            let selected_paths = apply
+                .planned_paths
+                .iter()
+                .map(|path| normalize_selection_path(path))
+                .collect::<Result<BTreeSet<_>, _>>()?;
+            if selected_paths.is_empty() && !apply.changes.is_empty() {
+                return Err(OverlayError::InvalidState(format!(
+                    "prepared apply {} has changes but no recovery paths",
+                    apply.apply_id
+                )));
+            }
+            if apply.state == ApplyRecordState::Prepared {
+                apply_prepared_target(
+                    record,
+                    &selected_paths,
+                    &apply.preimages,
+                    &apply.changes,
+                    &apply.selection,
+                    true,
+                    ApplyTarget {
+                        apply_id: &apply.apply_id,
+                        kind: target_kind,
+                    },
+                )?;
+                mark_apply_target_applied(record, &apply.apply_id)?;
+                *confirmed = Some(ApplyRecordState::TargetApplied);
+            }
+            let remaining = complete_target_applied(record, lower_dirs, &selected_paths)?;
+            consume_applied_preimages(record, &selected_paths, &apply.changes)?;
+            mark_apply_committed(record, &apply.apply_id, remaining.len())?;
+            *confirmed = Some(ApplyRecordState::Committed);
+            cleanup_apply_backups(record, &apply.apply_id, target_kind)?;
+            Ok(())
+        })?;
         recovered.push(apply.apply_id);
     }
     Ok(recovered)
@@ -1504,14 +1556,18 @@ fn apply_project_selected(
         state: ApplyRecordState::Prepared,
         remaining_changes: 0,
     };
-    append_apply_record_scoped(record, apply.clone(), Some(boundary))?;
-    publish_project_apply(record, &apply, &target, false)?;
-    mark_apply_target_applied(record, &apply.apply_id)?;
-    let remaining = finish_project_apply(record, lowers, &apply, &target)?;
-    Ok(ApplyOutcome {
-        apply_id: apply.apply_id,
-        applied: apply.changes,
-        remaining,
+    apply_attempt(&apply.apply_id, None, |confirmed| {
+        append_apply_record_scoped(record, apply.clone(), Some(boundary))?;
+        *confirmed = Some(ApplyRecordState::Prepared);
+        publish_project_apply(record, &apply, &target, false)?;
+        mark_apply_target_applied(record, &apply.apply_id)?;
+        *confirmed = Some(ApplyRecordState::TargetApplied);
+        let remaining = finish_project_apply(record, lowers, &apply, &target, confirmed)?;
+        Ok(ApplyOutcome {
+            apply_id: apply.apply_id.clone(),
+            applied: apply.changes.clone(),
+            remaining,
+        })
     })
 }
 
@@ -1520,6 +1576,7 @@ fn recover_project_apply(
     lowers: &[PathBuf],
     apply: &ApplyRecord,
     boundary: &ProjectApplyBoundary,
+    confirmed: &mut Option<ApplyRecordState>,
 ) -> Result<(), OverlayError> {
     if record.protect_target {
         return Err(OverlayError::Apply(
@@ -1537,8 +1594,9 @@ fn recover_project_apply(
     if apply.state == ApplyRecordState::Prepared {
         publish_project_apply(record, apply, &target, true)?;
         mark_apply_target_applied(record, &apply.apply_id)?;
+        *confirmed = Some(ApplyRecordState::TargetApplied);
     }
-    finish_project_apply(record, lowers, apply, &target)?;
+    finish_project_apply(record, lowers, apply, &target, confirmed)?;
     Ok(())
 }
 
@@ -1547,12 +1605,14 @@ fn finish_project_apply(
     lowers: &[PathBuf],
     apply: &ApplyRecord,
     target: &ProjectTarget,
+    confirmed: &mut Option<ApplyRecordState>,
 ) -> Result<Vec<ChangeEntry>, OverlayError> {
     target.check_binding()?;
     let paths = apply.planned_paths.iter().cloned().collect();
     let remaining = complete_target_applied(record, lowers, &paths)?;
     consume_applied_preimages(record, &paths, &apply.changes)?;
     mark_apply_committed(record, &apply.apply_id, remaining.len())?;
+    *confirmed = Some(ApplyRecordState::Committed);
     Ok(remaining)
 }
 
@@ -6888,8 +6948,13 @@ mod tests {
             fs::set_permissions(tmp.path(), fs::Permissions::from_mode(0o500)).unwrap();
             let failed = recover_pending_applies_locked(&mut record, std::slice::from_ref(&target));
             fs::set_permissions(tmp.path(), permissions).unwrap();
+            let OverlayError::ApplyFailure(failure) = failed.unwrap_err() else {
+                panic!("cleanup failure must identify the committed apply");
+            };
+            assert_eq!(failure.apply_id, apply.apply_id);
+            assert_eq!(failure.last_confirmed, Some(ApplyRecordState::Committed));
             assert!(
-                matches!(failed, Err(OverlayError::Io(ref e)) if e.kind() == io::ErrorKind::PermissionDenied)
+                matches!(*failure.source, OverlayError::Io(ref e) if e.kind() == io::ErrorKind::PermissionDenied)
             );
             assert_eq!(
                 fs::read(backup.join(".pvisor-owner")).unwrap(),
@@ -6997,6 +7062,11 @@ mod tests {
                     recover_pending_applies_locked(&mut record, std::slice::from_ref(&target))
                         .unwrap_err();
                 assert!(error.to_string().contains("target changed after staging"));
+                let OverlayError::ApplyFailure(failure) = &error else {
+                    panic!("prepared recovery must retain its apply identity");
+                };
+                assert_eq!(failure.apply_id, "interrupted-partial");
+                assert_eq!(failure.last_confirmed, Some(ApplyRecordState::Prepared));
                 assert_eq!(fs::read(target.join("a")).unwrap(), b"later host edit");
                 assert_eq!(fs::read(target.join("b")).unwrap(), b"old-b");
                 assert_eq!(fs::read(target.join("keep")).unwrap(), b"old-keep");
@@ -7110,7 +7180,15 @@ mod tests {
                     let error =
                         recover_pending_applies_locked(&mut record, std::slice::from_ref(&target))
                             .unwrap_err();
-                    assert!(matches!(error, OverlayError::Persist(_)), "{error}");
+                    let OverlayError::ApplyFailure(failure) = error else {
+                        panic!("recovery failure must identify its apply");
+                    };
+                    assert_eq!(failure.apply_id, apply.apply_id);
+                    assert_eq!(
+                        failure.last_confirmed,
+                        Some(ApplyRecordState::TargetApplied)
+                    );
+                    assert!(matches!(*failure.source, OverlayError::Persist(_)));
                     assert_eq!(fs::read(target.join("a")).unwrap(), b"later host edit");
                     assert!(!record.upper.path().join("a").exists());
                     assert!(!record.upper.path().join("b").exists());

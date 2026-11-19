@@ -27,6 +27,99 @@ from tests.packaging_fixtures import (
 
 
 class ReleasePackagingTests(unittest.TestCase):
+    def test_install_receipt_is_published_only_after_success_and_never_claims_vm(self):
+        with workspace() as (root, resources):
+            wheel = root / "pvisor_sandbox-1.2.3-py3-none-macosx_11_0_arm64.whl"
+            wheel.write_bytes(b"installed wheel")
+            resources.enter_context(mock.patch.dict(os.environ, {"GITHUB_SHA": "a" * 40}))
+            report = root / "result.json"
+
+            def create_environment(builder, environment):
+                scripts = wheel_verify._installed_script_dir(environment)
+                scripts.mkdir(parents=True)
+                for name in wheel_verify.expected_binaries(wheel):
+                    executable = scripts / name
+                    executable.write_bytes(b"binary")
+                    executable.chmod(0o755)
+
+            resources.enter_context(
+                mock.patch.object(wheel_verify.venv.EnvBuilder, "create", create_environment)
+            )
+            run = resources.enter_context(
+                mock.patch.object(wheel_verify, "_run", return_value="pvisor 1.2.3")
+            )
+            run.side_effect = RuntimeError("installation failed")
+            with self.assertRaisesRegex(RuntimeError, "installation failed"):
+                wheel_verify.install_smoke(wheel, "1.2.3", install_log=report)
+            self.assertFalse(report.exists())
+            run.side_effect = None
+            wheel_verify.install_smoke(wheel, "1.2.3", install_log=report)
+            receipt = json.loads(report.read_text())
+            self.assertEqual(
+                receipt,
+                {
+                    "version": "1.2.3",
+                    "source_sha": "a" * 40,
+                    "wheel": wheel.name,
+                    "wheel_sha256": wheel_verify.hashlib.sha256(wheel.read_bytes()).hexdigest(),
+                    "status": "PASS",
+                    "coverage": "install-smoke",
+                },
+            )
+
+            run.side_effect = RuntimeError("retry installation failed")
+            with self.assertRaisesRegex(RuntimeError, "retry installation failed"):
+                wheel_verify.install_smoke(wheel, "1.2.3", install_log=report)
+            self.assertFalse(report.exists())
+            run.side_effect = None
+            wheel_verify.install_smoke(wheel, "1.2.3", install_log=report)
+            self.assertEqual(json.loads(report.read_text())["status"], "PASS")
+
+            def mutate_wheel(*args, **kwargs):
+                wheel.write_bytes(b"replaced while installing")
+                return "pvisor 1.2.3"
+
+            run.side_effect = mutate_wheel
+            with self.assertRaisesRegex(RuntimeError, "wheel changed"):
+                wheel_verify.install_smoke(wheel, "1.2.3", install_log=report)
+            self.assertFalse(report.exists())
+            run.side_effect = None
+
+            def accept(*args):
+                report.write_text(json.dumps({"steps": [{"step": "finished"}]}))
+
+            def failed_cleanup(*args):
+                accept(*args)
+                raise RuntimeError("VM cleanup failed")
+
+            with mock.patch.object(wheel_verify, "acceptance", side_effect=failed_cleanup):
+                with self.assertRaisesRegex(RuntimeError, "VM cleanup failed"):
+                    wheel_verify.install_smoke(wheel, "1.2.3", acceptance_log=report)
+            self.assertNotIn("status", json.loads(report.read_text()))
+            with mock.patch.object(wheel_verify, "acceptance", side_effect=accept):
+                wheel_verify.install_smoke(wheel, "1.2.3", acceptance_log=report)
+            receipt = json.loads(report.read_text())
+            self.assertEqual(receipt["status"], "PASS")
+            self.assertEqual(receipt["coverage"], "vm-recovery")
+            self.assertEqual(receipt["steps"], [{"step": "finished"}])
+
+            install_report = root / "install.json"
+            install_report.write_text(report.read_text())
+            run.side_effect = RuntimeError("retry installation failed")
+            with self.assertRaisesRegex(RuntimeError, "retry installation failed"):
+                wheel_verify.install_smoke(
+                    wheel, "1.2.3", acceptance_log=report, install_log=install_report
+                )
+            self.assertFalse(report.exists())
+            self.assertFalse(install_report.exists())
+            run.side_effect = None
+            with mock.patch.object(wheel_verify, "acceptance", side_effect=accept):
+                wheel_verify.install_smoke(
+                    wheel, "1.2.3", acceptance_log=report, install_log=install_report
+                )
+            self.assertNotIn("status", json.loads(report.read_text()))
+            self.assertEqual(json.loads(install_report.read_text())["coverage"], "vm-recovery")
+
     def test_wheel_backend_stages_before_setuptools_and_propagates_native_failure(self):
         settings = {"cargo-profile": "dev"}
         with (
@@ -1056,7 +1149,7 @@ class ReleasePackagingTests(unittest.TestCase):
                     ):
                         wheel_verify._wheel_contents(wheel)
 
-    def test_install_smoke_uses_integrated_cache_and_daemon(self):
+    def test_install_smoke_uses_image_frontend_and_daemon(self):
         for platform in ["manylinux_2_28_x86_64", "macosx_11_0_arm64"]:
             with self.subTest(platform=platform):
                 with ExitStack() as resources:
@@ -1088,14 +1181,16 @@ class ReleasePackagingTests(unittest.TestCase):
                     for name in expected:
                         assert [name, "--version"] in commands
                         assert [name, "--help"] in commands
-                    for command in ("prepare", "publish", "read"):
-                        assert ["pvisor", "cache", command, "--help"] in commands
+                    for command in ("build", "pull", "push", "inspect"):
+                        assert ["pvisor", "image", command, "--help"] in commands
                     for command in ("run", "spawn", "replay"):
                         assert ["pvisor", command, "--help"] in commands
                     assert ["pvisor-daemon", "serve", "--help"] in commands
                     assert ["pvisor-daemon", "protocol"] in commands
                     assert not any(
-                        "service" in command or "pvisor-memory-pool" in command
+                        "cache" in command
+                        or "service" in command
+                        or "pvisor-memory-pool" in command
                         for command in commands
                     )
 

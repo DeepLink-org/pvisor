@@ -10,6 +10,14 @@ fail-fast = false
 status-level = "fail"
 final-status-level = "fail"
 
+[profile.vm-lifecycle]
+slow-timeout = { period = "60s", terminate-after = 2 }
+retries = 0
+fail-fast = false
+
+[profile.vm-lifecycle.junit]
+path = "junit.xml"
+
 [profile.rootless]
 # Keep capability-suite selection and results in the native runner.
 default-filter = 'binary(=rootless_local) | binary(=run_config_cli) | binary(=prepared_rootfs_cli)'
@@ -52,6 +60,12 @@ threads-required = "num-test-threads"
 # before supervision starts; concurrent cold launches can exhaust that budget.
 [[profile.default.overrides]]
 filter = 'package(=pvisor-replay) & (test(=adapter::claude_code::tests::bash_timeout_kills_the_historical_process_group) | test(=process::tests::times_out_and_reaps_the_foreground_process_group))'
+threads-required = "num-test-threads"
+
+# The continuation fixture's upstream deadline includes child and Python startup.
+# Concurrent cold launches on macOS can exhaust it before the first request.
+[[profile.default.overrides]]
+filter = 'package(=pvisor-replay) & binary(=continuation_failures) & test(=opencode_continuation_preserves_failure_and_step_budget)'
 threads-required = "num-test-threads"
 
 # This fixture mounts FUSE beneath the checkout. Reserve all slots so concurrent
