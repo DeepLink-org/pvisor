@@ -796,6 +796,7 @@ impl Project {
                 .unwrap_or(10_000),
             healthcheck: None,
             no_healthcheck: false,
+            branchable: false,
         };
         staging::validate_mounts(&mut config)?;
         Ok(config)

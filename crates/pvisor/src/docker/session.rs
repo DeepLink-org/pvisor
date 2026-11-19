@@ -112,6 +112,13 @@ impl Store {
         &self,
         instance: &Instance<Backing>,
     ) -> anyhow::Result<()> {
+        self.session_record(instance)?.write()
+    }
+
+    pub(super) fn session_record<Backing: Serialize + Clone>(
+        &self,
+        instance: &Instance<Backing>,
+    ) -> anyhow::Result<Session<ContainerProfile<Backing>>> {
         let root = self.directory(&instance.id);
         ensure!(
             !root.join("instance.json").try_exists()?,
@@ -152,7 +159,6 @@ impl Store {
             SessionKind::Container,
             owner_epoch,
             profile,
-        )?
-        .write()
+        )
     }
 }

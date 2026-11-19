@@ -902,3 +902,7 @@ protocol ownership/security metadata; Core temporarily adds owner access to set
 opacity and restores the original native permissions. Fault tests cover EIO /
 ENOSPC after native creation, reopen, retry and unchanged lower contents. This
 does not promise crash-atomic directory creation or cleanup after a second error.
+
+Same-host fork restore can reuse immutable image-object bindings when the
+caller retains the corresponding image projection. Writable overlay state
+remains private to each restored guest.

@@ -2597,3 +2597,24 @@ Execution preparation binds VM Gateway proxies to Core's VM resolved-address
 constraints, even when LLM Gateway dispatch is disabled. Injected HTTP/HTTPS/ALL
 proxy routes therefore cannot widen direct VM egress to link-local metadata or
 IPv6 destinations. Host execution keeps the host proxy's address policy.
+
+### Fork a running OCI Session on one host
+
+On Linux x86-64 with KVM, start a detached source using a cached OCI image, then
+fork while the guest control channel is idle. Each child resumes the source's
+processes and open files with private writable memory and filesystem state.
+
+```sh
+pvisor run -d --name source --branchable --network none --entrypoint /bin/sh "$IMAGE" -c 'sleep 600'
+pvisor container branch source --names child-a child-b child-c child-d
+pvisor stop source
+pvisor rm source
+pvisor exec child-a /bin/sh -c 'echo ready'
+```
+
+The branch command waits for the guest control channel in every named child.
+The source and children share an immutable image projection. The children also
+share the sealed captured RAM backing until they write individual pages. Each
+child holds its own references and can continue after source removal. Stop and
+remove child Sessions normally. Fork children are one-shot. Use a source with
+networking disabled, no additional mounts, and no restart policy or health check.

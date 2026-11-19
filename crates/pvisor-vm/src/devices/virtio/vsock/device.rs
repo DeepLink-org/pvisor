@@ -191,6 +191,10 @@ impl Vsock {
 }
 
 impl VirtioDevice for Vsock {
+    fn snapshot_blocker(&self) -> Result<Option<String>, String> {
+        self.muxer.snapshot_blocker()
+    }
+
     fn freeze(&mut self) -> Result<bool, String> {
         self.frozen = true;
         self.muxer.freeze()
@@ -209,7 +213,7 @@ impl VirtioDevice for Vsock {
     }
 
     fn capture_state(&self) -> Result<super::super::DeviceSnapshot, String> {
-        let state = super::super::DeviceSnapshotState::Vsock(self.muxer.capture_state()?);
+        let state = super::super::DeviceSnapshotState::Vsock(self.muxer.capture_state(crate::devices::virtio::live_fork_scope())?);
         let queues = if self.is_activated() {
             if !self.frozen {
                 return Err("vsock must be frozen before capture".into());
@@ -242,7 +246,7 @@ impl VirtioDevice for Vsock {
         let super::super::DeviceSnapshotState::Vsock(state) = state else {
             return Err("vsock state type mismatch".into());
         };
-        self.muxer.validate_state(state)?;
+        self.muxer.restore_state(state)?;
         self.frozen = true;
         Ok(())
     }

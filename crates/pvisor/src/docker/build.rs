@@ -709,6 +709,7 @@ impl Stage {
             stop_timeout_ms: 10_000,
             healthcheck: None,
             no_healthcheck: false,
+            branchable: false,
         };
         let instance = Instance {
             schema: 1,

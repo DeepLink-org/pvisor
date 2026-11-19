@@ -267,7 +267,7 @@ impl<Profile> Session<Profile> {
 }
 
 impl<Profile: Serialize> Session<Profile> {
-    pub(crate) fn write(&self) -> anyhow::Result<()> {
+    pub(crate) fn record_bytes(&self) -> anyhow::Result<Vec<u8>> {
         let legacy = match self.kind {
             SessionKind::Task => "execution-session.json",
             SessionKind::Container => "instance.json",
@@ -285,6 +285,11 @@ impl<Profile: Serialize> Session<Profile> {
             body.len() as u64 <= MAX_SESSION_BYTES,
             "Session record exceeds 64 MiB"
         );
+        Ok(body)
+    }
+
+    pub(crate) fn write(&self) -> anyhow::Result<()> {
+        let body = self.record_bytes()?;
         crate::util::write_run_bytes(
             &self.root.join(super::super::session_execution::STATE),
             &body,

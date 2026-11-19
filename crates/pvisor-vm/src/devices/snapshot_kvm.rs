@@ -9,7 +9,7 @@ use crate::devices::{
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "kind", content = "state", deny_unknown_fields)]
 pub enum BusDeviceSnapshot {
-    Virtio(MmioSnapshot),
+    Virtio(Box<MmioSnapshot>),
     Cmos(CmosSnapshot),
     I8042(I8042Snapshot),
     Serial(SerialSnapshot),
@@ -29,6 +29,26 @@ fn supported(device: &dyn BusDevice) -> bool {
 }
 
 impl Bus {
+    /// Probe while CPUs/workers can still drain control responses. Frozen
+    /// capture independently validates again; this is not a snapshot itself.
+    pub fn snapshot_channel_blocker(&self) -> Result<Option<String>, String> {
+        for (base, _, device) in self.mapped_devices() {
+            let device = match device.try_lock() {
+                Ok(device) => device,
+                Err(std::sync::TryLockError::WouldBlock) => {
+                    return Ok(Some(format!("bus_busy at {base:#x}")));
+                }
+                Err(_) => return Err(format!("poisoned bus device at {base:#x}")),
+            };
+            if let Some(virtio) = device.as_any().downcast_ref::<MmioTransport>() {
+                if let Some(reason) = virtio.snapshot_blocker()? {
+                    return Ok(Some(format!("device {base:#x}: {reason}")));
+                }
+            }
+        }
+        Ok(None)
+    }
+
     /// Poll while CPUs are parked, releasing the VMM lock between executions.
     /// Never close the RAM gate until every worker has stopped. Unsupported
     /// mappings are detected before requesting any device to freeze.
@@ -86,7 +106,7 @@ impl Bus {
                     .map_err(|_| format!("busy/poisoned device at {base:#x}"))?;
                 let any = device.as_mut_any();
                 let device = if let Some(device) = any.downcast_mut::<MmioTransport>() {
-                    BusDeviceSnapshot::Virtio(device.capture_state()?)
+                    BusDeviceSnapshot::Virtio(Box::new(device.capture_state()?))
                 } else if let Some(device) = any.downcast_mut::<Cmos>() {
                     BusDeviceSnapshot::Cmos(device.capture_state()?)
                 } else if let Some(device) = any.downcast_mut::<I8042Device>() {

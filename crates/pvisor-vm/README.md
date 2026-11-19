@@ -2111,3 +2111,8 @@ namespace admission through opacity/identity publication; fresh directories keep
 disjoint-parent creation concurrency. Native security contexts, guest ownership,
 umask and setgid handling stay in the adapter. No guest entry is published by the
 creating request until Core completes directory initialization.
+
+For a same-host live fork, the VM owner captures branch state on Linux x86-64.
+The caller retains the RAM backing, binds each child's filesystem and guest
+control listener, and starts each child through the live-fork restore path.
+The caller must keep the immutable filesystem projection available to each child.

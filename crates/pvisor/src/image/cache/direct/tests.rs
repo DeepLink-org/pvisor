@@ -78,6 +78,7 @@ fn resolved_node_reuse_requires_a_completed_projection_and_keeps_traversal_error
         objects,
         reader: source.reader.clone(),
         source: Mutex::new(source),
+        snapshot_owner: Default::default(),
         projected: Mutex::default(),
         complete: Mutex::default(),
         reuse_resolved_nodes: true,
@@ -282,6 +283,7 @@ fn direct_copy_fills_upper_without_materializing_lower_in_both_copy_paths() {
             objects: objects.clone(),
             reader: source.reader.clone(),
             source: Mutex::new(source),
+            snapshot_owner: Default::default(),
             projected: Mutex::default(),
             complete: Mutex::default(),
             reuse_resolved_nodes: false,
@@ -370,6 +372,7 @@ fn runner_handoff_reopens_the_backend_and_retires_with_its_owner() {
     let DirectImage {
         attachment,
         _directory,
+        ..
     } = image(client, digest, temp.path());
     let root = attachment.root().to_owned();
     backend::materialize_file(&root.join("large")).unwrap();
@@ -461,6 +464,7 @@ fn index_page_capability_survives_direct_handoff_without_reopening_revision() {
     let DirectImage {
         attachment,
         _directory,
+        ..
     } = DirectImage::new(source, temp.path()).unwrap();
     let root = attachment.root().to_owned();
     let descriptor = root.parent().unwrap().join(DESCRIPTOR);
