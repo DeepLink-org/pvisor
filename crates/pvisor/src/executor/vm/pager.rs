@@ -18,6 +18,8 @@ use std::{
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 use std::time::Instant;
 
+const POOL_EXCHANGE_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// Owned, negotiated storage prepared before building a VMM. Starting the pager
 /// consumes this connection rather than reconnecting to a possibly replaced pool.
 pub(crate) struct PreparedPager {
@@ -219,7 +221,10 @@ pub(crate) fn start_diagnostics(handle: &pvisor_vm::api::VmmHandle) -> io::Resul
     Ok(())
 }
 
-fn connect_pool(path: &Path) -> io::Result<PoolClient> {
+fn connect_pool(
+    path: &Path,
+    connect: impl FnOnce(&Path) -> io::Result<UnixStream>,
+) -> io::Result<PoolClient> {
     let parent = path
         .parent()
         .ok_or_else(|| io::Error::other("pool parent missing"))?;
@@ -232,16 +237,16 @@ fn connect_pool(path: &Path) -> io::Result<PoolClient> {
             "experimental pool directory must belong to this user and be private",
         ));
     }
-    let stream = UnixStream::connect(path)?;
+    let stream = connect(path)?;
     crate::host_transport::authorize_host_peer_sync(&stream).map_err(io::Error::other)?;
-    PoolClient::new(stream, Duration::from_secs(5))
+    PoolClient::new(stream, POOL_EXCHANGE_TIMEOUT)
 }
 
 /// Authenticate and negotiate an explicit host-only pool before VMM construction.
 /// Failure leaves the socket and pool ownership untouched; dropping the prepared
 /// pager closes the session. No RAM is published until `start` is called.
 pub(crate) fn prepare_pool(path: &Path, metrics: bool) -> io::Result<PreparedPager> {
-    let mut pool = connect_pool(path)?;
+    let mut pool = connect_pool(path, |path| UnixStream::connect(path))?;
     #[cfg(target_os = "macos")]
     let store = match pool.enable_shared_mapping() {
         Ok(()) => PagerStore::Physical(pool),
@@ -282,6 +287,47 @@ fn pool_generation(file: &std::fs::File) -> io::Result<PoolGeneration> {
 }
 
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+fn connect_restore_pool(path: &Path) -> io::Result<UnixStream> {
+    use std::os::{
+        fd::{AsRawFd, FromRawFd, OwnedFd},
+        unix::ffi::OsStrExt,
+    };
+
+    let mut address: libc::sockaddr_un = unsafe { std::mem::zeroed() };
+    let bytes = path.as_os_str().as_bytes();
+    if bytes.len() >= address.sun_path.len() || bytes.contains(&0) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "invalid Physical restore pool socket path",
+        ));
+    }
+    address.sun_family = libc::AF_UNIX as _;
+    for (destination, byte) in address.sun_path.iter_mut().zip(bytes) {
+        *destination = *byte as _;
+    }
+    let length =
+        (std::mem::offset_of!(libc::sockaddr_un, sun_path) + bytes.len() + 1) as libc::socklen_t;
+    let raw = unsafe {
+        libc::socket(
+            libc::AF_UNIX,
+            libc::SOCK_STREAM | libc::SOCK_NONBLOCK | libc::SOCK_CLOEXEC,
+            0,
+        )
+    };
+    if raw < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: socket returned an owned fd, and the address fits in sockaddr_un.
+    let fd = unsafe { OwnedFd::from_raw_fd(raw) };
+    // Linux returns EAGAIN for a full Unix accept queue. Fail this admission
+    // before doing any peer negotiation; another call can retry.
+    if unsafe { libc::connect(fd.as_raw_fd(), std::ptr::from_ref(&address).cast(), length) } < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(fd.into())
+}
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 fn prepare_restore_pool(path: &Path) -> io::Result<PoolClient> {
     use std::os::unix::fs::FileTypeExt;
     let metadata = std::fs::symlink_metadata(path)?;
@@ -293,7 +339,7 @@ fn prepare_restore_pool(path: &Path) -> io::Result<PoolClient> {
             "Physical restore pool requires a private owned socket",
         ));
     }
-    let mut pool = connect_pool(path)?;
+    let mut pool = connect_pool(path, connect_restore_pool)?;
     pool.enable_shared_mapping()?;
     pool.stats()?;
     Ok(pool)
@@ -489,6 +535,171 @@ mod tests {
         drop(prepared);
         server.join().unwrap();
         assert_eq!(pool.lock().unwrap().object_count(), 0);
+    }
+
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    fn accept_restore_client(listener: &UnixListener) -> UnixStream {
+        use std::os::fd::AsRawFd;
+
+        let mut fd = libc::pollfd {
+            fd: listener.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        assert_eq!(unsafe { libc::poll(&mut fd, 1, 5000) }, 1);
+        assert_ne!(fd.revents & libc::POLLIN, 0);
+        listener.accept().unwrap().0
+    }
+
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    fn serve_restore_client(
+        listener: &UnixListener,
+        owner: &Arc<Mutex<crate::ram_backing::shared::SharedPool>>,
+    ) -> std::thread::JoinHandle<()> {
+        let listener = listener.try_clone().unwrap();
+        let owner = owner.clone();
+        std::thread::spawn(move || {
+            let stream = accept_restore_client(&listener);
+            crate::ram_backing::ipc::serve_shared(stream, owner, 32).unwrap();
+        })
+    }
+
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    #[test]
+    fn physical_restore_pool_rejects_missing_and_stale_endpoints() {
+        let directory = private_directory();
+        let socket = directory.path().join("pool.sock");
+        assert_eq!(
+            preflight_restore_pool(&socket).err().unwrap().kind(),
+            io::ErrorKind::NotFound
+        );
+        assert!(!socket.exists());
+
+        let listener = UnixListener::bind(&socket).unwrap();
+        std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let before = std::fs::symlink_metadata(&socket).unwrap();
+        drop(listener);
+        assert_eq!(
+            preflight_restore_pool(&socket).err().unwrap().kind(),
+            io::ErrorKind::ConnectionRefused
+        );
+        let after = std::fs::symlink_metadata(&socket).unwrap();
+        assert_eq!((before.dev(), before.ino()), (after.dev(), after.ino()));
+    }
+
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    #[test]
+    fn physical_restore_pool_rejects_a_full_listener_and_can_retry() {
+        use super::super::supported::RamPager;
+        use crate::ram_backing::shared::SharedPool;
+        use std::os::fd::AsRawFd;
+
+        let directory = private_directory();
+        let socket = directory.path().join("pool.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let before = std::fs::symlink_metadata(&socket).unwrap();
+        let owner = Arc::new(Mutex::new(SharedPool::new(1 << 20, 32).unwrap()));
+        let server = serve_restore_client(&listener, &owner);
+        let bound = preflight_restore_pool(&socket).unwrap();
+        server.join().unwrap();
+        let selection = RamPager::RestorePhysical {
+            socket: bound.socket.clone(),
+            generation: bound.generation,
+        };
+
+        // Linux's zero backlog admits one queued connection while no one accepts.
+        assert_eq!(unsafe { libc::listen(listener.as_raw_fd(), 0) }, 0);
+        let filler = UnixStream::connect(&socket).unwrap();
+        let (results, received) = std::sync::mpsc::channel();
+        let probe_socket = socket.clone();
+        let probe = std::thread::spawn(move || {
+            let preflight = preflight_restore_pool(&probe_socket)
+                .err()
+                .map(|e| e.kind());
+            let runner = prepare(&selection, 1).err().map(|e| e.kind());
+            results.send((preflight, runner)).unwrap();
+            selection
+        });
+        let Ok(outcome) = received.recv_timeout(Duration::from_secs(2)) else {
+            // Closing the listener releases a regressed blocking connect.
+            drop(listener);
+            drop(filler);
+            probe.join().unwrap();
+            panic!("saturated listener stalled Raw admission");
+        };
+        let selection = probe.join().unwrap();
+        assert_eq!(
+            outcome,
+            (
+                Some(io::ErrorKind::WouldBlock),
+                Some(io::ErrorKind::WouldBlock)
+            )
+        );
+        listener.set_nonblocking(true).unwrap();
+        assert!(listener.accept().is_ok());
+        assert_eq!(
+            listener.accept().unwrap_err().kind(),
+            io::ErrorKind::WouldBlock
+        );
+        listener.set_nonblocking(false).unwrap();
+        drop(filler);
+
+        let server = serve_restore_client(&listener, &owner);
+        let prepared = prepare(&selection, 1).unwrap();
+        assert!(matches!(prepared.store, PagerStore::RestorePhysical(_)));
+        drop(prepared);
+        server.join().unwrap();
+        let after = std::fs::symlink_metadata(&socket).unwrap();
+        assert_eq!((before.dev(), before.ino()), (after.dev(), after.ino()));
+        assert_eq!(owner.lock().unwrap().object_count(), 0);
+    }
+
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    #[test]
+    fn physical_restore_pool_times_out_during_mapping_and_can_retry() {
+        use crate::ram_backing::shared::SharedPool;
+        use std::io::{Read, Write};
+
+        let directory = private_directory();
+        let socket = directory.path().join("pool.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let before = std::fs::symlink_metadata(&socket).unwrap();
+        let accepting = listener.try_clone().unwrap();
+        let server = std::thread::spawn(move || {
+            let mut stream = accept_restore_client(&accepting);
+            let timeout = Some(POOL_EXCHANGE_TIMEOUT + Duration::from_secs(2));
+            stream.set_read_timeout(timeout).unwrap();
+            stream.set_write_timeout(timeout).unwrap();
+            stream.write_all(b"PVMEMP2\0").unwrap();
+            stream.write_all(&[1; 16]).unwrap();
+            let mut operation = [0];
+            stream.read_exact(&mut operation).unwrap();
+            assert_eq!(operation, [6], "expected mapping negotiation");
+            stream.write_all(&[0]).unwrap();
+            // Keep the session open without sending the mapping descriptor.
+            assert_eq!(stream.read(&mut operation).unwrap(), 0);
+        });
+        assert_eq!(
+            preflight_restore_pool(&socket).err().unwrap().kind(),
+            io::ErrorKind::TimedOut
+        );
+        server.join().unwrap();
+        listener.set_nonblocking(true).unwrap();
+        assert_eq!(
+            listener.accept().unwrap_err().kind(),
+            io::ErrorKind::WouldBlock
+        );
+        listener.set_nonblocking(false).unwrap();
+
+        let owner = Arc::new(Mutex::new(SharedPool::new(1 << 20, 32).unwrap()));
+        let server = serve_restore_client(&listener, &owner);
+        assert!(preflight_restore_pool(&socket).is_ok());
+        server.join().unwrap();
+        let after = std::fs::symlink_metadata(&socket).unwrap();
+        assert_eq!((before.dev(), before.ino()), (after.dev(), after.ino()));
+        assert_eq!(owner.lock().unwrap().object_count(), 0);
     }
 
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
