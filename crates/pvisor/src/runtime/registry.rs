@@ -1105,7 +1105,7 @@ mod tests {
             lookup_run_id_in(
                 Path::new(&original.run_id),
                 &temp.path().join("unused"),
-                &[root.clone()]
+                std::slice::from_ref(&root)
             )
             .unwrap()
             .unwrap()
