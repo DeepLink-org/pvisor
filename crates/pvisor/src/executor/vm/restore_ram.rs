@@ -313,6 +313,9 @@ impl<K: Ord, T> Mounts<K, T> {
     }
 }
 
+#[cfg(all(test, target_os = "linux", target_arch = "x86_64"))]
+mod compact_fuse_fixture;
+
 #[cfg(test)]
 mod tests {
     use super::*;
