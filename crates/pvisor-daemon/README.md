@@ -117,6 +117,12 @@ with this mode is rejected. The mode is fixed at scheduler startup:
   high/low pressure latch, and preserves capacity for one offloaded VM to wake.
   Simultaneous startups cannot spend the same headroom twice.
 
+With measured accounting, `allow_uncapped_vm: true` also accepts VM leaves with
+`memory.max=max` under a scheduler root with a finite `memory.max` at least
+as large as the budget. The reservation covers admission and restore. Runtime
+usage can grow beyond it and counts toward the measured node budget. The launcher
+sets the root limit and disables leaf swap. The option defaults to false.
+
 For example, sixteen bound VMs configured for 5 GiB each can all obtain resident
 tool permits when their combined measured node usage is 5 GiB under a 40 GiB
 budget. They do not retain sixteen 5 GiB reservations. The scheduler uses the observed parent charge directly.

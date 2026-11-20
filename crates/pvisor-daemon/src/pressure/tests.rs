@@ -14,6 +14,7 @@ fn config() -> Config {
         high_bytes: 18,
         low_bytes: 14,
         max_writebacks: 16,
+        allow_uncapped_vm: false,
         resident_memory_accounting: ResidentMemoryAccounting::Reserved,
         waiting_memory_margin_bytes: None,
         recovery_reclaim: false,

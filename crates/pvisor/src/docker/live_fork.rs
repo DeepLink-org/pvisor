@@ -13,6 +13,16 @@ use std::sync::Arc;
 const RAM_FD: &str = "PVISOR_INTERNAL_COW_RAM_FD";
 const SEALS: i32 = libc::F_SEAL_WRITE | libc::F_SEAL_SHRINK | libc::F_SEAL_GROW | libc::F_SEAL_SEAL;
 
+fn check_disjoint_cgroup(group: &Path, previous: &[PathBuf]) -> anyhow::Result<()> {
+    ensure!(
+        previous
+            .iter()
+            .all(|other| !group.starts_with(other) && !other.starts_with(group)),
+        "overlapping child cgroups"
+    );
+    Ok(())
+}
+
 pub(super) fn validate(config: &Create) -> anyhow::Result<()> {
     ensure!(
         config.branchable
@@ -462,12 +472,14 @@ impl Store {
         );
         let mut placements = Vec::with_capacity(groups.len());
         let mut seen = std::collections::BTreeSet::new();
+        let mut paths = Vec::with_capacity(groups.len());
         for group in groups {
             let group = group.canonicalize()?;
             ensure!(
                 group.starts_with("/sys/fs/cgroup") && group != Path::new("/sys/fs/cgroup"),
                 "expected a delegated cgroup v2 subtree"
             );
+            check_disjoint_cgroup(&group, &paths)?;
             let procs = fs::OpenOptions::new()
                 .write(true)
                 .open(group.join("cgroup.procs"))?;
@@ -476,7 +488,8 @@ impl Store {
                 return Err(io::Error::last_os_error().into());
             }
             ensure!(
-                unsafe { info.assume_init() }.f_type == libc::CGROUP2_SUPER_MAGIC,
+                i128::from(unsafe { info.assume_init() }.f_type)
+                    == i128::from(libc::CGROUP2_SUPER_MAGIC),
                 "expected cgroup v2"
             );
             let meta = procs.metadata()?;
@@ -490,6 +503,7 @@ impl Store {
                     .any(|line| line == "populated 0"),
                 "child cgroup is populated"
             );
+            paths.push(group);
             placements.push(procs);
         }
         let pool = pool.map(fs::canonicalize).transpose()?;
@@ -653,6 +667,15 @@ use std::os::unix::fs::DirBuilderExt;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pressure_children_require_disjoint_cgroups_in_either_order() {
+        let previous = [PathBuf::from("/group/vm")];
+        for path in ["/group/vm", "/group", "/group/vm/nested"] {
+            assert!(check_disjoint_cgroup(Path::new(path), &previous).is_err());
+        }
+        assert!(check_disjoint_cgroup(Path::new("/group/vm2"), &previous).is_ok());
+    }
 
     #[test]
     fn live_fork_mapping_is_read_only_and_independent_of_the_source_handle() {
