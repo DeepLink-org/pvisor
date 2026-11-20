@@ -1505,17 +1505,24 @@ pub(super) mod native {
         compatibility: &Compatibility,
     ) -> anyhow::Result<(
         crate::environment_snapshot::PublishedEnvironment,
+        crate::environment_snapshot::SnapshotRamReader,
         Vec<pvisor_vm::api::RamRestoreExtent>,
     )> {
-        // Authenticate all source bytes before attaching the optional sharing
-        // owner. Runtime reads still verify indexed blocks on the pinned reader.
-        let published = store.open(id, compatibility)?;
-        let extents = published.ram_reader()?.compact_zero_restore()?;
+        let published = store.open_for_restore(id, compatibility)?;
+        ensure!(
+            published.manifest().ram_index.is_some(),
+            "CAPABILITY_UNSUPPORTED: Physical restore requires indexed Raw RAM"
+        );
+        let mut reader = published.ram_reader()?;
+        // Zero extents bypass FUSE reads; verify the index on the backing that
+        // will supply the compact view.
+        reader.authenticate_indexed_raw(&published.manifest().ram_sha256)?;
+        let extents = reader.compact_zero_restore()?;
         ensure!(
             !extents.is_empty(),
             "CAPABILITY_UNSUPPORTED: Physical restore requires compact indexed Raw extents"
         );
-        Ok((published, extents))
+        Ok((published, reader, extents))
     }
 
     #[cfg(all(test, target_os = "linux"))]
@@ -1550,14 +1557,24 @@ pub(super) mod native {
             "{err:#}"
         );
 
+        let zero = publish(&vec![0; block]);
+        let (_, reader, extents) =
+            authenticate_physical_snapshot(&store, &zero, &compatibility).unwrap();
+        assert_eq!(reader.len(), 0);
+        assert_eq!(extents.len(), 1);
+        assert_eq!(extents[0].offset, 0);
+        assert_eq!(extents[0].length, block as u64);
+        assert_eq!(extents[0].backing_offset, None);
+
         let mut mixed = vec![0x5a; 2 * block];
         mixed[..block].fill(0);
         let compact = publish(&mixed);
-        let (published, extents) =
+        let (published, reader, extents) =
             authenticate_physical_snapshot(&store, &compact, &compatibility).unwrap();
         assert_eq!(extents.len(), 2);
         assert_eq!(extents[0].backing_offset, None);
         assert_eq!(extents[1].backing_offset, Some(0));
+        drop(reader);
         drop(published);
 
         let ram = fs::OpenOptions::new()
@@ -1574,6 +1591,73 @@ pub(super) mod native {
             .err()
             .unwrap();
         assert!(err.to_string().contains("RAM digest mismatch"), "{err:#}");
+    }
+
+    #[cfg(all(test, target_os = "linux"))]
+    #[test]
+    fn physical_restore_rejects_inconsistent_zero_extent_index() {
+        use sha2::{Digest, Sha256};
+        use std::io::Write;
+        use std::os::unix::fs::MetadataExt;
+
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("source");
+        fs::create_dir(&source).unwrap();
+        let store_path = root.path().join("snapshots");
+        let store = SnapshotStore::new(&store_path).unwrap();
+        let firmware = root.path().join("firmware");
+        fs::write(&firmware, b"test firmware identity").unwrap();
+        let compatibility = compatibility(Some(&firmware)).unwrap();
+        let block = crate::ram_backing::BLOCK_BYTES;
+        let mut bytes = vec![0; 3 * block];
+        bytes[block..2 * block].fill(0x5a);
+        bytes[2 * block..].fill(0xa5);
+        let pending = store.begin().unwrap();
+        pending.create_ram().unwrap().write_all(&bytes).unwrap();
+        let id = pending
+            .publish(&source, b"opaque-machine", compatibility.clone())
+            .unwrap();
+        let object = store_path.join("objects").join(id);
+        let manifest_path = object.join("manifest.json");
+        let mut manifest: serde_json::Value =
+            serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
+        manifest["ram_index"]["sha256"][1] = manifest["ram_index"]["sha256"][0].clone();
+        let manifest_bytes = serde_json::to_vec(&manifest).unwrap();
+        let id = crate::util::encode_hex(&Sha256::digest(&manifest_bytes));
+        fs::write(manifest_path, &manifest_bytes).unwrap();
+        let object_path = store_path.join("objects").join(&id);
+        fs::rename(object, &object_path).unwrap();
+
+        let ram_path = object_path.join("ram.bin");
+        let before = fs::metadata(&ram_path).unwrap();
+        let stage = root.path().join("child");
+        let checkpoint = ExecutionCheckpoint {
+            snapshot_id: id,
+            store: store_path,
+            source_run_id: "source-run".into(),
+            source_execution_id: "source-execution".into(),
+            created_at_unix_ms: 1,
+            ram_storage: SnapshotRamStorage::Raw,
+        };
+        let settings = crate::VmSettings {
+            restore_physical_pool: Some(root.path().join("pool.sock")),
+            ..Default::default()
+        };
+        let Err(error) = prepare_restore(checkpoint, &settings, Some(&firmware), &stage) else {
+            panic!("an inconsistent zero extent must fail authentication");
+        };
+        assert!(
+            error.to_string().contains("block digest mismatch"),
+            "{error:#}"
+        );
+        assert!(!stage.exists());
+        let after = fs::metadata(&ram_path).unwrap();
+        assert_eq!((after.dev(), after.ino()), (before.dev(), before.ino()));
+        assert_eq!(fs::read(&ram_path).unwrap(), bytes);
+        assert_eq!(
+            fs::read(object_path.join("manifest.json")).unwrap(),
+            manifest_bytes
+        );
     }
 
     pub(in crate::executor::vm) fn prepare_restore(
@@ -1616,10 +1700,10 @@ pub(super) mod native {
             &checkpoint.store,
             &checkpoint.snapshot_id,
         );
-        let (published, expected_extents) = if physical {
-            let (published, extents) =
+        let (published, raw) = if physical {
+            let (published, reader, extents) =
                 authenticate_physical_snapshot(&store, &checkpoint.snapshot_id, &compatibility)?;
-            (published, Some(extents))
+            (published, Some((reader, extents)))
         } else {
             (
                 store.open_for_restore(&checkpoint.snapshot_id, &compatibility)?,
@@ -1753,6 +1837,26 @@ pub(super) mod native {
             source.is_absolute() && source != Path::new("/"),
             "invalid snapshot filesystem root"
         );
+        let acquire_ram = |raw, saved: &SavedExecution| -> anyhow::Result<_> {
+            let owner = super::super::restore_ram::acquire(
+                &checkpoint.store,
+                &checkpoint.snapshot_id,
+                &published,
+                settings.node_socket.as_deref(),
+                settings.snapshot_filesystem_pool.as_deref(),
+                raw,
+            )?;
+            pvisor_vm::api::MachineRestore {
+                ram_extents: owner.extents.clone(),
+                state: saved.state.clone(),
+                ram_file: owner.file.clone(),
+            }
+            .validate(usize::from(saved.cpus))
+            .map_err(anyhow::Error::msg)?;
+            Ok(owner)
+        };
+        // Failed Physical RAM admission leaves the branch stage available for retry.
+        let ram_owner = raw.map(|raw| acquire_ram(Some(raw), &saved)).transpose()?;
         Persistence::create_dir_all_durable(&storage)?;
         ensure!(
             storage == storage.canonicalize()?,
@@ -1979,25 +2083,11 @@ pub(super) mod native {
             }),
             ..Default::default()
         };
-        let ram_owner = super::super::restore_ram::acquire(
-            &checkpoint.store,
-            &checkpoint.snapshot_id,
-            &published,
-            settings.node_socket.as_deref(),
-            settings.snapshot_filesystem_pool.as_deref(),
-        )?;
-        ensure!(
-            expected_extents.is_none_or(|extents| extents == ram_owner.extents),
-            "Physical restore RAM geometry differs from the authenticated Raw extents"
-        );
+        let ram_owner = match ram_owner {
+            Some(owner) => owner,
+            None => acquire_ram(None, &saved)?,
+        };
         let ram = ram_owner.file.clone();
-        pvisor_vm::api::MachineRestore {
-            ram_extents: ram_owner.extents.clone(),
-            state: saved.state.clone(),
-            ram_file: ram.clone(),
-        }
-        .validate(usize::from(saved.cpus))
-        .map_err(anyhow::Error::msg)?;
         let machine = preparation.join("machine.json");
         // Keep original bindings in this immutable private header. The runner
         // reopens copies after entering the same UID mapping as capture.

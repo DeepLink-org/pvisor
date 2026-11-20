@@ -182,6 +182,24 @@ impl SnapshotRamReader {
             cache: lru::LruCache::new(std::num::NonZeroUsize::new(4).unwrap()),
         })
     }
+
+    pub(crate) fn authenticate_indexed_raw(&self, expected_sha256: &str) -> anyhow::Result<()> {
+        let Backing::Raw {
+            file,
+            index: Some(index),
+        } = &self.backing
+        else {
+            anyhow::bail!("CAPABILITY_UNSUPPORTED: Physical restore requires indexed Raw RAM");
+        };
+        let (actual, sha256) = RawRamIndex::capture(file)?;
+        ensure!(sha256 == expected_sha256, "environment RAM digest mismatch");
+        ensure!(
+            actual.length == index.length && actual.sha256 == index.sha256,
+            "raw RAM block digest mismatch"
+        );
+        Ok(())
+    }
+
     /// Select a runtime-only nonzero view after the publication/index has been
     /// authenticated by the host. Capture and durable file formats are unchanged.
     pub(crate) fn compact_zero_restore(

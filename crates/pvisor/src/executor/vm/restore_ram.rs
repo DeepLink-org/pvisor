@@ -1,6 +1,6 @@
 //! One authenticated read-only RAM inode per live snapshot on this supervisor.
 //! Guest mappings remain MAP_PRIVATE; only unchanged baseline pages are shared.
-use crate::environment_snapshot::{PublishedEnvironment, SnapshotRamMount};
+use crate::environment_snapshot::{PublishedEnvironment, SnapshotRamMount, SnapshotRamReader};
 use anyhow::ensure;
 use std::{
     collections::BTreeMap,
@@ -28,8 +28,10 @@ pub(super) fn acquire(
     published: &PublishedEnvironment,
     node_socket: Option<&Path>,
     filesystem_pool: Option<&Path>,
+    raw: Option<(SnapshotRamReader, Vec<pvisor_vm::api::RamRestoreExtent>)>,
 ) -> anyhow::Result<Arc<SharedRam>> {
     if let Some(socket) = node_socket {
+        ensure!(raw.is_none(), "Physical restore requires a local RAM owner");
         // The caller already authenticated this publication; the service also
         // checks it before looking up its cross-supervisor owner.
         let pin = crate::node::Pin::ram(
@@ -55,13 +57,20 @@ pub(super) fn acquire(
     // The caller opens/validates the published reference on every restore,
     // before cache lookup. A live mount cannot authorize a deleted snapshot.
     let store = store.canonicalize()?;
+    let expected_extents = raw.as_ref().map(|(_, extents)| extents.clone());
     let owner = MOUNTS.get_or_init(|| Mounts::new(4096)).get(
         (store.clone(), snapshot_id.to_owned()),
         || {
             // Independent of any one Execution's directory/lifetime, and never
             // nested in the durable store (which may be an OverlayFS lower).
-            let mut reader = published.ram_reader()?;
-            let extents = reader.compact_zero_restore()?;
+            let (reader, extents) = match raw {
+                Some(raw) => raw,
+                None => {
+                    let mut reader = published.ram_reader()?;
+                    let extents = reader.compact_zero_restore()?;
+                    (reader, extents)
+                }
+            };
             let base = reader.compressed_base();
             #[cfg(target_os = "linux")]
             let preparation_cache = match reader.raw_preparation_cache() {
@@ -97,6 +106,10 @@ pub(super) fn acquire(
             })
         },
     )?;
+    ensure!(
+        expected_extents.is_none_or(|extents| extents == owner.extents),
+        "Physical restore RAM geometry differs from the authenticated Raw extents"
+    );
     #[cfg(target_os = "linux")]
     if let Some(lease) = owner.runner_lease() {
         use std::os::fd::AsRawFd;

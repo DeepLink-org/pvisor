@@ -2571,7 +2571,9 @@ for all clients that opt in. Use a separate daemon instance for each group that
 may compare page contents. The runner holds its own negotiated connection and
 checks its identity against the supervisor's preflight.
 
-Admission authenticates the Raw source and requires a compact zero-extent plan.
+Admission verifies the whole Raw digest and each block digest against the
+retained source inode before selecting compact zero extents. It checks the RAM
+owner and restore geometry before creating the child stage.
 Guest RAM still faults lazily from the read-only snapshot. The pool only replaces
 present, exclusively mapped anonymous pages in ordinary RAM after private writes.
 The snapshot, untouched zero pages, kernel and device mappings keep their original
