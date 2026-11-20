@@ -16,6 +16,7 @@
 | [`ag_fixture_tests.rs`](ag_fixture_tests.rs) | 基于 AG 数据的 conversion + capture 回归 |
 | [`llm_fixtures.rs`](llm_fixtures.rs) | 基础 smoke 测试 |
 | [`semantic_conversion.rs`](semantic_conversion.rs) | 生产 understanding / bridge 入口的 Codex、工具历史和并行结果顺序回归 |
+| [`stream_chunk_boundaries.rs`](stream_chunk_boundaries.rs) | LF/CRLF SSE 的逐字节切分、Unicode 与控制字符精确重组、截断和缺失 finish reason 拒绝 |
 | [`model_api_forwarding.rs`](model_api_forwarding.rs) | Chat Completions、Responses、Messages 的文本与 tool call 非流式/SSE 同协议转发测试 |
 | [`capture/apps/claude/`](capture/apps/claude/) | Claude 专有轨迹 fixture（与 AG 无关） |
 

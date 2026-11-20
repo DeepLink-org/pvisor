@@ -27,8 +27,10 @@ Public examples remain doctests on the existing exports.
 
 - Fixed regressions retain exact errors and their existing configuration matrix.
 - Generated namespace traces compare outcomes and complete visible trees after
-  every operation and reopen. The native filesystem is not an oracle for errno
-  ordering when multiple rejection conditions overlap.
+  every operation and reopen, including hardlink inode-equivalence groups.
+  Alias rewrites, same-inode rename and removal also have a successful fixed trace.
+  The native filesystem is not an oracle for errno ordering when multiple
+  rejection conditions overlap.
 - Successful lifecycle traces are positive controls, not random assumptions.
   Every generated trace must execute the intended successful transitions.
 - Journals retain original first-touch states, including absence, rather than

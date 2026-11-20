@@ -80,13 +80,20 @@ including the terminating root octet. Malformed questions receive FORMERR
 without allocating a synthetic address. `tests/vm_dns.rs` sends a bounded
 malformed/valid query trace through the public framed guest link, checking
 truncation, length boundaries and continued service without host networking.
-TCP SYN admission validates IPv4 and TCP headers with the stack's semantic
-parsers before allocating a flow slot, including TCP options, nonzero ports
-and flag combinations. Unsupported fragments and invalid IP versions cannot
-reserve listeners. The same test fixture sends 15 deterministic malformed or
-truncated SYN frames through a one-slot backend, checks uninterrupted UDP DNS,
-and then requires an unrelated valid TCP DNS SYN to receive SYN-ACK. This
-guards against rejected packets pinning the table and resetting healthy flows.
+Its malformed-question matrix also covers invalid question counts, reserved
+label-length encodings and prohibited label bytes, requiring unchanged healthy
+answers and no synthetic-address allocation after each refusal.
+TCP SYN admission matches the stack's Ethernet destination filter and validates
+IPv4 and TCP headers with its semantic parsers before allocating a flow slot,
+including TCP options, nonzero ports and flag combinations.
+Unsupported fragments, unspecified TCP destinations and invalid IP versions cannot
+reserve listeners. The same test fixture sends 17 deterministic malformed,
+truncated, unspecified-destination or foreign-unicast-destination SYN frames
+through a one-slot backend, checks uninterrupted UDP DNS, and then requires an
+unrelated valid TCP DNS SYN to receive SYN-ACK. Each rejected frame must leave
+the opened-flow counter at zero, so a wildcard listener cannot hide an unintended
+allocation. This guards against rejected packets pinning the table and resetting
+healthy flows.
 
 Does not own LLM protocol adaptation, upstream selection, session correlation,
 capture events, or Journal writes.
@@ -159,6 +166,15 @@ mise run test -- pvisor-overlaynet -- --test stream_recovery --run-ignored only 
 
 This checks router/body ownership and delayed local sink errors, not a real
 HTTP transport, upstream read timeout or network reconnect.
+
+The same target's generated ownership test retains one proxy across a finite
+seed interval, mixing pending bodies, delayed errors, healthy requests, overload
+and out-of-order body drops. An independent held-response inventory checks
+active ownership; every 32 operations it also fills all 128 slots, checks
+overload and releases a seeded subset. Default coverage is 16 seeds × 256
+operations, selected with `PVISOR_CHAOS_FIRST_SEED` and
+`PVISOR_CHAOS_SEED_COUNT` (1–4096). Tokio time is paused; this is not additional
+real-timer or network-transport coverage.
 
 ## Links
 

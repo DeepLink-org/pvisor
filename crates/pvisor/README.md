@@ -734,6 +734,14 @@ Executor wrappers must forward
 this method, as the CLI's terminal observer does. Frontend restoration selections
 are still validated against owned prepared-workspace resources.
 
+The default VM `TMPDIR` uses a per-Run tmpfs beneath the guest-only `/dev/shm`,
+which PID 1 mounts before scratch setup. Its mountpoint therefore does not become
+a staged rootfs candidate. The scratch mount permits executable temporary files,
+retains nodev/nosuid, and remains bounded to one quarter of guest RAM, at most
+64 MiB. Explicit or explicitly unset `TMPDIR` still suppresses automatic setup.
+Restoration retains the captured guest path and capacity, including older
+root-level scratch paths; this does not rewrite existing checkpoints.
+
 ### Typed VM inputs and executor attachments
 
 Construct `VmExecutionInputs` and call `apply_to(&mut spec)` for guest cwd,

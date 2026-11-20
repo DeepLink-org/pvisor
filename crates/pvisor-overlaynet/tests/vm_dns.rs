@@ -1,6 +1,8 @@
 //! Bounded hostile DNS trace through the public length-prefixed guest link.
 mod support;
-use pvisor_overlaynet::api::{EgressControl, VmNetworkConfiguration, VmNetworkRuntime};
+use pvisor_overlaynet::api::{
+    EgressControl, InterceptionObservation, VmNetworkConfiguration, VmNetworkRuntime,
+};
 use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
 use std::sync::Arc;
@@ -126,6 +128,21 @@ fn malformed_dns_and_wire_name_limit_do_not_poison_later_queries() {
     // RFC 1035 §2.3.4: the 255-octet name limit includes the root terminator.
     malformed.push(query(&[63, 63, 63, 62])); // 256 wire octets, not 255.
     malformed.push(query(&[63, 63, 63, 63]));
+    for count in [0_u16, 2, 255, 256, u16::MAX] {
+        let mut bad = good.clone();
+        bad[4..6].copy_from_slice(&count.to_be_bytes());
+        malformed.push(bad);
+    }
+    for length in [64_u8, 127, 128, 191, 192, 255] {
+        let mut bad = good.clone();
+        bad[12] = length;
+        malformed.push(bad);
+    }
+    for byte in [0, b'.', b'/', b' ', 0x7f, 0x80, 0xff] {
+        let mut bad = good.clone();
+        bad[13] = byte;
+        malformed.push(bad);
+    }
     for bad in &malformed {
         exchange(&mut stream, bad, 1, 0);
         assert_eq!(exchange(&mut stream, &good, 0, 1), stable);
@@ -157,6 +174,7 @@ fn rejected_syn_headers_do_not_consume_the_only_flow_slot() {
     );
     let mut config = VmNetworkConfig::new(egress, EgressContext::default());
     config.max_flows = 1;
+    let observations = config.metrics.clone();
     let (network, mut stream) = support::start(config).unwrap();
     stream
         .set_read_timeout(Some(Duration::from_secs(2)))
@@ -228,7 +246,11 @@ fn rejected_syn_headers_do_not_consume_the_only_flow_slot() {
     for end in [14, 33, 34, good.len() - 1] {
         rejected.push(good[..end].to_vec());
     }
-    assert_eq!(rejected.len(), 15);
+    let mut foreign_destination = bad_base.clone();
+    foreign_destination[..6].copy_from_slice(&[2, 0x50, 0x56, 0, 0, 99]);
+    rejected.push(foreign_destination);
+    rejected.push(syn([2, 4, 5, 180], 40000, std::net::Ipv4Addr::UNSPECIFIED));
+    assert_eq!(rejected.len(), 17);
     let query = query(&[4, 7]);
     let stable = exchange(&mut stream, &query, 0, 1);
     for frame in &rejected {
@@ -236,6 +258,7 @@ fn rejected_syn_headers_do_not_consume_the_only_flow_slot() {
         // Ordered UDP request/reply is a backend progress barrier, and confirms
         // recovery of an unrelated flow without sleeps or waiting for silence.
         assert_eq!(exchange(&mut stream, &query, 0, 1), stable);
+        assert_eq!(observations.snapshot().tcp_flows_opened, 0);
     }
     send(&mut stream, &good);
     let reply = receive(&mut stream);
@@ -245,8 +268,8 @@ fn rejected_syn_headers_do_not_consume_the_only_flow_slot() {
     assert!(tcp.syn() && tcp.ack() && !tcp.rst());
     assert!(tcp.verify_checksum(&ROUTER_IPV4.into(), &GUEST_IPV4.into()));
     let metrics = network.shutdown().unwrap();
-    assert_eq!(metrics.dns_queries, 16);
-    assert_eq!(metrics.dns_answers, 16);
+    assert_eq!(metrics.dns_queries, 18);
+    assert_eq!(metrics.dns_answers, 18);
     assert_eq!(metrics.tcp_flows_opened, 1);
     assert_eq!(metrics.tcp_flows_denied, 0);
     assert_eq!(metrics.tcp_connect_failures, 0);

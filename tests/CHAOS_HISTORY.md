@@ -96,3 +96,37 @@ Evidence paths below are relative to those worktree roots.
   unchanged. Checks did not authenticate every host namespace.
 - Evidence: `.data/chaos6/`, including `validation-totals.json`,
   `failed-evidence-integrity-baseline.json` and `delayed-audits.jsonl`.
+
+## 2026-11-18 — bounded packet admission and stage lifecycle
+
+- Scope: the 00:24:05–06:24:05 UTC observation window covered Core, Journal,
+  Replay, Gateway, Overlay Core/FS/Net, private network catalogs and real KVM
+  stage/apply/drop at 128/256/512 MiB. CPU was capped at two cores, memory at
+  4 GiB with swap disabled, and compilation/test batches were serial.
+- Results: [PR #160](https://github.com/DeepLink-org/pvisor/pull/160) repaired
+  foreign Ethernet destination admission (`a17d4e5f`), staged VM scratch
+  mountpoints (`fb231ff5`) and unspecified TCP destination admission
+  (`135de3b5`). Independent hardlink, stream-fragmentation and body-ownership
+  oracles were added in `14d0bd9a`. Final selected regressions and native Scrut
+  stage specifications passed; the PR was not merged and had no reported CI checks.
+- Timing: this was not six hours of continuous testing. Recorded bounded
+  build/test batches occupied about 4h23m, including 3h07m of native stage
+  activity. A 43m19s model/scheduling interval had no owned test load.
+  Final tests ended at 06:18:31 UTC; read-only resource observation continued
+  to the original deadline. Report finalization resumed after 07:13 UTC.
+- Non-passes: preserve the pre-fix failures, one budget timeout, one evidence-cap
+  stop and a conservative swap-out stop. An invalid positive fixture correctly
+  hit the existing non-root directory-ownership refusal. Deferred subreaper
+  recovery also caused a Replay zombie-PID assertion failure; recorded zombie
+  state/exit status, positive/negative controls and the unchanged full test
+  selection distinguished this harness interference from live-process leakage.
+- Limits: no power-loss, automatic recovery of retained pending applies,
+  old-checkpoint native restore, HVF/WHP or full-workspace acceptance claim.
+  Passing specifications did not approve or alter review ledgers.
+- Cleanup: the final delayed audit found all 53 recorded cgroups absent, no
+  campaign-marker process and no campaign mount in the observer namespace.
+  Failed/pending fixtures and raw evidence were retained; unrelated host
+  namespaces and shared runtime lock caches were not swept.
+- Evidence: worker-local `target/chaos6h-20261118/`, including `clock.json`,
+  `totals.json`, `activity-intervals.json`, `final-observer.jsonl`,
+  `audit-071359.json` and per-batch monitor/reaper logs.

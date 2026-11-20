@@ -335,3 +335,82 @@ proptest! {
             .block_on(async { assert_body_lifetimes(proxy(), &actions).await });
     }
 }
+
+#[tokio::test(start_paused = true)]
+async fn generated_body_ownership_sequences_preserve_all_admission_slots() {
+    let first = std::env::var("PVISOR_CHAOS_FIRST_SEED")
+        .map(|value| value.parse::<u64>().unwrap())
+        .unwrap_or(2026111800);
+    let count = std::env::var("PVISOR_CHAOS_SEED_COUNT")
+        .map(|value| value.parse::<u64>().unwrap())
+        .unwrap_or(16);
+    assert!((1..=4096).contains(&count));
+    let (router, active, _) = proxy();
+    for seed in first..first.checked_add(count).unwrap() {
+        let mut random = seed;
+        let mut held = Vec::new();
+        for step in 0..256 {
+            random ^= random << 13;
+            random ^= random >> 7;
+            random ^= random << 17;
+            match random % 5 {
+                0 | 1 => {
+                    let response = request(&router, "/pending").await;
+                    if held.len() == 128 {
+                        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+                    } else {
+                        assert_eq!(response.status(), StatusCode::OK);
+                        held.push(response);
+                    }
+                }
+                2 if !held.is_empty() => {
+                    drop(held.swap_remove(random as usize % held.len()));
+                }
+                3 if held.len() < 128 => {
+                    let response = request(&router, "/fault").await;
+                    assert_eq!(response.status(), StatusCode::OK);
+                    let mut body = response.into_body();
+                    assert_eq!(
+                        body.frame().await.unwrap().unwrap().into_data().unwrap(),
+                        "prefix"
+                    );
+                    let mut terminal = Box::pin(body.collect());
+                    assert!(poll!(terminal.as_mut()).is_pending());
+                    assert_eq!(active.load(Ordering::Relaxed), held.len() + 1);
+                    tokio::time::advance(Duration::from_secs(90)).await;
+                    let error = terminal.await.unwrap_err();
+                    assert!(error.to_string().contains("owned delayed body failure"));
+                }
+                _ if held.len() == 128 => {
+                    assert_eq!(
+                        request(&router, "/ok").await.status(),
+                        StatusCode::TOO_MANY_REQUESTS
+                    );
+                }
+                _ => healthy(&router).await,
+            }
+            assert_eq!(
+                active.load(Ordering::Relaxed),
+                held.len(),
+                "seed={seed} step={step}"
+            );
+            if step % 32 == 31 {
+                while held.len() < 128 {
+                    let response = request(&router, "/pending").await;
+                    assert_eq!(response.status(), StatusCode::OK);
+                    held.push(response);
+                }
+                assert_eq!(
+                    request(&router, "/ok").await.status(),
+                    StatusCode::TOO_MANY_REQUESTS
+                );
+                held.truncate((random % 64) as usize);
+                healthy(&router).await;
+                assert_eq!(active.load(Ordering::Relaxed), held.len());
+            }
+        }
+        drop(held);
+        healthy(&router).await;
+        assert_eq!(active.load(Ordering::Relaxed), 0, "seed={seed}");
+    }
+}

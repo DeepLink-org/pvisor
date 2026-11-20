@@ -1359,7 +1359,8 @@ impl RunExecutor for VmExecutor {
             .map(|requested| requested.min(self.settings.memory_mib))
             .unwrap_or(self.settings.memory_mib);
         let scratch = pvisor_guest::api::TemporaryFilesystem {
-            path: PathBuf::from(format!("/.pvisor-tmp-{}", spec.run_id)),
+            // PID 1 mounts /dev/shm first; scratch mountpoints must not become staged rootfs output.
+            path: PathBuf::from(format!("/dev/shm/.pvisor-tmp-{}", spec.run_id)),
             size_bytes: (u64::from(memory_mib) * 1024 * 1024 / 4).min(64 * 1024 * 1024),
         };
         #[cfg(any(

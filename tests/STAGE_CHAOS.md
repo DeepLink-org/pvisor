@@ -41,7 +41,7 @@ Arguments: required `--binary --firmware --output --seed --seconds`; optional
 (0,86400], rounds in [1,1000000]. One VM at a time, one vCPU, network none;
 concurrent apply/drop commands do not create another VM.
 
-Default schedule: the ten scenarios below repeated four times form a named
+Default schedule: scenarios 1–10 below repeated four times form a named
 40-round cycle; the cycle then repeats until the budget/round limit. Seed and
 round determine payloads, order and tiny injection delay; native scheduling is
 not deterministic. Use `--scenario NAME --rounds 1` to select a single scenario.
@@ -113,6 +113,12 @@ stop a longer run, but remains visibly incomplete in its final exit/summary.
     publication debris is recorded, not blindly deleted. A kill can race past
     the gate to Committed: then all payloads must agree with Committed, and no
     pending/recovery coverage is claimed. No automatic recovery apply is run.
+11. **project_only** (explicit `--scenario`, not in the default cycle): perform
+    the ordinary selective-apply lifecycle without the outside-project write.
+    Applying the remaining project changes must leave both `in_scope=0` and
+    `outside_scope=0`, preserve the exact expected project tree and make drop
+    refuse without changing the accepted project or environment. Unexpected
+    environment candidates fail rather than being treated as full application.
 
 All JSON previews recursively snapshot the whole project/stage including file
 hash, mode, UID/GID, device/inode, mtime and ctime; atime is ignored. Text

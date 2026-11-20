@@ -6,6 +6,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
     io::{self, Write},
+    os::unix::fs::MetadataExt,
     path::{Path, PathBuf},
 };
 
@@ -32,6 +33,7 @@ pub(super) enum Operation {
     Remove(&'static str, bool),
     Create(&'static str),
     Mkdir(&'static str),
+    HardLink(&'static str, &'static str),
     Write(&'static str, Vec<u8>),
 }
 
@@ -39,6 +41,7 @@ impl Operation {
     fn native(&self, root: &Path) -> io::Result<()> {
         match self {
             Self::Rename(old, new) => fs::rename(root.join(old), root.join(new)),
+            Self::HardLink(old, new) => fs::hard_link(root.join(old), root.join(new)),
             Self::Remove(path, true) => fs::remove_dir(root.join(path)),
             Self::Remove(path, false) => fs::remove_file(root.join(path)),
             Self::Create(path) => fs::OpenOptions::new()
@@ -58,6 +61,7 @@ impl Operation {
     fn overlay(&self, service: &FilesystemService) -> io::Result<()> {
         match self {
             Self::Rename(old, new) => service.rename(Path::new(old), Path::new(new), false),
+            Self::HardLink(old, new) => service.hard_link(Path::new(old), Path::new(new)),
             Self::Remove(path, directory) => service.remove(Path::new(path), *directory),
             Self::Create(path) => service
                 .create_file(
@@ -77,6 +81,40 @@ impl Operation {
 }
 
 type Tree = BTreeMap<PathBuf, Option<Vec<u8>>>;
+
+fn hard_link_groups(
+    paths: impl Iterator<Item = (PathBuf, fs::Metadata)>,
+) -> BTreeSet<BTreeSet<PathBuf>> {
+    let mut groups: BTreeMap<_, BTreeSet<_>> = BTreeMap::new();
+    for (path, metadata) in paths {
+        groups
+            .entry((metadata.dev(), metadata.ino()))
+            .or_default()
+            .insert(path);
+    }
+    groups
+        .into_values()
+        .filter(|paths| paths.len() > 1)
+        .collect()
+}
+
+fn assert_hard_links(native: &Path, service: &FilesystemService, expected: &Tree) {
+    let files: Vec<_> = expected
+        .iter()
+        .filter(|(_, bytes)| bytes.is_some())
+        .map(|(path, _)| path.clone())
+        .collect();
+    let native_groups = hard_link_groups(
+        files
+            .iter()
+            .map(|path| (path.clone(), fs::metadata(native.join(path)).unwrap())),
+    );
+    let overlay_groups = hard_link_groups(files.iter().map(|path| {
+        let backing = service.prepare_open(path, libc::O_RDONLY).unwrap();
+        (path.clone(), fs::metadata(backing).unwrap())
+    }));
+    assert_eq!(overlay_groups, native_groups);
+}
 
 fn native_tree(root: &Path) -> Tree {
     fn walk(root: &Path, relative: &Path, tree: &mut Tree) {
@@ -190,6 +228,7 @@ pub(super) fn run_trace(
             native_tree(&native),
             "step {index}: {operation:?}"
         );
+        assert_hard_links(&native, &service, &native_tree(&native));
         assert_eq!(
             native_tree(&lower),
             original,
@@ -212,6 +251,7 @@ pub(super) fn run_trace(
             native_tree(&native),
             "reopen {index}"
         );
+        assert_hard_links(&native, &service, &native_tree(&native));
         assert_eq!(
             fs::read_dir(&work).unwrap().count(),
             0,

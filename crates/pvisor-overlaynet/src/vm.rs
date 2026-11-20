@@ -1179,10 +1179,16 @@ fn initial_tcp_syn(frame: &[u8], guest_address: Ipv4Addr) -> Option<FlowKey> {
     if ethernet.ethertype() != EthernetProtocol::Ipv4 {
         return None;
     }
+    let destination = ethernet.dst_addr();
+    // Match the stack's Ethernet admission before reserving a listener.
+    if destination != ROUTER_MAC && !destination.is_broadcast() && !destination.is_multicast() {
+        return None;
+    }
     let ipv4 = Ipv4Packet::new_checked(ethernet.payload()).ok()?;
     let checksum_caps = ChecksumCapabilities::default();
     Ipv4Repr::parse(&ipv4, &checksum_caps).ok()?;
     if ipv4.src_addr() != guest_address
+        || ipv4.dst_addr().is_unspecified()
         || ipv4.next_header() != IpProtocol::Tcp
         || ipv4.more_frags()
         || ipv4.frag_offset() != 0
