@@ -23,6 +23,7 @@ mod product;
 mod run;
 mod runtime;
 mod session_exec;
+mod shell;
 mod stage;
 mod stage_source;
 #[cfg(unix)]

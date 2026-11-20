@@ -266,6 +266,8 @@ persistence timings and frontend/owner correlation records. This changes diagnos
 only; workload output, boundary/staging notices, warnings, errors and Run Bundle/review
 guidance remain visible. Enabled markers are emitted after command parsing and do
 not measure complete process entry.
+Stage arguments in printed next-step commands use POSIX shell quoting, so paths
+containing spaces, apostrophes or expansion characters remain one literal argument.
 Execution lets clap build the selected parsing path; grouped root help still
 builds the full tree. The generated `help` command never defaults to `spawn`.
 `PVISOR_STARTUP_PROFILE=1` additionally records `cli.entry_to_parsed`, measured

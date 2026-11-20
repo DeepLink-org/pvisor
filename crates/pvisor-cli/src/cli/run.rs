@@ -1951,11 +1951,9 @@ async fn execute_config(
         )
     })?;
     let bundle_path = RunBundle::path(&record.stage_dir());
+    let stage_argument = super::shell::quote_path(&record.stage_dir());
     run_log!("Run Bundle: {}", bundle_path.display());
-    run_log!(
-        "Review: pvisor status --review {}",
-        record.stage_dir().display()
-    );
+    run_log!("Review: pvisor status --review {}", stage_argument);
     if bundle.filesystem.is_some() {
         if stage_launch.is_some() {
             run_log!(
@@ -1963,20 +1961,17 @@ async fn execute_config(
                 record.stage_dir().display(),
                 record.run_id
             );
-            run_log!(
-                "Results: pvisor review {} --diff",
-                record.stage_dir().display()
-            );
+            run_log!("Results: pvisor review {} --diff", stage_argument);
             run_log!(
                 "Accept: pvisor apply {} — choose project results interactively; scripts use --path <project-relative-path> or --all",
-                record.stage_dir().display()
+                stage_argument
             );
             run_log!(
                 "Preview: add --path <project-relative-path> --dry-run --diff. Unselected project and environment changes stay staged; apply does not run tests or restart services."
             );
             run_log!(
                 "Cleanup: pvisor drop {} — discards pending files, not already applied files or remote effects.",
-                record.stage_dir().display()
+                stage_argument
             );
             if result.state != RunState::Completed || result.exit_code.is_some_and(|code| code != 0)
             {
@@ -1987,8 +1982,8 @@ async fn execute_config(
         } else {
             run_log!(
                 "Decide: pvisor apply {} --path <relative-path> (or --all) | pvisor drop {}",
-                record.stage_dir().display(),
-                record.stage_dir().display()
+                stage_argument,
+                stage_argument
             );
         }
     }
