@@ -1134,6 +1134,8 @@ fn canonical_seatbelt_paths(paths: &[PathBuf], kind: &str) -> std::io::Result<Ve
 
 #[cfg(target_os = "linux")]
 fn enter_rootless_namespaces(network: NetworkIsolation) -> std::io::Result<()> {
+    use std::io::Write;
+
     let uid = unsafe { libc::getuid() };
     let gid = unsafe { libc::getgid() };
     if unsafe { libc::unshare(libc::CLONE_NEWUSER) } != 0 {
@@ -1142,12 +1144,17 @@ fn enter_rootless_namespaces(network: NetworkIsolation) -> std::io::Result<()> {
 
     // A one-ID identity mapping is sufficient for a local Agent executable and
     // avoids /etc/subuid, newuidmap, and a privileged setup helper.
-    match std::fs::write("/proc/self/setgroups", b"deny\n") {
-        Ok(()) => {}
+    match std::fs::OpenOptions::new()
+        .write(true)
+        .open("/proc/self/setgroups")
+    {
+        Ok(mut setgroups) => setgroups
+            .write_all(b"deny\n")
+            .map_err(|error| with_io_context("write deny to /proc/self/setgroups", error))?,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => {
             return Err(with_io_context(
-                "disable setgroups in user namespace",
+                "open /proc/self/setgroups for write",
                 error,
             ));
         }
