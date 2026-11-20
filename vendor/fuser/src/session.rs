@@ -126,6 +126,38 @@ impl<FS: Filesystem> Session<FS> {
         })
     }
 
+    /// Mount a Linux filesystem whose owner will unmount it explicitly.
+    ///
+    /// Closing the session never attempts to unmount. The caller must retain
+    /// the request loop during unmount and handle failures and mount identity.
+    #[cfg(fuser_mount_impl = "pure-rust")]
+    pub fn new_with_external_unmount(
+        filesystem: FS,
+        mountpoint: &Path,
+        options: &[MountOption],
+    ) -> io::Result<Self> {
+        if options.iter().any(|option| match option {
+            MountOption::AutoUnmount => true,
+            MountOption::CUSTOM(value) => value.split(',').any(|part| part == "auto_unmount"),
+            _ => false,
+        }) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "external unmount is incompatible with auto_unmount",
+            ));
+        }
+        let session = Self::new(filesystem, mountpoint, options)?;
+        session
+            .mount
+            .lock()
+            .unwrap()
+            .as_mut()
+            .unwrap()
+            .1
+            .retain_mount_on_drop();
+        Ok(session)
+    }
+
     /// Wrap an existing /dev/fuse file descriptor. This doesn't mount the
     /// filesystem anywhere; that must be done separately.
     pub fn from_fd(filesystem: FS, fd: OwnedFd, acl: SessionACL) -> Self {

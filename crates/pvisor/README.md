@@ -2579,6 +2579,24 @@ ownership. An active pool disables balloon discard, snapshot capture and whole-V
 offload. Owner or transport loss stops the runner. Native KVM qualification is
 pending.
 
+### Linux snapshot RAM shutdown
+
+Local Raw restoration uses a read-only FUSE mount owned by the restore
+supervisor. The existing per-mount RAM server process serves the authenticated
+source independently of the supervisor and native runners. Its lifetime pipe
+has a writer in the supervisor and each runner, so teardown waits for the
+last runner even if the supervisor dies. An exiting runner cannot retire a
+mount still used by another runner. Admission and native control reject a
+lost pager.
+
+The Linux owner matches the private mount's namespace, mount ID, device and
+source before ordinary unmount. It keeps the request loop active during the
+unmount attempts and confirms that the mount ID disappeared before removing
+the original empty directory. A busy mount or identity mismatch can leave a
+mountpoint for reconciliation. Cleanup errors record the path and identity,
+and a replacement mount or directory is left alone. The mount cache remains
+local to each supervisor.
+
 ### Existing immutable OCI pool objects
 
 Filesystem object publication detects an existing regular object before writing

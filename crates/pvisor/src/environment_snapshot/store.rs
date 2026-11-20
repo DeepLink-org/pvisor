@@ -1455,7 +1455,23 @@ impl PublishedEnvironment {
         executable: &Path,
         directory: &Path,
     ) -> std::io::Result<(super::SnapshotRamMount, File)> {
-        super::SnapshotRamMount::external(&self.path, &self.manifest, directory, executable)
+        super::SnapshotRamMount::external(&self.path, &self.manifest, directory, executable, None)
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn raw_runtime_ram_mount(
+        &self,
+        executable: &Path,
+        directory: &Path,
+        reader: &SnapshotRamReader,
+    ) -> std::io::Result<(super::SnapshotRamMount, File)> {
+        super::SnapshotRamMount::external(
+            &self.path,
+            &self.manifest,
+            directory,
+            executable,
+            Some(reader),
+        )
     }
     /// Independent leases must outlive restored VMs, including after object deletion.
     pub fn base_leases(&self) -> anyhow::Result<Vec<super::SnapshotBase>> {

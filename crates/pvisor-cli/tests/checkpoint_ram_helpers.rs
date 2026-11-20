@@ -10,6 +10,46 @@ fn ram_watchdog_cleans_an_already_detached_private_directory() {
     let temp = tempfile::tempdir().unwrap();
     let mount = temp.path().join("ram-mount-watchdog-test");
     std::fs::create_dir(&mount).unwrap();
+    let mut command = Command::new(env!("CARGO_BIN_EXE_pvisor"));
+    command
+        .env(
+            "PVISOR_VM_RESTORE_RAM_WATCHDOG",
+            mount.canonicalize().unwrap(),
+        )
+        .stderr(std::process::Stdio::piped());
+    #[cfg(target_os = "linux")]
+    let result = {
+        use std::{io::Write, os::unix::fs::MetadataExt};
+        let directory = std::fs::metadata(&mount).unwrap();
+        let namespace = std::fs::metadata("/proc/thread-self/ns/mnt").unwrap();
+        let identity = serde_json::json!({
+            "directory": {"device": directory.dev(), "inode": directory.ino()},
+            "mount": {
+                "namespace": {"device": namespace.dev(), "inode": namespace.ino()},
+                "id": u64::MAX,
+                "device": b"0:0",
+            }
+        });
+        let mut child = command.stdin(std::process::Stdio::piped()).spawn().unwrap();
+        writeln!(child.stdin.take().unwrap(), "{identity}").unwrap();
+        child.wait_with_output().unwrap()
+    };
+    #[cfg(target_os = "macos")]
+    let result = command.stdin(std::process::Stdio::null()).output().unwrap();
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert!(!mount.exists());
+}
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[test]
+fn ram_watchdog_requires_ownership_evidence() {
+    let temp = tempfile::tempdir().unwrap();
+    let mount = temp.path().join("ram-mount-watchdog-test");
+    std::fs::create_dir(&mount).unwrap();
     let result = Command::new(env!("CARGO_BIN_EXE_pvisor"))
         .env(
             "PVISOR_VM_RESTORE_RAM_WATCHDOG",
@@ -18,12 +58,9 @@ fn ram_watchdog_cleans_an_already_detached_private_directory() {
         .stdin(std::process::Stdio::null())
         .output()
         .unwrap();
-    assert!(
-        result.status.success(),
-        "{}",
-        String::from_utf8_lossy(&result.stderr)
-    );
-    assert!(!mount.exists());
+    assert!(!result.status.success());
+    assert!(String::from_utf8_lossy(&result.stderr).contains("missing RAM watchdog identity"));
+    assert!(mount.is_dir());
 }
 
 #[cfg(any(

@@ -55,9 +55,9 @@ pub(super) fn acquire(
     // The caller opens/validates the published reference on every restore,
     // before cache lookup. A live mount cannot authorize a deleted snapshot.
     let store = store.canonicalize()?;
-    MOUNTS
-        .get_or_init(|| Mounts::new(4096))
-        .get((store.clone(), snapshot_id.to_owned()), || {
+    let owner = MOUNTS.get_or_init(|| Mounts::new(4096)).get(
+        (store.clone(), snapshot_id.to_owned()),
+        || {
             // Independent of any one Execution's directory/lifetime, and never
             // nested in the durable store (which may be an OverlayFS lower).
             let mut reader = published.ram_reader()?;
@@ -71,8 +71,20 @@ pub(super) fn acquire(
                     None
                 }
             };
-            let (mut mount, file) = SnapshotRamMount::runtime(reader, &[&store])?;
-            mount.watch_native_owner_exit(&std::env::current_exe()?)?;
+            #[cfg(target_os = "linux")]
+            let (mount, file) = if published.manifest().ram_blocks.is_none() {
+                published.raw_runtime_ram_mount(&std::env::current_exe()?, &store, &reader)?
+            } else {
+                let (mut mount, file) = SnapshotRamMount::runtime(reader, &[&store])?;
+                mount.watch_runner_exit(&std::env::current_exe()?)?;
+                (mount, file)
+            };
+            #[cfg(not(target_os = "linux"))]
+            let (mount, file) = {
+                let (mut mount, file) = SnapshotRamMount::runtime(reader, &[&store])?;
+                mount.watch_runner_exit(&std::env::current_exe()?)?;
+                (mount, file)
+            };
             Ok(SharedRam {
                 file: Arc::new(file),
                 path: mount.ram_path(),
@@ -83,7 +95,57 @@ pub(super) fn acquire(
                 #[cfg(target_os = "linux")]
                 preparation_cache,
             })
-        })
+        },
+    )?;
+    #[cfg(target_os = "linux")]
+    if let Some(lease) = owner.runner_lease() {
+        use std::os::fd::AsRawFd;
+        check_raw_pager(lease.as_raw_fd(), None)?;
+    }
+    Ok(owner)
+}
+
+#[cfg(target_os = "linux")]
+pub(super) fn check_raw_pager(
+    lease: std::os::fd::RawFd,
+    control: Option<std::os::fd::RawFd>,
+) -> std::io::Result<()> {
+    let mut descriptors = [
+        libc::pollfd {
+            fd: lease,
+            events: 0,
+            revents: 0,
+        },
+        libc::pollfd {
+            fd: control.unwrap_or(-1),
+            events: libc::POLLIN,
+            revents: 0,
+        },
+    ];
+    loop {
+        // Pipe writers report an error when the only reader (the pager) dies.
+        let ready = unsafe {
+            libc::poll(
+                descriptors.as_mut_ptr(),
+                2,
+                if control.is_some() { -1 } else { 0 },
+            )
+        };
+        if ready < 0 {
+            let error = std::io::Error::last_os_error();
+            if error.kind() == std::io::ErrorKind::Interrupted {
+                continue;
+            }
+            return Err(error);
+        }
+        if descriptors[0].revents != 0 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::BrokenPipe,
+                "Raw RAM pager exited",
+            ));
+        }
+        return Ok(());
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -182,6 +244,12 @@ impl PreparationCache {
 
 #[cfg(target_os = "linux")]
 impl SharedRam {
+    pub(super) fn runner_lease(&self) -> Option<&std::process::ChildStdin> {
+        self._mount
+            .as_ref()
+            .and_then(SnapshotRamMount::runner_lease)
+    }
+
     pub(super) fn has_preparation_cache(&self) -> bool {
         self.preparation_cache.is_some()
     }
@@ -253,6 +321,67 @@ mod tests {
         atomic::{AtomicUsize, Ordering},
         mpsc,
     };
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn pager_observes_last_runner_even_after_supervisor_is_killed() {
+        use super::super::supported::{RAW_LEASE_CHILD_FD, runner_fd};
+        use std::{
+            io,
+            os::{fd::AsRawFd, unix::process::CommandExt},
+            process::{Command, Stdio},
+        };
+        for first_runner in [0, 1] {
+            let (reader, writer) = io::pipe().unwrap();
+            let spawn = || {
+                let source = runner_fd(writer.as_raw_fd()).unwrap();
+                let fd = source.as_raw_fd();
+                let mut command = Command::new("/bin/cat");
+                command.stdin(Stdio::piped()).stdout(Stdio::null());
+                unsafe {
+                    command.pre_exec(move || {
+                        if libc::dup2(fd, RAW_LEASE_CHILD_FD) < 0 {
+                            return Err(io::Error::last_os_error());
+                        }
+                        Ok(())
+                    });
+                }
+                command.spawn().unwrap()
+            };
+            let mut supervisor = spawn();
+            let mut runners = [spawn(), spawn()];
+            drop(writer);
+            let reader_has_writers = || {
+                let mut poll = libc::pollfd {
+                    fd: reader.as_raw_fd(),
+                    events: 0,
+                    revents: 0,
+                };
+                assert!(unsafe { libc::poll(&mut poll, 1, 0) } >= 0);
+                poll.revents & libc::POLLHUP == 0
+            };
+            supervisor.kill().unwrap();
+            assert!(!supervisor.wait().unwrap().success());
+            assert!(reader_has_writers());
+            drop(runners[first_runner].stdin.take());
+            assert!(runners[first_runner].wait().unwrap().success());
+            assert!(reader_has_writers());
+            runners[1 - first_runner].kill().unwrap();
+            assert!(!runners[1 - first_runner].wait().unwrap().success());
+            assert!(!reader_has_writers());
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn dead_pager_fences_admission_even_while_the_supervisor_holds_a_writer() {
+        use std::{io, os::fd::AsRawFd};
+        let (reader, writer) = io::pipe().unwrap();
+        check_raw_pager(writer.as_raw_fd(), None).unwrap();
+        drop(reader);
+        let error = check_raw_pager(writer.as_raw_fd(), None).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::BrokenPipe);
+    }
 
     #[cfg(target_os = "linux")]
     #[test]

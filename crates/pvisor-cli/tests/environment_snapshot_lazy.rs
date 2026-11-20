@@ -116,6 +116,56 @@ fn fuse_faults_restore_ram_and_private_mappings_isolate_forks() {
 
 #[cfg(target_os = "linux")]
 #[test]
+#[ignore = "requires an authorized ordinary FUSE mount and unmount; no VM or user namespace"]
+fn raw_ram_mount_retires_its_id_after_last_file_closes() {
+    use std::{
+        os::{fd::AsRawFd, unix::fs::FileExt},
+        path::Path,
+    };
+    let temporary = tempfile::tempdir().unwrap();
+    let source = temporary.path().join("source");
+    fs::create_dir(&source).unwrap();
+    let store = SnapshotStore::new(&temporary.path().join("store")).unwrap();
+    let expected = bytes();
+    let id = publish(&store, &source, &expected, false);
+    let published = store.open_for_restore(&id, &compatibility()).unwrap();
+    let (mount, first) = published
+        .ram_mount(Path::new(env!("CARGO_BIN_EXE_pvisor")), temporary.path())
+        .unwrap();
+    let second = first.try_clone().unwrap();
+    let fd = first.as_raw_fd();
+    let target = fs::read_link(format!("/proc/self/fd/{fd}")).unwrap();
+    let path = target.parent().unwrap();
+    let info = fs::read_to_string(format!("/proc/self/fdinfo/{fd}")).unwrap();
+    let id_field = info
+        .lines()
+        .find_map(|line| line.strip_prefix("mnt_id:"))
+        .unwrap()
+        .trim();
+    let mountinfo = || fs::read_to_string("/proc/thread-self/mountinfo").unwrap();
+    assert!(!path.starts_with(temporary.path()));
+    assert!(mountinfo().lines().any(|line| {
+        line.split(' ').next() == Some(id_field) && line.contains(" - fuse pvisor-snapshot-ram-")
+    }));
+    drop(first);
+    let mut sampled = [0; 16];
+    second.read_exact_at(&mut sampled, 65536).unwrap();
+    assert_eq!(sampled, expected[65536..65552]);
+    drop(second);
+    drop(mount);
+    assert!(
+        matches!(fs::symlink_metadata(path), Err(error) if error.kind() == std::io::ErrorKind::NotFound)
+    );
+    assert!(
+        !mountinfo()
+            .lines()
+            .any(|line| line.split(' ').next() == Some(id_field))
+    );
+    store.open(&id, &compatibility()).unwrap();
+}
+
+#[cfg(target_os = "linux")]
+#[test]
 #[ignore = "requires /dev/fuse; exercises pager SIGKILL cleanup"]
 fn fuse_mount_is_reaped_after_helper_is_killed() {
     use std::os::fd::AsRawFd;

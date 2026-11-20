@@ -32,27 +32,35 @@ pub struct Mount {
     mountpoint: CString,
     auto_unmount_socket: Option<UnixStream>,
     fuse_device: Arc<File>,
+    unmount_on_drop: bool,
 }
 impl Mount {
     pub fn new(mountpoint: &Path, options: &[MountOption]) -> io::Result<(Arc<File>, Mount)> {
         let mountpoint = mountpoint.canonicalize()?;
+        let native = CString::new(mountpoint.as_os_str().as_bytes())?;
         let (file, sock) = fuse_mount_pure(mountpoint.as_os_str(), options)?;
         let file = Arc::new(file);
         Ok((
             file.clone(),
             Mount {
-                mountpoint: CString::new(mountpoint.as_os_str().as_bytes())?,
+                mountpoint: native,
                 auto_unmount_socket: sock,
                 fuse_device: file,
+                unmount_on_drop: true,
             },
         ))
+    }
+
+    pub(crate) fn retain_mount_on_drop(&mut self) {
+        debug_assert!(self.auto_unmount_socket.is_none());
+        self.unmount_on_drop = false;
     }
 }
 
 impl Drop for Mount {
     fn drop(&mut self) {
         use std::io::ErrorKind::PermissionDenied;
-        if !is_mounted(&self.fuse_device) {
+        if !self.unmount_on_drop || !is_mounted(&self.fuse_device) {
             // If the filesystem has already been unmounted, avoid unmounting it again.
             // Unmounting it a second time could cause a race with a newly mounted filesystem
             // living at the same mountpoint
@@ -94,33 +102,17 @@ fn fuse_mount_pure(
 }
 
 fn fuse_unmount_pure(mountpoint: &CStr) {
-    #[cfg(target_os = "linux")]
-    unsafe {
-        let result = libc::umount2(mountpoint.as_ptr(), libc::MNT_DETACH);
-        if result == 0 {
-            return;
-        }
-    }
-    #[cfg(target_os = "macos")]
-    unsafe {
-        let result = libc::unmount(mountpoint.as_ptr(), libc::MNT_FORCE);
-        if result == 0 {
-            return;
-        }
-    }
-
     let mut builder = Command::new(detect_fusermount_bin());
-    builder.stdout(Stdio::piped()).stderr(Stdio::piped());
+    builder.stdout(Stdio::null()).stderr(Stdio::inherit());
     builder
         .arg("-u")
-        .arg("-q")
-        .arg("-z")
         .arg("--")
-        .arg(OsStr::new(&mountpoint.to_string_lossy().into_owned()));
+        .arg(OsStr::from_bytes(mountpoint.to_bytes()));
 
-    if let Ok(output) = builder.output() {
-        debug!("fusermount: {}", String::from_utf8_lossy(&output.stdout));
-        debug!("fusermount: {}", String::from_utf8_lossy(&output.stderr));
+    match builder.status() {
+        Ok(status) if status.success() => {}
+        Ok(status) => error!("FUSE unmount helper exited with {}", status),
+        Err(err) => error!("FUSE unmount helper failed: {}", err),
     }
 }
 
@@ -140,7 +132,6 @@ fn detect_fusermount_bin() -> String {
     // Default to fusermount3
     FUSERMOUNT3_BIN.to_string()
 }
-
 
 fn fuse_mount_fusermount(
     mountpoint: &OsStr,

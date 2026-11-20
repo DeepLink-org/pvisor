@@ -1,6 +1,8 @@
 //! libkrun VM process isolation over a pVisor-provided root OverlayFS.
 
 use crate::config::VmSettings;
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+use crate::env::runner::RAW_LEASE_FD_ENV;
 use crate::env::{
     self,
     ram::POOL_ENV,
@@ -35,6 +37,7 @@ const CONTROL_CHILD_FD: RawFd = 199;
 const RAM_CHILD_FD: RawFd = 200;
 const IDLE_CHILD_FD: RawFd = 202;
 const RAW_READY_CHILD_FD: RawFd = 203;
+pub(super) const RAW_LEASE_CHILD_FD: RawFd = 204;
 
 pub(super) fn runner_fd(fd: RawFd) -> std::io::Result<OwnedFd> {
     // Keep every source descriptor above all fixed destinations, avoiding dup2
@@ -43,7 +46,7 @@ pub(super) fn runner_fd(fd: RawFd) -> std::io::Result<OwnedFd> {
         libc::fcntl(
             fd,
             libc::F_DUPFD_CLOEXEC,
-            RAW_READY_CHILD_FD.max(crate::diagnostics::INHERITED_LOG_FD) + 1,
+            RAW_LEASE_CHILD_FD.max(crate::diagnostics::INHERITED_LOG_FD) + 1,
         )
     };
     if duplicate < 0 {
@@ -1789,6 +1792,20 @@ impl RunExecutor for VmExecutor {
         #[cfg(not(target_os = "linux"))]
         let raw_ready_pair: Option<(tokio::net::UnixStream, OwnedFd)> = None;
         let raw_ready_source_fd = raw_ready_pair.as_ref().map(|(_, fd)| fd.as_raw_fd());
+        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+        let ram_lease = match self
+            .restore
+            .as_ref()
+            .filter(|restore| restore._eager_ram.is_none())
+            .and_then(|restore| restore._ram_owner.runner_lease())
+            .map(|pipe| runner_fd(pipe.as_raw_fd()))
+            .transpose()
+        {
+            Ok(lease) => lease,
+            Err(error) => return failed_to_start(format!("duplicate Raw pager lease: {error}")),
+        };
+        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+        let ram_lease_fd = ram_lease.as_ref().map(AsRawFd::as_raw_fd);
 
         let network_runner = match vm_network
             .as_ref()
@@ -1838,6 +1855,13 @@ impl RunExecutor for VmExecutor {
         if raw_ready_source_fd.is_some() {
             command.env(RAW_READY_FD_ENV, RAW_READY_CHILD_FD.to_string());
         }
+        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+        {
+            command.env_remove(RAW_LEASE_FD_ENV);
+            if ram_lease_fd.is_some() {
+                command.env(RAW_LEASE_FD_ENV, RAW_LEASE_CHILD_FD.to_string());
+            }
+        }
         let control_source_fd = control_runner.as_raw_fd();
         let ram_source_fd = ram_runner.as_raw_fd();
         unsafe {
@@ -1865,6 +1889,12 @@ impl RunExecutor for VmExecutor {
                     return Err(std::io::Error::last_os_error());
                 }
                 if libc::dup2(ram_source_fd, RAM_CHILD_FD) < 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+                if let Some(fd) = ram_lease_fd
+                    && libc::dup2(fd, RAW_LEASE_CHILD_FD) < 0
+                {
                     return Err(std::io::Error::last_os_error());
                 }
                 Ok(())
@@ -1910,6 +1940,8 @@ impl RunExecutor for VmExecutor {
         drop(diagnostic_runner);
         drop(control_runner);
         drop(ram_runner);
+        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+        drop(ram_lease);
         drop(network_runner);
         #[cfg(target_os = "linux")]
         if let Some((mut host, runner_fd)) = raw_ready_pair {
@@ -2766,6 +2798,22 @@ fn run_linked_krun(
     mut restore: Option<pvisor_vm::api::MachineRestore>,
 ) -> anyhow::Result<()> {
     use std::io::Write;
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    let raw_pager_lease = if env::os(RAW_LEASE_FD_ENV).is_some() {
+        let fd = env::required_unicode(RAW_LEASE_FD_ENV)?.parse::<RawFd>()?;
+        anyhow::ensure!(
+            spec.restore.is_some() && fd == RAW_LEASE_CHILD_FD,
+            "invalid Raw pager lease"
+        );
+        if unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) } < 0 {
+            return Err(std::io::Error::last_os_error().into());
+        }
+        let lease = unsafe { OwnedFd::from_raw_fd(fd) };
+        super::restore_ram::check_raw_pager(lease.as_raw_fd(), None)?;
+        Some(lease)
+    } else {
+        None
+    };
     if std::env::var_os("PVISOR_KRUN_LOG").is_some() {
         pvisor_vm::api::VmPlatform::init_logging("trace");
     }
@@ -2968,6 +3016,15 @@ fn run_linked_krun(
             .spawn(move || {
                 use std::io::Read;
                 loop {
+                    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+                    if let Some(lease) = &raw_pager_lease
+                        && let Err(error) = super::restore_ram::check_raw_pager(
+                            lease.as_raw_fd(), Some(control.as_raw_fd()),
+                        )
+                    {
+                        eprintln!("Raw restore lost its RAM pager: {error}");
+                        std::process::exit(1);
+                    }
                     let mut length = [0; 4];
                     if control.read_exact(&mut length).is_err() {
                         // The host supervisor is gone. Do not leave its VM parked

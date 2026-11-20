@@ -2,6 +2,9 @@
 //! page faults; MAP_PRIVATE guest mappings own all subsequent writes.
 #[path = "ram_runtime.rs"]
 mod ram_runtime;
+#[cfg(target_os = "linux")]
+#[path = "ram_unmount.rs"]
+mod ram_unmount;
 use super::{EnvironmentManifest, RamBlocks, SnapshotStore, store::valid_id};
 use crate::ram_backing::BLOCK_BYTES;
 #[cfg(target_os = "macos")]
@@ -22,7 +25,7 @@ use std::{
         ffi::OsStrExt,
         fs::{FileExt, OpenOptionsExt, PermissionsExt},
     },
-    path::Path,
+    path::{Path, PathBuf},
     process::{Child, ChildStdin, Command, Stdio},
     time::{Duration, Instant, UNIX_EPOCH},
 };
@@ -269,6 +272,14 @@ impl SnapshotRamReader {
         }
     }
 
+    #[cfg(target_os = "linux")]
+    fn raw_inode(&self) -> io::Result<Option<ram_unmount::Inode>> {
+        match &self.backing {
+            Backing::Raw { file, .. } => ram_unmount::Inode::file(file).map(Some),
+            Backing::Compressed(_) => Ok(None),
+        }
+    }
+
     pub(crate) fn compressed_base(&self) -> Option<std::sync::Arc<super::blocks::PinnedRamBlocks>> {
         match &self.backing {
             Backing::Compressed(base) => Some(base.clone()),
@@ -372,47 +383,27 @@ fn read_direct_block(file: &File, output: &mut [u8], offset: u64) -> io::Result<
     result
 }
 
-/// Must outlive the VM and its RAM mappings. Dropping it unmounts the pager and
-/// releases content pins; it must never be dropped at the guest-ready callback.
+/// Must outlive the VM and its RAM mappings. Drop attempts ordinary Linux
+/// retirement and retains the mountpoint on failure for reconciliation.
 pub struct SnapshotRamMount {
     session: Option<BackgroundSession>,
     server: Option<(Child, ChildStdin)>,
     watchdog: Option<(Child, ChildStdin)>,
-    directory: tempfile::TempDir,
+    directory: PathBuf,
+    retirement_started: bool,
+    #[cfg(target_os = "linux")]
+    directory_inode: ram_unmount::Inode,
+    #[cfg(target_os = "linux")]
+    identity: Option<ram_unmount::Identity>,
 }
 impl SnapshotRamMount {
-    pub(crate) fn ram_path(&self) -> std::path::PathBuf {
-        self.directory.path().join("ram")
+    pub(crate) fn ram_path(&self) -> PathBuf {
+        self.directory.join("ram")
     }
 
-    /// The ordinary executor owns its pager in the supervisor, whose binary
-    /// enters internal modes before parsing CLI arguments.
-    pub(crate) fn watch_native_owner_exit(&mut self, executable: &Path) -> io::Result<()> {
-        use std::os::unix::process::CommandExt;
-        if self.watchdog.is_some() {
-            return Err(io::Error::other("RAM exit watchdog already installed"));
-        }
-        let mut child = Command::new(executable)
-            .env_clear()
-            .env(
-                "PATH",
-                std::env::var_os("PATH").unwrap_or_else(|| "/usr/bin:/bin".into()),
-            )
-            .env(
-                crate::env::runner::RESTORE_RAM_WATCHDOG_ENV,
-                self.directory.path(),
-            )
-            .stdin(Stdio::piped())
-            .stdout(Stdio::null())
-            .stderr(Stdio::inherit())
-            .process_group(0)
-            .spawn()?;
-        let pipe = child
-            .stdin
-            .take()
-            .ok_or_else(|| io::Error::other("missing RAM watchdog pipe"))?;
-        self.watchdog = Some((child, pipe));
-        Ok(())
+    #[cfg(target_os = "linux")]
+    pub(crate) fn runner_lease(&self) -> Option<&ChildStdin> {
+        self.server.as_ref().map(|(_, pipe)| pipe)
     }
 
     /// Mount in a private host runtime directory, never in durable state.
@@ -436,33 +427,11 @@ impl SnapshotRamMount {
         reader: SnapshotRamReader,
         temporary: tempfile::TempDir,
     ) -> io::Result<(Self, File)> {
-        let options = [
-            MountOption::FSName("pvisor-snapshot-ram".into()),
-            MountOption::RO,
-            MountOption::DefaultPermissions,
-            MountOption::NoExec,
-            MountOption::NoSuid,
-            MountOption::NoDev,
-            #[cfg(target_os = "macos")]
-            MountOption::CUSTOM("backend=kernel".into()),
-        ];
-        #[cfg(target_os = "linux")]
-        let session = BackgroundSession::new_interruptible(fuser::Session::new(
-            RamFs { reader },
-            temporary.path(),
-            &options,
-        )?)?;
-        #[cfg(not(target_os = "linux"))]
-        let session = fuser::spawn_mount2(RamFs { reader }, temporary.path(), &options)?;
-        let mount = Self {
-            session: Some(session),
-            server: None,
-            watchdog: None,
-            directory: temporary,
-        };
+        let mut mount = Self::new_owner(temporary)?;
+        mount.start(reader)?;
         let deadline = Instant::now() + Duration::from_secs(5);
         let file = loop {
-            match File::open(mount.directory.path().join("ram")) {
+            match File::open(mount.ram_path()) {
                 Ok(file) => break file,
                 Err(error) if error.kind() == io::ErrorKind::NotFound => {
                     if mount.session.as_ref().unwrap().guard.is_finished() {
@@ -481,7 +450,66 @@ impl SnapshotRamMount {
                 Err(error) => return Err(error),
             }
         };
+        #[cfg(target_os = "linux")]
+        mount.identity.as_ref().unwrap().verify_file(&file)?;
         Ok((mount, file))
+    }
+
+    fn new_owner(temporary: tempfile::TempDir) -> io::Result<Self> {
+        Ok(Self {
+            session: None,
+            server: None,
+            watchdog: None,
+            retirement_started: false,
+            #[cfg(target_os = "linux")]
+            directory_inode: ram_unmount::Inode::directory(temporary.path())?,
+            #[cfg(target_os = "linux")]
+            identity: None,
+            directory: temporary.keep(),
+        })
+    }
+
+    fn start(&mut self, reader: SnapshotRamReader) -> io::Result<()> {
+        let options = [
+            #[cfg(target_os = "linux")]
+            MountOption::FSName(ram_unmount::source(&self.directory)),
+            #[cfg(target_os = "macos")]
+            MountOption::FSName("pvisor-snapshot-ram".into()),
+            MountOption::RO,
+            MountOption::DefaultPermissions,
+            MountOption::NoExec,
+            MountOption::NoSuid,
+            MountOption::NoDev,
+            #[cfg(target_os = "macos")]
+            MountOption::CUSTOM("backend=kernel".into()),
+        ];
+        #[cfg(target_os = "linux")]
+        {
+            let session = fuser::Session::new_with_external_unmount(
+                RamFs { reader },
+                &self.directory,
+                &options,
+            );
+            // A helper can fail after creating the mount. Capture the uniquely
+            // named entry before propagating that error so Drop can retire it.
+            self.identity = ram_unmount::Identity::capture(&self.directory).ok();
+            let session = session?;
+            if self.identity.is_none() {
+                return Err(io::Error::other(
+                    "cannot identify newly created snapshot RAM mount",
+                ));
+            }
+            self.session = Some(BackgroundSession::new_interruptible(session)?);
+        }
+        #[cfg(target_os = "macos")]
+        {
+            self.session = Some(fuser::spawn_mount2(
+                RamFs { reader },
+                &self.directory,
+                &options,
+            )?);
+        }
+        Ok(())
     }
 
     /// Serve faults outside the VMM process. Its kernel teardown must never
@@ -493,6 +521,7 @@ impl SnapshotRamMount {
         manifest: &EnvironmentManifest,
         directory: &Path,
         executable: &Path,
+        restore_reader: Option<&SnapshotRamReader>,
     ) -> io::Result<(Self, File)> {
         use std::os::unix::{io::AsRawFd, process::CommandExt};
         let object = fs::canonicalize(object)?;
@@ -506,14 +535,21 @@ impl SnapshotRamMount {
         // owner is released on readiness or on any startup failure.
         let staging = ram_runtime::temporary(&[store, directory])?;
         let mut spec = tempfile::NamedTempFile::new_in(staging.path())?;
+        let mut mount = Self::new_owner(temporary)?;
         serde_json::to_writer(
             spec.as_file_mut(),
             &RamServerSpec {
                 object: object.as_os_str().as_bytes().to_vec(),
-                mount: temporary.path().as_os_str().as_bytes().to_vec(),
+                mount: mount.directory.as_os_str().as_bytes().to_vec(),
                 blocks: manifest.ram_blocks.clone(),
                 index: manifest.ram_index.clone(),
                 ram_sha256: manifest.ram_sha256.clone(),
+                compact: restore_reader.is_some_and(|reader| reader.compact.is_some()),
+                #[cfg(target_os = "linux")]
+                raw_inode: restore_reader
+                    .map(SnapshotRamReader::raw_inode)
+                    .transpose()?
+                    .flatten(),
             },
         )?;
         spec.as_file_mut().flush()?;
@@ -537,12 +573,7 @@ impl SnapshotRamMount {
             .stdout
             .take()
             .ok_or_else(|| io::Error::other("missing RAM readiness pipe"))?;
-        let mount = Self {
-            session: None,
-            server: Some((child, pipe)),
-            watchdog: None,
-            directory: temporary,
-        };
+        mount.server = Some((child, pipe));
         // The pipe is private and has one writer. Bound readiness without a
         // detached reader thread or an unbounded wait on a failed helper.
         let flags = unsafe { libc::fcntl(output.as_raw_fd(), libc::F_GETFL) };
@@ -564,10 +595,10 @@ impl SnapshotRamMount {
                 }
                 Ok(count) => {
                     ready.extend_from_slice(&bytes[..count]);
-                    if ready == b"ready\n" {
+                    if ready.ends_with(b"\n") {
                         break;
                     }
-                    if ready.len() >= 6 {
+                    if ready.len() >= 512 {
                         return Err(io::Error::other("invalid RAM server readiness"));
                     }
                 }
@@ -586,9 +617,25 @@ impl SnapshotRamMount {
             }
             std::thread::sleep(Duration::from_millis(20));
         }
+        #[cfg(target_os = "linux")]
+        {
+            let identity = serde_json::from_slice::<ram_unmount::Identity>(&ready)?;
+            if ram_unmount::Identity::capture(&mount.directory)? != identity {
+                return Err(io::Error::other(
+                    "RAM server mount identity changed during readiness",
+                ));
+            }
+            mount.identity = Some(identity);
+        }
+        #[cfg(target_os = "macos")]
+        if ready != b"ready\n" {
+            return Err(io::Error::other("invalid RAM server readiness"));
+        }
         // The caller's published-object lease remains held until the helper
         // has opened raw backing or acquired independent compressed pins.
-        let file = File::open(mount.directory.path().join("ram"))?;
+        let file = File::open(mount.ram_path())?;
+        #[cfg(target_os = "linux")]
+        mount.identity.as_ref().unwrap().verify_file(&file)?;
         Ok((mount, file))
     }
 
@@ -608,7 +655,7 @@ impl SnapshotRamMount {
             )
             .env(
                 crate::env::runner::RESTORE_RAM_WATCHDOG_ENV,
-                self.directory.path(),
+                &self.directory,
             )
             .stdin(Stdio::piped())
             .stdout(Stdio::null())
@@ -620,76 +667,100 @@ impl SnapshotRamMount {
             .take()
             .ok_or_else(|| io::Error::other("missing RAM watchdog pipe"))?;
         self.watchdog = Some((child, pipe));
+        #[cfg(target_os = "linux")]
+        {
+            let (_, pipe) = self.watchdog.as_mut().unwrap();
+            serde_json::to_writer(
+                &mut *pipe,
+                &WatchIdentity {
+                    directory: self.directory_inode,
+                    mount: self
+                        .identity
+                        .clone()
+                        .ok_or_else(|| io::Error::other("missing RAM mount ID"))?,
+                },
+            )?;
+            pipe.write_all(b"\n")?;
+        }
         Ok(())
     }
 }
+impl SnapshotRamMount {
+    fn shutdown(&mut self) -> io::Result<()> {
+        self.retirement_started = true;
+        if let Some((mut child, pipe)) = self.server.take().or_else(|| self.watchdog.take()) {
+            drop(pipe);
+            // A still-live helper owns retirement. Do not kill its request
+            // loop or race it with another unmount after a timeout.
+            let status = match poll_exit(&mut child, Duration::from_secs(7)) {
+                Ok(status) => status,
+                Err(error) => {
+                    let reaper = std::thread::Builder::new()
+                        .name("pvisor-ram-reap".into())
+                        .spawn(move || child.wait());
+                    if let Err(error) = reaper {
+                        tracing::warn!(%error, "cannot schedule RAM cleanup helper reap");
+                    }
+                    return Err(error);
+                }
+            };
+            if !status.success() {
+                tracing::warn!(%status, path = %self.directory.display(), "snapshot RAM cleanup helper exited unsuccessfully");
+            }
+        }
+        #[cfg(target_os = "linux")]
+        ram_unmount::retire(
+            &self.directory,
+            self.directory_inode,
+            self.identity.as_ref(),
+        )?;
+        #[cfg(target_os = "macos")]
+        detach_mount(&self.directory).map_err(io::Error::other)?;
+        if let Some(session) = self.session.take() {
+            session.unmount()?;
+        }
+        Ok(())
+    }
+}
+
 impl Drop for SnapshotRamMount {
     fn drop(&mut self) {
-        if let Some((mut child, pipe)) = self.server.take() {
-            drop(pipe); // RAM users have gone; the independent server may detach.
-            let deadline = Instant::now() + Duration::from_secs(10);
-            loop {
-                match child.try_wait() {
-                    Ok(Some(status)) => {
-                        if !status.success() {
-                            tracing::warn!(%status, "snapshot RAM server cleanup failed");
-                            if let Err(error) = detach_mount(self.directory.path()) {
-                                tracing::warn!(%error, "cannot detach failed snapshot RAM server");
-                            }
-                        }
-                        break;
-                    }
-                    Ok(None) if Instant::now() < deadline => {
-                        std::thread::sleep(Duration::from_millis(20))
-                    }
-                    result => {
-                        tracing::warn!(?result, "snapshot RAM server cleanup exceeded deadline");
-                        // No VM mappings may outlive this owner. Force-detach
-                        // only this private mount before terminating its server.
-                        if let Err(error) = detach_mount(self.directory.path()) {
-                            tracing::warn!(%error, "cannot detach snapshot RAM server");
-                        }
-                        let _ = child.kill();
-                        let _ = child.wait();
-                        break;
-                    }
-                }
-            }
-        }
-
-        if let Some((mut child, pipe)) = self.watchdog.take() {
-            drop(pipe);
-            let result = wait_for_exit(&mut child, Duration::from_secs(10));
-            if !matches!(result, Ok(status) if status.success()) {
-                tracing::warn!(?result, "snapshot RAM watchdog cleanup failed");
-                if let Err(error) = detach_mount(self.directory.path()) {
-                    tracing::warn!(%error, "cannot detach snapshot RAM after watchdog failure");
-                }
-            }
-        }
-        if let Some(session) = self.session.take()
-            && let Err(error) = session.unmount()
+        if !self.retirement_started
+            && let Err(error) = self.shutdown()
         {
-            tracing::warn!(%error, "cannot unmount snapshot RAM");
+            #[cfg(target_os = "macos")]
+            tracing::warn!(%error, path = %self.directory.display(), "snapshot RAM retirement incomplete");
+            #[cfg(target_os = "linux")]
+            tracing::warn!(%error, identity = ?self.identity, path = %self.directory.display(), "snapshot RAM retirement incomplete");
         }
     }
 }
 
-fn wait_for_exit(child: &mut Child, timeout: Duration) -> io::Result<std::process::ExitStatus> {
+fn poll_exit(child: &mut Child, timeout: Duration) -> io::Result<std::process::ExitStatus> {
     let deadline = Instant::now() + timeout;
     loop {
         if let Some(status) = child.try_wait()? {
             return Ok(status);
         }
         if Instant::now() >= deadline {
-            let _ = child.kill();
-            let _ = child.wait();
             return Err(io::Error::new(
                 io::ErrorKind::TimedOut,
                 "RAM cleanup helper timed out",
             ));
         }
         std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn wait_for_exit(child: &mut Child, timeout: Duration) -> io::Result<std::process::ExitStatus> {
+    match poll_exit(child, timeout) {
+        Err(error) if error.kind() == io::ErrorKind::TimedOut => {
+            let _ = child.kill();
+            let _ = child.wait();
+            Err(error)
+        }
+        result => result,
     }
 }
 
@@ -701,7 +772,21 @@ struct RamServerSpec {
     blocks: Option<RamBlocks>,
     index: Option<RawRamIndex>,
     ram_sha256: String,
+    #[serde(default)]
+    compact: bool,
+    #[cfg(target_os = "linux")]
+    #[serde(default)]
+    raw_inode: Option<ram_unmount::Inode>,
 }
+
+#[cfg(target_os = "linux")]
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WatchIdentity {
+    directory: ram_unmount::Inode,
+    mount: ram_unmount::Identity,
+}
+
 /// Private snapshot pager entry point; keep answering faults until its sole
 /// owning runner closes the pipe, including during kernel process teardown.
 pub(crate) fn serve_ram(spec: &Path) -> anyhow::Result<()> {
@@ -741,36 +826,43 @@ pub(crate) fn serve_ram(spec: &Path) -> anyhow::Result<()> {
             && metadata.permissions().mode() & 0o077 == 0,
         "invalid private RAM server mountpoint"
     );
-    let reader = SnapshotRamReader::from_parts(
+    let mut reader = SnapshotRamReader::from_parts(
         object,
         spec.blocks.as_ref(),
         spec.index.as_ref(),
         &spec.ram_sha256,
     )?;
-    ram_runtime::private(mount, &[&reader.store_root])?;
-    let options = [
-        MountOption::FSName("pvisor-snapshot-ram".into()),
-        MountOption::RO,
-        MountOption::DefaultPermissions,
-        MountOption::NoExec,
-        MountOption::NoSuid,
-        MountOption::NoDev,
-        #[cfg(target_os = "macos")]
-        MountOption::CUSTOM("backend=kernel".into()),
-    ];
     #[cfg(target_os = "linux")]
-    let session = BackgroundSession::new_interruptible(fuser::Session::new(
-        RamFs { reader },
-        mount,
-        &options,
-    )?)?;
-    #[cfg(not(target_os = "linux"))]
-    let session = fuser::spawn_mount2(RamFs { reader }, mount, &options)?;
+    if let Some(expected) = spec.raw_inode {
+        ensure!(
+            reader.raw_inode()? == Some(expected),
+            "snapshot Raw RAM inode changed before pager launch"
+        );
+    }
+    if spec.compact {
+        ensure!(
+            !reader.compact_zero_restore()?.is_empty(),
+            "invalid compact RAM pager view"
+        );
+    }
+    ram_runtime::private(mount, &[&reader.store_root])?;
+    let mut owner = SnapshotRamMount {
+        session: None,
+        server: None,
+        watchdog: None,
+        directory: mount.to_path_buf(),
+        retirement_started: false,
+        #[cfg(target_os = "linux")]
+        directory_inode: ram_unmount::Inode::directory(mount)?,
+        #[cfg(target_os = "linux")]
+        identity: None,
+    };
+    owner.start(reader)?;
     let result = (|| -> anyhow::Result<()> {
         let deadline = Instant::now() + Duration::from_secs(5);
-        while !mount.join("ram").try_exists()? {
+        while !owner.ram_path().try_exists()? {
             ensure!(
-                !session.guard.is_finished(),
+                !owner.session.as_ref().unwrap().guard.is_finished(),
                 "snapshot RAM server stopped before mount readiness"
             );
             ensure!(
@@ -779,23 +871,64 @@ pub(crate) fn serve_ram(spec: &Path) -> anyhow::Result<()> {
             );
             std::thread::sleep(Duration::from_millis(20));
         }
-        io::stdout().write_all(b"ready\n")?;
-        io::stdout().flush()?;
+        let mut output = io::stdout().lock();
+        #[cfg(target_os = "linux")]
+        {
+            serde_json::to_writer(&mut output, owner.identity.as_ref().unwrap())?;
+            output.write_all(b"\n")?;
+        }
+        #[cfg(target_os = "macos")]
+        output.write_all(b"ready\n")?;
+        output.flush()?;
+        drop(output);
+        #[cfg(target_os = "linux")]
+        wait_for_ram_consumers(owner.session.as_ref().unwrap())?;
+        #[cfg(target_os = "macos")]
         io::copy(&mut io::stdin().lock(), &mut io::sink())?;
         Ok(())
     })();
-    // EOF is safe even for SIGKILL/_exit: the FUSE server remains alive while
-    // the owning process releases mappings, so it cannot wait on itself.
-    let detached = detach_mount(mount);
-    let unmounted = session.unmount();
+    // The supervisor and each Linux native consumer hold a writer. The
+    // independent server continues answering requests during ordinary unmount.
+    let retired = owner.shutdown().map_err(|error| {
+        #[cfg(target_os = "linux")]
+        let identity = format!(" ({:?})", owner.identity);
+        #[cfg(target_os = "macos")]
+        let identity = "";
+        anyhow::anyhow!("retire snapshot RAM {}{identity}: {error}", mount.display())
+    });
     result?;
-    detached?;
-    unmounted?;
+    retired?;
     Ok(())
 }
 
-/// Internal CLI watchdog entry point. EOF means the sole owning runner has
-/// exited or explicitly released its mount after all RAM users were dropped.
+#[cfg(target_os = "linux")]
+fn wait_for_ram_consumers(session: &BackgroundSession) -> io::Result<()> {
+    use std::os::fd::AsRawFd;
+    let mut input = libc::pollfd {
+        fd: io::stdin().as_raw_fd(),
+        events: 0,
+        revents: 0,
+    };
+    loop {
+        if session.guard.is_finished() {
+            return Err(io::Error::other("snapshot RAM request loop exited"));
+        }
+        let polled = unsafe { libc::poll(&mut input, 1, 100) };
+        if polled < 0 {
+            let error = io::Error::last_os_error();
+            if error.kind() != io::ErrorKind::Interrupted {
+                return Err(error);
+            }
+        } else if input.revents & libc::POLLHUP != 0 {
+            return Ok(());
+        } else if input.revents != 0 {
+            return Err(io::Error::other("invalid snapshot RAM consumer pipe"));
+        }
+    }
+}
+
+/// Internal CLI watchdog entry point. EOF means the owner has exited or
+/// explicitly released the mount after dropping every known consumer.
 pub(crate) fn watch_mount(path: &Path) -> anyhow::Result<()> {
     ensure!(
         path.is_absolute()
@@ -804,54 +937,37 @@ pub(crate) fn watch_mount(path: &Path) -> anyhow::Result<()> {
                 .is_some_and(|name| name.to_string_lossy().starts_with("ram-mount-")),
         "invalid RAM watchdog mountpoint"
     );
-    io::copy(&mut io::stdin().lock(), &mut io::sink())?;
-    detach_mount(path)
-}
-fn detach_mount(path: &Path) -> anyhow::Result<()> {
+    let mut input = io::stdin().lock();
     #[cfg(target_os = "linux")]
-    {
-        let native = super::native_path(path)?;
-        // Privileged deployments may mount directly without fusermount.
-        let detached = unsafe { libc::umount2(native.as_ptr(), libc::MNT_DETACH) } == 0;
-        let error = io::Error::last_os_error();
-        if !detached
-            && !matches!(error.raw_os_error(), Some(libc::EINVAL | libc::ENOENT))
-            && linux_mount_present(path)?
-        {
-            let mut result = None;
-            for helper in ["fusermount3", "fusermount"] {
-                match Command::new(helper)
-                    .args(["-u", "-z", "--"])
-                    .arg(path)
-                    .stdout(Stdio::null())
-                    .stderr(Stdio::inherit())
-                    .spawn()
-                {
-                    Ok(mut child) => {
-                        result = Some(wait_for_exit(&mut child, Duration::from_secs(5))?);
-                        break;
-                    }
-                    Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
-                    Err(error) => return Err(error.into()),
-                }
-            }
-            let status =
-                result.ok_or_else(|| anyhow::anyhow!("FUSE unmount helper unavailable"))?;
-            ensure!(status.success(), "snapshot RAM unmount failed: {status}");
-        }
-    }
+    let identity: WatchIdentity = {
+        use std::io::BufRead;
+        let mut bytes = Vec::new();
+        (&mut input).take(512).read_until(b'\n', &mut bytes)?;
+        ensure!(bytes.ends_with(b"\n"), "missing RAM watchdog identity");
+        serde_json::from_slice(&bytes)?
+    };
+    io::copy(&mut input, &mut io::sink())?;
+    #[cfg(target_os = "linux")]
+    ram_unmount::retire(path, identity.directory, Some(&identity.mount)).map_err(|error| {
+        anyhow::anyhow!(
+            "retire snapshot RAM {} ({:?}): {error}",
+            path.display(),
+            identity.mount
+        )
+    })?;
     #[cfg(target_os = "macos")]
-    {
-        let native = super::native_path(path)?;
-        // The sole runner has closed its ownership pipe, so no VM mappings
-        // may still use this private read-only mount. Match fuser's Darwin
-        // detach policy: ordinary umount can wait forever on a dead server.
-        // SAFETY: native is a live NUL-terminated path; the OS checks ownership.
-        let detached = unsafe { libc::unmount(native.as_ptr(), libc::MNT_FORCE) } == 0;
-        let error = io::Error::last_os_error();
-        if !detached && !matches!(error.raw_os_error(), Some(libc::EINVAL | libc::ENOENT)) {
-            return Err(error).context("snapshot RAM detach failed");
-        }
+    detach_mount(path)?;
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn detach_mount(path: &Path) -> anyhow::Result<()> {
+    let native = super::native_path(path)?;
+    // SAFETY: native is a live NUL-terminated path; the OS checks ownership.
+    let detached = unsafe { libc::unmount(native.as_ptr(), libc::MNT_FORCE) } == 0;
+    let error = io::Error::last_os_error();
+    if !detached && !matches!(error.raw_os_error(), Some(libc::EINVAL | libc::ENOENT)) {
+        return Err(error).context("snapshot RAM detach failed");
     }
     match fs::remove_dir(path) {
         Ok(()) => {}
@@ -859,30 +975,6 @@ fn detach_mount(path: &Path) -> anyhow::Result<()> {
         Err(error) => return Err(error.into()),
     }
     Ok(())
-}
-
-#[cfg(target_os = "linux")]
-fn linux_mount_present(path: &Path) -> io::Result<bool> {
-    // Linux can return EPERM before checking whether this path is mounted.
-    // Read the kernel table rather than treating an unmount helper's diagnostic
-    // as proof that cleanup is safe. Encode paths as mountinfo does, including
-    // whitespace, backslashes and non-UTF-8 names, without touching the mount.
-    let mut target = Vec::new();
-    for byte in path.as_os_str().as_bytes() {
-        match byte {
-            b' ' => target.extend_from_slice(b"\\040"),
-            b'\t' => target.extend_from_slice(b"\\011"),
-            b'\n' => target.extend_from_slice(b"\\012"),
-            b'\\' => target.extend_from_slice(b"\\134"),
-            byte => target.push(*byte),
-        }
-    }
-    let mounts = fs::read("/proc/self/mountinfo")?;
-    Ok(mounts.split(|byte| *byte == b'\n').any(|line| {
-        line.split(|byte| *byte == b' ')
-            .nth(4)
-            .is_some_and(|mount| mount == target)
-    }))
 }
 
 const ROOT: u64 = 1;

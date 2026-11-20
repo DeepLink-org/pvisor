@@ -93,6 +93,8 @@ pub(crate) mod runner {
     pub(crate) const IDLE_FD_ENV: &str = "PVISOR_KRUN_IDLE_FD";
     pub(crate) const RAW_READY_FD_ENV: &str = "PVISOR_KRUN_RAW_READY_FD";
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    pub(crate) const RAW_LEASE_FD_ENV: &str = "PVISOR_KRUN_RAW_LEASE_FD";
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     pub(crate) const ENOMEM_OVERRIDE_ENV: &str = "PVISOR_KRUN_ENOMEM_WORKAROUND";
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     pub(crate) const ENOMEM_WORKAROUND_ENV: &str = "KRUN_ENOMEM_WORKAROUND";
