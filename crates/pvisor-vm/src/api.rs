@@ -575,7 +575,8 @@ pub trait ColdRamControl: VmControl {
     /// fit the caller's control budget. Arbitrary-latency external stores are not
     /// supported by this latency contract; a stalled fault/transition may terminate
     /// the runner. The generic store trait cannot identify an external transport.
-    /// Snapshot capture and whole-VM offload reject an active pager. Linux owns
+    /// Snapshot capture rejects an active pager. Whole-VM offload with a pager
+    /// requires Linux x86-64 branch delta restore and physical sharing. Linux owns
     /// its kernel resolver; external fault handlers/RAM tokens remain unsupported.
     /// Unsupported backends reject before spawning a worker.
     /// The store exclusively owns its session references;

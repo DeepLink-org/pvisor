@@ -30,6 +30,22 @@ fn help(root: &Path, args: &[&str]) -> String {
 }
 
 #[test]
+fn fork_pressure_controls_require_delegation_and_exclude_manual_control() {
+    let root = tempfile::tempdir().unwrap();
+    for args in [
+        vec!["--memory-pool", "/tmp/pool"],
+        vec!["--offload", "--pressure-cgroup", "/sys/fs/cgroup/example"],
+    ] {
+        let mut command = vec!["container", "branch", "source", "--names", "child"];
+        command.extend(args);
+        assert_eq!(cli(root.path(), &command).status.code(), Some(2));
+    }
+    let text = help(root.path(), &["container", "branch", "--help"]);
+    assert!(text.contains("--pressure-cgroup"));
+    assert!(text.contains("--memory-pool"));
+}
+
+#[test]
 fn export_help_is_grouped_and_inert_and_stage_explains_both_network_choices() {
     let root = tempfile::tempdir().unwrap();
     let text = help(root.path(), &["--help"]);

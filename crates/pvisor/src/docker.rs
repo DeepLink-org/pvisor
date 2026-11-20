@@ -1268,7 +1268,7 @@ impl Store {
                 instance.exit_code = None;
                 instance.restart_count = 0;
                 self.save(&instance)?;
-                let spawn = self.spawn_owner(&instance, owner_lease, None);
+                let spawn = self.spawn_owner(&instance, owner_lease, None, None);
                 if let Err(error) = spawn {
                     let error = match staging::failed_admission(self, &instance) {
                         Ok(()) => error,
@@ -1289,10 +1289,26 @@ impl Store {
         instance: &Instance,
         owner_lease: File,
         fork_ram: Option<&File>,
+        placement: Option<&File>,
     ) -> anyhow::Result<()> {
         let mut command = Command::new(std::env::current_exe()?);
         #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
         live_fork::pass_ram(&mut command, fork_ram);
+        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+        if let Some(file) = placement {
+            use std::os::fd::AsRawFd;
+            let fd = file.as_raw_fd();
+            unsafe {
+                command.pre_exec(move || {
+                    if libc::write(fd, b"0".as_ptr().cast(), 1) != 1 {
+                        return Err(io::Error::last_os_error());
+                    }
+                    Ok(())
+                });
+            }
+        }
+        #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+        let _ = placement;
         command
             .arg("--pvisor-internal-docker-owner")
             .arg(&self.root)
@@ -2046,7 +2062,12 @@ fn settle_owner_generation(
 ) -> anyhow::Result<()> {
     // The native runner exits the process; Rust Drop is not its cleanup receipt.
     // Reap first, then retire only this generation's host control endpoint.
-    let cleanup = if instance.config.managed_memory {
+    let cleanup = if instance.config.managed_memory
+        || store
+            .directory(&instance.id)
+            .join("pressure-managed")
+            .is_file()
+    {
         managed::retire(&managed::Target {
             container_id: instance.id.clone(),
             generation: instance.generation.clone(),
@@ -2276,17 +2297,28 @@ fn run_vm<Backing>(
         all(target_os = "macos", target_arch = "aarch64"),
         all(target_os = "linux", target_arch = "x86_64")
     ))]
-    let pager = instance
-        .config
-        .memory_pool
-        .as_deref()
-        .map(|pool| {
-            crate::executor::vm::prepare_pool(
-                pool,
-                crate::env::os(crate::env::ram::METRICS_ENV).is_some(),
-            )
-        })
-        .transpose()?;
+    let branch_pool: Option<PathBuf> =
+        match File::open(store.directory(&instance.id).join("pressure-managed")) {
+            Ok(file) => serde_json::from_reader(file)?,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+            Err(error) => return Err(error.into()),
+        };
+    #[cfg(any(
+        all(target_os = "macos", target_arch = "aarch64"),
+        all(target_os = "linux", target_arch = "x86_64")
+    ))]
+    let pager = {
+        let metrics = crate::env::os(crate::env::ram::METRICS_ENV).is_some();
+        match branch_pool {
+            Some(pool) => Some(crate::executor::vm::prepare_managed_pool(&pool, metrics)?),
+            None => instance
+                .config
+                .memory_pool
+                .as_deref()
+                .map(|pool| crate::executor::vm::prepare_pool(pool, metrics))
+                .transpose()?,
+        }
+    };
     // Pins must outlive the VMM and its filesystem workers.
     let mut file_shares = Vec::new();
     let mut vm = VmBuilder::new(instance.config.cpus, instance.config.memory_mib)?;
@@ -2298,7 +2330,10 @@ fn run_vm<Backing>(
     }
     let directory = store.directory(&instance.id);
     managed::validate_config(&instance.config)?;
-    let managed_ram = if instance.config.managed_memory {
+    let managed_branch = directory.join("pressure-managed").try_exists()?;
+    let managed_ram = if managed_branch {
+        Some(tempfile::tempfile_in(&directory)?)
+    } else if instance.config.managed_memory {
         let file = tempfile::tempfile_in(&directory)?;
         vm.ram_backing(file.try_clone()?)?;
         Some(file)
@@ -2373,7 +2408,12 @@ fn run_vm<Backing>(
         lower_mutability[0] = pvisor_overlay_core::LayerMutability::Immutable;
         if let Some(saved) = live_fork::load(&directory)? {
             let restore = saved.restore(&directory, &endpoint)?;
-            if directory.join("offload-enabled").try_exists()? {
+            if managed_branch {
+                let delta = managed_ram
+                    .as_ref()
+                    .context("missing managed branch delta")?;
+                vm.machine_restore_with_branch_offload(restore, delta.try_clone()?)?;
+            } else if directory.join("offload-enabled").try_exists()? {
                 let delta = tempfile::tempfile_in(&directory)?;
                 vm.machine_restore_with_branch_offload(restore, delta)?;
                 memory_endpoint = Some(std::os::unix::net::UnixListener::bind(
@@ -2566,6 +2606,12 @@ fn run_vm<Backing>(
             }
             crate::executor::vm::start_diagnostics(&handle)?;
             if let Some(pager) = pager {
+                #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+                if !is_restored {
+                    // Cold-pager registration takes its own CPU/device barrier.
+                    use pvisor_vm::api::VmControl;
+                    handle.resume().map_err(io::Error::other)?;
+                }
                 pager.start(handle.clone())?;
             }
         }
@@ -4263,6 +4309,16 @@ impl Store {
         _: bool,
     ) -> anyhow::Result<Vec<Instance>> {
         bail!("live OCI fork requires Linux x86-64")
+    }
+    /// Fork into one delegated cgroup per child for daemon-managed offload.
+    pub fn fork_running_with_pressure(
+        &self,
+        _: &str,
+        _: &[String],
+        _: &[PathBuf],
+        _: Option<&Path>,
+    ) -> anyhow::Result<Vec<Instance>> {
+        bail!("pressure-managed live OCI fork requires Linux x86-64")
     }
     /// Same-host live VM fork requires Linux x86-64 and KVM.
     pub fn fork_running(&self, _: &str, _: &[String]) -> anyhow::Result<Vec<Instance>> {

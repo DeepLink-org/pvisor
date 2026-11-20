@@ -2121,4 +2121,18 @@ The caller must keep the immutable filesystem projection available to each child
 VM with an exclusive sparse delta. Under the CPU and device barrier, offload
 classifies private pages, saves them before replacing the mappings, synchronizes
 previously mapped delta pages and drops resident mappings. The shared snapshot
-remains read-only. On transition failure the runner must terminate.
+remains read-only. If the branch would exceed 4,096 delta runs, offload copies
+the smallest one- or two-page gaps within each RAM region until the runs fit.
+Padding across all offloads is limited to 10% of the non-padding delta pages.
+The backing-byte counters include these copied pages. If the limits cannot be
+met, offload fails before writing new pages. On transition failure the runner
+must terminate.
+
+
+On Linux x86-64 a restored branch can use a physical page pool together with
+its private offload delta. The scanner admits resident anonymous CoW pages and
+rechecks ownership and contents under the CPU/device barrier before remapping.
+The pool keeps clean shared mappings valid across offload. Rewritten shared
+pages enter the branch delta on offload. Delta-backed pages are excluded from
+subsequent scans. Compressed pools and external fault handlers are unsupported
+in this profile.
