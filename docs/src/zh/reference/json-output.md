@@ -31,7 +31,7 @@ jq '[.filesystem.changes[]? | select(.path != "src" and (.path | startswith("src
 
 网络计数的字段包括 `requests_seen`、`policy_allowed`、`policy_denied`、`failures`、`tcp_flows_opened`、`tcp_flows_denied` 与 `targets`。没有 `intercepted` 是未提供计数，不是“零流量”。文件访问拒绝需看 `run_observation.filesystem`；净改动需看 `filesystem.changes`，两者不能混用。
 
-安全判定需要同时检查 schema、必需字段、执行状态、能力观察与警告；不要用 `// false` 或空数组把未知状态变成通过。读取器应识别格式版本，并容忍与所需判断无关的额外字段。
+安全判定需要同时检查 schema、必需字段、执行状态、能力观察与警告；不要用 `// false` 或空数组把未知状态变成通过。
 
 ## 一个可用于脚本的判断 {#gate}
 
@@ -39,14 +39,17 @@ jq '[.filesystem.changes[]? | select(.path != "src" and (.path | startswith("src
 
 ```bash
 jq -e '
-  .schema_version == 4
+  .schema_version == 6
   and .run.state == "completed"
   and .run.exit_code == 0
   and .safety.filesystem_read_non_bypassable == true
   and .safety.filesystem_write_non_bypassable == true
   and .safety.network_non_bypassable == true
   and (.filesystem.changes | type == "array")
-  and all(.filesystem.changes[]; .path_bytes == null and (.path == "src" or (.path | startswith("src/"))))
+  and all(.filesystem.changes[];
+    .path_bytes == null
+    and (.path | type == "string")
+    and (.path == "src" or (.path | startswith("src/"))))
 ' ../review-001.json
 ```
 
@@ -54,7 +57,7 @@ jq -e '
 
 `schema_version` 未识别时停止读取该版本；必需字段缺失时停止判断。网络统计 `null` 表示没有提供观察值，`0` 表示记录到的计数为零。展示改动列表可以把缺失值显示为空，但准入检查应像示例一样先验证字段类型。
 
-## JSON 版本与命令响应结构 {#envelopes}
+## JSON schema 与命令响应结构 {#envelopes}
 
 schema 数字属于输出格式，而非整个 CLI。`status --json` 使用 `schema_version = 3`，返回大小有界的展示摘要。其字段如下：
 
@@ -74,7 +77,7 @@ schema 数字属于输出格式，而非整个 CLI。`status --json` 使用 `sch
 | `observations.filesystem/network` | 汇总计数、`source`（`live` 或 `durable`）、溢出计数与最多五条有界拒绝样本；不可用时为 null |
 | `filesystem` | `changed_files`、`whiteouts`、`sample_paths`、`samples_truncated`；没有暂存时为 null |
 
-基础摘要限制为 256 KiB。每条路径/目标样本最多 512 UTF-8 字节，缩短的样本带有截断标记。缺失观察表示不可用，不是零流量。status 不再内嵌完整启动配置、checkpoint/apply 数组或请求映射；通过 checkpoint list/show、review 与保留的归属记录查看详情。实例协议为 `pvisor-instance-control-3`；替换安装前应使用旧 Session 的所属可执行文件结束它们。
+基础摘要限制为 256 KiB。每条路径/目标样本最多 512 UTF-8 字节，缩短的样本带有截断标记。缺失观察表示不可用，不是零流量。详细检查点和 apply 数据见 checkpoint list/show、review 与归属记录。
 
 审查输出在 Bundle 上增加 `review_context`：`session_id`、`execution_id`、可为 null 的 `checkpoint_id`、`workspace_generation`、`file_view`、`execution_evidence`。执行证据保留历史结果；所选文件视图会在审查时刷新，包括 apply/drop 之后。审查 checkpoint 选择它保存的文件，不会重跑任务。
 
@@ -90,4 +93,4 @@ checkpoint 的成功响应都包含 `schema_version = 1`、`operation`、`sessio
 
 `kill --json` 对已经停止的 Session 返回 `already_stopped = true` 与已记录的 state；其他情况下返回 `state = "stopping"`、`termination_requested = true`，只确认终止请求，不表示已经退出。轮询 status 获取后续状态。
 
-replay 等伴随命令拥有各自的输出格式。普通 `run`、`resume`、`fork`、`apply`、`drop` 不输出 JSON 成功响应；读取 status/Bundle 并保留退出码。`suspend --json` 仅在检查点发布并确认原生退出后成功，返回 `schema_version = 1`、`operation = "suspend"`、`session_id`、`state = "suspended"`、`request_id`、`checkpoint_id`、`kind = "execution"` 和 `checkpoint`。不支持的 profile 向 stderr 报错，不会生成 checkpoint 成功对象。`pvisor --help` 列出当前安装中可用的命令。
+replay 等伴随命令拥有各自的输出格式。使用 [`apply --json`](cli.md#apply-results) 读取 apply 结果和恢复证据。普通 `run`、`resume`、`fork`、`drop` 不输出 JSON 成功响应。请读取 status 或 Bundle 并保留退出码。`suspend --json` 仅在检查点发布并确认原生退出后成功，返回 `schema_version = 1`、`operation = "suspend"`、`session_id`、`state = "suspended"`、`request_id`、`checkpoint_id`、`kind = "execution"` 和 `checkpoint`。不支持的 profile 向 stderr 报错，不会生成 checkpoint 成功对象。`pvisor --help` 列出当前安装中可用的命令。

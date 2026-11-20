@@ -1,6 +1,6 @@
 # pVisor 命令模型
 
-CLI 有两个执行入口：`pvisor run` 创建独立容器 VM，`pvisor spawn` 创建 Session；省略子命令时默认进入 `spawn`。`status`、`kill`、`inspect`、`fork`、`apply`、`drop` 直接操作 Session，`replay` 从已有轨迹创建 Session；Session、Run 与 Execution 的关系见[执行模型](../design/execution-model.md)。
+在 Unix 上，`pvisor run` 创建使用独立 VM 的容器型 Session，`pvisor spawn` 创建任务型 Session。省略子命令时默认进入 `spawn`。`status`、`kill`、`inspect`、`fork`、`apply`、`drop` 直接操作 Session，`replay` 从已有轨迹创建 Session；Session、Run 与 Execution 的关系见[执行模型](../design/execution-model.md)。
 内部仍用 Run 记录保存 Session，配置类型仍是 `RunConfig`；配置文件必须显式传入，
 不会被当作隐式项目策略。
 
@@ -87,7 +87,7 @@ pvisor fork last --state workspace --stage ./stage/branch -- codex
 
 `status --review` 是快捷形式；`review` 是详细审查入口。Session 操作直接使用顶层命令，没有 `session` 命令层。
 
-资源工具使用各自的可执行文件。原生执行状态捕获、恢复和存储管理使用 Session 命令，能力由实际 VM profile 决定。其他未知名称按普通默认执行规则处理。直接调用 `pvisor ctrl`、`pvisor ctrl --help` 和 `pvisor help ctrl` 会明确拒绝并给出迁移提示，不会按默认规则运行工作负载；`pvisor spawn -- ctrl` 仍表达显式工作负载意图，不是控制 API 别名。
+资源工具使用各自的可执行文件。原生执行状态捕获、恢复和存储管理使用 Session 命令，能力由实际 VM profile 决定。未知命令名在解析阶段失败。直接调用 `pvisor ctrl`、`pvisor ctrl --help` 和 `pvisor help ctrl` 会明确拒绝并给出迁移提示，不会按默认规则运行工作负载；`pvisor spawn -- ctrl` 仍表达显式工作负载意图，不是控制 API 别名。
 
 ```bash
 pvisor-daemon serve --help
@@ -96,7 +96,7 @@ pvisor push --help
 pvisor-daemon memory-pool --help
 ```
 
-Sandbox 生命周期及可选池所有权直接调用 `pvisor-daemon`。缓存和 replay 仍独立于 Session 命令；replay 伴随程序查找会明确报告工具缺失。Daemon CLI 构造原生 VM 运行时并派发 supervisor，同步内部 VM 派发先于 Tokio。Node 资源协议属于运行时，没有 daemon acquire/release 适配器。打包不暴露 staging/checkpoint API，也不自动获取 node 资源。
+Sandbox 生命周期及可选池所有权直接调用 `pvisor-daemon`。缓存和 replay 仍独立于 Session 命令；replay 伴随程序查找会明确报告工具缺失。Daemon CLI 构造原生 VM 运行时并派发 supervisor，同步内部 VM 派发先于 Tokio。调用方持有的 VM 必须显式登记后才由独立压力服务管理，见[受管容器内存](../guides/infrastructure/lifecycle.md#container-memory)。打包不暴露 staging/checkpoint API，也不自动获取 node 资源。
 
 工具来自静态表，只查可信安装目录，不搜索 PATH 或执行 discovery。安装目录与可执行文件归当前用户或 root 所有，不得 group/world 可写，拒绝符号链接。Unix `exec` 保留参数、stdio、信号和退出码；子命令自己的 `--help`/`--version` 原样转交，工具不能覆盖 Session 命令。Sandbox 部署与原生资源预算见 [daemon 架构](daemon/index.md)与[运维](daemon/operations.md)。
 

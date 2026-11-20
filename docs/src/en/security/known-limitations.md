@@ -13,7 +13,7 @@ Known gaps are listed with their impact, source, and mitigation. Report new find
 | With deny rules enabled, multi-hard-link files and new hard links are conservatively rejected | Tools that rely on hard links may fail | Disable the rule for that tool or use another execution path | [File access rules](../reference/cli.md) |
 | File rules do not promise to resist a race with another host process rewriting the underlying file | Rules may fail when the lower layer is rewritten concurrently | Leave the lower directory under a trusted supervisor | [File access rules](../reference/cli.md) |
 | `warn` counts filesystem access executions, not content reads | Counts are imprecise; the kernel cache may merge accesses | Treat them as a signal only | [File access rules](../reference/cli.md) |
-| macOS host `--safe` is documented as enforcing a Seatbelt read scope, but Run evidence reports reads as ambient | Documentation and evidence disagree, so the read boundary must follow the evidence | Read the Safety boundary in `status --review`; use the VM when you need a read boundary | October 2026 measured `--safe` Run output; pending implementation confirmation |
+| macOS Host review can print a generic warning about shared reads even when the backend reports an installed Seatbelt read policy | The warning alone cannot identify the installed read scope | Read `executor_observations.enforcement.dimensions.filesystem_read` and test the paths your policy must protect | [Recorded Host Bundle](../assets/examples/json/run-bundle.json) |
 
 ## Credentials and sensitive files
 
@@ -30,7 +30,7 @@ Known gaps are listed with their impact, source, and mitigation. Report new find
 | Selective proxying on host and container is cooperative | Clients that ignore the proxy, add `NO_PROXY`, or open raw sockets can bypass it | VM `auto`, host `--overlaynet-deny-all`, or container offline mode |
 | Network observations cover only requests that pass through the proxy | A destination absent from the records was not necessarily never reached | Use a mandatory boundary when you need a complete conclusion |
 | Domain rules cannot distinguish inference, telemetry, and upload APIs on the same domain | An authorized destination may be used to exfiltrate | Use a Gateway and restrict routes |
-| The VM data plane does not support UDP, IPv6, ICMP, QUIC, or inbound forwarding | Tools that depend on those protocols fail (fail-closed) | Fall back to host execution |
+| Native VM Session egress on the `auto` path supports IPv4 TCP and DNS | Tools that need other protocols require another execution profile | Check the [network boundaries](../guides/policies/network.md#网络边界). Docker-style peer traffic and TCP port publishing have [separate rules](../reference/cli.md#container-networks). |
 
 ## Processes and executors
 

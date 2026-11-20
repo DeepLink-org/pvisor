@@ -32,7 +32,7 @@ pvisor status --review --json ../stage-001 > ../bundle-001.json
 jq '{schema_version, run: {id: .run.run_id, state: .run.state}, safety, resources}' ../bundle-001.json
 ```
 
-Bundles are written with mode `0600`. New schema-6 Bundles require the matching schema-3 Run/Execution and protocol-2 `completion.json` receipt, including the Bundle digest. Legacy schema-4 Bundles retain their original reading rules. Unknown versions, corrupt bindings and missing required observation contracts reject; missing fields do not mean safe. After owner exit, an Execution without a committed receipt remains Unknown and cannot apply workspace effects.
+Bundles are written with mode `0600`. Schema-6 Bundles require the matching schema-3 Run/Execution and protocol-2 `completion.json` receipt, including the Bundle digest. The reader validates bindings and required observations. After owner exit, an Execution without a committed receipt remains Unknown and cannot apply workspace effects.
 
 Arguments, paths, stdout/stderr, and capture may contain secrets. Omitting environment values does not redact the entire Bundle. Inspect it and referenced artifacts before sharing. Types: `crates/pvisor/src/runtime/bundle.rs`; retention: [Sessions](../concepts/sessions.md).
 
@@ -44,7 +44,7 @@ Arguments, paths, stdout/stderr, and capture may contain secrets. Omitting envir
 
 | JSON path | Rust type | Presence | Meaning |
 | --- | --- | --- | --- |
-| `schema_version` | `u32` | required | 5 for new records; legacy 4 is accepted under its original contract |
+| `schema_version` | `u32` | required | 6 |
 | `generated_at_unix_ms` | `u64` | required | Bundle generation wall-clock time, Unix milliseconds |
 | `project_apply_scope` | `Option<super::session_service::ProjectApplyScope>` | defaulted; omitted when None | Launch-time project writeback scope; absence defaults to None and grants no project authority |
 | `run` | `BundleRun` | required | Execution outcome and identity |
@@ -157,9 +157,8 @@ Arguments, paths, stdout/stderr, and capture may contain secrets. Omitting envir
 `project_apply_scope` is an explicit opt-in contract for project writeback from
 a root-filesystem stage. The runtime captures it before launch from
 `pvisor.project_apply_scope` RunSpec metadata, validates it and requires its
-`root` to match the recorded workspace. Without opt-in, including legacy
-records without this contract, the field is absent on write and reads as
-`None`; it is not inferred from the current directory or filesystem summary.
+`root` to match the recorded workspace. Without opt-in, the field is omitted
+on write and reads as `None`; it is not inferred from the current directory or filesystem summary.
 
 When present, the object has these required fields; unknown fields are rejected:
 
@@ -170,14 +169,13 @@ When present, the object has these required fields; unknown fields are rejected:
 | `project_apply_scope.device` | `u64` | Device identity captured from the opened directory without following symlinks |
 | `project_apply_scope.inode` | `u64` | Inode identity captured from that same directory |
 
-The Bundle copies the scope from RunRecord. Schema-5 reads require agreement
+The Bundle copies the scope from RunRecord. The reader checks agreement
 with that record and the committed completion receipt whose Bundle digest binds
 these bytes. Once completion commits, the scope cannot be changed independently
 of that binding. Apply revalidates the version, canonical root and device/inode
 identity; deserializing the object alone grants no authority. Missing or
 contradictory bindings and directory identity changes block rootstage project
-writeback. Ordinary legacy workspace apply retains its separate compatibility
-contract; see [apply scope](cli.md#apply-scope).
+writeback. [Apply scope](cli.md#apply-scope)
 
 This object identifies a writeback boundary, not a snapshot of project contents,
 a frozen host lower, or general snapshot/restore support. It does not protect
@@ -185,8 +183,8 @@ the project against concurrent writers or authorize system-root writeback.
 
 ## Read a change without confusing it with an operation {#changes}
 
-The [real sample](../assets/examples/json/run-bundle.json) contains `obsolete.txt` as `deleted`, `src` as an added directory, and `src/result.txt` as an added file. `filesystem.changes` describes the net staged result; `run_observation.filesystem` describes actual accesses, allowed/denied decisions, and counters. A file written repeatedly can appear once in the changeset. A denied read may appear in observations without producing a change.
+The [recorded macOS Host sample](../assets/examples/json/run-bundle.json) contains `obsolete.txt` as `deleted`, `src` as an added directory, and `src/result.txt` as an added file. `filesystem.changes` describes the net staged result; `run_observation.filesystem` describes actual accesses, allowed/denied decisions, and counters. A file written repeatedly can appear once in the changeset. A denied read may appear in observations without producing a change.
 
 `path` is for display. If `path_bytes` exists, use those Unix bytes for path identity; do not authorize a mutation by the display text alone. Directory changes and `opaque` entries have subtree effects and must be considered when selecting files to apply. Use the CLI's selective apply rather than copying raw upper-layer whiteouts into the project.
 
-The saved `run-bundle.json` describes execution at capture time. `review --json` additionally supplies `review_context` and refreshes the selected filesystem view; it does not recreate the executor observations. See [JSON envelopes and samples](json-output.md#envelopes).
+The saved `run-bundle.json` describes execution at capture time. `review --json` additionally supplies `review_context` and refreshes the selected filesystem view; it does not recreate the executor observations. The downloadable sample is normalized review output. Keep the actual Stage, RunRecord and completion receipt for lifecycle or recovery operations. [JSON envelopes](json-output.md#envelopes)

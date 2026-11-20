@@ -1,6 +1,6 @@
 # 记录与版本矩阵
 
-pVisor 的执行身份、事实日志、文件发布和机器快照分别持有自己的记录。一次 Session 可以同时包含带完成协议 2 的 schema 3 `run.json`、schema 6 的 Bundle、version 5 的 Event 和 version 3 的 Session；这些数字分别约束各自的 reader，不能互相替代，也不等于 Cargo 包版本。
+pVisor 的执行身份、事实日志、文件发布和机器快照分别持有自己的记录。一次 Session 可以同时包含带完成协议 2 的 schema 3 `run.json`、schema 6 的 Bundle、version 5 的 Event 和 version 4 的 Session；这些数字分别约束各自的 reader，不能互相替代，也不等于 Cargo 包版本。
 
 ## 记录分别回答什么问题 {#ownership}
 
@@ -19,16 +19,16 @@ Event 的 ID 与 Journal position、Host `request_id`、Session 生命周期请�
 
 下表按当前源码声明和读取分支整理；修改格式时需要同步核对 writer、reader、调用方和现存记录。字段级定义仍由对应专题维护。
 
-| 对象 | 当前写入版本 | 读取与兼容边界 | 源码所有者（`crates/` 下） |
+| 对象 | 当前写入版本 | 读取校验 | 源码所有者（`crates/` 下） |
 | --- | --- | --- | --- |
 | RunSpec | `schema_version = 1` | runtime 拒绝不匹配版本；输入校验不等于执行成功 | `pvisor-core/src/execution.rs`、`pvisor/src/runtime/run.rs` |
 | Operation | `version = 1` | `OPERATION_VERSION` 精确检查，并校验身份、种类与改写关系 | `pvisor-core/src/operation.rs` |
 | Event | `version = 5` | `VERSION` 精确检查；Observation 的 `domain/name/version` 是独立载荷身份 | `pvisor-core/src/event.rs` |
-| Journal Header / Record | `pvisor.trace/5` | Header 与 Event 校验相互配合；完整旧格式拒绝，不当作坏尾部截掉 | `pvisor-journal/src/journal.rs` |
-| Run Bundle | `schema_version = 6` | 要求匹配 Run/Execution 的完成回执与 Bundle 摘要；旧版本 4 保留原读取规则；未知版本拒绝 | `pvisor/src/runtime/bundle.rs` |
-| RunRecord（`run.json`） | `schema_version = 3` | 完成协议 2 绑定终态结果与 Bundle；owner 退出且无回执时为 Unknown；schema 1 保留旧规则；终态清除 live control | `pvisor/src/runtime/registry.rs` |
+| Journal Header / Record | `pvisor.trace/5` | 校验 Header 与每条 Event | `pvisor-journal/src/journal.rs` |
+| Run Bundle | `schema_version = 6` | 要求匹配 Run/Execution 的完成回执与 Bundle 摘要 | `pvisor/src/runtime/bundle.rs` |
+| RunRecord（`run.json`） | `schema_version = 3` | 完成协议 2 绑定终态结果与 Bundle；owner 退出且无回执时为 Unknown；终态清除 live control | `pvisor/src/runtime/registry.rs` |
 | Execution 完成回执（`completion.json`） | `version = 2` | 绑定 `RunResult` 与 Bundle BLAKE3；缺失或不一致不能推断成功 | `pvisor/src/runtime/completion.rs` |
-| execution Session（`execution-session.json`） | `version = 3` | 精确版本与 Session/root/stage 绑定检查；旧记录不自动转换 | `pvisor/src/runtime/session_execution.rs` |
+| 任务 / Unix 容器 Session（`session.json`） | `version = 4` | 校验版本、profile 与所有权绑定 | `pvisor/src/runtime/execution/session.rs`、`pvisor/src/docker/session.rs` |
 
 Event version 5 与 Journal format 5 在当前实现中共用 Event 的版本常量；其他版本没有这种关系。一个领域 Observation 的载荷版本变化，也不能仅靠外层 Event version 5 判断业务兼容性。JSON 可被解析，只说明语法可读；还要经过具体记录的校验。
 
@@ -39,35 +39,35 @@ Event version 5 与 Journal format 5 在当前实现中共用 Event 的版本常
 | 对象 | 当前格式 | 读取与发布边界 | 源码所有者（`crates/` 下） |
 | --- | --- | --- | --- |
 | workspace checkpoint | `schema_version = 3`，显式 `kind = workspace` | reader 要求 schema 3；不按 execution 机器载荷解释 | `pvisor/src/runtime/checkpoint.rs` |
-| EnvironmentManifest | 写入版本由 profile 选择：2、3、4 或 5 | reader 接受明确的 v1–v5/RAM 字段组合，并检查文件布局、摘要、平台条件和 `SnapshotCompatibility` | `pvisor/src/environment_snapshot/store.rs` |
-| 不可变基底 seal | `version = 2` | 必须保留摘要绑定的内容索引；旧 seal 拒绝 | `pvisor/src/environment_snapshot/base.rs` |
-| compact preimage log | `pvisor.preimages/2`，frame `PVR2` | 首次观察与完整性记录有独立合同；旧逐文件 journal 由旧路径读取，不原地强转格式 | `pvisor-overlay-core/src/preimage_log.rs`、`core.rs` |
+| EnvironmentManifest | 写入版本由 profile 选择：2、3、4 或 5 | 校验 RAM 字段、文件布局、摘要与恢复前提 | `pvisor/src/environment_snapshot/store.rs` |
+| 不可变基底 seal | `version = 2` | 必须保留摘要绑定的内容索引 | `pvisor/src/environment_snapshot/base.rs` |
+| compact preimage log | `pvisor.preimages/2`，frame `PVR2` | 首次观察与完整性记录有独立合同 | `pvisor-overlay-core/src/preimage_log.rs`、`core.rs` |
 | stage durability / seal | `durability-v1`、`sealed-v1` | 缺少 policy 按原 strict 合同处理；未知 policy 拒绝；受管理 stage 必须完整 seal 才可复用或 apply | `pvisor-overlay-core/src/stage.rs` |
-| apply ledger / ApplyRecord | 当前 schema 2；reader 接受 1 或 2 | 兼容读取不把旧记录补成新保证；在目标锁下按记录阶段恢复 | `pvisor-overlay-core/src/apply.rs` |
+| apply ledger / ApplyRecord | 普通 apply 使用 schema 2，项目范围 apply 使用 schema 3 | 在目标锁下按记录阶段恢复 | `pvisor-overlay-core/src/apply.rs` |
 | `vm.ram` descriptor | `PVZRAM`，descriptor version 2 | 校验 descriptor、绝对代际目录与 head 记录；与环境 manifest 版本分别维护 | `pvisor/src/ram_backing.rs` |
 
-环境 manifest 的多个版本代表不同 RAM/文件系统组合，不能把“最高版本为 5”解释成“所有新快照都写 5”。stage profile 的 raw RAM 使用 v4，压缩 RAM 使用 v5；其他 profile 按各自字段组合判定。SDK 可以读取某种存储格式，也不表示当前 Session CLI 能直接采用任意历史独立 snapshot store。
+环境 manifest 的多个版本代表不同 RAM/文件系统组合，不能把“最高版本为 5”解释成“所有新快照都写 5”。stage profile 的 raw RAM 使用 v4，压缩 RAM 使用 v5；其他 profile 按各自字段组合判定。
 
 Session 的检查点入口与兼容 profile 见[Session 检查点设计](session-checkpoint-cli.md#10-当前实现与验收边界)。完整机器与文件引用见[环境快照](environment-snapshot.md#storage-contract)，RAM 子格式见[卸载文件格式](offload/disk-layout-and-schema.md)，镜像元数据与内容版本见[共享镜像缓存](lazy-image-v2.md)。
 
 ## 控制协议与构建身份 {#control-protocols}
 
-| 镜像索引／内容池 | `format_version=2`、`pvisor-radix-v2`、`pvisor-v2:` | V1 明确拒绝；从 OCI 重新发布到新前缀，HEAD CAS 提交；传输协议独立 | `pvisor/src/image/cache/portable.rs`、`portable/`、`pool.rs` |
-| 协议 | 版本与额外绑定 | 权限与兼容范围 |
+| 镜像索引／内容池 | `format_version=2`、`pvisor-radix-v2`、`pvisor-v2:` | 条件更新 HEAD 提交发布 | `pvisor/src/image/cache/portable.rs`、`portable/`、`pool.rs` |
+| 协议 | 版本与额外绑定 | 权限范围 |
 | --- | --- | --- |
 | Host AgentCtl envelope | `AGENTCTL_HOST_VERSION = 2` | Session/Execution/generation 目标由端点 owner 检查；Guest token 不授予 Host 权限 |
 | Guest AgentCtl | `AGENTCTL_VERSION = 1` | 工作负载 `Hello`/`Sync`、状态与协作；和 Host 是两套协议 |
-| Session owner 实例控制 | `pvisor-instance-control-3`，version-2 Host envelope，精确 Session/Execution 与记录的 socket device/inode | 同 UID；调用方二进制可不同，按实例协议兼容；不兼容只拒绝该 Session |
+| Session owner 实例控制 | `pvisor-instance-control-3`，version-2 Host envelope，精确 Session/Execution 与记录的 socket device/inode | 同 UID 调用方访问记录中的 owner socket |
 | CLI owner 启动 | 继承的私有 socketpair、内部 DTO 与同一二进制 BLAKE3 校验 | 仅前端启动自己的 owner；后续命令不使用该 DTO |
-| 持久 Session 操作锁 | `session.lock` 诊断协议 `pvisor-session-lock-1`，PID 与操作名 | 独占 flock、0600、单硬链接；兼容磁盘格式的不同二进制共享该锁，未知格式拒绝修改 |
-| daemon native supervisor | version-2 Host envelope，加 owner/token 与精确目标 | 凭据与准入独立于 Session owner 协议；旧 supervisor 无透明接管兼容 |
+| 持久 Session 操作锁 | `session.lock` 诊断协议 `pvisor-session-lock-1`，PID 与操作名 | 独占 flock、0600、单硬链接 |
+| daemon native supervisor | version-2 Host envelope，加 owner/token 与精确目标 | 凭据与准入独立于 Session owner 协议 |
 
-源码入口是 `pvisor-core/src/host_protocol.rs`、`protocol.rs`、`pvisor-cli/src/cli/host_service.rs` 及 `pvisor/src/runtime/` 下的 `host_transport.rs`、`registry.rs` 和 `supervisor.rs`。线上 framing、同 UID 边界和升级顺序由[Host AgentCtl](architecture.md#host-wire)维护。Rust `api` 的组织方式与线上兼容性分别管理，见[API 边界与迁移状态](architecture.md#api-boundaries)。
+[Host AgentCtl](architecture.md#host-wire)定义消息 framing 与 socket 权限。
+[Rust API 边界](architecture.md#api-boundaries)列出 crate 的公开入口。
 
-## 版本变化时沿哪些关系核对 {#evolution}
+## 校验记录绑定 {#evolution}
 
-1. 确认变化属于输入 DTO、磁盘对象、领域载荷还是 live 协议，找到实际 reader。
-2. 明确接受旧格式、提供显式转换，或拒绝旧格式；禁止只改版本数字绕过结构与绑定检查。
-3. 对存储对象同时核对摘要、依赖引用、stage/Execution 归属和恢复 profile；对 live 协议核对权限、端点支持的目标字段、实例协议名与 socket 身份。同一二进制校验只适用于前端启动自己的 owner。
-4. 在升级前处理旧 listener/supervisor 的活动请求和实例；文件格式兼容不等于运行中进程可接管。
-5. 发生超时、断连或发布失败时，先判断原请求在哪个提交点，按[失败语义与重试](failure-semantics.md)核对，再决定是否重试。
+1. 通过所属读取器校验 schema 与必需字段。
+2. 对持久状态核对摘要、依赖引用及 Session、Execution 和 stage 归属。
+   对活体控制核对端点与已记录的 socket 身份。
+3. 超时、断连或发布失败后，定位原请求的提交点，并按[失败语义](failure-semantics.md)核对。

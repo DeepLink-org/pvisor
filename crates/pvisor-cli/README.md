@@ -674,10 +674,7 @@ Root metadata/signal/rootfs-export commands and grouped spellings select the sam
 Session resources. Unsupported commands fail closed. An alias does not redirect
 SDK sockets or executable lookup in subprocesses, and no Docker Engine API is supplied.
 
-Persistent container/task records now use shared Session schema 4 `session.json`.
-Old `instance.json`/`execution-session.json` records are explicitly rejected, never
-silently migrated. Use the old owning binary to drain/review/clean old resources,
-or select a fresh private store; existing images/volumes are not reformatted.
+Persistent container and task records use Session schema 4 `session.json`.
 
 ```bash
 pvisor run -d --name worker --label purpose=test --restart on-failure:3 \
@@ -1603,8 +1600,8 @@ Windows builds use `cargo build --locked -p pvisor-cli --bin pvisor`; parser tes
 use `mise run test -- pvisor-cli -- --lib --bin pvisor`. Unix runtime dependencies
 are excluded; Windows container commands use the native profile below.
 
-Full Unix installations also include `pvisor-tui` for interaction,
-`pvisor-replay` for replay and `pvisor-daemon` for automatic pools/shared services.
+Full Unix installations also include `pvisor-replay` for replay and
+`pvisor-daemon` for automatic pools and shared services.
 Companion dispatch checks trusted adjacent executables. These components,
 Session workflows and Windows packaging remain unported. `whp_smoke.exe`
 is a test probe; embedded `pvisor-guest` runs inside Linux guests.

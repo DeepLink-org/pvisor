@@ -60,7 +60,7 @@ OverlayNet 拥有连接授权与转发，VM 的 virtio-net 将 Ethernet frame �
 
 ## API 边界与迁移状态 {#api-boundaries}
 
-`pvisor-vm`、`pvisor-overlayfs`、`pvisor-journal`、`pvisor-containers`、`pvisor-replay`、`pvisor-overlaynet` 和 `pvisor-guest` 已采用唯一 `api` 入口；其他 crate 保留既有接口。
+`pvisor-vm`、`pvisor-overlayfs`、`pvisor-journal`、`pvisor-containers`、`pvisor-replay`、`pvisor-overlaynet`、`pvisor-guest`、`pvisor-daemon`、`pvisor-shim` 和 `pvisor-cli` 已采用唯一 `api` 入口；其他 crate 保留既有接口。
 
 | crate | 当前公开边界 | 实现与资源归属 |
 | --- | --- | --- |
@@ -73,13 +73,16 @@ OverlayNet 拥有连接授权与转发，VM 的 virtio-net 将 Ethernet frame �
 | `pvisor-overlaynet` | `pvisor_overlaynet::api`；代理、出口、VM 传输和观测 trait | connector、peer 成员、计数器和 worker 生命周期私有；策略记录归 Core 所有 |
 | `pvisor-replay` | `pvisor_replay::api`；拥有请求、统一加载/执行 trait 与结果/错误记录 | 适配器、校验、进程监管和 journal 所有权私有 |
 | `pvisor-containers` | `pvisor_containers::api`；目录和生命周期 trait | store、镜像和原生传输实现私有 |
-| `pvisor`、Gateway、Daemon 等 | 保留各自既有入口，未统一成单一 `api` 模型 | 继续按实际生命周期与领域边界演进 |
+| `pvisor-daemon` | `pvisor_daemon::api`；运行时、预制模板目录、压力调度与服务契约 | 沙箱注册表、supervisor 与服务实现私有 |
+| `pvisor-shim` | `pvisor_shim::api`；`Shim` 与 `ShimRuntime` | containerd 注册、任务与 VM 适配器私有 |
+| `pvisor-cli` | `pvisor_cli::api`；`Application` 与 `CommandLine` | 解析、分派、终端处理与伴随程序定位私有 |
+| `pvisor`、Gateway 等 | 保留各自既有入口，未统一成单一 `api` 模型 | 继续按实际生命周期与领域边界演进 |
 
 已迁移 crate 的 `api` 声明公开数据、字段和 trait 方法；不透明 owner 可以从私有实现重新导出，但状态保持私有。方法体、校验、平台分派和资源管理放在实现中，公开 trait 没有默认方法体；调用方通过所属 crate 的 `api` 导入合同。API 在支持的平台和 feature 间保持同一声明形状，实际能力用能力查询和明确的不支持错误表达。
 
 迁移按 crate 进行：同时调整该 crate 的调用方、README、公开文档和边界检查，保留外部 API 合同覆盖。尚未迁移的 crate 不应临时套一层全量 re-export 或重复 DTO 来制造一致外观，也不能公开内部模块绕过编译边界。硬件/私有状态检查留在 crate 内；外部调用方只依据所有权、生命周期、失败后状态和同步合同。
 
-这套 Rust 边界不自动提供稳定线上协议或旧记录兼容性。前端 self-exec owner 时校验同一二进制身份；后续 CLI 按实例协议兼容，不要求二进制摘要相同。磁盘格式由各自 reader 检查。版本对应关系见[记录与版本矩阵](records-and-versions.md)。迁移状态依据 `lib.rs`、VM 的 `runtime_modules.rs`、各 `api.rs` 与目录 README 静态核对；此次状态核对未重新运行契约测试或平台验证。
+磁盘记录和控制 envelope 检查各自的所有权绑定。见[记录矩阵](records-and-versions.md)。
 
 ## Host 与 Guest AgentCtl {#host-agentctl}
 
@@ -138,7 +141,7 @@ owner 引用，退出清理也会移除发现记录。Guest AgentCtl 保留独�
 恢复路径的 `vm_control_socket(None)` 恒为空，也属于可删除的遗留。
 这些启动消息清理尚未实现。
 
-### 线上契约与升级 {#host-wire}
+### 线上契约 {#host-wire}
 
 实例契约名为 `pvisor-instance-control-3`。Core 的 version-2 Host envelope
 携带关联信息、精确 Session/Execution 目标及类型化结果/错误。
@@ -146,11 +149,8 @@ owner 引用，退出清理也会移除发现记录。Guest AgentCtl 保留独�
 同一 owner 最多接纳八个连接，修改复用已有操作锁。公共 socket 不接收终端
 描述符或 Guest token。内部 CLI DTO 只用于 self-exec owner 的启动。
 
-调用方与 owner 的二进制可以不同，只要求实例协议匹配。不兼容的 Session 协议
-会指出该 owner 记录的二进制，不阻塞其他 Session。升级前使用旧二进制等旧 Session
-结束，并停止旧 `--pvisor-internal-host`。新 CLI 不连接旧的
-`<generation>.sock`。没有 live 发现字段的旧记录只提供磁盘状态，不自动发现
-旧 VM。daemon supervisor 的监听、私有凭据、framing 和准入保持不变。
+CLI 通过记录的 socket 身份定位运行中的 owner。daemon supervisor 的独立权限见
+[记录矩阵](records-and-versions.md#control-protocols)。
 
 ### 取消与验证边界 {#host-limits}
 

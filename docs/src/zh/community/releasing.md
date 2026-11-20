@@ -47,10 +47,12 @@ GitHub 中不存放 PyPI API token。pending publisher 可以在首次成功上�
 
 1. 在 `pyproject.toml`、`Cargo.toml` 的 workspace package 段以及
    `pvisor/__init__.py` 中更新同一 `X.Y.Z` 版本。
-2. 刷新 lockfile 中的本地 workspace 版本，且不升级依赖：
+2. 按软件包版本刷新 Rust 和 Python lockfile，再检查发布版本：
 
    ```bash
    cargo metadata --format-version 1 >/dev/null
+   uv lock
+   mise run check-release-version
    ```
 
 3. 提交版本变更并合并到 `main`。工作流会拒绝其 commit 无法从 `main` 到达
@@ -131,7 +133,9 @@ macOS 校验原生载荷、签名 entitlement、安装、版本和命令转发�
 macOS VM 验收仍需独立的硬件验证记录。
 
 发布集检查要求每个平台恰好一个受支持 wheel、版本匹配、包元数据有效，以及产物
-大小有界。两个平台的验收与完整发布集均通过后，才能向任一渠道发布。
+大小有界。两个平台的验收与完整发布集均通过后才会发布。校验器会核对每个平台
+的验收记录、源码提交和待发布 wheel 的 SHA-256。Windows WHP CI 验收源码构建的
+profile，目前没有稳定版 Windows 安装包。
 
 构建 runner 还通过 Homebrew 式软链接布局测试原生归档，包括 host 执行和 companion
 定位。归档原样复制已签名的 macOS 程序；guest 内核已内嵌，来源记录保留在可执行文件旁。稳定发布的
@@ -198,8 +202,7 @@ VM 能力沿用真实硬件验收。Stable 保持不可变，nightly 使用独�
 
 运行现有 Agent CLI 不要求语言 SDK：pVisor 直接启动命令，Agent 的实现语言不影响
 这一入口。平台集成可先使用已文档化的命令、退出码和
-[JSON 输出](../reference/json-output.md)，并按[兼容边界](../reference/stability.md)
-固定版本；完整 schema 和跨版本稳定协议仍需完善。
+[JSON 输出](../reference/json-output.md)，并用代表性任务[验证集成](../reference/stability.md)。
 
 先收敛启动、取消、状态、事件与文件审查的结构化契约，再根据实际集成用户选择
 TypeScript 或 Python SDK。npm 安装入口可以只分发 Rust 原生 CLI；它不要求

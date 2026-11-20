@@ -25,7 +25,7 @@ None of the three implies another: enabling staging does not restrict reads, and
 
 What `--safe` combines on each platform:
 
-- **macOS**: Seatbelt enforces staged writes and allows connections only to the loopback proxy ports pVisor assigns. The agent uses a temporary HOME and cannot read the original home directory directly. Read scope is judged by Run evidence: current evidence reports reads as ambient, see [Known limitations](../../security/known-limitations.md).
+- **macOS**: Seatbelt installs filesystem and network policies for the safe preset. Check the Bundle observations and actual path grants before relying on the read scope. [Executor boundaries](../../security/executor-boundaries.md)
 - **Linux**: requires rootless namespaces, a synthetic root, chroot, Landlock, and a copy-on-write HOME view. Selective egress is forwarded cooperatively through a supervisor loopback proxy, and a **direct socket can still bypass it**; use a VM or deny-all when you need a non-bypassable network boundary.
 
 ## Known gaps

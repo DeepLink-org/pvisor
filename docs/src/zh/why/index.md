@@ -17,7 +17,7 @@ PolicyVisor（pVisor）是一个 sandbox（沙箱）框架，有两种模式。D
 
 Sandbox 是框架与执行隔离的总称；stagebox 专指 Agent style 模式；stage（暂存区）是保存未接收文件变化的存储。Stagebox 不对应一种新的 VM 或隔离级别，也不自动关闭 Agent 的审批。
 
-Docker style sandbox 当前提供实验性 Docker 兼容命令子集，不支持 Docker Engine API 或 Compose，详见[容器命令](../reference/cli.md#container-commands)。Agent style stagebox 从[离线首跑](../start/first-run.md)开始，之后按 [Agent 指南](../guides/agents/index.md)配置认证和网络。普通 Host Session 默认直写，需要显式启用暂存才能进行文件审查与接收。
+Docker style sandbox 提供 [Docker 风格命令](../reference/cli.md#container-commands)和实验性的 [Compose 项目](../reference/cli.md#compose)。Docker Engine API 客户端需要单独的 Engine。Agent style stagebox 从[离线首跑](../start/first-run.md)开始，之后按 [Agent 指南](../guides/agents/index.md)配置认证和网络。普通 Host Session 默认直写，需要显式启用暂存才能进行文件审查与接收。
 
 “沉浸式氛围编程，无需反复权限确认”描述沙箱框架中 Agent style stagebox 的一项特性。免审批体验的 Agent 版本与配置验证矩阵尚未发布；初次认证、外部写入控制和最终成果检查仍需明确安排。
 

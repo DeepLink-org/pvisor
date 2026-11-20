@@ -8,6 +8,8 @@ Install the CLI, prepare your platform, and follow the [quick start](first-run.m
 
 Release packages support Linux x86_64 and Apple Silicon macOS. Python installation needs 3.10+; no Rust toolchain or Docker Daemon is needed. The Docker style path requires virtualization and image downloads. The offline Agent style demo uses your local shell without a VM image or model account.
 
+Windows x86_64 users can build the experimental WHP container CLI from source. See the [Windows profile](../reference/platforms.md#windows-startup) for firmware and host prerequisites.
+
 <a id="1-install-the-tools"></a>
 
 ## 1. Install the CLI {#install-cli}
@@ -53,6 +55,14 @@ test -r /dev/kvm && test -w /dev/kvm && echo 'KVM accessible'
 Expect `x86_64` and `KVM accessible`. If the device is missing or inaccessible, ask the administrator to configure virtualization and account permissions. Virtualized servers also need nested virtualization. Namespace policy can affect Linux VMM restrictions; see the [VM guide](../guides/executors/vm.md) for startup permission failures.
 
 On Apple Silicon macOS, `uname -m` should print `arm64`. Use a release package with the Hypervisor entitlement; source builds need signing as described in [VM platform setup](../guides/executors/vm.md). This VM path does not require macFUSE for Host staging.
+
+Check whether the current process can create a VM:
+
+```bash
+pvisor vm-check --json
+```
+
+Inspect `can_create_vm` and `firmware`. This probe creates an empty VM and reports firmware discovery separately. Booting a guest is the next check.
 
 First use needs Docker Hub access and image-cache space. Start a VM with the [Docker tutorial](first-run.md#docker-style) to confirm that the setup works.
 
@@ -157,7 +167,7 @@ python -m pip install --upgrade pvisor-sandbox
 python -m pip uninstall pvisor-sandbox
 ```
 
-Before upgrading, check release notes and deployed `PVISOR_*` settings. Uninstalling leaves Session state and user caches in place.
+Uninstalling leaves Session state and user caches in place.
 
 <a id="homebrew-and-native-downloads"></a>
 
@@ -172,7 +182,7 @@ brew install DeepLink-org/formula/pvisor
 
 The explicit repository URL is required because the tap is named `Formula`, rather than `homebrew-formula`. The tap contains package metadata; binaries come from GitHub Releases. Update with `brew update` and `brew upgrade DeepLink-org/formula/pvisor`.
 
-To install without Python, download the native archive for your platform and `SHA256SUMS` from [GitHub Releases](https://github.com/DeepLink-org/pvisor/releases). Verify and extract the archive, add its `bin` directory to `PATH`, and keep its files together. Replace the complete directory when upgrading.
+To install without Python, download the native archive for your platform and `SHA256SUMS` from [GitHub Releases](https://github.com/DeepLink-org/pvisor/releases). Compare the archive digest from `sha256sum` (Linux) or `shasum -a 256` (macOS) with its entry in `SHA256SUMS`. After it matches, extract the archive, add its `bin` directory to `PATH`, and keep its files together. Replace the complete directory when upgrading.
 
 See the [release guide](../community/releasing.md#one-time-setup) for Homebrew tap publication requirements and configuration.
 

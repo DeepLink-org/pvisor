@@ -4,7 +4,7 @@ To assess a Session's guarantees, check its requested permissions, admission pla
 
 ## Policy layering rules {#layering}
 
-Policies narrow layer by layer: a later `allow` cannot override an earlier explicit `deny`. A layer that declares rules but omits `default_action` denies by default. With no policy configured, the network runs public and reads are unrestricted; declare any restrictions explicitly. `--safe` requires isolation to be installed and rejects sensitive paths; `--strict` validates every requested dimension and refuses to run without evidence. For fields and presets, see the [policy fields reference](../reference/policy.md).
+Policies narrow layer by layer: a later `allow` cannot override an earlier explicit `deny`. A layer that declares rules but omits `default_action` denies by default. An ordinary Host Session without filesystem or network controls retains the host's ambient access. Check [executor boundaries](../security/executor-boundaries.md) for each selected control. `--safe` requires isolation to be installed and rejects sensitive paths; `--strict` validates every requested dimension and refuses to run without evidence. For fields and presets, see the [policy fields reference](../reference/policy.md).
 
 ## Check each dimension
 
@@ -35,7 +35,7 @@ Executor teardown returns `ExecutorObservations` with these actual control level
 - `Cooperative`: control through a cooperative path.
 - `Enforced`: installed mechanism supplies a mandatory boundary within its reported scope.
 
-`executor_observations` in the Run Bundle is the enforcement evidence for the current execution; safety summaries are derived from it. Isolation labels, configuration, metadata, or warning strings cannot replace installation receipts. `run.json` stores run facts and executor-selection identity, not enforcement claims. Old Bundles missing the observation contract are rejected.
+`executor_observations` in the Run Bundle is the enforcement evidence for the current execution; safety summaries are derived from it. Isolation labels, configuration, metadata, or warning strings cannot replace installation receipts. `run.json` stores run facts and executor-selection identity, not enforcement claims.
 
 Execution is rejected when a required control cannot be satisfied. Modes that allow degradation must record the missing controls and warnings. See [CLI reference](../reference/cli.md#安全的第一次运行) for the current limits of `--strict`.
 

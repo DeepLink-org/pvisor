@@ -319,34 +319,17 @@ pvisor kill ./stage/task
 pvisor apply ./stage/task --all
 ```
 
-## 8. Compatibility and implementation order
+## 8. Execution and checkpoint validation
 
-1. Preserve existing run, stage selection, workspace fork and apply/drop contracts; first extend Session lifecycle and checkpoint kinds.
-2. Integrate the standalone snapshot runner's capture/restore capabilities into the existing VM executor, Run/Execution/Bundle, stage, control channel and execution ownership. Reuse the original run entry point; do not pretend to unify it by redirecting to old snapshot run. Connect file versions and preimage ownership before declaring save capabilities; add no mandatory run flags.
-3. Deliver suspend/resume, accurate status projection and failure cleanup; full VM saving must not masquerade as normal exit.
-4. Deliver capture-and-continue transactions for execution create/fork, sharing capture implementation. Private stage copies form the baseline; optimize incremental capture and COW in backends over time.
-5. Deliver checkpoint references, deletion/GC and historical selection. Preserve reading of old Sessions when changing internal layout; do not interpret old logical checkpoints as execution checkpoints.
-6. Retain `status --review` as a compatible review entry point. Retain `fork --checkpoint`, requiring checkpoint kind to match explicit state.
-7. The standalone snapshot command is removed, without a hidden legacy frontend. Storage SDKs still validate compatibility, provenance and references for old objects; no ordinary Session records are fabricated. Migration capability needs explicit acceptance.
+Validate normal run arguments, configuration precedence, environment, output,
+exit codes, Bundle records and staged file decisions. Check the installed
+executor and its mount and policy boundaries. An execution checkpoint requires
+an explicit capture request. A suspend or execution fork on an unsupported
+profile returns a capability error without changing Session state or permissions.
 
-During migration, do not offer run aliases that appear unified but bypass the stage. Before exposing each new command, require Session lifecycle, file acceptance and real VM validation; unsupported platforms/configurations return capability errors.
+## 9. Current implementation and acceptance boundary {#10-当前实现与验收边界}
 
-## 9. Acceptance gates for preserving run behavior
-
-Integration must compare normal run behavior before and after changes, not only validate new commands:
-
-- Preserve existing run arguments, default execution shorthand, configuration precedence, command arguments and environment.
-- Identical configuration produces the same executor, policy requests, mount view and stage location.
-- Without a save request, do not create execution checkpoints, add compression or fully copy RAM/file trees.
-- Preserve output, exit codes, Bundle and apply/drop contracts for normal completion, cancellation and failure.
-- Sessions that cannot be saved must still run normally; suspend or execution fork returns a capability error without changing Session state or permissions.
-- Preserve default workspace fork behavior; changes from running execution fork require explicit operations.
-
-Session and Execution records may add versioned capability and lifecycle fields with compatible reads; these fields do not change user-facing run semantics.
-
-## 10. Current implementation and acceptance boundary {#10-当前实现与验收边界}
-
-Ordinary Sessions now integrate native VM capture and restore. Run parsing, defaults, rootfs, DAX, networking and executor selection retain their contracts. The standalone snapshot runner is not restored, and another manager does not fabricate Sessions.
+Task Sessions capture and restore native VM state through the Session owner.
 
 | Feature | Current implementation |
 | --- | --- |
@@ -363,13 +346,13 @@ Ordinary Sessions now integrate native VM capture and restore. Run parsing, defa
 
 The current execution profile requires Linux x86_64 or macOS ARM64, no network devices, private RAM and an owned complete rootfs. Host root /, networking, writable RAM backing, memory pools and cold-page compression return capability errors without changing run configuration. Restore binds to the same host boot, binary and firmware. The captured guest environment is retained instead of being replaced by the resume/fork shell environment.
 
-`execution-session.json` retains Session metadata, and `execution-session-root.json` associates Executions with the root Session. Request admission, checkpoint publication and native termination are separate commits. Preparation failure before accepting a RunHandle retains a retryable suspended head; interrupted handoff or missing receipts stay conservative and never start another VM based only on a missing PID. Status reports requests/current Execution, and explicit fork restores historical execution points.
+`session.json` retains Session metadata, and `execution-session-root.json` associates Executions with the root Session. Request admission, checkpoint publication and native termination are separate commits. Preparation failure before accepting a RunHandle retains a retryable suspended head; interrupted handoff or missing receipts stay conservative and never start another VM based only on a missing PID. Status reports requests/current Execution, and explicit fork restores historical execution points.
 
 Stages inside the workspace use an independent capture store whose ownership is recorded by the Session. Native launch bindings authenticate exclusions of already hidden management directories, while visible content and metadata remain fully audited. `resume`/execution `fork --eager-ram` fully reads RAM before startup; omission keeps lazy loading.
 
 Workspace checkpoints still reference external lowers, and historical workspace operations conservatively acquire the source Session lease. Their file views are not treated as sealed complete machines. Execution metadata locking is independent of the source Execution lease, allowing selection of published historical execution checkpoints while the parent VM runs.
 
-Workspace branches use manifest hard links and require the same filesystem. Execution branches use storage leases, content references and durable Session branch records. Drop/kill do not automatically release these references; Session deletion/archiving has no release interface yet. Old standalone snapshot stores are not automatically converted into Session checkpoints.
+Workspace branches use manifest hard links and require the same filesystem. Execution branches use storage leases, content references and durable Session branch records. Drop/kill do not automatically release these references; Session deletion/archiving has no release interface yet.
 
 The session_execution_vm acceptance test uses real KVM, ordinary CLI commands and a static guest to check external/nested stages, shared filesystem pools, eager RAM, capture-and-continue, raw/compressed RAM, same-Session/new-Execution continuation, open descriptor and memory-counter continuity, historical branch isolation, restoration after deleting the source rootfs, request retries and head/branch deletion protection. Regular regressions additionally cover terminal receipt validation, refusing mutation of uncertain/suspended Sessions, stable Session selectors and retained Execution records. The native test requires KVM/FUSE and is skipped by default:
 
@@ -377,6 +360,6 @@ The session_execution_vm acceptance test uses real KVM, ordinary CLI commands an
 PVISOR_TEST_LIBRARY_DIR=/path/to/firmware cargo nextest run --locked -p pvisor --test session_execution_vm --run-ignored only --test-threads 1
 ```
 
-Session records use version 3 with typed lifecycle states, resume requests (stage and RAM policy together), and fork requests. Workspace checkpoint manifests use schema 3 and require explicit kind, Execution, generation, filesystem layers and access policy. Older Session records and workspace manifests are rejected without conversion. Native checkpoint payloads retain their independent integrity and host-binding validation.
+Task Session records use version 4 with typed lifecycle states, resume requests (stage and RAM policy together), and fork requests. Workspace checkpoint manifests use schema 3 and require explicit kind, Execution, generation, filesystem layers and access policy. Native checkpoint payloads retain their independent integrity and host-binding validation.
 
 Immutable imported base seals use version 2 and require a digest-bound content index; generations without that receipt are rejected.

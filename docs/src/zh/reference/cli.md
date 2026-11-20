@@ -1,6 +1,6 @@
 # `pvisor` 命令参考
 
-`pvisor run` 在独立的 rootless Linux VM 中创建容器；`pvisor spawn` 创建 Session，省略子命令也默认进入 `spawn`。
+在 Unix 上，`pvisor run` 在独立的 Linux VM 中创建容器型 Session。Windows 有[独立的 WHP profile](platforms.md)。`pvisor spawn` 创建任务型 Session，省略子命令也默认进入 `spawn`。
 Session 生命周期和变更审查命令直接操作 Session，不新增 `session` 子命令，
 `replay` 从轨迹创建 Session。Session、Run 与 Execution 的关系见[执行模型](../design/execution-model.md)；现有 Session ID 和磁盘记录仍保留
 `run-*`、`Run Bundle` 等名称。
@@ -25,7 +25,8 @@ pvisor help suspend
 
 ## 容器命令 {#container-commands}
 
-`run`、`build`、`pull`、`images`、`rmi`、`exec`、`ps`、`start`、`stop`、`rm`、`logs`、`network`
+`run`、`exec`、`ps`、`start`、`stop`、`restart`、`wait`、`cp`、`rm`、`logs`、
+`build`、`pull`、`push`、`images`、`rmi`、`network`、`volume` 和 `builder`
 提供 Docker 风格的选项子集，每个容器使用独立 VM，无需全局 daemon。
 用 `pvisor COMMAND --help` 查看支持的参数。
 `--safe`、`--stage`、`--executor` 等 Session 参数属于 `spawn`，不属于容器 `run`。
@@ -41,9 +42,43 @@ pvisor rm redis
 
 `pull --platform linux/amd64` 或 `linux/arm64` 选择镜像架构，`linux/arm64/v8` 是别名。
 省略时使用原生架构。可以下载异构镜像，但尚未实现 CPU 模拟，`run` 和 `start` 只能运行原生镜像。
-该接口不实现 Docker Engine API、Compose 或 credential helper。
-容器记录使用独立存储；review/apply/drop 也接受下述暂存绑定挂载的实例名称或 ID。
-Session 选择器与 checkpoint 保持原有行为；`spawn` 不变。
+私有 registry 返回 Bearer challenge 时，可用 `--username` 搭配
+`--password-stdin` 向 token 端点认证。`--password` 也受支持，但会让秘密出现在
+进程参数中。当前不支持 Docker credential helper 或 Docker Engine API。
+
+Unix 容器与任务 Session 使用 schema 4 记录，各有独立存储和命令能力。
+容器 review/apply/drop 选择暂存绑定挂载。
+
+### Compose 项目（实验性） {#compose}
+
+在 Linux x86_64 或 Apple Silicon macOS 上，用 `pvisor compose` 从单个 Compose
+文件启动服务，无需 Docker daemon。完成 [VM 准备](../start/installation.md#docker-prerequisites)后，在空的演示目录中将以下内容保存为 `compose.yaml`。若容器存储中已有 `pvisor-demo` 项目，请改用未占用的名称。
+
+```yaml
+name: pvisor-demo
+services:
+  web:
+    image: python:3.12-alpine
+    command: ["python", "-m", "http.server", "8000"]
+    depends_on: [cache]
+  cache:
+    image: redis:7
+```
+
+验证文件、等待启动、查看两个服务，再删除演示容器：
+
+```bash
+pvisor compose config -q
+pvisor compose up -d --wait
+pvisor compose ps
+pvisor compose down
+```
+
+执行 `up --wait` 后，`web` 和 `cache` 都应处于运行状态。首次运行需要访问镜像仓库。
+每个服务运行在独立 VM 中，可通过名称在项目默认网络内互访。启动时可等待声明的
+依赖条件，包括健康检查和成功退出。把 `-f FILE` 和 `-p PROJECT` 放在子命令前。
+`down` 默认保留镜像与托管卷。迁移现有 Compose 项目前请核对支持的参数和示例。
+[Compose 命令范围](https://github.com/DeepLink-org/pvisor/blob/main/crates/pvisor-cli/README.md#compose-command-profile-experimental)
 
 ### 容器绑定挂载暂存（仅 Linux） {#container-staged-binds}
 
@@ -150,7 +185,8 @@ STOPSIGNAL。COPY 支持 JSON/glob、数字 --chown 和八进制 --chmod；支�
 产物是单个扁平 OCI layer，保留合并后的删除、guest 属主/权限、符号链接和硬链接。
 成功后登记本地标签，可直接 run；普通失败清理私有暂存并保留旧标签。
 前端突然死亡可能留下未发布的暂存目录。OCI 导出必须使用新文件。
-尚无指令缓存，接受 `--no-cache`，每次执行所有步骤。
+成功的 RUN 会发布本地文件系统和配置检查点。命中缓存时跳过该 RUN 的 VM 启动。
+`--no-cache` 跳过缓存读取，并刷新成功的检查点。使用 `pvisor builder prune` 清理可删除的检查点。
 
 这是 Docker build 子集：拒绝远程/stdin 上下文、ADD、ONBUILD、heredoc、RUN mount、
 secret/SSH/cache mount、名称形式 COPY 属主、外部镜像 COPY、扩展变量替换、
@@ -174,14 +210,16 @@ review、apply、drop 和 inspect 在调用方持有 `session.lock` 时直接执
 有效 owner 仍持有 stage 时，apply/drop 拒绝执行。交互执行沿用原终端，允许
 Ctrl-C 到达工作负载，并在退出后恢复前台进程组。
 
-实例协议为 `pvisor-instance-control-3`；兼容的调用方二进制不要求摘要与 owner
-相同。同 UID 私有 socket 使用有界换行 JSON，不接收终端描述符或 Guest
+实例协议为 `pvisor-instance-control-3`。同 UID 私有 socket 使用有界换行 JSON，不接收终端描述符或 Guest
 AgentCtl token。响应丢失、超时和取消之后，副作用仍可能已经发生，命令不自动重试。
 
-升级前使用旧二进制等旧 Session 结束，并停止旧 `--pvisor-internal-host`。新 CLI
-忽略旧 generation socket；没有 live control 的旧记录只提供磁盘状态。
-daemon supervisor 保持不变。所有权、记录校验和平台限制见
-[Host 与 Guest AgentCtl](../design/architecture.md#host-agentctl)。
+新启动、已启用文件系统隔离的 Linux Host Session 可用
+`pvisor exec --session -it SELECTOR /bin/sh` 连接 shell。shell 继承现有沙箱，
+主任务退出时随之结束。暂停的 Session 和仅启用 Landlock 的 Host 路径拒绝连接。
+用 `pvisor status SELECTOR --lifecycle --json` 轻量轮询生命周期。
+
+控制协议所有权见 [Host 与 Guest AgentCtl](../design/architecture.md#host-agentctl)，
+持久状态见[记录矩阵](../design/records-and-versions.md)。
 
 ## 实验性特性 {#features}
 
@@ -390,7 +428,7 @@ Apply 也拒绝 `-o` 和 `--output-dir`，Session 查找存储只使用 `--store
 | `--dry-run` | 只读预检：展示所选改动、必要依赖、阻塞原因和剩余数量；不消费暂存改动。 |
 | `--diff` | 展示有大小限制的文本 diff，跳过二进制内容。要求 `--dry-run`；与 `--json` 冲突。 |
 | `--json` | stdout 只输出一个 schema 版本 1 的结果对象；要求 `--path`、`--include` 或 `--all`，绝不打开选择器。诊断写入 stderr。 |
-| `--store DIR` | Session 查找存储，默认 `.pvisor/capture`；没有短别名或旧式别名。 |
+| `--store DIR` | Session 查找存储，默认 `.pvisor/capture`。 |
 | `--mount GUEST` | 使用容器名称/ID 时，选择精确的暂存 bind guest 目标；一个暂存 bind 时可省略，多个时必填。 |
 | `--rootfs` | 高级操作：以特权写回记录中的 `/` 目标；容器暂存 bind 拒绝此选项。 |
 
@@ -414,7 +452,7 @@ Enter 进入预览，`q` 取消。被排除的路径不能勾选。预览中，`
 也不创建目标目录或缺失的锁文件。预览使用严格只读的观察锁和 lease；
 已有 `session.lock` 或必需 lease 文件缺失时直接拒绝，不补建。
 新 `stage` 在启动时预建这些锁，使首次预览可直接使用。
-旧 stage 缺少这些锁时仍然阻塞；预览不会修复锁或适配旧存储。
+
 
 ### 项目授权与记录目标 {#apply-scope}
 
@@ -423,7 +461,7 @@ Enter 进入预览，`q` 取消。被排除的路径不能勾选。预览中，`
 RunRecord 与 Run Bundle 携带该 scope，并由完成 receipt 绑定。
 Apply 重新校验绑定和目录身份；项目目录被替换、契约改变或绑定缺失都会阻塞写回。
 当前目录不能补授缺失的权限。
-缺少该契约的旧 rootstage 拒绝项目 apply；需要重建 stage 才能使用这条路径。
+项目 apply 要求存在已记录的 scope。
 普通工作区 stage 只使用其所属 overlay 记录的目标。
 该目标与 rootstage 绑定的项目根目录均不可覆盖；apply 不猜测替代范围。
 
@@ -509,13 +547,13 @@ pvisor checkpoint gc ./stage/task --kind execution --json
 
 execution fork 不接受替换命令。指定历史检查点时可以保持父 Session 运行；不指定时，对运行中父 Session 捕获后继续执行，对已暂停父 Session 使用当前 head。子 Session 拥有独立 RAM 和文件系统上层。`--ram-storage raw|compressed` 只影响新捕获，默认 compressed。`resume` 和 execution `fork` 支持 `--eager-ram`，在启动前完整读取 RAM；省略时按需加载。
 
-当前支持 Linux x86_64 和 macOS ARM64 的原生无网络、私有 RAM profile；宿主根目录 `/`、联网设备、共享内存池、可写 RAM backing 和冷页压缩不在这个恢复合同内。`spawn` 不为保存能力自动关闭网络、DAX 或改变 rootfs；用 `status SESSION --json` 查看能力与拒绝原因。恢复要求相同宿主启动、pVisor binary 和固件，不能跨宿主或跨版本恢复。
+当前支持 Linux x86_64 和 macOS ARM64 的原生无网络、私有 RAM profile；宿主根目录 `/`、联网设备、共享内存池、可写 RAM backing 和冷页压缩不在这个恢复合同内。`spawn` 不为保存能力自动关闭网络、DAX 或改变 rootfs；用 `status SESSION --json` 查看能力与拒绝原因。恢复要求相同宿主启动、pVisor binary 和固件。
 
 当 stage 位于工作区内，检查点存储自动放在 guest backing 之外，并记录 Session 归属。必要时恢复副本也使用独立目录，Execution 记录保留路径供审查和 apply 使用。捕获保存 guest 可见文件，排除 guest 已隐藏的 stage 管理目录；可见文件的内容、元数据及硬链接校验仍然完整。
 
 暂停期间拒绝 `apply/drop` 和工作区捕获；先 `kill SESSION` 可撤销恢复权，保留历史检查点，再处理文件变化。execution 检查点的 `list/show/delete` 与工作区检查点共用入口；删除会检查 suspended head、分支引用及存储租约。分支引用保守保留，尚无 Session 删除/归档接口来释放它们。GC 回收本 Session 存储中的未发布事务、删除残留和未引用 RAM 内容，不删除已发布检查点，也不是跨 Session 的全库清理，不清理 daemon 沙箱状态。
 
-原不可变基底管理可通过 `checkpoint import-base SESSION ROOTFS --json`、`checkpoint verify-base SESSION BASE_ID --json` 使用；导入结果给出独立 rootfs 路径，后续普通 `spawn --rootfs` 可以使用该路径。独立 `snapshot` 前端保持删除，旧 store 不自动转换为 Session 检查点。实现与验收见[Session 检查点设计](../design/session-checkpoint-cli.md#10-当前实现与验收边界)。
+不可变基底管理可通过 `checkpoint import-base SESSION ROOTFS --json`、`checkpoint verify-base SESSION BASE_ID --json` 使用；导入结果给出独立 rootfs 路径，后续普通 `spawn --rootfs` 可以使用该路径。实现与验收见[Session 检查点设计](../design/session-checkpoint-cli.md#10-当前实现与验收边界)。
 
 ## `--safe` 参数预设 {#safe-参数预设}
 
@@ -531,14 +569,13 @@ pvisor spawn --safe --overlaynet-allow inference.example.com:443 -- zcode
 优先级是 **显式 CLI > safe 预设 > 配置文件 > 普通默认值**。
 支持普通命令和 TOML `--config`；已准备好的 JSON `--spec` 不接受该预设。
 
-`--safe` 直接要求落实文件读取、写入和网络隔离，不允许静默回退到普通 host 进程。
+`--safe` 要求沙箱通过准入，拒绝回退到普通无沙箱 Host 进程。Linux Host 的选择性出口可以使用协作式代理，见下文。
 不引入额外的 sandbox 命令行参数或配置项。`--strict` 仍是对全部请求能力的校验，
 含资源限制等，和该隔离要求不同。
 
-- macOS host：强制 Seatbelt 读取/写入范围，只允许连接 pVisor 分配的 loopback TCP 代理端口；
-  阻止其他直接 IP 出口和环境中的宿主 Unix socket，仅保留必要的 Run 内 IPC。
-  Agent 使用临时 HOME，不能直接读取原来的主目录；凭据需显式传入或由 Gateway 持有。
-  系统运行库和启动所需的路径元数据仍可读取。
+- macOS host：Seatbelt 安装所请求的文件系统控制，将 socket 限制在指定代理和获准的本地 IPC。
+  Agent 使用私有 HOME。核对实际读、写和网络观察，并验证任务需要保护的路径。
+  [执行器边界](../security/executor-boundaries.md)
 - Linux host：`--safe` 要求 rootless namespace、synthetic root、chroot、Landlock
   和 HOME 写时复制视图。选择性出口和 Gateway
   通过 supervisor loopback proxy cooperative 转发，直接 socket 仍可能绕过；需要不可绕过
@@ -751,7 +788,7 @@ pvisor spawn \
 ```
 
 `--record-destination` 将 `pvisor_core::event::Event` 写入本地 Journal
-`events.trace.jsonl`，不支持旧 JSONL。Journal position 定义追加顺序，
+`events.trace.jsonl`。Journal position 定义追加顺序，
 `caused_by` 定义因果关系；`observed_at_unix_ms` 是观测元数据，不是顺序事实源。
 
 等价 TOML 是：
@@ -913,7 +950,7 @@ CLI 与嵌入式自定义端点都必须位于规范的 `/tmp/pvisor-host-<UID>`
 `0700`，socket 为 `0600`。不覆盖已有 socket。默认路径为
 `sessions/<session-id>/<execution-id>/control.sock`，Execution 结束时清除发现记录。
 执行器将整个权限根目录排除在 Guest 访问范围外；这些是宿主记录，不是
-Guest 发现文件。当前调试覆盖仍使用旧交换路径，其取消限制见
+Guest 发现文件。调试覆盖的取消限制见
 [owner 控制边界](../design/architecture.md#host-limits)；协议见
 [owner 协议](../design/architecture.md#host-wire)。
 

@@ -162,6 +162,7 @@ pVisor 也为 Agent 推理、评测和 RL 后训练提供执行环境。资源�
 
 ## 文档
 
+- [pVisor 0.4.0 发布说明](docs/src/zh/community/changelog.md#v040)
 - [安装指南](https://deeplink-org.github.io/pvisor/zh/start/installation/)：准备并检查环境
 - [首次运行](https://deeplink-org.github.io/pvisor/zh/start/first-run/)：完成所选模式的启动与清理
 - [Agent 接入](https://deeplink-org.github.io/pvisor/zh/guides/agents/)：配置命令、凭据和网络访问

@@ -27,11 +27,11 @@ Docker Hub 短名和完整名共用一个 canonical catalog 身份，pull/build 
 
 本地池标签持续可离线使用，直到显式 pull/refresh 或新的发布替换它。五分钟的标签自动刷新窗口适用于可写的文件系统/S3 后端，不适用于本地池。
 
-只接受当前 V2 镜像记录和池格式。目录式 rootfs 记录、缺少 platform/binding 的记录和旧缓存布局会被拒绝，不提供迁移或兼容读取器。先通过旧版本停止并清理旧容器，再在新存储中重新 pull/build 并重建容器；已有文件不自动删除。
+镜像记录绑定所选平台与内容池 revision。
 
 ## 选择后端
 
-服务器、文件系统、S3 与本地 pool 使用[共享镜像缓存 V2](../design/lazy-image-v2.md)：独立镜像元数据、压缩目录 radix 索引与共享内容池。V1 存储实现已删除，旧缓存需要从 OCI 重新发布到空目录／前缀；不会自动删除旧数据。
+服务器、文件系统、S3 与本地 pool 使用[共享镜像缓存 V2](../design/lazy-image-v2.md)：独立镜像元数据、压缩目录 radix 索引与共享内容池。
 
 服务器、文件系统和 S3 使用同一套 `prepare/list/stat/read` 接口，VM 也使用相同配置。文件系统和 S3 是直接存储后端，使用它们不需要启动 `pvisor-daemon serve --cache`。
 
@@ -43,7 +43,7 @@ Docker Hub 短名和完整名共用一个 canonical catalog 身份，pull/build 
 
 嵌入式客户端可设置 `PVISOR_CACHE_READ_ONLY=true` 进入只读模式。只读客户端不能刷新或补齐共享池中的镜像名，仍可维护私有加速缓存。
 
-### 发布本地镜像
+### 发布本地镜像 {#publish-a-local-image}
 
 在发布端配置 AWS 凭据和区域，并使用已有的 bucket。接收端使用发布回执中的 `source`。示例用 `jq` 提取该值。
 

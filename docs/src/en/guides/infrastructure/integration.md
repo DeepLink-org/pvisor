@@ -7,11 +7,12 @@ Choose the CLI for native Sessions and file review, the Runtime when a Rust appl
 | Entry point | Intended caller | Identity and lifecycle managed | Prerequisites |
 | --- | --- | --- | --- |
 | `pvisor spawn` CLI | Developers, scripts, CI, and evaluators integrating through subprocesses | Native Session/Execution; commands manage execution, review, and state operations | Prepare the selected host, OCI, or VM executor; associate tasks through machine-readable output |
+| Docker-style CLI | Container users and multi-service tool workloads | Container-profile Session per VM on Unix, project resources through experimental Compose | VM support, images for the host architecture and the selected [container command set](../../reference/cli.md#container-commands) |
 | Rust `pvisor` Runtime | Rust applications requiring direct execution and cleanup control | `PVisor`, `RunHandle`, and Session service; the application owns the runtime and completes waiting and cleanup | Pin crate versions, configure executors/drivers, and follow lifecycle and persistence contracts |
 | `pvisor-daemon serve --sandbox` | Platform services using an HTTP lifecycle API | Daemon sandbox ID; local admission, TTL, supervisors, and persistent state | Linux x86_64, KVM, delegated cgroup v2, trusted prepared images, and a supported guest execution engine |
 | `containerd-shim-pvisor-v2` | containerd / CRI call chains | containerd task / exec identity and the corresponding task lifecycle | Linux and containerd configuration; VM execution also needs the `vm` build feature and KVM |
 
-The CLI column describes native Sessions created with `pvisor spawn`. Standalone containers use `pvisor run` and the other container commands, with distinct identities and interface scopes; see the [CLI reference](../../reference/cli.md).
+The CLI column describes native Sessions created with `pvisor spawn`. Unix containers use `pvisor run` and the container-profile Session lifecycle, with their own selectors and command scope; see the [CLI reference](../../reference/cli.md).
 
 The CLI is a calling interface; an executor is an execution environment. Choosing the CLI does not limit try to host processes. API identities are not interchangeable: daemon sandbox IDs cannot be passed to native Session commands, and containerd task IDs do not automatically become Session selectors.
 
@@ -36,13 +37,21 @@ The daemon implements partial OpenSandbox 1.1.0 and E2B Python SDK 2.59.0 profil
 
 Validate the local environment with an [offline task](../../start/first-run.md), then decide whether to embed the Runtime. Scripts or an existing trainer can call the CLI and use [machine-readable output](../../reference/json-output.md) to retain associations between tasks and execution results.
 
-Rust applications directly manage executors, drivers, waiting, and cleanup. Cancellation requests, process exit, resource reclamation, and terminal publication occur at different points; retain the corresponding owners according to the [execution model](../../design/execution-model.md). See the [Runtime README](https://github.com/DeepLink-org/pvisor/blob/main/crates/pvisor/README.md) for API entry points and [stability](../../reference/stability.md) for interface compatibility.
+Rust applications directly manage executors, drivers, waiting, and cleanup. Cancellation requests, process exit, resource reclamation, and terminal publication occur at different points; retain the corresponding owners according to the [execution model](../../design/execution-model.md). See the [Runtime README](https://github.com/DeepLink-org/pvisor/blob/main/crates/pvisor/README.md) for API entry points and [integration checks](../../reference/stability.md) for a representative workflow.
 
 ## containerd integration {#containerd}
 
 The shim connects containerd task/exec operations to host execution or an explicitly selected VM path. It is a separate entry point from the native CLI's OCI executor, which invokes `runc`/`crun` through `pvisor spawn --executor container` and retains the Session workflow.
 
 VM shim CPU/RAM annotations configure VM shape. Some host OCI constraints are accepted as no-ops, so their presence does not establish enforcement inside the guest. See the [shim README](https://github.com/DeepLink-org/pvisor/blob/main/crates/pvisor-shim/README.md) for registration, guest exec, mounts, and support scope. After registration, validate the controls and data paths required by the workload before deployment.
+
+On Linux nodes, set `vm.default_network` in `/etc/pvisor-shim/config.json`
+(or the file selected by `PVISOR_SHIM_CONFIG`) to supply an egress posture
+when a VM task has no `io.pvisor.vm.network` annotation. Set `vm.auto_expose`
+to opt in to TCP relays for eligible guest listeners inside the pod network
+namespace. This requires the guest control channel and adds no authentication.
+Use pod NetworkPolicy and service-level authentication for reachability.
+[Shim node configuration](https://github.com/DeepLink-org/pvisor/blob/main/crates/pvisor-shim/README.md#node-config)
 
 ## Image caching is a shared service {#cache}
 

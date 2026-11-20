@@ -7,22 +7,20 @@ The current focus is single-machine execution reliability, shared-resource cost 
 | Local lifecycle/staging reliability | Regressions for completion, cancellation, timeout, fork and batch apply on macOS/Linux; inspect records and remaining changes after failure |
 | Boundaries agree with evidence | Verify file/network controls per executor; Bundles distinguish plans, installation receipts, unobserved counts and zeros; labels cannot hide missing controls |
 | Gateway capture reliability | Regressions for bounded queues, commit failures, shutdown and recovery; distinguish enqueue from durable commit |
-| Replay compatibility | Pin supported versions per adapter; verify complete tool batches and the first continuation-request boundary; reports state samples and limitations |
+| Replay validation | Pin supported versions per adapter; verify complete tool batches and the first continuation-request boundary; reports state samples and limitations |
 | Documentation/distribution consistency | Entry examples run; each default behavior has one authoritative definition |
 
-Before adding a public feature, provide implementation, validation scenarios, limitations and release notes. Define compatibility and acceptance before changing data contracts, boundaries or public commands.
+Before adding a public feature, provide implementation, validation scenarios, limitations and release notes. Define acceptance criteria before changing data contracts, boundaries or public commands.
 
 ## Installation and integration {#installation-and-integration}
 
-Planned: make installation, first execution and staged review work end to end before expanding distribution channels and language SDKs. The [distribution proposal](releasing.md#distribution-plan) defines channel roles and shared artifacts; [installation](../start/installation.md) owns currently available commands.
-
-Next are standalone binary archives, a versioned installer and a Homebrew entry point, alongside installation diagnostics, upgrades, rollback and removal. Settle CLI JSON output, events, errors and compatibility first; actual platform integration needs then drive TypeScript/Python SDKs. Evaluate npm distribution independently of an SDK; neither is a prerequisite for the CLI release.
+Start with the [installation guide](../start/installation.md) for wheels, native archives and Homebrew. Distribution work focuses on installation diagnostics, a standalone installer and end-to-end acceptance of package entry points. SDK proposals depend on the interfaces needed by platform integrations. [Distribution plan](releasing.md#distribution-plan)
 
 Linux host selective egress still uses a cooperative proxy, so the `--safe` label cannot establish a non-bypassable boundary. The proposed work combines a controlled proxy exit with host network isolation and validates cleared proxy variables, direct sockets and access to helper processes. See [network boundaries](../guides/policies/network.md#网络边界) for existing enforced-egress options and platform differences.
 
 ## Small-file delivery for lazy images {#lazy-image-small-files}
 
-Implemented: V2 places all metadata in compressed directory radix indexes, packs small files by directory, and independently decompresses data frames. Server, filesystem, S3 and Docker local pools share this format. Storage V1 is retired and requires republication from OCI. See [Lazy Image V2](../design/lazy-image-v2.md) for contracts/limits. The [lazy-image benchmark](../benchmarks/lazy-image-startup.md) separately covers real inventories, native Docker cold/warm clients, first/repeated local mmap and whole-group memory. Disk and small-working-set benefits do not establish universal performance superiority.
+Implemented: V2 places all metadata in compressed directory radix indexes, packs small files by directory, and independently decompresses data frames. Server, filesystem, S3 and Docker local pools share this format. See [Lazy Image V2](../design/lazy-image-v2.md) for contracts/limits. The [lazy-image benchmark](../benchmarks/lazy-image-startup.md) separately covers real inventories, native Docker cold/warm clients, first/repeated local mmap and whole-group memory. Disk and small-working-set benefits do not establish universal performance superiority.
 
 Next acceptance work:
 

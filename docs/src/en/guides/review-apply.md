@@ -32,6 +32,8 @@ Stop other writers during apply: these checks cannot make a multi-file update at
 
 `apply-ledger.json` persists batch progress so an interrupted apply can recover. Recovery accepts already-applied content only when it matches the expected result; any other target change is still an error. Inspect conflicts and keep external edits before retrying.
 
+When `apply --json` reports `execution.recovery_required`, preserve the stage and ledger. Use `apply_id` to correlate the attempt. A missing applied count or an unconfirmed ledger means the response lacks a verified record of the effect. Reconcile the original batch before retrying or dropping the stage.
+
 ## Discard remaining changes
 
 ```bash

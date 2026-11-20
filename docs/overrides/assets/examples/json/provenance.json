@@ -1,8 +1,8 @@
 {
-  "kind": "historical CLI output adapted to current Session field names; not a new execution",
+  "kind": "actual CLI output; paths, identities and numeric wall-clock fields normalized",
   "commands": {
     "run-bundle": [
-      "run",
+      "spawn",
       "--safe",
       "--overlaynet-deny-all",
       "--stdio",
@@ -15,7 +15,7 @@
       "mkdir -p src; printf \"ready\\n\" > src/result.txt; rm obsolete.txt"
     ],
     "failed-run": [
-      "run",
+      "spawn",
       "--safe",
       "--overlaynet-deny-all",
       "--stdio",
@@ -28,7 +28,7 @@
       "printf \"candidate\\n\" > failed.txt; exit 7"
     ],
     "timeout-run": [
-      "run",
+      "spawn",
       "--safe",
       "--overlaynet-deny-all",
       "--stdio",
@@ -36,11 +36,11 @@
       "--stage",
       "/tmp/pvisor-example/timeout-run",
       "--timeout",
-      "100ms",
+      "2s",
       "--",
       "/bin/sh",
       "-c",
-      "printf \"candidate\\n\" > timed.txt; sleep 2"
+      "printf \"candidate\\n\" > timed.txt; sleep 30"
     ]
   },
   "return_codes": {
@@ -48,12 +48,13 @@
     "failed-run": 7,
     "timeout-run": 1
   },
-  "cli_sha256": "b8a3799d17b72f41e910b444e853f8298aa2b1e5edc0b951c04fd7f661ea658b",
+  "cli": "pvisor 0.4.0",
+  "cli_sha256": "bcd7de5177273dde3bf1fcc417ea74371696cf580ec7ae291d62da91bd96fb7a",
   "source_sha256": {
-    "crates/pvisor/src/runtime/bundle.rs": "1d552fa2a1c6d6787c66cc235455b8847170740227e9f6d131c8007251ef82c3",
-    "crates/pvisor/src/cli/runtime.rs": "4b71fd099cee7815c023608abf5667a83928ae01aa2f055caa8e012666adea1b",
-    "crates/pvisor/src/cli/checkpoint.rs": "8ec66653952aee860144724186ece5b58aa8f819c199d761ac088277fc1c2f2b",
-    "crates/pvisor/src/cli/product.rs": "fe6656766373d58587c2fbc4368687f9c656b41e8602858830834e99cd6b930e"
+    "crates/pvisor/src/runtime/bundle.rs": "cf10c9c89e2b30462c66ce848a5646056b0ba9b1aab824243d5936e87aff2379",
+    "crates/pvisor-cli/src/cli/runtime.rs": "3f510a4c17512f9c9cf296f464748853941d01fee1053c43de1410305fd48866",
+    "crates/pvisor-cli/src/cli/checkpoint.rs": "c762a23422d8086635e0b6ed42ffc2a46f3654d893bbddc6b4600d1a0e147943",
+    "crates/pvisor-cli/src/cli/product.rs": "24eb03539e8464c9782446738e924eb34fe43501521bcaef9df88324f11fec1e"
   },
-  "platform": "Linux x86_64; host executor; safe staging and deny-all networking"
+  "platform": "Darwin arm64; host executor; safe staging and deny-all networking"
 }

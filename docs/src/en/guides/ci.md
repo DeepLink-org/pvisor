@@ -68,8 +68,8 @@ pvisor spawn --safe --overlaynet-deny-all --stdio capture \
 failure_code=$?
 pvisor status --review --json ../ci-failure-001 > ../ci-failure-001.json
 failure_review_code=$?
-pvisor spawn --safe --overlaynet-deny-all --stdio capture --timeout 100ms \
-  --stage ../ci-timeout-001 -- /bin/sh -c 'printf "candidate\n" > timed.txt; sleep 2'
+pvisor spawn --safe --overlaynet-deny-all --stdio capture --timeout 2s \
+  --stage ../ci-timeout-001 -- /bin/sh -c 'printf "candidate\n" > timed.txt; sleep 30'
 timeout_code=$?
 pvisor status --review --json ../ci-timeout-001 > ../ci-timeout-001.json
 timeout_review_code=$?

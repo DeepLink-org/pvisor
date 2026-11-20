@@ -103,13 +103,13 @@ OpenSandbox 发布 44772/18080 两个逻辑端点，E2B 发布 49983。它们均
 
 原生 pause/resume 通过 RunHandle 控制同一 Execution 的 live vCPU，不是 cgroup freeze、内存 offload、checkpoint/restore 或重建 VM。准入记账保留。Execd 转发不是 Gateway 路由、捕获或推理空闲 CPU 释放。
 
-普通 Session 保持独立的[checkpoint/fork 语义](../execution-model.md)。Daemon 不能 stage/apply 文件、恢复原生 VM 状态、获取 node backing 或协调模型响应。接入这些路径需要显式适配器及生命周期／证据合同，不能靠重命名已退役的分布式控制完成。
+普通 Session 保持独立的[checkpoint/fork 语义](../execution-model.md)。Sandbox API 不提供 stage/apply、VM 检查点、恢复或 offload。对于调用方持有的 OCI VM，独立的 Linux 压力服务要求显式登记与上报安全等待点。见[受管容器内存](../../guides/infrastructure/lifecycle.md#container-memory)。
 
-## 兼容性与证据 {#invariants}
+## 验证范围 {#invariants}
 
 部分协议固定为 OpenSandbox 1.1.0 与 E2B Python SDK 2.59.0。默认 guest 引擎、显式上游模板、SDK 核心流程和 API 重启检查具有不同验收入口，见[证据范围](operations.md#validation)。已验证的核心流程不等于完整服务兼容。
 
-运行时已接入原生 VM 执行。Stage/apply、checkpoint/fork 和 offload API、Gateway 推理等待协调与自动 node 资源获取未实现。旧 Cluster 结果不验证 daemon SDK 兼容、性能或密度，也没有全节点物理内存收益证据。
+压力服务有独立的验证范围，当前没有全节点内存收益保证。
 
 实现归属：`daemon/models.rs` 定义 schema 与资源校验，`daemon/store.rs` 持久化逐沙箱记录，`daemon/mod.rs` 编排准入和生命周期，`daemon/http.rs` 与 `daemon/e2b.rs` 提供两套 HTTP profile。`runtime.rs` 拥有原生 supervisor、IPC/cgroup 与 VM 归属；`native.rs`/`native/` 适配 guest 进程和文件协议；`prepared_image.rs` 发布模板；`cache_component.rs` 与 `memory_pool.rs` 监督独立组件。
 

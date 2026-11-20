@@ -27,11 +27,11 @@ Short and fully qualified Docker Hub aliases share one canonical catalog identit
 
 Local pool tags stay available offline until an explicit pull/refresh or another publication replaces them. The five-minute automatic tag refresh applies to writable filesystem/S3 backends, not the local pool.
 
-Only current V2 image records and pool formats are accepted. Directory-root records, missing platform/binding fields and old cache layouts are rejected; no migration or compatibility reader is provided. Stop and clean up old containers through the old version, then re-pull or rebuild into a fresh store and recreate containers. Existing files are not automatically deleted.
+Image records bind the selected platform and the content-pool revision.
 
 ## Choose a backend
 
-Server, filesystem, S3 and local pools use [shared image cache V2](../design/lazy-image-v2.md): independent image metadata, compressed directory radix indexes and shared content pools. The V1 storage implementation is removed. Republish OCI sources into an empty directory/prefix; old data is never automatically deleted.
+Server, filesystem, S3 and local pools use [shared image cache V2](../design/lazy-image-v2.md): independent image metadata, compressed directory radix indexes and shared content pools.
 
 Server, filesystem, and S3 caches share the same prepare/list/stat/read interface and VM configuration. Filesystem and S3 are direct storage backends and require no cache serve process.
 
@@ -43,7 +43,7 @@ Server, filesystem, and S3 caches share the same prepare/list/stat/read interfac
 
 Set `PVISOR_CACHE_READ_ONLY=true` to make an embedded client read-only. A read-only client cannot refresh or populate a missing shared-pool name, and may still keep a private acceleration cache.
 
-### Publish a local image
+### Publish a local image {#publish-a-local-image}
 
 On the publisher, configure AWS credentials and region and use an existing bucket. Copy the receipt's `source` to the receiving machine. The example uses `jq` to extract that value.
 

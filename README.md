@@ -181,6 +181,7 @@ for a caller-script example, or consult the
 
 ## Documentation
 
+- [pVisor 0.4.0 release notes](docs/src/en/community/changelog.md#v040)
 - [Installation](https://deeplink-org.github.io/pvisor/start/installation/): prepare and verify your environment
 - [First run](https://deeplink-org.github.io/pvisor/start/first-run/): try either mode from launch to cleanup
 - [Agent guides](https://deeplink-org.github.io/pvisor/guides/agents/): command setup, credentials, and network access

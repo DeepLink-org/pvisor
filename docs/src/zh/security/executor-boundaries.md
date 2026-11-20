@@ -10,11 +10,11 @@
 | --- | --- | --- | --- | --- |
 | 工作区写入 | 暂存时经 OverlayFS（FUSE），apply 前不落地 | 暂存时经 OverlayFS（macFUSE） | 暂存时经 OverlayFS | 经 virtio-fs 服务的写时复制工作区 |
 | 宿主其他路径的写入 | `--filesystem sandbox`：namespace、投影根目录与 Landlock | `--filesystem sandbox`：Seatbelt 写入范围 | 镜像用户空间与配置的挂载 | 独立 guest；根目录写入进临时 upper，退出丢弃 |
-| 读取 | 默认 ambient；`--filesystem sandbox` 下受投影根目录与 Landlock 约束 | 默认 ambient；`--safe` 申请 Seatbelt 读取范围，但当前 Run 证据仍把读取报告为 ambient（见[已知限制](known-limitations.md)） | 镜像内容与配置的挂载 | 只有 rootfs 与声明的挂载；`--rootfs host` 会暴露宿主内容 |
+| 读取 | 默认 ambient；`--filesystem sandbox` 下受投影根目录与 Landlock 约束 | 默认保留宿主读取权限。配置文件系统策略后，核对已安装的 Seatbelt 读取机制与授权路径。[已知限制](known-limitations.md) | 镜像内容与配置的挂载 | 只有 rootfs 与声明的挂载；`--rootfs host` 会暴露宿主内容 |
 | 视图内敏感路径 | `--access` 规则与 `--safe` 预设，经 OverlayFS 执行 | 同左 | 同左 | 同左，并作用于根视图 |
 | 网络（选择性策略） | 协作式代理，可被绕过 | `--safe` 下阻断直接连接，代理执行选择性规则 | 协作式代理，需 host 网络 | 不可绕过的 smoltcp 数据面 |
 | 网络（全部拒绝） | 私有 network namespace | Seatbelt 阻断非 loopback IP 与 ambient Unix socket | `--container-network none` | `--overlaynet off` |
-| HOME 与凭据 | `--safe`：HOME 写时复制视图；凭据需显式 `--pass-env` | `--safe`：临时 HOME，不能读取原主目录 | 只有显式挂载与传入的变量 | 取决于 rootfs；`--rootfs host` 保留宿主 HOME |
+| HOME 与凭据 | `--safe`：HOME 写时复制视图；凭据需显式 `--pass-env` | `--safe`：私有 HOME；原主目录的访问取决于实际读取范围与显式共享 | 只有显式挂载与传入的变量 | 取决于 rootfs；`--rootfs host` 保留宿主 HOME |
 | 子进程 | user/mount/PID namespace；进程组清理 | 进程组清理 | 容器进程树 | guest 内核内 |
 | `--safe` 是否可用 | 可用 | 可用 | **拒绝启动**（缺少完整强制边界） | 可用，要求 `auto` 网络 |
 

@@ -79,7 +79,7 @@ nav = [
       { "Environment variables" = "reference/env-vars.md" },
       { "Exit codes and errors" = "reference/exit-codes.md" },
       { "Platforms and executor support" = "reference/platforms.md" },
-      { "Stability and compatibility" = "reference/stability.md" },
+      { "Validate an integration" = "reference/stability.md" },
     ] },
   ] },
   { "Basic concepts" = [
@@ -206,7 +206,7 @@ nav = [
     { "Release and maintenance" = [
       { "Release PolicyVisor" = "community/releasing.md" },
       { "Roadmap" = "community/roadmap.md" },
-      { "Changelog" = "community/changelog.md" },
+      { "Release notes" = "community/changelog.md" },
       { "Governance" = "community/governance.md" },
       { "Vulnerability disclosure policy" = "security/disclosure.md" },
     ] },

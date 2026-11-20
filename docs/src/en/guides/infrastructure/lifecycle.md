@@ -133,3 +133,24 @@ pvisor drop ../stage
 The explicitly selected `guest.ram` is a caller-owned backing file; remove it once the VM has exited and it is no longer needed. To stop early, use `pvisor kill ../stage`. The five-minute task timeout continues during pauses.
 
 This workflow was verified on 2026-10-24 with Linux x86_64/KVM and CLI `0.3.0+g35.b318715`: the counter stopped after pause/offload, continued after resume, retained its Execution identity, passed memory checks, and exited with code 0. This verifies single-VM functionality, not concurrency density or automatic model-wait management.
+
+## Manage memory for container VMs {#container-memory}
+
+On Linux x86_64/KVM, start a detached `pvisor run --branchable --network none`
+source without mounts, port publishing, restart policy or health checks.
+Run `pvisor container branch SOURCE --offload --names a b` at an idle guest
+command boundary. The children share a sealed RAM base, each with private writes
+and filesystem state. Use a disk-backed container store for reclamation.
+After commands in child `a` finish, run `pvisor container offload a` and wait for
+success, then `pvisor container resume a` before the next guest command.
+A child can outlive its source but cannot cold-restart from these files.
+[Container branch contract](https://github.com/DeepLink-org/pvisor/blob/main/crates/pvisor/README.md#fork-a-running-oci-session-on-one-host)
+
+For ordinary Linux x86_64 OCI container VMs, `pvisor run --managed-memory`
+selects raw file-backed RAM with offload/resume controls. A cooperating owner
+can explicitly enroll the VM with `pvisor-daemon pressure-serve` using a
+delegated cgroup v2 subtree. The owner marks safe waits and obtains a ready
+permit before dispatching work. Keep direct exec and background guest work out
+of those waits. The service applies only to enrolled VMs and retains their
+original execution identity. OpenSandbox/E2B SDK lifecycle calls remain separate.
+[Pressure scheduling and owner protocol](https://github.com/DeepLink-org/pvisor/blob/main/crates/pvisor-daemon/README.md#opt-in-pressure-scheduling-for-ordinary-oci-executions)

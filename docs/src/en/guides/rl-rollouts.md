@@ -32,10 +32,11 @@ Replay reruns tools in a new environment and repeats their side effects. Use tes
 
 ## Score and retain a training sample {#score}
 
-Use this minimal evaluator for the preceding offline task. It checks execution first, then candidate content. The example requires `jq`.
+Run the evaluator in a shell with `jq`. It stops if the execution result or candidate file cannot be read.
 
 ```bash
-jq -e '.schema_version == 4 and .run.state == "completed" and .run.exit_code == 0' \
+set -e
+jq -e '.schema_version == 6 and .run.state == "completed" and .run.exit_code == 0' \
   rollout-001.bundle.json
 pvisor inspect ../rollout-001 -- cat answer.txt > rollout-001.answer.txt
 reward=0

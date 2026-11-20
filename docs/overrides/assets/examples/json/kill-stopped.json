@@ -1,7 +1,7 @@
 {
   "already_stopped": true,
-  "session_id": "run-bundle-run_id",
   "operation": "kill",
   "schema_version": 1,
+  "session_id": "run-bundle-run_id",
   "state": "completed"
 }

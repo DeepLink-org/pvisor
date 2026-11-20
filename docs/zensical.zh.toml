@@ -79,7 +79,7 @@ nav = [
       { "环境变量" = "reference/env-vars.md" },
       { "退出码与错误" = "reference/exit-codes.md" },
       { "平台与执行器支持矩阵" = "reference/platforms.md" },
-      { "稳定性与兼容承诺" = "reference/stability.md" },
+      { "验证集成" = "reference/stability.md" },
     ] },
   ] },
   { "基本概念" = [
@@ -206,7 +206,7 @@ nav = [
     { "发布与维护" = [
       { "发布 PolicyVisor" = "community/releasing.md" },
       { "路线图" = "community/roadmap.md" },
-      { "变更日志" = "community/changelog.md" },
+      { "发布说明" = "community/changelog.md" },
       { "治理" = "community/governance.md" },
       { "漏洞披露政策" = "security/disclosure.md" },
     ] },

@@ -190,13 +190,13 @@ Native OverlayNet provides VM egress networking. OpenSandbox network-policy requ
 
 The host account, daemon/firmware and prepared images must be trusted. Private state and same-UID IPC do not stop hostile same-UID or root code. Other local users may reach loopback publications; configure service authentication and host access controls. Secrets stay out of supervisor argv and the host environment but are kept in private records. No security-audit results exist; hostile multi-user isolation is out of scope.
 
-## Relationship to native Sessions, the cache and the retired Cluster {#native}
+## Native Sessions, cache and pressure scheduling {#native}
 
 A daemon sandbox ID is not a Session ID; do not pass it to `pvisor checkpoint`, `fork`, `apply` or `drop`. A daemon pause is a confirmed vCPU pause on the same live Execution, not a sealed RAM/CPU/device/filesystem snapshot. Native Session file review, checkpoints and model capture continue through the `pvisor spawn` path: execution steps are in the [VM guide](../executors/vm.md), node-local Session file checkpoints in [checkpoints and forks](../fork-checkpoint.md), and model-request routing/capture in the [Gateway guide](../capture.md). A compatible standalone-rootfs, network-free VM Session can use execution checkpoints; check capability and blockers with `pvisor status --json`.
 
 Use `pvisor push` for publication and the Rust client for cache diagnostics. See the [shared image cache reference](../../reference/shared-image-cache.md) for publication, backends, authentication and access. Daemon state is stored separately from native Sessions and cache stores; the Daemon API key authorizes neither the standalone cache nor node-runtime IPC.
 
-The retired Cluster task/client SDK, Controller/Worker registration, placement, DAG, lease renewal, completion outbox and artifact retirement commands are not daemon interfaces. Do not feed old task JSON, `worker.toml`, Controller credentials or journals to the daemon; there is no automatic path from distributed task history to sandbox state. Retain old results before retiring a deployment, and use fresh state for the OpenSandbox profile.
+The Linux pressure service accepts explicit enrollment from owners of ordinary OCI container VMs. Follow the [VM memory workflow](../infrastructure/lifecycle.md#container-memory) for cgroup v2 prerequisites and dispatch permits.
 
 ## Troubleshooting {#troubleshooting}
 

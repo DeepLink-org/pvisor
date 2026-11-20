@@ -1,26 +1,16 @@
-# Stability and compatibility
+# Validate an integration
 
-For a long-running pipeline, pin the pVisor version, record format, and agent version. Before upgrading, use representative tasks to verify execution, review, apply, and replay; keep the matching reader for old records.
+Use a representative task in a fresh Session to check the executor, installed
+policy controls, output and failure behavior your pipeline depends on.
 
-Current readers check format versions. Verify each interface against its reading rules when upgrading.
-
-## Reading rules available today
-
-| Interface | Current rule |
-| --- | --- |
-| CLI / Run TOML | Current `--help`/types define behavior; unknown fields reject; check changelog when upgrading |
-| Run record / completion | New Run schema 3 requires completion protocol 2; missing committed completion yields Unknown after owner exit; schema 1 retains legacy reading rules |
-| Run Bundle | New schema 6 requires a matching Run/Execution completion receipt and Bundle digest; schema 4 remains readable under legacy rules; unknown versions reject; no automatic migration |
-| Event / Journal | Formal version 5; old JSONL incompatible |
-| Operation | Schema 1; unknown versions reject |
-| Replay | `sandbox-playback.result/v3`; adapter versions pinned in the guide |
-| Rust embedding API | Follows crate revision; CLI availability does not imply ABI/source compatibility |
-
-These are implemented reading rules, not new long-term promises awaiting maintainer confirmation. Pin pVisor version/commit, record schemas, and validate representative tasks before upgrading.
-
-## Upgrade procedure
-
-1. Retain old Bundles, Journals, and capture rather than overwriting them.
-2. Run a fresh Session with the new version; check admission, output reading, and apply conflicts.
-3. Keep a compatible old reader for old records; do not remove schema fields to bypass checks.
-4. Record CLI/config/format/platform changes in the changelog. Maintainers still need to define deprecation windows.
+1. Check the required flags with `pvisor help COMMAND` and consult the
+   [configuration reference](config.md) for TOML fields.
+2. Read the [JSON result](json-output.md) and [Run Bundle](run-bundle.md) to
+   confirm the outcome, selected executor and installed controls. Use the
+   [record matrix](../design/records-and-versions.md) to locate receipts and
+   their ownership bindings.
+3. Run a selective apply and check that a conflicting host edit blocks a second
+   apply. Keep the stage and ledger when the result requires recovery.
+   [Review and apply](../guides/review-apply.md)
+4. If your pipeline uses replay, run a recorded task and inspect the result
+   with the configured adapter. [Replay](../guides/replay.md)

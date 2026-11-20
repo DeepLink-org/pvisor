@@ -8,6 +8,8 @@ description: 逐步安装 pVisor，检查 Linux 或 macOS 的文件暂存支持�
 
 发布包支持 Linux x86_64 和 Apple Silicon macOS。Python 安装需要 3.10+，无需 Rust 工具链或 Docker Daemon。Docker style 路径需要虚拟化与镜像下载；离线 Agent style 演示使用本机 Shell，无需 VM 镜像或模型账号。
 
+Windows x86_64 可从源码构建实验性的 WHP 容器 CLI。固件与宿主机前置条件见 [Windows profile](../reference/platforms.md#windows-startup)。
+
 <a id="1"></a>
 
 ## 1. 安装 CLI {#install-cli}
@@ -53,6 +55,14 @@ test -r /dev/kvm && test -w /dev/kvm && echo 'KVM accessible'
 应输出 `x86_64` 和 `KVM accessible`。设备缺失或无权限时，请管理员配置虚拟化和账号权限；在虚拟化服务器内还需开放嵌套虚拟化。Linux 的 VMM 限制也可能受 namespace 策略影响，启动权限错误见 [VM 指南](../guides/executors/vm.md)。
 
 Apple Silicon macOS 上，`uname -m` 应输出 `arm64`，使用带 Hypervisor entitlement 的发布包；源码构建需按 [VM 平台说明](../guides/executors/vm.md)签名。这个 VM 路径不要求安装用于 Host 暂存的 macFUSE。
+
+检查当前进程能否创建 VM：
+
+```bash
+pvisor vm-check --json
+```
+
+检查 `can_create_vm` 和 `firmware`。预检只创建空 VM，并单独报告固件发现结果。接下来还需确认 guest 能启动。
 
 首次运行需要访问 Docker Hub，并留出镜像缓存空间。按[Docker 教程](first-run.md#docker-style)启动 VM，确认配置可以正常工作。
 
@@ -157,7 +167,7 @@ python -m pip install --upgrade pvisor-sandbox
 python -m pip uninstall pvisor-sandbox
 ```
 
-升级前检查发布说明和部署中的 `PVISOR_*` 设置。卸载不会清理 Session 状态与用户缓存。
+卸载不会清理 Session 状态与用户缓存。
 
 <a id="homebrew"></a>
 
@@ -172,7 +182,7 @@ brew install DeepLink-org/formula/pvisor
 
 tap 仓库名为 `Formula`，而不是 `homebrew-formula`，因此添加时需要指定完整 URL。tap 只包含软件包元数据，二进制从 GitHub Releases 下载。升级时运行 `brew update` 和 `brew upgrade DeepLink-org/formula/pvisor`。
 
-不使用 Python 安装时，可从 [GitHub Releases](https://github.com/DeepLink-org/pvisor/releases) 下载对应平台的原生归档及 `SHA256SUMS`。校验后解压，将 `bin` 加入 `PATH`，并保持其中的文件在一起；升级时替换完整目录。
+不使用 Python 安装时，可从 [GitHub Releases](https://github.com/DeepLink-org/pvisor/releases) 下载对应平台的原生归档及 `SHA256SUMS`。用 `sha256sum`（Linux）或 `shasum -a 256`（macOS）计算归档摘要，与 `SHA256SUMS` 中对应条目核对。匹配后解压，将 `bin` 加入 `PATH`，并保持其中的文件在一起；升级时替换完整目录。
 
 Homebrew tap 的发布条件与配置见[发布指南](../community/releasing.md#one-time-setup)。
 

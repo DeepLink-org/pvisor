@@ -17,7 +17,7 @@ PolicyVisor (pVisor) is a sandbox framework with two modes. Docker style sandbox
 
 Sandbox names the framework and execution isolation. Stagebox refers specifically to the Agent style mode. A stage stores file changes awaiting acceptance. Stagebox does not name a new VM or isolation level, and does not automatically disable agent approvals.
 
-Docker style sandbox currently provides an experimental Docker-compatible command subset, without Docker Engine API or Compose; see [container commands](../reference/cli.md#container-commands). Start Agent style stagebox with the [offline tutorial](../start/first-run.md), then configure authentication and networking using the [agent guides](../guides/agents/index.md). Ordinary Host Sessions write through by default; file review and acceptance require explicit staging.
+Docker style sandbox provides [Docker-style commands](../reference/cli.md#container-commands) and experimental [Compose projects](../reference/cli.md#compose). Docker Engine API clients require a separate Engine. Start Agent style stagebox with the [offline tutorial](../start/first-run.md), then configure authentication and networking using the [agent guides](../guides/agents/index.md). Ordinary Host Sessions write through by default; file review and acceptance require explicit staging.
 
 “Hands-off vibe coding. Coding without sandbox approvals.” describes one feature of Agent style stagebox within the sandbox framework. A verified agent/version/configuration matrix for approval-free operation is not yet published. Initial authentication, external-write controls, and final result review still need explicit handling.
 

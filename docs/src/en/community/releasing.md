@@ -35,10 +35,12 @@ Before pushing the first release tag, verify that the `pvisor-sandbox` Trusted P
 ## Prepare a release
 
 1. Set the same `X.Y.Z` version in `pyproject.toml`, the workspace package section of `Cargo.toml` and `pvisor/__init__.py`.
-2. Refresh local workspace versions in the lockfile without upgrading dependencies:
+2. Refresh the Rust and Python lockfiles for the package version, then run the release version check:
 
    ```bash
    cargo metadata --format-version 1 >/dev/null
+   uv lock
+   mise run check-release-version
    ```
 
 3. Commit version changes and merge into `main`. The workflow rejects tags whose commit is not reachable from `main`.
@@ -121,7 +123,10 @@ separate hardware evidence.
 
 Release-set validation requires exactly one supported wheel per platform,
 matching versions, valid metadata and bounded artifact sizes. Both platform
-acceptances and the complete set must pass before either publication channel.
+acceptances and the complete set must pass before publication. The verifier
+checks each platform receipt against the source commit and SHA-256 of the exact
+wheel to ship. Windows WHP CI validates a source-built profile and produces no
+stable Windows package.
 
 Native archives are also tested on the build runners through a Homebrew-style symlink layout, including host execution and companion discovery. Archives copy signed macOS binaries unchanged; their guest kernel is embedded and the provenance receipt remains beside the executables. The stable Homebrew session downloads the published archive, installs it, removes group/other write permission from the runner's Cellar, and runs `brew test`. Formula tests check versions, protocol and companion help inside Homebrew's sandbox. The session then executes a real host Session outside that sandbox, checks its exit status and `hello` output, and uninstalls the formula before updating the tap. Homebrew's Seatbelt sandbox cannot nest pVisor's; installation permissions are covered in the [installation guide](../start/installation.md). Linux Homebrew installation and upgrade/rollback acceptance still need native coverage.
 
@@ -181,6 +186,6 @@ Keep the initial matrix at Linux x86_64 and macOS arm64. Add native acceptance b
 
 ### CLI, protocols and SDKs
 
-Running an existing Agent CLI needs no language SDK: pVisor starts the command directly, regardless of the Agent's implementation language. Platform integrations can initially use documented commands, exit codes and [JSON output](../reference/json-output.md), pinning versions according to the [compatibility boundaries](../reference/stability.md). Complete schemas and stable cross-version protocols still need work.
+Running an existing Agent CLI needs no language SDK: pVisor starts the command directly, regardless of the Agent's implementation language. Platform integrations can initially use documented commands, exit codes and [JSON output](../reference/json-output.md) and [validate the integration](../reference/stability.md) with a representative task.
 
 First settle structured contracts for startup, cancellation, status, events and file review, then choose a TypeScript or Python SDK based on actual integration users. An npm entry point can distribute only the Rust native CLI; it requires no TypeScript rewrite and does not imply an SDK exists. An SDK is not a prerequisite for the current CLI release.
