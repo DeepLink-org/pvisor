@@ -462,7 +462,10 @@ pub(crate) fn main() -> anyhow::Result<()> {
         Command::Spawn(run) => {
             finish(host_service::call(host::SessionCommand::Run(run))?);
         }
-        Command::Fork(args) => finish(host_service::call(host::SessionCommand::Fork(args))?),
+        Command::Fork(args) => {
+            args.validate_physical_restore()?;
+            finish(host_service::call(host::SessionCommand::Fork(args))?);
+        }
         Command::Apply(args) => finish(apply::run(args)),
         Command::Drop(args) => finish(host_service::call(host::SessionCommand::Drop(args))?),
         Command::Status(args) => {

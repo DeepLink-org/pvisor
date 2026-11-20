@@ -567,6 +567,10 @@ impl VmExecutor {
         super::checkpoint::compatibility(firmware.as_deref())
     }
     pub fn new(mut settings: VmSettings) -> anyhow::Result<Self> {
+        anyhow::ensure!(
+            settings.restore_physical_pool.is_none(),
+            "CAPABILITY_UNSUPPORTED: physical restore pool requires a native execution fork"
+        );
         // The host environment alias is consumed once, at admission. Explicit settings
         // win; the child receives only the normalized descriptor.
         resolve_ram_settings(&mut settings, env::os(POOL_ENV))?;
@@ -765,6 +769,7 @@ impl VmExecutor {
         checkpoint: pvisor_core::operation::ExecutionCheckpoint,
         storage: &Path,
     ) -> anyhow::Result<(Self, crate::OverlayHint)> {
+        settings.check_physical_restore(&checkpoint)?;
         anyhow::ensure!(
             settings.prepared_rootfs.is_none(),
             "prepared rootfs cannot override a restored VM"

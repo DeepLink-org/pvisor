@@ -74,6 +74,9 @@ pub struct ForkOptions {
     pub name: Option<String>,
     pub ram_storage: Option<SnapshotRamStorage>,
     pub eager_ram: bool,
+    /// Explicit physical pool socket for an indexed Raw execution fork.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub restore_physical_pool: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

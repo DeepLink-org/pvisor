@@ -561,6 +561,7 @@ async fn owned_workspace_native_restore_services_refuse_before_launch_or_stage_m
             name: None,
             ram_storage: None,
             eager_ram: false,
+            restore_physical_pool: None,
             request_id: None,
         },
         |_| async { panic!("fresh-only fork must not invoke a launcher") },

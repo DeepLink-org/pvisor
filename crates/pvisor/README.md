@@ -2563,6 +2563,13 @@ node-owned views, compressed snapshots and other platforms retain their previous
 path. This optimization does not enable offload on restored COW memory and does
 not promise a measured total-memory saving before workload validation.
 
+An explicit execution-fork Physical pool socket is part of durable request identity.
+The runtime derives the child-only setting from the request and uses that same
+configuration for restore and the child Session. Omission leaves sharing disabled
+for descendants. New requests with that setting return `CAPABILITY_UNSUPPORTED`
+before child admission pending qualification of Physical pager attachment to
+indexed Raw RAM.
+
 ### Existing immutable OCI pool objects
 
 Filesystem object publication detects an existing regular object before writing

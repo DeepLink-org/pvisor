@@ -19,6 +19,9 @@ pub struct ExecutionForkRequest {
     pub name: Option<String>,
     pub ram_storage: Option<SnapshotRamStorage>,
     pub eager_ram: bool,
+    /// Absolute pool socket path for lazy native indexed Raw restore.
+    /// The socket is part of request identity and applies only to the child.
+    pub restore_physical_pool: Option<PathBuf>,
     pub request_id: Option<String>,
 }
 #[derive(Debug, serde::Serialize)]
@@ -39,6 +42,24 @@ impl SessionService {
         F: FnOnce(RestoredExecution) -> Fut,
         Fut: Future<Output = anyhow::Result<i32>>,
     {
+        if let Some(pool) = &args.restore_physical_pool {
+            anyhow::ensure!(
+                args.checkpoint.is_some() && !args.eager_ram && args.ram_storage.is_none(),
+                "physical restore requires an existing checkpoint and lazy RAM"
+            );
+            anyhow::ensure!(
+                cfg!(all(target_os = "linux", target_arch = "x86_64")),
+                "CAPABILITY_UNSUPPORTED: physical restore requires Linux x86_64"
+            );
+            anyhow::ensure!(
+                pool.is_absolute()
+                    && pool.file_name().is_some()
+                    && !pool
+                        .components()
+                        .any(|component| component == std::path::Component::ParentDir),
+                "physical restore requires an absolute pool socket path without parent traversal"
+            );
+        }
         let source = Self::resolve(context, &args.session)?;
         anyhow::ensure!(
             args.checkpoint.is_none() || args.ram_storage.is_none(),
@@ -57,6 +78,7 @@ impl SessionService {
             name: args.name.clone(),
             ram_storage: args.ram_storage,
             eager_ram: args.eager_ram,
+            restore_physical_pool: args.restore_physical_pool.clone(),
         };
         let template = session_execution::session(&source)?;
         let selection_lease = template.lock()?;
@@ -119,6 +141,64 @@ impl SessionService {
         .await
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::child_config;
+    use crate::{RunConfig, Session, runtime::session_execution::ForkOptions};
+
+    #[test]
+    fn physical_restore_fork_projects_and_persists_the_child_configuration() {
+        let root = tempfile::tempdir().unwrap();
+        let parent = RunConfig::default();
+        let mut options: ForkOptions = serde_json::from_value(serde_json::json!({
+            "checkpoint": "raw", "eager_ram": false
+        }))
+        .unwrap();
+        assert!(options.restore_physical_pool.is_none());
+        assert!(
+            serde_json::to_value(&options)
+                .unwrap()
+                .get("restore_physical_pool")
+                .is_none()
+        );
+        assert_eq!(child_config(&parent, &options).vm, parent.vm);
+
+        let pool = root.path().join("physical.sock");
+        options.restore_physical_pool = Some(pool.clone());
+        let config = child_config(&parent, &options);
+        assert_eq!(
+            config.vm.restore_physical_pool.as_deref(),
+            Some(pool.as_path())
+        );
+        assert_eq!(config.vm.memory_pool, parent.vm.memory_pool);
+        assert!(parent.vm.restore_physical_pool.is_none());
+        let child = Session::new(
+            "child".into(),
+            root.path().into(),
+            None,
+            config,
+            pvisor_core::RunSpec::process("child", "sh", "/bin/sh"),
+        )
+        .unwrap();
+        child.write().unwrap();
+        assert_eq!(child.current().unwrap().config().vm, child.config().vm);
+
+        options.restore_physical_pool = None;
+        let next = child_config(child.config(), &options);
+        assert!(next.vm.restore_physical_pool.is_none());
+    }
+}
+
+fn child_config(
+    parent: &crate::RunConfig,
+    options: &crate::runtime::session_execution::ForkOptions,
+) -> crate::RunConfig {
+    let mut config = parent.clone();
+    config.vm.restore_physical_pool = options.restore_physical_pool.clone();
+    config
+}
+
 async fn fork_execution_from_checkpoint<F, Fut>(
     context: &ServiceContext<'_>,
     args: ExecutionForkRequest,
@@ -151,6 +231,8 @@ where
         );
     }
     parent.checkpoint(&checkpoint.snapshot_id)?;
+    let config = child_config(parent.config(), &options);
+    config.vm.check_physical_restore(&checkpoint)?;
     let run_id = format!("run-{}", uuid::Uuid::new_v4());
     let stage = fork_stage_candidate(
         &args
@@ -176,8 +258,8 @@ where
         },
     })?;
     let (mut executor, mut overlay) =
-        VmExecutor::restore(parent.config().vm.clone(), checkpoint.clone(), &stage)?;
-    executor = executor.with_features(parent.config().features.clone())?;
+        VmExecutor::restore(config.vm.clone(), checkpoint.clone(), &stage)?;
+    executor = executor.with_features(config.features.clone())?;
     if args.eager_ram {
         executor.materialize_restore_ram(&stage)?;
     }
@@ -196,13 +278,7 @@ where
             serde_json::json!(name),
         );
     }
-    let mut child = crate::Session::new(
-        run_id.clone(),
-        stage.clone(),
-        None,
-        parent.config().clone(),
-        spec,
-    )?;
+    let mut child = crate::Session::new(run_id.clone(), stage.clone(), None, config, spec)?;
     child.apply(crate::runtime::execution::SessionTransition::StoreBound {
         store: &stage.join("execution-snapshots"),
     })?;

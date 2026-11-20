@@ -61,6 +61,129 @@ fn durable_request_ids_share_core_bounds_and_reject_controls() {
     }
 }
 
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[tokio::test]
+async fn physical_restore_fork_blocks_new_admission_and_fences_request_id_replay() {
+    use crate::runtime::execution::SessionTransition;
+    use crate::runtime::session_execution::{ForkOptions, ForkRequest};
+    use pvisor_core::operation::{ExecutionCheckpoint, SnapshotRamStorage};
+
+    let root = tempfile::tempdir().unwrap();
+    let parent_stage = root.path().join("parent");
+    let child_stage = root.path().join("child");
+    let record = fixture(&parent_stage);
+    let mut config = crate::RunConfig::default();
+    config.run.executor = crate::RunExecutorKind::Vm;
+    config.overlaynet.mode = crate::OverlayNetMode::Off;
+    let mut parent = Session::new(
+        record.run_id.clone(),
+        parent_stage.clone(),
+        record.execution_id.clone(),
+        config,
+        pvisor_core::RunSpec::process(record.run_id.clone(), "sh", "/bin/sh"),
+    )
+    .unwrap();
+    let checkpoint = ExecutionCheckpoint {
+        snapshot_id: "a".repeat(64),
+        store: parent_stage.join("store"),
+        source_run_id: record.run_id.clone(),
+        source_execution_id: record.execution_id.clone().unwrap(),
+        created_at_unix_ms: 1,
+        ram_storage: SnapshotRamStorage::Raw,
+    };
+    parent
+        .apply(SessionTransition::StoreBound {
+            store: &checkpoint.store,
+        })
+        .unwrap();
+    parent
+        .apply(SessionTransition::CaptureAdmitted {
+            id: "capture",
+            suspend: false,
+            ram_storage: checkpoint.ram_storage,
+        })
+        .unwrap();
+    parent
+        .apply(SessionTransition::CaptureAcknowledged {
+            id: "capture",
+            checkpoint: &checkpoint,
+        })
+        .unwrap();
+    parent.write().unwrap();
+    let initial_parent = std::fs::read(parent_stage.join("session.json")).unwrap();
+
+    let pool = root.path().join("retired-pool/pool.sock");
+    let request = |path| ExecutionForkRequest {
+        session: selection(&record),
+        checkpoint: Some(checkpoint.snapshot_id.clone()),
+        stage: Some(child_stage.clone()),
+        name: None,
+        ram_storage: None,
+        eager_ram: false,
+        restore_physical_pool: path,
+        request_id: Some("fork".into()),
+    };
+    let context = ServiceContext::default();
+    let launch = |_| async { panic!("blocked or replayed request must never launch a VM") };
+    let error = SessionService::fork_execution(&context, request(Some(pool.clone())), launch)
+        .await
+        .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("no qualified Physical pager attachment"),
+        "{error:#}"
+    );
+    assert!(!child_stage.exists());
+    assert!(!checkpoint.store.exists());
+    assert_eq!(
+        std::fs::read(parent_stage.join("session.json")).unwrap(),
+        initial_parent
+    );
+
+    let mut child_record = fixture(&child_stage);
+    child_record.run_id = "child-session".into();
+    child_record.session_id = child_record.run_id.clone();
+    child_record.write().unwrap();
+    let receipt = ForkRequest {
+        options: ForkOptions {
+            checkpoint: Some(checkpoint.snapshot_id.clone()),
+            stage: Some(child_stage.clone()),
+            name: None,
+            ram_storage: None,
+            eager_ram: false,
+            restore_physical_pool: Some(pool.clone()),
+        },
+        stage: child_stage.clone(),
+        session_id: child_record.run_id.clone(),
+        checkpoint_id: checkpoint.snapshot_id.clone(),
+    };
+    parent
+        .apply(SessionTransition::ForkAdmitted {
+            id: "fork",
+            request: &receipt,
+        })
+        .unwrap();
+    parent.write().unwrap();
+
+    let response = SessionService::fork_execution(&context, request(Some(pool.clone())), launch)
+        .await
+        .unwrap();
+    assert!(
+        matches!(response, ExecutionForkResponse::AlreadyAdmitted { session_id, stage }
+        if session_id == child_record.run_id && stage == child_stage)
+    );
+    for changed in [Some(pool.with_file_name("other.sock")), None] {
+        let error = SessionService::fork_execution(&context, request(changed), launch)
+            .await
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("REQUEST_ID_CONFLICT"),
+            "{error:#}"
+        );
+    }
+}
+
 #[test]
 fn durable_target_rejects_stale_session_execution_and_generation() {
     let root = tempfile::tempdir().unwrap();
@@ -936,6 +1059,7 @@ async fn resume_replay_is_fenced_before_embedded_launcher() {
             ram_storage: None,
             request_id: Some("replay".into()),
             eager_ram: false,
+            restore_physical_pool: None,
         },
         |_| async {
             launched.store(true, Ordering::SeqCst);

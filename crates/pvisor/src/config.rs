@@ -317,6 +317,10 @@ pub struct VmSettings {
     /// the latter requires kernel-fault userfaultfd and retains local recovery
     /// after service loss. Physical/legacy pools must stay alive. Disabled by default.
     pub memory_pool: Option<PathBuf>,
+    /// Physical pool requested for a native execution fork from indexed Raw RAM.
+    /// Restore rejects this setting until it can attach a Physical pager to indexed Raw RAM.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub restore_physical_pool: Option<PathBuf>,
     /// Host-owned immutable filesystem pool for native execution checkpoints.
     /// Must be independent of every VM-writable root and on the Session's volume.
     /// Linux x86-64 no-network snapshot profile only; omitted keeps owned copies.
@@ -349,6 +353,32 @@ pub struct VmSettings {
 }
 
 impl VmSettings {
+    pub(crate) fn check_physical_restore(
+        &self,
+        checkpoint: &pvisor_core::operation::ExecutionCheckpoint,
+    ) -> anyhow::Result<()> {
+        if self.restore_physical_pool.is_some() {
+            use pvisor_core::operation::SnapshotRamStorage;
+            checkpoint.validate()?;
+            anyhow::ensure!(
+                cfg!(all(target_os = "linux", target_arch = "x86_64"))
+                    && checkpoint.ram_storage == SnapshotRamStorage::Raw,
+                "CAPABILITY_UNSUPPORTED: physical restore requires native Linux x86_64 Raw RAM"
+            );
+            anyhow::ensure!(
+                !self.cold_pager_requested()
+                    && !self.ram_compression
+                    && self.ram_backing.is_none()
+                    && !self.ram_dedup,
+                "CAPABILITY_UNSUPPORTED: physical restore conflicts with an existing pager, compression, writable RAM backing or kernel dedup"
+            );
+            anyhow::bail!(
+                "CAPABILITY_UNSUPPORTED: indexed Raw RAM has no qualified Physical pager attachment"
+            );
+        }
+        Ok(())
+    }
+
     pub(crate) fn cold_pager_requested(&self) -> bool {
         self.cold_ram_compression || self.memory_pool.is_some()
     }
@@ -391,6 +421,7 @@ impl Default for VmSettings {
             cold_ram_compression: false,
             ram_dedup: false,
             memory_pool: None,
+            restore_physical_pool: None,
             snapshot_filesystem_pool: None,
             node_socket: None,
             rootfs: None,

@@ -48,6 +48,10 @@ pub(crate) struct ForkArgs {
     /// Read all captured RAM before starting an execution branch; default is lazy.
     #[arg(long)]
     eager_ram: bool,
+    /// Absolute physical pool socket for lazy indexed Raw execution fork.
+    #[arg(long, value_name = "SOCKET", hide = true)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    restore_physical_pool: Option<PathBuf>,
     /// Durable idempotency key for an execution branch.
     #[arg(long)]
     request_id: Option<String>,
@@ -68,9 +72,24 @@ impl ForkArgs {
     pub(in crate::cli) fn pin_selection(&mut self, path: PathBuf) {
         self.source = path;
     }
+
+    pub(in crate::cli) fn validate_physical_restore(&self) -> anyhow::Result<()> {
+        if self.restore_physical_pool.is_some() {
+            anyhow::ensure!(
+                self.restores_execution(),
+                "--restore-physical-pool requires --state execution"
+            );
+            anyhow::ensure!(
+                self.checkpoint.is_some() && !self.eager_ram && self.ram_storage.is_none(),
+                "--restore-physical-pool requires an existing --checkpoint and lazy RAM"
+            );
+        }
+        Ok(())
+    }
 }
 
 pub(in crate::cli) async fn fork(args: ForkArgs) -> anyhow::Result<i32> {
+    args.validate_physical_restore()?;
     anyhow::ensure!(
         args.state == crate::cli::checkpoint::Kind::Execution
             || args.request_id.is_none() && !args.eager_ram,
@@ -298,6 +317,7 @@ async fn fork_execution(args: ForkArgs, source: RunRecord) -> anyhow::Result<i32
             name: args.name,
             ram_storage: args.ram_storage.map(Into::into),
             eager_ram: args.eager_ram,
+            restore_physical_pool: args.restore_physical_pool,
             request_id: args.request_id,
         },
         execute_restored,
@@ -460,6 +480,60 @@ mod tests {
     use pvisor::session_execution::{
         ForkOptions, ForkRequest, ResumeRequest, SESSION_SCHEMA_VERSION,
     };
+
+    #[tokio::test]
+    async fn physical_restore_fork_cli_requires_execution_and_lazy_named_checkpoint() {
+        use clap::Parser;
+
+        #[derive(Parser)]
+        struct Frontend {
+            #[command(flatten)]
+            args: ForkArgs,
+        }
+
+        let parse = |options: &[&str]| {
+            Frontend::try_parse_from(
+                [
+                    "pvisor",
+                    "missing-source",
+                    "--restore-physical-pool",
+                    "/pool/socket",
+                ]
+                .into_iter()
+                .chain(options.iter().copied()),
+            )
+            .unwrap()
+            .args
+        };
+        for (options, expected) in [
+            (&["--checkpoint", "id"][..], "requires --state execution"),
+            (
+                &["--state", "execution"][..],
+                "requires an existing --checkpoint",
+            ),
+            (
+                &["--state", "execution", "--checkpoint", "id", "--eager-ram"][..],
+                "requires an existing --checkpoint and lazy RAM",
+            ),
+        ] {
+            assert!(
+                fork(parse(options))
+                    .await
+                    .unwrap_err()
+                    .to_string()
+                    .contains(expected)
+            );
+        }
+
+        let args = parse(&["--state", "execution", "--checkpoint", "id"]);
+        args.validate_physical_restore().unwrap();
+        let encoded = serde_json::to_value(crate::cli::host::SessionCommand::Fork(args)).unwrap();
+        assert_eq!(encoded["args"]["restore_physical_pool"], "/pool/socket");
+        let decoded: crate::cli::host::SessionCommand =
+            serde_json::from_value(encoded.clone()).unwrap();
+        assert_eq!(serde_json::to_value(decoded).unwrap(), encoded);
+    }
+
     fn write_session(session: &Session) {
         pvisor::write_private_json(&session.root().join("session.json"), session).unwrap();
     }
@@ -535,6 +609,7 @@ mod tests {
             name: None,
             ram_storage: None,
             eager_ram: false,
+            restore_physical_pool: None,
             request_id: None,
             output_dir: root.path().into(),
             command: vec![],
@@ -630,6 +705,7 @@ mod tests {
                         name: None,
                         ram_storage: None,
                         eager_ram: false,
+                        restore_physical_pool: None,
                         request_id: Some("retry".into()),
                         output_dir: root.path().into(),
                         command: vec![],
@@ -668,6 +744,7 @@ mod tests {
                 name: None,
                 ram_storage: None,
                 eager_ram: false,
+                restore_physical_pool: None,
             },
             stage: root.path().join("unconfirmed-child"),
             session_id: "child".into(),
@@ -695,6 +772,7 @@ mod tests {
             name: None,
             ram_storage: None,
             eager_ram: false,
+            restore_physical_pool: None,
             request_id: Some("replay".into()),
             output_dir: root.path().into(),
             command: vec![],
