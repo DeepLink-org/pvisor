@@ -133,3 +133,22 @@ pvisor drop ../stage
 显式指定的 `guest.ram` 是调用方保存的 backing 文件，确认 VM 已退出且不再需要后自行清理。中途终止用 `pvisor kill ../stage`；5 分钟任务超时在暂停期间仍计时。
 
 此流程于 2026-10-24 在 Linux x86_64/KVM、CLI `0.3.0+g35.b318715` 上验证：pause／offload 后计数停止，恢复后继续，Execution 不变，内存校验通过且退出码为 0。这是单 VM 功能验证，不是并发密度或自动模型等待管理测试。
+
+## 管理容器 VM 内存 {#container-memory}
+
+在 Linux x86_64/KVM 上，用 `pvisor run --branchable --network none` 启动后台
+源容器，不添加挂载、端口发布、重启策略或健康检查。在 guest 命令空闲时运行
+`pvisor container branch SOURCE --offload --names a b`。子分支共用一份密封的
+RAM 基底，各自保留私有写入与文件系统状态。回收内存需要磁盘支撑的容器存储。
+子分支 `a` 中的命令结束后，运行 `pvisor container offload a` 并等待成功，
+在发送下一条 guest 命令前运行 `pvisor container resume a`。源容器删除后子分支仍可
+运行，子分支无法用这些文件冷启动。
+[容器分叉契约](https://github.com/DeepLink-org/pvisor/blob/main/crates/pvisor/README.md#fork-a-running-oci-session-on-one-host)
+
+对普通 Linux x86_64 OCI 容器 VM，`pvisor run --managed-memory` 选用原始文件
+支撑的 RAM，并提供 offload/resume 控制。调用方可将 VM 显式登记到
+`pvisor-daemon pressure-serve`，使用委派的 cgroup v2 子树。调用方报告安全等待点，
+并在派发工作前等待许可就绪。等待期间禁止直接 exec 或在 guest 中继续后台工作。
+服务仅管理已登记的 VM，并保留原 Execution 身份。OpenSandbox/E2B SDK 的
+生命周期调用有独立入口。
+[压力调度与 owner 协议](https://github.com/DeepLink-org/pvisor/blob/main/crates/pvisor-daemon/README.md#opt-in-pressure-scheduling-for-ordinary-oci-executions)

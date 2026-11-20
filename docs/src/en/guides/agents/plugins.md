@@ -6,16 +6,13 @@ description: Install pVisor through Homebrew or pip, add Pi, DSH and Codex plugi
 
 Call pVisor staged tasks from your Agent, then hand off results through the native `spawn → status/review → apply/drop` workflow. Install the runtime through Homebrew or pip; npm distributes only the Agent adapters.
 
-!!! note "Upgrade from 0.1.0"
-    Use plugin 0.1.1 or newer for Homebrew/pip runtimes. The published 0.1.0 package still requires obsolete npm runtime packages; reinstalling it does not fix that dependency. Remote marketplace tags require separate publication; npm publication alone does not make those refs available.
-
-The output, offline Rust, fanout and batch-cleanup features started in plugin 0.1.2; later test builds improved drop and apply presentation. Version 0.1.6 added native Host workspace fork, scoped artifact export and structured review. Version 0.1.8 fixed DSH monitor discovery, and 0.1.11 fixed refresh churn. The current 0.1.12 test build presents task runs and per-file inline diffs. Registry install commands require publication; successful source tests are not publication evidence.
+Registry installation requires the npm package to be published. Remote marketplace refs are published separately.
 
 ## Install {#install}
 
 Prepare Node.js 22.19+, your Agent host and a separate pVisor installation through [Homebrew or pip](../../start/installation.md). Host staging supports Linux x64 and macOS arm64 and requires the [Host staging prerequisites](../../start/installation.md#local-prerequisites). The plugin does not install a runtime, elevate privileges to install FUSE, enable extensions or change namespace policy.
 
-Launch the Agent host with `pvisor` on its PATH. Desktop apps may not inherit your terminal PATH; set `PVISOR_PLUGIN_BINARY` in the host environment to the absolute installed CLI path if needed. The plugin ignores empty and relative PATH entries and checks required CLI flags before work. Incompatible runtimes fail with upgrade instructions; older releases such as 0.3.1 without selective apply are insufficient. Plugin and runtime versions are independent.
+Launch the Agent host with `pvisor` on its PATH. Desktop apps may not inherit your terminal PATH; set `PVISOR_PLUGIN_BINARY` in the host environment to the absolute installed CLI path if needed. The plugin ignores empty and relative PATH entries and checks required CLI flags before work.
 
 Choose the hosts you actually use:
 
@@ -182,13 +179,7 @@ For repeated external commands in one long-lived VM, Linux [container staged bin
 Plugin 0.1.12 provides a read-only **pVisor** page in the right Sidebar guide
 (also reachable through its tab strip's add control). Restart DSH Web and
 refresh the page after installing. The browser extension targets DSH
-**0.2.2-rc.1**; check `dsh --version`. Earlier alpha tests cover only the tool
-interface; UI compatibility and Desktop/Electron operation remain unverified.
-
-Upgrade from 0.1.7: its bundle mounted the named `/dsh` subpath, which DSH
-0.2.2-rc.1 skips during browser-module discovery. Tools can work while the
-monitor is absent. Version 0.1.8 mounts the package root instead, with `/dsh`
-retained as an alias. Stop/restart DSH Web and refresh the browser after updating.
+**0.2.2-rc.1**. Desktop/Electron operation remains unverified.
 
 The panel shows the current Session project's task pages, separate execution
 and stage states, structured candidate entries and on-demand terminal output.
@@ -210,8 +201,7 @@ not a separate unauthenticated server or browser filesystem access.
 
 The panel uses DSH's shared Button/Pill/Tag controls and theme tokens.
 Tasks sort newest creation first before pagination, with native command
-excerpts and times. New records carry adapter creation time; legacy record
-birthtime (or mtime fallback) is an estimate marked `≈`. `pvisor_tasks` keeps
+excerpts and times. Estimated creation times are marked `≈`. `pvisor_tasks` keeps
 its ID-order default; request `order: "newest"` and retain that order across
 cursor requests to use this ordering.
 
@@ -300,7 +290,7 @@ The approval card is a short paragraph that remains readable when the host colla
 
 The separate preview result retains project/stage, requested paths, actual selected changes by kind, required dependencies, remaining counts and scoped text detail. Unselected inventory is not presented as an approved change set. A blocked preview lists candidate inventory and blockers and states that this request wrote no project files; no approval is requested.
 
-The adapter reads native JSON and scoped text dry runs separately because runtime 0.3.2 rejects `--json` with `--diff`. It rechecks the plan after collecting text. A changed plan, malformed response, mismatched source/project or failed/truncated detail collection cannot open an approval prompt. This checks display consistency during collection, not a transaction or a reservation while the user decides. Execution still performs native conflict checks.
+The adapter reads native JSON and scoped text dry runs separately. It rechecks the plan after collecting text. A changed plan, malformed response, mismatched source/project or failed/truncated detail collection cannot open an approval prompt. This checks display consistency during collection, not a transaction or a reservation while the user decides. Execution still performs native conflict checks.
 
 Machine-readable JSON remains in `stdout`; human display uses `summary`. `diff`, `preview_state` and `approval_ready` are separate fields. Large inventories and excerpts explicitly say when display is truncated. Missing text diff is not evidence that content is unchanged, and preview does not run tests.
 
@@ -325,9 +315,8 @@ Each task gets a fresh private HOME and XDG state paths, without host HOME login
 
 ### VM-first policy {#execution-policy}
 
-The source implementation requires a runtime with `vm-check --json`;
-availability in the published 0.3.2 binary is unverified. Configure a prepared Linux
-rootfs before starting the Agent host:
+Run `vm-check --json` and configure a prepared Linux rootfs before starting
+the Agent host:
 
 ```sh
 pvisor vm-check --json
@@ -339,7 +328,7 @@ the Agent host's permissions. Apple Silicon creates/destroys an HVF VM; this
 path has not been validated on this Linux host. Firmware discovery is separate:
 `bundled_unloaded` is not loaded-library or guest-boot evidence.
 Missing virtualization, firmware or rootfs blocks default execution. A malformed,
-failed or interrupted preflight requires correction/upgrade, not downgrade.
+failed or interrupted preflight blocks launch.
 The plugin never changes device permissions, downloads images or uses host `/`
 as an implicit rootfs. Prepare guest tools and dependencies inside the rootfs.
 
@@ -352,8 +341,7 @@ env PVISOR_PLUGIN_ALLOW_HOST_FALLBACK=true dsh web
 
 Only `auto` honors this permission after a valid negative preflight.
 `PVISOR_PLUGIN_EXECUTION=vm` never falls back; `PVISOR_PLUGIN_EXECUTION=host`
-explicitly retains the previous safe Host workflow and works without the new
-VM preflight command. The same variables apply to Pi and Codex/MCP.
+selects safe Host execution and skips the VM preflight. The same variables apply to Pi and Codex/MCP.
 VM launch/boot failure never causes a Host retry. Doctor distinguishes
 preflight from its optional real staged probe; task rows show the selected
 backend and authorized fallback, not proof a failed task booted.

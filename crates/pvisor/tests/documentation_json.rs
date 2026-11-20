@@ -3,10 +3,7 @@ use pvisor::{RUN_BUNDLE_FILENAME, RunBundle};
 use serde_json::Value;
 
 fn sample() -> Value {
-    serde_json::from_str(include_str!(
-        "../../../docs/overrides/assets/examples/json/run-bundle.json"
-    ))
-    .unwrap()
+    serde_json::from_str(include_str!("fixtures/bundles/v4-review.json")).unwrap()
 }
 
 fn read(value: &Value) -> anyhow::Result<RunBundle> {
@@ -100,10 +97,8 @@ fn documented_omission_is_different_from_an_observed_zero() {
             .is_none()
     );
     assert_eq!(value["run"]["exit_code"], 0);
-    let status: Value = serde_json::from_str(include_str!(
-        "../../../docs/overrides/assets/examples/json/status.json"
-    ))
-    .unwrap();
+    let status: Value =
+        serde_json::from_str(include_str!("fixtures/bundles/legacy-status.json")).unwrap();
     assert!(status.get("schema_version").is_none());
     assert_eq!(status["observations"]["network"]["requests_seen"], 0);
     let checkpoint: Value = serde_json::from_str(include_str!(

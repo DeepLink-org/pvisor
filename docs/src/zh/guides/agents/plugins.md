@@ -6,16 +6,13 @@ description: 通过 Homebrew 或 pip 安装 pVisor，接入 Pi、DSH、Codex 插
 
 在 Agent 中调用 pVisor 暂存任务，完成后使用原生 `spawn → status/review → apply/drop` 流程交接成果。通过 Homebrew 或 pip 安装 runtime，npm 仅分发 Agent 适配器。
 
-!!! note "从 0.1.0 升级"
-    使用 0.1.1 或更新版本的插件接入 Homebrew/pip runtime。已发布的 0.1.0 仍依赖旧 npm runtime 包，重装不能解决该依赖。远程 marketplace tag 需要单独发布；仅发布 npm 包不会让这些 ref 自动可用。
-
-下述输出收集、离线 Rust、fanout 和批量清理功能始于插件 0.1.2，后续测试版改进了 drop 和 apply 展示。0.1.6 增加原生 Host workspace fork、受控产物导出和结构化 review。0.1.8 修复 DSH 监控面板的发现问题，0.1.11 修复后台刷新痕迹。当前 0.1.12 测试版以运行记录和逐文件内联 diff 展示任务。Registry 安装命令需要先完成发布，源码测试通过不代表已经发布。
+从 registry 安装需要 npm 包已发布，远程 marketplace ref 单独发布。
 
 ## 安装 {#install}
 
 准备 Node.js 22.19+、目标 Agent，并通过 [Homebrew 或 pip](../../start/installation.md) 单独安装 pVisor。Host 暂存支持 Linux x64、macOS arm64，需要满足 [Host 暂存前提](../../start/installation.md#local-prerequisites)。插件不会安装 runtime、自行提权安装 FUSE、启用扩展或改变 namespace 策略。
 
-启动 Agent 宿主时，确保其 PATH 中可以找到 `pvisor`。桌面应用可能不继承终端 PATH，必要时在宿主环境中设置 `PVISOR_PLUGIN_BINARY` 为已安装 CLI 的绝对路径。插件忽略空或相对 PATH 项，并在工作前检查必需的 CLI 参数。不兼容时拒绝执行并提示升级；缺少选择性 apply 的旧版（例如 0.3.1）不满足要求。插件与 runtime 独立版本管理。
+启动 Agent 宿主时，确保其 PATH 中可以找到 `pvisor`。桌面应用可能不继承终端 PATH，必要时在宿主环境中设置 `PVISOR_PLUGIN_BINARY` 为已安装 CLI 的绝对路径。插件忽略空或相对 PATH 项，并在工作前检查必需的 CLI 参数。
 
 选择你实际使用的宿主：
 
@@ -181,13 +178,7 @@ Export 的传输 watchdog 为 120 秒。取消进程或丢失/无效/截断的�
 
 插件 0.1.12 在右侧栏导航页提供只读 **pVisor** 页面，
 也可通过标签栏的新增入口打开。安装后重启 DSH Web 并刷新页面。
-浏览器扩展以 DSH **0.2.2-rc.1** 为基线，请先检查 `dsh --version`。
-旧 alpha 版仅验证了工具接口；UI 兼容性和 Desktop/Electron 运行仍未验证。
-
-从 0.1.7 升级：旧包通过 `/dsh` 包子路径挂载，DSH 0.2.2-rc.1
-扫描浏览器模块时会跳过这种名称，所以工具可用而面板缺失。
-0.1.8 改为挂载包根入口，保留 `/dsh` 别名。更新后停止并重启 DSH Web，
-再刷新浏览器。
+浏览器扩展面向 DSH **0.2.2-rc.1**。Desktop/Electron 运行尚未验证。
 
 面板显示当前 Session 项目的任务分页，分别展示执行状态和 stage 状态、
 结构化候选条目以及按需读取的终态输出。本页包含 live/运行中/未知任务时，
@@ -205,8 +196,7 @@ Export 的传输 watchdog 为 120 秒。取消进程或丢失/无效/截断的�
 不另开无认证服务，也不让浏览器直接读取文件系统。
 
 面板使用 DSH 公共 Button/Pill/Tag 控件和主题变量。任务在分页前按
-创建时间从新到旧排序，显示原生命令摘录和时间。新记录保存适配器创建时间；
-旧记录以记录文件出生时间（不可用时取修改时间）估计，标注 `≈`。
+创建时间从新到旧排序，显示原生命令摘录和时间。估算的创建时间标注为 `≈`。
 `pvisor_tasks` 默认仍按 ID 排序；传 `order: "newest"` 可启用创建时间排序，
 后续 cursor 请求应保持相同 order。
 
@@ -287,7 +277,7 @@ DSH 的 `pvisor_apply` 在展示原生预览后要求 Harness 的 `Allow once`�
 
 独立的预览结果仍保留项目/stage、请求路径、按类型列出的实际选中变更、必需依赖、剩余数量及所选范围的文本详情。未选中的 inventory 不会被显示为已获准的变更集合。被阻塞的预览列出候选 inventory 和 blocker，明确说明本次请求未写入项目文件，不发起审批。
 
-Runtime 0.3.2 不允许 `--json` 与 `--diff` 同用，适配器因此分别读取原生 JSON 和所选范围的文本 dry run，收集文本后再核对计划。计划变化、响应损坏、来源/项目不匹配，以及详情收集失败或截断，都不会打开审批框。这只检查收集期间的展示一致性，不是事务，也不在用户决定期间保留写入权。执行时仍进行原生冲突检查。
+适配器分别读取原生 JSON 和所选范围的文本 dry run，收集文本后再核对计划。计划变化、响应损坏、来源/项目不匹配，以及详情收集失败或截断，都不会打开审批框。这只检查收集期间的展示一致性，不是事务，也不在用户决定期间保留写入权。执行时仍进行原生冲突检查。
 
 机器可读 JSON 保留在 `stdout`，人工展示使用 `summary`，另有独立的 `diff`、`preview_state` 和 `approval_ready` 字段。大量变更和节选会明确标注显示截断；缺少文本 diff 不代表内容未变化，预览也不会运行测试。
 
@@ -312,8 +302,7 @@ DSH 的 `pvisor_apply` 要求提供非空 `summary` 字符串（1–512 字节�
 
 ### VM 优先策略 {#execution-policy}
 
-源码实现要求 runtime 提供 `vm-check --json`；已发布的 0.3.2
-二进制是否提供此接口尚未验证。启动 Agent 宿主前先配置准备好的 Linux rootfs：
+启动 Agent 宿主前，运行 `vm-check --json` 并配置准备好的 Linux rootfs：
 
 ```sh
 pvisor vm-check --json
@@ -324,7 +313,7 @@ Linux 预检使用 Agent 宿主的权限打开 KVM、检查 API 版本并创建�
 Apple Silicon 路径尝试创建和销毁 HVF VM，尚未在这台 Linux 主机上验证。
 Firmware 发现是独立结果：`bundled_unloaded` 不代表动态库已加载或 guest 已启动。
 缺少虚拟化能力、firmware 或 rootfs 时，默认阻止执行。预检畸形、失败或中断
-需要修复或升级，不允许降级。插件不修改设备权限、不下载镜像，也不默认将宿主
+会阻止启动。插件不修改设备权限、不下载镜像，也不默认将宿主
 `/` 当作 rootfs；guest 工具和依赖需预置在 rootfs 内。
 
 如允许降级，在 Agent 宿主启动配置中保存操作员授权，工具参数不能改变它：
@@ -335,7 +324,7 @@ env PVISOR_PLUGIN_ALLOW_HOST_FALLBACK=true dsh web
 
 仅 `auto` 在收到有效的否定预检后使用此授权。
 `PVISOR_PLUGIN_EXECUTION=vm` 始终拒绝降级；
-`PVISOR_PLUGIN_EXECUTION=host` 显式保留原安全 Host 工作流，不要求新的 VM 预检命令。
+`PVISOR_PLUGIN_EXECUTION=host` 选择安全 Host 执行并跳过 VM 预检。
 Pi、Codex/MCP 使用相同环境变量。VM 启动失败不会转到 Host 重试。
 Doctor 区分预检与可选的真实暂存 probe；任务行显示选定后端和已授权降级，
 不将后端选择当作失败任务已经启动 guest 的证明。

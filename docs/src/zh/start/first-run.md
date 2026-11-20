@@ -71,6 +71,8 @@ pvisor ps -a
 
 该模式使用容器命令管理 VM；参数与卷的持久化规则见[容器参考](../reference/cli.md#container-commands)。未配置卷的演示不需要 Session 的 review/apply/drop。
 
+需要一起运行多个服务时，可使用[实验性 Compose](../reference/cli.md#compose)。
+
 ## Agent style stagebox {#agent-style}
 
 用本机 Shell 创建两个候选文件，只把问候文件交回原目录。不需要模型账号、VM 镜像或运行中的 Daemon。以下步骤在同一个终端、同一个目录依次执行。

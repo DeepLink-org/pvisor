@@ -629,11 +629,11 @@ or evidence of completed research:
   Linked nested protocols remain owned by their definitions; this does not claim
   a full generated JSON Schema.
 - `reference/json-output`: status, review context, kill, and all five checkpoint
-  success envelopes are documented. Six downloadable outputs are collected by
-  `scripts/record-doc-json.py` from a real offline host task, nonzero exit, and
-  deadline. Provenance includes binary/source hashes and actual return codes.
-  Rust tests read the samples using the product reader and reject incompatible
-  versions and missing required receipts. Generated schemas for all nested
+  success envelopes are documented. Six downloadable outputs come from
+  `scripts/record-doc-json.py` running real offline Host tasks with success,
+  nonzero exit and timeout. Provenance records the CLI, platform, hashes and
+  return codes. Documentation tests run the published JSON filters against these
+  captures. Separate Rust fixtures exercise the durable Bundle reader. Generated schemas for all nested
   protocols and the internal whiteout sample-path issue remain outstanding.
 - `guides/ci` and `reference/exit-codes`: copyable failure/timeout commands have
   expected return codes, retained-file behavior, and real output samples.
@@ -810,19 +810,6 @@ charter and conduct reporting channel are not yet established.
 
 - Release schema files; check real output in CI.
 - Annotated minimal Bundle example.
-
-### reference/stability.md
-
-**Requirements**
-
-- Maintainer-defined version policy, including pre-1.0 incompatible changes.
-- Stability and deprecation notice period per interface.
-- Old-record handling on Bundle upgrades.
-
-**Acceptance criteria**
-
-- Maintainer confirmation.
-- Changelog marks incompatible changes accordingly.
 
 ### security/audits.md
 

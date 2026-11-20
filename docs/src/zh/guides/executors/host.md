@@ -25,7 +25,7 @@ pvisor spawn --executor host --stage ../stage-host -- /bin/sh
 
 `--safe` 在两个平台上的具体组合：
 
-- **macOS**：Seatbelt 强制暂存写入，只允许连接 pVisor 分配的 loopback 代理端口；Agent 使用临时 HOME，不能直接读取原主目录。读取范围以 Run 证据为准：当前证据把读取报告为 ambient，见[已知限制](../../security/known-limitations.md)。
+- **macOS**：Seatbelt 安装预设请求的文件系统和网络策略。依赖读取范围前，核对 Bundle 观察和实际路径授权。[执行器边界](../../security/executor-boundaries.md)
 - **Linux**：要求 rootless namespace、synthetic root、chroot、Landlock 和 HOME 写时复制视图。选择性出口通过 supervisor loopback 代理协作式转发，**直接 socket 仍可能绕过**；需要不可绕过的网络边界时，用 VM 或 deny-all。
 
 ## 已知缺口

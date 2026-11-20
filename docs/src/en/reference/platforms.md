@@ -2,7 +2,7 @@
 
 Linux x86_64 and Apple Silicon macOS have full CLI installations. Windows x86_64
 supports source-built `pvisor vm-run` and an experimental native WHP container
-profile; Sessions, TUI, replay and the local
+profile; Sessions, replay and the local
 Daemon are not ported.
 
 One `pvisor.exe` covers this VM entry point, with `libkrunfw.dll`, a Linux rootfs
@@ -13,14 +13,13 @@ Apple Silicon Mac with working HVF.
 
 ## Installed components {#binaries}
 
-Complete Linux/macOS wheels and native archives contain four host programs from
+Complete Linux/macOS wheels and native archives contain three host programs from
 the same version, installed together. Ordinary noninteractive Sessions need no
 resident Daemon. Other components are invoked by the features that use them.
 
 | Program and owner | Used for | Windows status |
 | --- | --- | --- |
 | `pvisor` / `pvisor-cli` | Command entry; self-launches ordinary Session owners; `vm-run` executes a VM in the current process | `pvisor.exe`: `vm-run` and native container command subset; no Sessions |
-| `pvisor-tui` / `pvisor-cli` | `pvisor tui`, `spawn --tui/--ask`, interactive resume; launches adjacent `pvisor` and owns the PTY, terminal and review panels | Not ported |
 | `pvisor-replay` / `pvisor-cli` | `pvisor replay`; managed replay calls adjacent `pvisor` using Session/trajectory contracts | Not ported |
 | `pvisor-daemon` / separate crate | `pvisor daemon`, cache/sandbox services; `--vm-memory-pool auto` discovers or starts the shared pool through it | Not ported |
 
@@ -47,6 +46,8 @@ pool calls live in [automatic pool discovery](https://github.com/DeepLink-org/pv
 | Host Sessions (`spawn`), OverlayFS, review/apply/drop | FUSE for staging; user namespaces and Landlock for sandbox | macFUSE 5.4.0+ FSKit for staging; Seatbelt for file/network controls | Not ported |
 | Native OCI Sessions (`container` / `--executor container`) | `crun`/`runc` and a matching static Linux injected binary | Unsupported | Unsupported |
 | Docker-style VM containers and network policy | Implementation and separate contracts | Implementation; each capability needs HVF validation | Experimental WHP profile: image/lifecycle, bridge/none and stdin/PTY |
+| Experimental Compose | Native KVM VMs | Native HVF VMs | Unsupported |
+| Live container CoW branches and managed memory | Linux x86_64/KVM, explicit opt-in | Unsupported | Unsupported |
 | Linux host-root `stage`, `:stage` binds | Linux-specific paths | No Linux host-root; staged-bind equivalence with Linux is unestablished | Unsupported |
 | VM snapshots, restore, cold RAM | APIs/tests with backing/profile restrictions | APIs/tests with HVF/backing restrictions | Unsupported; pause/resume only |
 | Gateway | Depends on executor and configuration | Host execution path exists | Excluded from this CLI |
@@ -112,7 +113,7 @@ virtio-fs → Rust PID 1 supervisor → Linux workload → token-authenticated e
 | --- | --- | --- | --- |
 | CLI/processes | Full command tree, Session owners, signals and descendant cleanup | Same Session/companion structure, with macOS terminal/resource limits | `vm-run` plus container owners, generation-bound named pipes and runner Jobs; no Session state |
 | Companions | Adjacent discovery, Unix uid/mode checks, `exec` dispatch | Same checks; resolves Homebrew entry to its real installation | No dispatch; a full port needs `.exe` lookup, ACL trust and process startup/exit propagation |
-| Terminal | PTY, foreground ownership and signals | PTY, terminal restoration; separate TUI | Container stdin/guest PTY, console mode restoration and cancellable input; native ConPTY tests |
+| Terminal | PTY, foreground ownership and signals | PTY and terminal restoration | Container stdin/guest PTY, console mode restoration and cancellable input; native ConPTY tests |
 | Shared services | Unix sockets, same-user authentication, locks and readiness; sandbox also needs cgroup/KVM | Unix IPC; cache/pool supported, sandbox API unsupported | IPC, endpoint ACLs, locks, cancellation and service cleanup are not ported; reaching a remote Linux API does not supply a local service |
 | VM/filesystem | KVM ioctls, Unix virtio-fs; full runtime also has overlay/network configurations | HVF, Unix virtio-fs; signing, page-size and host-permission differences | WHP partitions, APIC/PIT/TSC, Win32 waitable handles and directory shares; Linux wire errno, flags and ABI widths require conversion |
 
@@ -122,7 +123,7 @@ Callers must exclusively manage rootfs and prevent untrusted host processes from
 mutating shared trees.
 
 A full Windows port also needs adjacent installation and version/permission
-checks, real CLI→TUI→CLI, CLI→replay→CLI and CLI→Daemon calls. Tests must cover
+checks, real CLI→replay→CLI and CLI→Daemon calls. Tests must cover
 terminal restoration, cancellation/deadlines, descendant cleanup, service
 readiness and failure recovery, then check Session JSON/Bundles, review/apply and
 service protocols separately. `--help` or VM workload results alone do not

@@ -321,35 +321,15 @@ pvisor kill ./stage/task
 pvisor apply ./stage/task --all
 ```
 
-## 8. 兼容与落地顺序
+## 8. 执行与检查点验证
 
-1. 保留现有run、stage选择、workspace fork与apply/drop合同，先扩展Session生命周期和checkpoint类型。
-2. 将独立快照runner的捕获/恢复能力纳入既有VM executor、Run/Execution/Bundle、stage、控制通道及执行权；复用原run入口，不通过改派到旧snapshot run来伪装统一。接通文件版本与前像归属，再声明对应保存能力，不增加必需的run标志。
-3. 交付suspend/resume、status真实投影及失败收尾；完整VM保存不以正常退出伪装。
-4. 交付execution create/fork的capture-and-continue事务，共用捕获实现；stage私有复制为基线，增量和COW在后端逐步优化。
-5. 交付checkpoint引用、删除/GC及历史选择。改变内部布局时保留旧Session读取能力，不能直接把旧逻辑checkpoint解释成execution。
-6. `status --review`保留为review兼容入口。`fork --checkpoint`保留，但要求checkpoint类型匹配显式state。
-7. 独立 snapshot 命令已删除，不保留隐藏 legacy 前端。旧对象仍由存储 SDK 验证兼容性、来源与引用，不伪造普通 Session 记录；迁移能力需明确验收。
+核对正常运行的参数、配置优先级、环境、输出、退出码、Bundle 记录和暂存文件处理结果，
+并检查实际安装的执行器、挂载与策略边界。执行检查点需要显式捕获请求。不受支持的 profile
+执行 suspend 或 execution fork 时返回能力错误，Session 状态与权限不变。
 
-迁移阶段不提供看似统一、实际绕过stage的run别名。每条新命令开放前须有Session生命周期、文件接受和真实VM验收；未支持的平台/配置返回能力错误。
+## 9. 当前实现与验收边界 {#10-当前实现与验收边界}
 
-
-## 9. run 行为保留的验收门槛
-
-接入实现必须比较改动前后的正常运行行为，不能只验收新命令：
-
-- 原有 run 参数、默认执行短写、配置优先级及命令参数/环境保持。
-- 相同配置得到相同的 executor、策略请求、挂载视图与 stage 位置。
-- 未请求保存时不产生 execution checkpoint，不额外压缩或全量复制 RAM/文件树。
-- 正常完成、取消和失败的输出、退出码、Bundle与apply/drop合同保持。
-- 不能保存的 Session仍可以正常运行；suspend或execution fork给出能力错误，不改变该Session状态或权限。
-- 原有workspace fork默认行为保持；运行中execution fork的改变必须由显式操作触发。
-
-Session与Execution记录可以增加版本化、兼容读取的能力和生命周期字段；这些字段不改变用户的run语义。
-
-## 10. 当前实现与验收边界 {#10-当前实现与验收边界}
-
-普通 Session 已接通 VM 原生捕获与恢复。`run` 的解析、默认配置、rootfs、DAX、网络和执行器选择保持原合同；不恢复独立 snapshot runner，也不由另一个管理器制造 Session。
+任务型 Session 通过 Session owner 捕获和恢复 VM 原生状态。
 
 | 功能 | 当前实现 |
 | --- | --- |
@@ -366,13 +346,13 @@ Session与Execution记录可以增加版本化、兼容读取的能力和生命�
 
 当前 execution profile 要求 Linux x86_64 或 macOS ARM64、无网络设备、私有 RAM 和拥有完整 rootfs。宿主 `/`、联网、可写 RAM backing、共享内存池和冷页压缩明确返回能力拒绝；不会因此改变原来的 run 配置。恢复绑定相同宿主启动、binary 和固件。guest 的原始环境随检查点保存，发起 resume/fork 的 shell 环境不会替换它。
 
-Session 元数据保存在 `execution-session.json`，Execution 通过 `execution-session-root.json` 关联根 Session。请求接收、检查点发布与原生终止是独立提交点。仅恢复准备在接受 RunHandle 前失败时保留可重试的 suspended head；交接崩溃或缺少回执时保持保守状态，不根据 PID 消失自动发起新 VM。可以通过 status 检查请求与当前 Execution，历史执行点通过显式 fork 恢复。
+Session 元数据保存在 `session.json`，Execution 通过 `execution-session-root.json` 关联根 Session。请求接收、检查点发布与原生终止是独立提交点。仅恢复准备在接受 RunHandle 前失败时保留可重试的 suspended head；交接崩溃或缺少回执时保持保守状态，不根据 PID 消失自动发起新 VM。可以通过 status 检查请求与当前 Execution，历史执行点通过显式 fork 恢复。
 
 工作区内的 stage 使用独立检查点存储，Session 元数据记录其归属。捕获排除 guest 已隐藏的管理目录，native launch binding 验证过滤范围，可见内容与元数据保持完整校验。`resume`/execution `fork --eager-ram` 在启动前读取完整 RAM，默认保持按需加载。
 
 工作区检查点仍引用外部 lower，历史 workspace 操作仍保守取得源 Session lease；不会假装其文件视图等价于完整机器封存。execution 的元数据锁独立于源 Execution lease，因此可以在父 VM 运行时选择已发布的历史 execution 检查点。
 
-工作区分支使用 manifest 硬链接，需要同一文件系统；execution 分支使用存储租约、内容引用和持久 Session 分支记录。引用不由 drop/kill 自动释放，尚无 Session 删除/归档接口。旧独立 snapshot store 不自动转换为 Session 检查点。
+工作区分支使用 manifest 硬链接，需要同一文件系统；execution 分支使用存储租约、内容引用和持久 Session 分支记录。引用不由 drop/kill 自动释放，尚无 Session 删除/归档接口。
 
 验收测试 `session_execution_vm` 使用真实 KVM、普通 CLI 与静态 guest，检查外部/工作区内 stage、共享文件块池、eager RAM、capture-and-continue、raw/compressed RAM、同 Session 新 Execution、打开的文件描述符和内存计数器连续性、历史分支隔离、源 rootfs 删除后恢复、请求重试以及 head/分支删除保护。普通回归测试另外覆盖终止回执校验、未知/暂停状态拒绝工作区修改、稳定 Session 路径与历史 Execution 记录。该原生测试需要 KVM/FUSE，默认跳过，运行方式：
 
@@ -380,6 +360,6 @@ Session 元数据保存在 `execution-session.json`，Execution 通过 `executio
 PVISOR_TEST_LIBRARY_DIR=/path/to/firmware cargo nextest run --locked -p pvisor --test session_execution_vm --run-ignored only --test-threads 1
 ```
 
-Session 记录使用 version 3，生命周期状态、恢复请求（路径与 RAM 策略一起保存）和分叉请求采用明确类型。工作区检查点清单使用 schema 3，必须显式记录 kind、Execution、generation、文件系统层和访问策略。旧 Session 记录及工作区清单直接拒绝，不做转换。原生检查点载荷仍执行独立的完整性与宿主绑定校验。
+任务型 Session 记录使用 version 4，生命周期状态、恢复请求（路径与 RAM 策略一起保存）和分叉请求采用明确类型。工作区检查点清单使用 schema 3，必须显式记录 kind、Execution、generation、文件系统层和访问策略。原生检查点载荷仍执行独立的完整性与宿主绑定校验。
 
 导入的不可变基底封印使用 version 2，必须包含摘要绑定的内容索引；缺少该回执的代际直接拒绝。

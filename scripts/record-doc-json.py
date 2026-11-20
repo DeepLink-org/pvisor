@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 """Collect actual JSON outputs in an isolated offline workspace.
 
-Requires a built CLI and the Linux host prerequisites for safe staging. It leaves
-its temporary task files available for inspection and never applies changes.
+Requires a built CLI and the host prerequisites for safe staging. It leaves its
+temporary task files available for inspection and never applies changes.
 """
 
 import argparse
 import hashlib
 import json
 import os
+import platform
 import subprocess
 import tempfile
 from pathlib import Path
@@ -22,7 +23,7 @@ def main():
     parser.add_argument("--output", type=Path, default=ROOT / "docs/overrides/assets/examples/json")
     args = parser.parse_args()
     binary = args.binary.resolve()
-    work = Path(tempfile.mkdtemp(prefix="pvisor-doc-json-"))
+    work = Path(tempfile.mkdtemp(prefix="pvisor-doc-json-")).resolve()
     workspace = work / "workspace"
     workspace.mkdir()
     (workspace / "obsolete.txt").write_text("old\n")
@@ -48,7 +49,7 @@ def main():
     for name, shell, expected, options in [
         ("run-bundle", 'mkdir -p src; printf "ready\\n" > src/result.txt; rm obsolete.txt', 0, []),
         ("failed-run", 'printf "candidate\\n" > failed.txt; exit 7', 7, []),
-        ("timeout-run", 'printf "candidate\\n" > timed.txt; sleep 2', 1, ["--timeout", "100ms"]),
+        ("timeout-run", 'printf "candidate\\n" > timed.txt; sleep 30', 1, ["--timeout", "2s"]),
     ]:
         stage = work / name
         command = [
@@ -84,7 +85,8 @@ def main():
     for name in commands:
         run = outputs[name]["run"]
         for key in ("run_id", "execution_id", "session_id"):
-            replacements.setdefault(run[key], f"{name}-{key}")
+            if run.get(key):
+                replacements.setdefault(run[key], f"{name}-{key}")
 
     def normalize(value):
         if isinstance(value, dict):
@@ -118,11 +120,15 @@ def main():
         "kind": "actual CLI output; paths, identities and numeric wall-clock fields normalized",
         "commands": commands,
         "return_codes": codes,
+        "cli": subprocess.check_output([str(binary), "--version"], text=True).strip(),
         "cli_sha256": hashlib.sha256(binary.read_bytes()).hexdigest(),
         "source_sha256": {
             name: hashlib.sha256((ROOT / name).read_bytes()).hexdigest() for name in sources
         },
-        "platform": "Linux x86_64; host executor; safe staging and deny-all networking",
+        "platform": (
+            f"{platform.system()} {platform.machine()}; host executor; "
+            "safe staging and deny-all networking"
+        ),
     }
     (args.output / "provenance.json").write_text(json.dumps(normalize(provenance), indent=2) + "\n")
     print(f"Recorded {len(outputs)} JSON examples in {args.output}; temporary task files: {work}")

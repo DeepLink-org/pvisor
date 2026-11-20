@@ -8,7 +8,7 @@ A workload can return `1`, `2`, or `125` itself, so a number alone is insufficie
 
 | Situation | CLI behavior |
 | --- | --- |
-| Workload exits normally | `run` returns its exit code; success is usually 0 |
+| Workload exits normally | `spawn` and foreground container `run` return the workload's exit code |
 | Wall-time timeout | 1; `run.failure.kind = "deadline_exceeded"`, no workload exit code |
 | Run cancelled | 130 |
 | Execution fails without a workload exit code | 1 |

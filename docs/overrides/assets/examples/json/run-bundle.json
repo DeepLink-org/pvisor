@@ -1,16 +1,20 @@
 {
   "agentctl": {
-    "execution_id": "run-bundle-execution_id",
     "clients": [],
     "directive": {
       "kind": "continue"
     },
+    "execution_id": "run-bundle-execution_id",
     "run_id": "run-bundle-run_id"
   },
   "artifacts": [
     {
       "kind": "run-record",
       "path": "/tmp/pvisor-example/run-bundle/run.json"
+    },
+    {
+      "kind": "capture",
+      "path": "/tmp/pvisor-example/run-bundle/.capture"
     }
   ],
   "environment": {
@@ -55,19 +59,19 @@
         "filesystem_read": {
           "level": "enforced",
           "mechanisms": [
-            "linux-synthetic-root"
+            "macos-seatbelt-read-policy"
           ]
         },
         "filesystem_write": {
           "level": "enforced",
           "mechanisms": [
-            "linux-synthetic-root"
+            "macos-seatbelt-write-policy"
           ]
         },
         "network": {
           "level": "enforced",
           "mechanisms": [
-            "linux-network-namespace"
+            "macos-seatbelt-proxy-only"
           ]
         }
       }
@@ -80,20 +84,21 @@
         "filesystem_read": {
           "level": "planned",
           "mechanisms": [
-            "linux-synthetic-root-landlock"
+            "macos-seatbelt-read-policy"
           ]
         },
         "filesystem_write": {
           "level": "planned",
           "mechanisms": [
-            "linux-synthetic-root-landlock"
+            "macos-seatbelt-write-policy"
           ]
         },
         "network": {
           "level": "planned",
           "mechanisms": [
-            "explicit-proxy-environment",
-            "linux-network-namespace"
+            "macos-seatbelt-network-deny",
+            "macos-seatbelt-proxy-only",
+            "explicit-proxy-environment"
           ]
         },
         "resources": {
@@ -104,17 +109,17 @@
         }
       }
     },
-    "isolation": "rootless_process",
+    "isolation": "sandboxed_process",
     "kind": "process",
-    "name": "local-rootless-v1",
+    "name": "local-seatbelt-v1",
     "supports_checkpoint": false,
     "supports_migration": false
   },
   "filesystem": {
     "access_policy": {
       "context": {
-        "execution_id": "run-bundle-execution_id",
         "audit_socket": null,
+        "execution_id": "run-bundle-execution_id",
         "run_id": "run-bundle-run_id",
         "view": "workspace"
       },
@@ -167,14 +172,60 @@
     "sample_paths": [
       ".wh.obsolete.txt",
       "src",
-      "src/result.txt"
+      "src/result.txt",
+      "src/.wh..pvisor-root-metadata"
     ],
     "state": "staged",
     "target": "/tmp/pvisor-example/workspace",
     "upper": "/tmp/pvisor-example/run-bundle/upper",
-    "whiteouts": 1
+    "whiteouts": 2
   },
   "generated_at_unix_ms": 0,
+  "handoff": {
+    "classification_available": true,
+    "counts": {
+      "environment": 0,
+      "project": 3,
+      "unclassified": 0,
+      "unsupported_project": 0
+    },
+    "environment_changes": [],
+    "limitations": [
+      "Advisory lexical classification only, not a safety certification or export authorization. Project caches, generated files and build outputs remain project changes.",
+      "Change paths remain relative to filesystem.target; remove project_prefix for project-relative export selections. No paths are canonicalized by this summary.",
+      "Export revalidates platform, stage lifecycle, source paths, metadata and selection dependencies; availability here is provisional, not a promise that export will succeed.",
+      "Export is an artifact inventory, not a merged snapshot or apply: deletions/directories are manifest-only; metadata and unselected dependencies are not reproduced.",
+      "Selective acceptance may conflict with concurrent project edits or omit dependencies. External API/database/message effects are not undone by drop; missing observations do not prove absence.",
+      "Non-root project export unavailable for this scope, platform or stage state; retain evidence for inspection."
+    ],
+    "non_root_export_available": false,
+    "partial_results": false,
+    "project_changes": [
+      {
+        "kind": "deleted",
+        "old_type": "file",
+        "path": "obsolete.txt"
+      },
+      {
+        "kind": "added",
+        "mode": 493,
+        "new_type": "directory",
+        "path": "src"
+      },
+      {
+        "kind": "added",
+        "mode": 420,
+        "new_type": "file",
+        "path": "src/result.txt",
+        "size_bytes": 6
+      }
+    ],
+    "project_prefix": "",
+    "project_root": "/tmp/pvisor-example/workspace",
+    "schema_version": 1,
+    "unclassified_changes": [],
+    "unsupported_project_changes": []
+  },
   "network": {
     "intercepted": {
       "absolute_http_requests": 0,
@@ -186,6 +237,9 @@
       "dns_queries": 0,
       "failures": 0,
       "peak_tcp_flows": 0,
+      "peer_packets_dropped": 0,
+      "peer_packets_received": 0,
+      "peer_packets_sent": 0,
       "policy_allowed": 0,
       "policy_denied": 0,
       "requests_seen": 0,
@@ -202,12 +256,16 @@
       "driver": "explicit-proxy",
       "http": true,
       "inherited_by_children": false,
+      "peer_ipv4": false,
       "strength": "cooperative",
       "tcp_connect": true,
       "udp": false
     },
     "policy": {
       "allowed_hosts": [],
+      "capability": {
+        "mode": "deny"
+      },
       "deny_rules": [],
       "limits": [],
       "mode": "no-network",
@@ -218,7 +276,7 @@
     "context": {
       "bindings": {
         "executor": {
-          "backend": "local-rootless-v1",
+          "backend": "local-seatbelt-v1",
           "contract": 1,
           "generation": 0,
           "resource": "run-bundle-run_id"
@@ -264,7 +322,7 @@
         "enforcement_plan": {
           "level": "planned",
           "mechanisms": [
-            "linux-synthetic-root-landlock"
+            "macos-seatbelt-write-policy"
           ]
         },
         "id": "fs.stage",
@@ -276,7 +334,7 @@
         "enforcement_plan": {
           "level": "planned",
           "mechanisms": [
-            "linux-synthetic-root-landlock"
+            "macos-seatbelt-read-policy"
           ]
         },
         "id": "fs.deny.0",
@@ -288,7 +346,7 @@
         "enforcement_plan": {
           "level": "planned",
           "mechanisms": [
-            "linux-synthetic-root-landlock"
+            "macos-seatbelt-read-policy"
           ]
         },
         "id": "fs.deny.1",
@@ -300,7 +358,7 @@
         "enforcement_plan": {
           "level": "planned",
           "mechanisms": [
-            "linux-synthetic-root-landlock"
+            "macos-seatbelt-read-policy"
           ]
         },
         "id": "fs.deny.2",
@@ -312,7 +370,7 @@
         "enforcement_plan": {
           "level": "planned",
           "mechanisms": [
-            "linux-synthetic-root-landlock"
+            "macos-seatbelt-read-policy"
           ]
         },
         "id": "fs.deny.3",
@@ -324,7 +382,7 @@
         "enforcement_plan": {
           "level": "planned",
           "mechanisms": [
-            "linux-synthetic-root-landlock"
+            "macos-seatbelt-read-policy"
           ]
         },
         "id": "fs.deny.4",
@@ -336,7 +394,7 @@
         "enforcement_plan": {
           "level": "planned",
           "mechanisms": [
-            "linux-synthetic-root-landlock"
+            "macos-seatbelt-read-policy"
           ]
         },
         "id": "fs.deny.5",
@@ -348,7 +406,7 @@
         "enforcement_plan": {
           "level": "planned",
           "mechanisms": [
-            "linux-synthetic-root-landlock"
+            "macos-seatbelt-read-policy"
           ]
         },
         "id": "fs.deny.6",
@@ -360,7 +418,7 @@
         "enforcement_plan": {
           "level": "planned",
           "mechanisms": [
-            "linux-synthetic-root-landlock"
+            "macos-seatbelt-read-policy"
           ]
         },
         "id": "fs.deny.7",
@@ -372,7 +430,7 @@
         "enforcement_plan": {
           "level": "planned",
           "mechanisms": [
-            "linux-synthetic-root-landlock"
+            "macos-seatbelt-read-policy"
           ]
         },
         "id": "fs.warn.0",
@@ -384,7 +442,7 @@
         "enforcement_plan": {
           "level": "planned",
           "mechanisms": [
-            "linux-synthetic-root-landlock"
+            "macos-seatbelt-read-policy"
           ]
         },
         "id": "fs.warn.1",
@@ -396,7 +454,7 @@
         "enforcement_plan": {
           "level": "planned",
           "mechanisms": [
-            "linux-synthetic-root-landlock"
+            "macos-seatbelt-read-policy"
           ]
         },
         "id": "fs.warn.2",
@@ -408,7 +466,7 @@
         "enforcement_plan": {
           "level": "planned",
           "mechanisms": [
-            "linux-synthetic-root-landlock"
+            "macos-seatbelt-read-policy"
           ]
         },
         "id": "fs.warn.3",
@@ -420,7 +478,7 @@
         "enforcement_plan": {
           "level": "planned",
           "mechanisms": [
-            "linux-synthetic-root-landlock"
+            "macos-seatbelt-read-policy"
           ]
         },
         "id": "fs.warn.4",
@@ -432,7 +490,7 @@
         "enforcement_plan": {
           "level": "planned",
           "mechanisms": [
-            "linux-synthetic-root-landlock"
+            "macos-seatbelt-read-policy"
           ]
         },
         "id": "fs.warn.5",
@@ -444,7 +502,7 @@
         "enforcement_plan": {
           "level": "planned",
           "mechanisms": [
-            "linux-synthetic-root-landlock"
+            "macos-seatbelt-read-policy"
           ]
         },
         "id": "fs.warn.6",
@@ -456,7 +514,7 @@
         "enforcement_plan": {
           "level": "planned",
           "mechanisms": [
-            "linux-synthetic-root-landlock"
+            "macos-seatbelt-read-policy"
           ]
         },
         "id": "fs.warn.7",
@@ -468,7 +526,7 @@
         "enforcement_plan": {
           "level": "planned",
           "mechanisms": [
-            "linux-synthetic-root-landlock"
+            "macos-seatbelt-read-policy"
           ]
         },
         "id": "fs.warn.8",
@@ -480,7 +538,7 @@
         "enforcement_plan": {
           "level": "planned",
           "mechanisms": [
-            "linux-synthetic-root-landlock"
+            "macos-seatbelt-read-policy"
           ]
         },
         "id": "fs.warn.9",
@@ -492,8 +550,9 @@
         "enforcement_plan": {
           "level": "planned",
           "mechanisms": [
-            "explicit-proxy-environment",
-            "linux-network-namespace"
+            "macos-seatbelt-network-deny",
+            "macos-seatbelt-proxy-only",
+            "explicit-proxy-environment"
           ]
         },
         "id": "net.aggregate",
@@ -622,32 +681,32 @@
     "requested": {}
   },
   "review_context": {
-    "execution_id": "run-bundle-execution_id",
     "checkpoint_id": null,
     "execution_evidence": "historical_bundle",
+    "execution_id": "run-bundle-execution_id",
     "file_view": "staged_upper_with_external_lowers",
     "session_id": "run-bundle-run_id",
     "workspace_generation": 0
   },
   "run": {
     "agent": "sh",
-    "execution_id": "run-bundle-execution_id",
     "command": [
       "/bin/sh",
       "-c",
       "mkdir -p src; printf \"ready\\n\" > src/result.txt; rm obsolete.txt"
     ],
-    "duration_ms": 37,
+    "duration_ms": 361,
+    "execution_id": "run-bundle-execution_id",
     "executor": {
-      "isolation": "rootless_process",
+      "isolation": "sandboxed_process",
       "kind": "process",
-      "name": "local-rootless-v1"
+      "name": "local-seatbelt-v1"
     },
     "exit_code": 0,
     "finished_at_unix_ms": 0,
     "metrics": {},
     "output": {
-      "stderr": "pvisor-startup level=info timestamp_ms=1791062490920 pid=1118757 ppid=1118712 run_id=\"-\" stage=process.entry monotonic_us=16294858180 process_elapsed_us=36\n",
+      "stderr": "",
       "stderr_truncated": false,
       "stdout": "",
       "stdout_truncated": false
@@ -664,6 +723,17 @@
       "overflow_hits": 0,
       "paths": {
         "": {
+          "access": {
+            "allowed": 240,
+            "bytes_read": 0,
+            "bytes_written": 0,
+            "denied": 0,
+            "effects": 0,
+            "failed": 0,
+            "hits": 240,
+            "succeeded": 240,
+            "uncertain_effects": 0
+          },
           "getattr": {
             "allowed": 3,
             "bytes_read": 0,
@@ -673,6 +743,17 @@
             "failed": 0,
             "hits": 3,
             "succeeded": 3,
+            "uncertain_effects": 0
+          },
+          "getxattr": {
+            "allowed": 12,
+            "bytes_read": 0,
+            "bytes_written": 0,
+            "denied": 0,
+            "effects": 0,
+            "failed": 12,
+            "hits": 12,
+            "succeeded": 0,
             "uncertain_effects": 0
           },
           "opendir": {
@@ -687,16 +768,118 @@
             "uncertain_effects": 0
           }
         },
-        "obsolete.txt": {
+        ".DS_Store": {
           "lookup": {
             "allowed": 1,
             "bytes_read": 0,
             "bytes_written": 0,
             "denied": 0,
             "effects": 0,
-            "failed": 0,
+            "failed": 1,
             "hits": 1,
-            "succeeded": 1,
+            "succeeded": 0,
+            "uncertain_effects": 0
+          }
+        },
+        ".Spotlight-V100": {
+          "lookup": {
+            "allowed": 1,
+            "bytes_read": 0,
+            "bytes_written": 0,
+            "denied": 0,
+            "effects": 0,
+            "failed": 1,
+            "hits": 1,
+            "succeeded": 0,
+            "uncertain_effects": 0
+          }
+        },
+        "._obsolete.txt": {
+          "lookup": {
+            "allowed": 1,
+            "bytes_read": 0,
+            "bytes_written": 0,
+            "denied": 0,
+            "effects": 0,
+            "failed": 1,
+            "hits": 1,
+            "succeeded": 0,
+            "uncertain_effects": 0
+          }
+        },
+        ".metadata_direct_scope_only": {
+          "lookup": {
+            "allowed": 1,
+            "bytes_read": 0,
+            "bytes_written": 0,
+            "denied": 0,
+            "effects": 0,
+            "failed": 1,
+            "hits": 1,
+            "succeeded": 0,
+            "uncertain_effects": 0
+          }
+        },
+        ".metadata_never_index": {
+          "lookup": {
+            "allowed": 1,
+            "bytes_read": 0,
+            "bytes_written": 0,
+            "denied": 0,
+            "effects": 0,
+            "failed": 1,
+            "hits": 1,
+            "succeeded": 0,
+            "uncertain_effects": 0
+          }
+        },
+        ".metadata_never_index_unless_rootfs": {
+          "lookup": {
+            "allowed": 1,
+            "bytes_read": 0,
+            "bytes_written": 0,
+            "denied": 0,
+            "effects": 0,
+            "failed": 1,
+            "hits": 1,
+            "succeeded": 0,
+            "uncertain_effects": 0
+          }
+        },
+        "DCIM": {
+          "lookup": {
+            "allowed": 1,
+            "bytes_read": 0,
+            "bytes_written": 0,
+            "denied": 0,
+            "effects": 0,
+            "failed": 1,
+            "hits": 1,
+            "succeeded": 0,
+            "uncertain_effects": 0
+          }
+        },
+        "obsolete.txt": {
+          "access": {
+            "allowed": 2,
+            "bytes_read": 0,
+            "bytes_written": 0,
+            "denied": 0,
+            "effects": 0,
+            "failed": 0,
+            "hits": 2,
+            "succeeded": 2,
+            "uncertain_effects": 0
+          },
+          "lookup": {
+            "allowed": 3,
+            "bytes_read": 0,
+            "bytes_written": 0,
+            "denied": 0,
+            "effects": 0,
+            "failed": 0,
+            "hits": 3,
+            "succeeded": 3,
             "uncertain_effects": 0
           },
           "unlink": {
@@ -712,6 +895,39 @@
           }
         },
         "src": {
+          "access": {
+            "allowed": 2,
+            "bytes_read": 0,
+            "bytes_written": 0,
+            "denied": 0,
+            "effects": 0,
+            "failed": 0,
+            "hits": 2,
+            "succeeded": 2,
+            "uncertain_effects": 0
+          },
+          "getattr": {
+            "allowed": 1,
+            "bytes_read": 0,
+            "bytes_written": 0,
+            "denied": 0,
+            "effects": 0,
+            "failed": 0,
+            "hits": 1,
+            "succeeded": 1,
+            "uncertain_effects": 0
+          },
+          "getxattr": {
+            "allowed": 2,
+            "bytes_read": 0,
+            "bytes_written": 0,
+            "denied": 0,
+            "effects": 0,
+            "failed": 0,
+            "hits": 2,
+            "succeeded": 2,
+            "uncertain_effects": 0
+          },
           "lookup": {
             "allowed": 1,
             "bytes_read": 0,
@@ -724,6 +940,17 @@
             "uncertain_effects": 0
           },
           "mkdir": {
+            "allowed": 1,
+            "bytes_read": 0,
+            "bytes_written": 0,
+            "denied": 0,
+            "effects": 1,
+            "failed": 0,
+            "hits": 1,
+            "succeeded": 1,
+            "uncertain_effects": 0
+          },
+          "setattr": {
             "allowed": 1,
             "bytes_read": 0,
             "bytes_written": 0,
@@ -747,15 +974,26 @@
             "succeeded": 1,
             "uncertain_effects": 0
           },
-          "getxattr": {
+          "getattr": {
             "allowed": 1,
             "bytes_read": 0,
             "bytes_written": 0,
             "denied": 0,
             "effects": 0,
-            "failed": 1,
+            "failed": 0,
             "hits": 1,
-            "succeeded": 0,
+            "succeeded": 1,
+            "uncertain_effects": 0
+          },
+          "getxattr": {
+            "allowed": 4,
+            "bytes_read": 0,
+            "bytes_written": 0,
+            "denied": 0,
+            "effects": 0,
+            "failed": 0,
+            "hits": 4,
+            "succeeded": 4,
             "uncertain_effects": 0
           },
           "lookup": {
@@ -767,6 +1005,28 @@
             "failed": 1,
             "hits": 1,
             "succeeded": 0,
+            "uncertain_effects": 0
+          },
+          "open": {
+            "allowed": 1,
+            "bytes_read": 0,
+            "bytes_written": 0,
+            "denied": 0,
+            "effects": 0,
+            "failed": 0,
+            "hits": 1,
+            "succeeded": 1,
+            "uncertain_effects": 0
+          },
+          "setattr": {
+            "allowed": 1,
+            "bytes_read": 0,
+            "bytes_written": 0,
+            "denied": 0,
+            "effects": 1,
+            "failed": 0,
+            "hits": 1,
+            "succeeded": 1,
             "uncertain_effects": 0
           },
           "write": {
@@ -784,14 +1044,14 @@
       },
       "rules": {
         "fs.stage": {
-          "allowed": 4,
+          "allowed": 6,
           "bytes_read": 0,
           "bytes_written": 6,
           "denied": 0,
-          "effects": 4,
+          "effects": 6,
           "failed": 0,
-          "hits": 4,
-          "succeeded": 4,
+          "hits": 6,
+          "succeeded": 6,
           "uncertain_effects": 0
         }
       }
@@ -997,13 +1257,13 @@
         "uncertain_effects": 0
       },
       "fs.stage": {
-        "allowed": 4,
+        "allowed": 6,
         "bytes_read": 0,
         "bytes_written": 6,
         "denied": 0,
-        "effects": 4,
+        "effects": 6,
         "failed": 0,
-        "succeeded": 4,
+        "succeeded": 6,
         "uncertain_effects": 0
       },
       "fs.warn.0": {
@@ -1137,8 +1397,8 @@
     "network_non_bypassable": true,
     "safe_profile_requested": true,
     "warnings": [
-      "filesystem access and process-tree cleanup are kernel-enforced; the host kernel and syscall surface remain shared"
+      "filesystem writes are Seatbelt-enforced; reads, the host PID namespace, syscall surface, and resource limits remain shared"
     ]
   },
-  "schema_version": 4
+  "schema_version": 6
 }

@@ -1,13 +1,21 @@
-# Changelog
+# Release notes
 
-See the repository-root [`CHANGELOG.md`](https://github.com/DeepLink-org/pvisor/blob/main/CHANGELOG.md) for the full history, and [GitHub Releases](https://github.com/DeepLink-org/pvisor/releases) for version release notes.
+## pVisor 0.4.0 {#v040}
 
-## What to check before upgrading
+Use `pvisor run` to run a container in its own VM or `pvisor spawn` to run a
+task Session and review staged changes. Linux x86_64 and Apple Silicon macOS
+have stable wheels and native archives. The experimental Windows x86_64 WHP
+container profile is available from source. [Platform requirements](../reference/platforms.md) · [Install pVisor](../start/installation.md)
 
-Record your current pVisor version or commit and the agent, model, and image versions you use. Check changes between your current and target versions to CLI arguments, TOML fields, record schemas, executor prerequisites, and platform artifacts.
+| Workflow | What you can do |
+| --- | --- |
+| Containers and Compose | On Unix, manage container-profile Sessions with Docker-style commands. Use experimental, daemonless `pvisor compose` for project startup, dependency checks and cleanup. [Compose](../reference/cli.md#compose) |
+| Image distribution | Authenticate OCI pulls to a registry's Bearer token endpoint. Publish lazy images with `pvisor push` and import a pinned source with `pvisor image pull --from`. [Image backends](../reference/shared-image-cache.md) |
+| Agent tasks | Monitor tasks from DSH and attach a terminal to eligible running Linux Host Sessions. The adapters prefer VM in `auto` mode and report the selected executor. [Agent plugins](../guides/agents/plugins.md) |
+| VM reuse and reclamation | Fork eligible Linux/KVM containers on the same host with copy-on-write RAM. Enable offload/resume for fork children or enroll ordinary container VMs in the Linux pressure service with caller-managed wait boundaries. [VM lifecycle](../guides/infrastructure/lifecycle.md#container-memory) |
+| containerd | Set node defaults for VM egress and optionally relay eligible guest TCP listeners within the pod network namespace. [Shim integration](../guides/infrastructure/integration.md#containerd) |
+| File results | Apply returns failure and recovery evidence. Workspace snapshots exclude leased sibling stages. [Review and apply](../guides/review-apply.md) |
 
-Run an independent Session with the new version to verify policy admission, review-output reading, selective apply, and conflict refusal. If you use replay, also validate your adapter. Retain old Bundles, Journals, capture artifacts, and the tools that can read them. Do not remove schema fields to bypass version checks; see [Stability and compatibility](../reference/stability.md) for current reading rules.
-
-## What to explain when submitting a change
-
-Describe user-visible behavior, applicable platforms and executors, validation, and any required changes to commands, configuration, or record readers in the PR. Mark incompatible changes explicitly, identifying affected interfaces and upgrade actions. This does not establish long-term compatibility or deprecation windows.
+Replay collects resource samples separately from trajectory scheduling.
+The release gate checks the acceptance receipt against the wheel and source
+commit. See the [release process](releasing.md) and [feature tests](testing.md).

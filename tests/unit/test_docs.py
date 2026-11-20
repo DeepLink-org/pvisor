@@ -11,6 +11,49 @@ reference = runpy.run_path(str(ROOT / "scripts/check-reference.py"))
 
 
 class NativeDocumentationTests(unittest.TestCase):
+    def test_documented_json_gates_use_current_review_output(self):
+        import json
+        import re
+        import shutil
+        import subprocess
+
+        jq = shutil.which("jq")
+        if jq is None:
+            self.skipTest("jq is required to execute the documented filters")
+        sample_dir = ROOT / "docs/overrides/assets/examples/json"
+        success = json.loads((sample_dir / "run-bundle.json").read_text())
+        failure = json.loads((sample_dir / "failed-run.json").read_text())
+        scoped = {
+            **success,
+            "filesystem": {
+                **success["filesystem"],
+                "changes": [
+                    change
+                    for change in success["filesystem"]["changes"]
+                    if change["path"] != "obsolete.txt"
+                ],
+            },
+        }
+        for locale in ("en", "zh"):
+            for page, cases in (
+                ("reference/json-output.md", [(scoped, 0), (success, 1), (failure, 1)]),
+                ("guides/rl-rollouts.md", [(success, 0), (failure, 1)]),
+            ):
+                with self.subTest(locale=locale, page=page):
+                    source = (ROOT / "docs/src" / locale / page).read_text()
+                    match = re.search(r"^jq -e '([^']+)'", source, re.MULTILINE)
+                    self.assertIsNotNone(match)
+                    for bundle, expected in cases:
+                        result = subprocess.run(
+                            [jq, "-e", match[1]],
+                            input=json.dumps(bundle),
+                            capture_output=True,
+                            text=True,
+                            timeout=5,
+                            check=False,
+                        )
+                        self.assertEqual(result.returncode, expected, result.stderr)
+
     def test_ci_tutorial_contains_a_runnable_workflow_structure(self):
         import re
 

@@ -71,6 +71,8 @@ The final list should no longer contain `pvisor-demo`. If ten minutes have elaps
 
 This mode manages VMs through container commands. See the [container reference](../reference/cli.md#container-commands) for flags and volume persistence. This demo configures no volumes and needs no Session review/apply/drop.
 
+To run several services together, try [experimental Compose](../reference/cli.md#compose).
+
 ## Agent style stagebox {#agent-style}
 
 Use your local shell to create two candidate files and hand only the greeting back to the original directory. No model account, VM image, or running Daemon is needed. Run the steps in order in the same terminal and directory.

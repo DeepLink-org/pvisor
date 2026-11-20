@@ -1,7 +1,7 @@
 # `pvisor` command reference
 
-`pvisor run` creates a container in its own rootless Linux VM. `pvisor spawn`
-creates a Session; omitting the subcommand also selects `spawn`. Session lifecycle and
+`pvisor run` creates a container-profile Session in its own Linux VM on Unix.
+Windows has a [separate WHP profile](platforms.md). `pvisor spawn` creates a task Session; omitting the subcommand also selects `spawn`. Session lifecycle and
 change-review commands operate directly on Sessions without a `session` subcommand, and
 `replay` creates a Session from a trajectory. See the
 [execution model](../design/execution-model.md) for how Session, Run and Execution
@@ -30,7 +30,8 @@ not measure the complete process-entry or argument-parsing overhead.
 
 ## Container commands {#container-commands}
 
-`run`, `build`, `pull`, `images`, `rmi`, `exec`, `ps`, `start`, `stop`, `rm`, `logs` and `network`
+`run`, `exec`, `ps`, `start`, `stop`, `restart`, `wait`, `cp`, `rm`, `logs`,
+`build`, `pull`, `push`, `images`, `rmi`, `network`, `volume` and `builder`
 use a Docker-style option subset with one VM per container and no central daemon.
 Use `pvisor COMMAND --help` for supported options. Session options such
 as `--safe`, `--stage` and `--executor` belong to `spawn`, not container `run`.
@@ -47,10 +48,46 @@ pvisor rm redis
 `pull --platform linux/amd64` or `linux/arm64` selects the image architecture;
 `linux/arm64/v8` is an alias. Omission uses the native platform. Foreign-image
 downloads are supported, but `run` and `start` require native images because CPU
-emulation is not implemented. This profile does not implement Docker Engine API,
-Compose or credential helpers. Container records use their own store;
-review/apply/drop also accept staged-bind instance names/IDs as described below.
-Session selectors and checkpoints retain their existing behavior; `spawn` is unchanged.
+emulation is unavailable. For private registries using a Bearer challenge, pass
+`--username` with `--password-stdin` to authenticate to the token endpoint.
+The CLI also accepts `--password`, which exposes the secret in process arguments.
+Docker credential helpers and the Docker Engine API are unsupported.
+
+Unix containers and task Sessions use schema 4 records with separate stores
+and command capabilities. Container review/apply/drop select staged binds.
+
+### Compose projects (experimental) {#compose}
+
+On Linux x86_64 or Apple Silicon macOS, use `pvisor compose` to start services
+from one Compose file without a Docker daemon. Complete [VM setup](../start/installation.md#docker-prerequisites), then save this as `compose.yaml` in an empty demo directory. Choose an unused project name if `pvisor-demo` already exists in your container store.
+
+```yaml
+name: pvisor-demo
+services:
+  web:
+    image: python:3.12-alpine
+    command: ["python", "-m", "http.server", "8000"]
+    depends_on: [cache]
+  cache:
+    image: redis:7
+```
+
+Validate the file, wait for startup, list the two services and remove the demo containers:
+
+```bash
+pvisor compose config -q
+pvisor compose up -d --wait
+pvisor compose ps
+pvisor compose down
+```
+
+Expect `web` and `cache` to be running after `up --wait`. The example
+needs registry access on first use. Each service runs in its own VM. Services can resolve each other by name on the
+project's default network. Startup can wait for declared dependency conditions,
+including health and successful completion. Place `-f FILE` and `-p PROJECT`
+before the subcommand. `down` retains images and managed volumes by default.
+Check the supported options and examples before moving an existing Compose
+project. [Compose command profile](https://github.com/DeepLink-org/pvisor/blob/main/crates/pvisor-cli/README.md#compose-command-profile-experimental)
 
 ### Staged container binds (Linux only) {#container-staged-binds}
 
@@ -172,8 +209,10 @@ only that variable; arguments are not secret storage. Images use a single flat
 OCI layer, preserving merged deletes, guest ownership/mode, symlinks and hardlinks.
 A successful build publishes local tags usable by run; ordinary failures clean
 private staging and retain prior tags. Abrupt death can leave unpublished staging.
-OCI output requires a new file. There is no instruction cache; `--no-cache` is
-accepted and every step runs.
+OCI output requires a new file. Successful RUN instructions publish local
+filesystem/configuration checkpoints. Cache hits skip VM launch for that RUN.
+`--no-cache` bypasses cache reads and refreshes successful checkpoints. Use
+`pvisor builder prune` to remove eligible checkpoints.
 
 This is a Docker build subset: remote/stdin contexts, ADD, ONBUILD, heredocs,
 RUN mounts, secrets/SSH/cache mounts, named COPY owners, external-image COPY,
@@ -201,16 +240,19 @@ and inspect run directly in the caller under `session.lock`. Apply/drop refuse a
 owner still holding stage. Interactive execution keeps the original terminal,
 allows Ctrl-C to reach the workload, and restores foreground ownership at exit.
 
-The instance protocol is `pvisor-instance-control-3`; compatible caller binaries
-need not match the owner's digest. Same-UID private sockets use bounded newline
+The instance protocol is `pvisor-instance-control-3`; same-UID private sockets use bounded newline
 JSON and never accept terminal descriptors or Guest AgentCtl tokens. Lost replies,
 timeouts and cancellation can follow effects and are never automatically retried.
 
-Before upgrade, drain old Sessions and stop the old `--pvisor-internal-host` with the
-old binary. New CLIs ignore old generation sockets and read records lacking live
-control as disk state only. The daemon supervisor is unchanged. See
-[Host and Guest AgentCtl](../design/architecture.md#host-agentctl) for ownership,
-record validation and platform limitations.
+For a newly started, filesystem-isolated Linux Host Session, use
+`pvisor exec --session -it SELECTOR /bin/sh` to attach a shell. It inherits the
+sandbox and ends when the main workload exits. Paused Sessions and the
+Landlock-only Host path reject attachment. Use
+`pvisor status SELECTOR --lifecycle --json` for lightweight lifecycle polling.
+
+See [Host and Guest AgentCtl](../design/architecture.md#host-agentctl) for
+control ownership and the [record matrix](../design/records-and-versions.md)
+for persistent state.
 
 ## Experimental features {#features}
 
@@ -460,7 +502,7 @@ entry point are removed.
 | `--dry-run` | Read-only preflight: selected changes, required dependencies, blockers and remaining counts. Does not consume staged changes. |
 | `--diff` | Bounded text diffs, skipping binary content. Requires `--dry-run`; conflicts with `--json`. |
 | `--json` | One schema-version-1 result object on stdout; requires `--path`, `--include` or `--all`, and never opens a picker. Diagnostics go to stderr. |
-| `--store DIR` | Session lookup storage, default `.pvisor/capture`; no short or legacy aliases. |
+| `--store DIR` | Session lookup storage, default `.pvisor/capture`. |
 | `--mount GUEST` | Select the exact staged-bind guest target for a container name/ID; optional for one staged bind, required for multiple. |
 | `--rootfs` | Advanced, privileged writeback to the recorded `/` target; refused for container staged binds. |
 
@@ -489,21 +531,18 @@ and requires confirmation again.
 `--dry-run` writes neither the target nor journals, apply ledger or recovery
 state. It performs no implicit recovery and creates no target directory or
 missing lock files. Preview uses strict read-only observation locks and leases;
-missing existing `session.lock` or required lease files fail closed. New `stage`
-startup precreates these locks so its first preview can use them. Old stages
-missing these locks remain blocked; preview does not repair them or adapt legacy
-storage.
+preview requires `session.lock` and the applicable lease files.
+The `stage` command creates them during startup.
 
 ### Project authority and recorded targets {#apply-scope}
 
-New Linux root-filesystem stages record `ProjectApplyScope` version 1 at launch:
+Linux root-filesystem stages record `ProjectApplyScope` version 1 at launch:
 a canonical project `root` other than `/`, plus `device` and `inode` identity.
 The RunRecord and Run Bundle carry this scope, bound by the completion receipt.
 Apply revalidates that binding and directory identity; replacing the project
 directory, changing the contract, or omitting the binding blocks writeback.
-The current directory cannot supply missing authority. Older rootstages without
-this contract are refused for project apply; recreate the stage to use that
-path. Ordinary workspace stages use only their owning overlay's recorded target.
+Project apply requires the recorded scope. Ordinary workspace stages use only
+their owning overlay's recorded target.
 Neither that target nor a rootstage's bound project root can be overridden;
 apply never guesses a replacement scope.
 
@@ -604,13 +643,13 @@ pvisor checkpoint gc ./stage/task --kind execution --json
 
 Execution forks reject replacement commands. Selecting a historical checkpoint can leave the parent running; without one, a running parent is captured and continued, while a suspended parent supplies its head. The child owns private RAM and filesystem upper layers. `--ram-storage raw|compressed` applies only to new capture and defaults to compressed. `resume` and execution `fork` accept `--eager-ram` to read all RAM before startup; omission keeps lazy loading.
 
-The current native profile supports Linux x86_64 and macOS ARM64 with no network devices and private RAM. Host root `/`, networking devices, shared memory pools, writable RAM backing and cold-page compression are outside this restore contract. `spawn` does not disable networking or DAX or change rootfs to enable capture; `status SESSION --json` reports capability and blockers. Restore requires the same host boot, pVisor binary and firmware; cross-host and cross-version restore are unsupported.
+The current native profile supports Linux x86_64 and macOS ARM64 with no network devices and private RAM. Host root `/`, networking devices, shared memory pools, writable RAM backing and cold-page compression are outside this restore contract. `spawn` does not disable networking or DAX or change rootfs to enable capture; `status SESSION --json` reports capability and blockers. Restore requires the same host boot, pVisor binary and firmware.
 
 When the stage is inside the workspace, capture storage is placed outside guest backing roots and recorded as Session-owned. When necessary, restored file copies also use an independent directory, with their paths retained in the Execution record for review/apply. Capture retains the guest-visible projection, excluding stage management directories already hidden from the guest. Visible content, metadata and hard-link audits remain complete.
 
 Suspended Sessions refuse apply/drop and workspace capture. `kill SESSION` withdraws continuation rights while retaining checkpoint history, allowing subsequent workspace decisions. Execution checkpoints share list/show/delete entries with workspace checkpoints; deletion checks the suspended head, branch references and storage leases. Branch references are retained conservatively; Session deletion/archiving has no release interface yet. GC collects unpublished transactions, tombstones and unreferenced RAM content in this Session's stores, never published checkpoints. It is not cross-Session store-wide collection and does not clean daemon sandbox state.
 
-Immutable base management uses `checkpoint import-base SESSION ROOTFS --json` and `checkpoint verify-base SESSION BASE_ID --json`. Import returns an owned rootfs path usable by subsequent ordinary `spawn --rootfs`. The CLI exposes snapshots through Session commands, not a standalone snapshot frontend; old stores are not automatically converted into Session checkpoints. See [Session checkpoint design](../design/session-checkpoint-cli.md#10-当前实现与验收边界) for implementation and acceptance.
+Immutable base management uses `checkpoint import-base SESSION ROOTFS --json` and `checkpoint verify-base SESSION BASE_ID --json`. Import returns an owned rootfs path usable by subsequent ordinary `spawn --rootfs`. See [Session checkpoint design](../design/session-checkpoint-cli.md#10-当前实现与验收边界) for implementation and acceptance.
 
 ## `--safe` parameter preset {#safe-参数预设}
 
@@ -629,18 +668,16 @@ never selects an executor. Precedence is **explicit CLI > safe preset >
 configuration file > ordinary defaults**. It supports ordinary commands and
 TOML `--config`; a prepared JSON `--spec` rejects the preset.
 
-`--safe` directly requires file read, file write and network isolation
-enforcement, and does not allow a silent fallback to an ordinary host process.
+`--safe` requires sandbox admission and refuses an ordinary unsandboxed
+Host fallback. Linux Host selective egress can remain cooperative, as described below.
 It adds no separate sandbox command-line option or configuration setting.
 `--strict` remains a check over all requested capabilities, including resource
 limits, and is distinct from this isolation requirement.
 
-- macOS host: Seatbelt enforces read/write scope and allows only connection to
-  pVisor's allocated loopback TCP proxy port; it blocks other direct IP egress
-  and ambient host Unix sockets, keeping only the Run-local IPC that is
-  required. The Agent uses a temporary HOME and cannot read the original home
-  directory directly; credentials must be passed explicitly or held by Gateway.
-  System runtime libraries and path metadata needed for startup remain readable.
+- macOS host: Seatbelt installs the requested filesystem controls and limits
+  sockets to the assigned proxy and allowed local IPC. The agent uses a
+  private HOME. Inspect the actual read/write/network observations and validate
+  any paths the task must protect. [Executor boundaries](../security/executor-boundaries.md)
 - Linux host: `--safe` requires rootless namespaces, a synthetic root, chroot,
   Landlock and a copy-on-write HOME view. Selective egress and Gateway traffic
   are forwarded cooperatively through the supervisor loopback proxy, and direct
@@ -906,7 +943,7 @@ pvisor spawn \
 ```
 
 `--record-destination` writes a local `pvisor_core::event::Event` Journal to
-`events.trace.jsonl`. Legacy JSONL is not supported. Journal positions define
+`events.trace.jsonl`. Journal positions define
 append order and `caused_by` defines causal links; `observed_at_unix_ms` is
 observation metadata, not an ordering source of truth.
 
@@ -1087,9 +1124,8 @@ same-UID non-symlink `0700` ancestors and a `0600` socket. Existing sockets are
 never overwritten. Default paths use `sessions/<session-id>/<execution-id>/control.sock`;
 the terminal owner removes discovery when the Execution ends. Executors exclude
 the whole authority root from Guest access. These are host records, not guest
-discovery files. The debug override still uses the older exchange path; see
-[owner control limits](../design/architecture.md#host-limits) for its cancellation
-limitation and the [owner protocol](../design/architecture.md#host-wire) for framing.
+discovery files. For the debug override's cancellation behavior, see
+[owner control limits](../design/architecture.md#host-limits) and the [owner protocol](../design/architecture.md#host-wire) for framing.
 
 ### VM local live cold compression {#vm-cold-ram-compression}
 

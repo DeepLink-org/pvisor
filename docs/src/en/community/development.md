@@ -86,7 +86,7 @@ core, guest ──> no other workspace crates
 
 The CLI owns arguments/display; the runtime owns execution and durable Sessions. VM, filesystem and network implementations stay in their owning crates. Core defines shared policies and wire DTOs. Sessions and daemon reuse in-process control while retaining their own authentication, admission, storage and confirmed cleanup.
 
-See [Core architecture](../design/architecture.md#api-boundaries) for public interfaces and migration status. Only VM, OverlayFS and Journal currently use a sole `api` entry. Other crates retain their actual exports; this logical table does not imply unified Rust visibility or stability.
+See [Core architecture](../design/architecture.md#api-boundaries) for public interfaces and migration status.
 
 ### Core implementation boundaries
 

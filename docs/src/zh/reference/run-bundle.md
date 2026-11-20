@@ -32,7 +32,7 @@ pvisor status --review --json ../stage-001 > ../bundle-001.json
 jq '{schema_version, run: {id: .run.run_id, state: .run.state}, safety, resources}' ../bundle-001.json
 ```
 
-Bundle 以 `0600` 写入。新 schema-6 Bundle 必须匹配 schema-3 Run/Execution 及协议 2 的 `completion.json` 回执，包括 Bundle 摘要。旧 schema-4 Bundle 保留原读取规则。未知版本、绑定损坏或缺少必需的观察契约会失败，不能把缺失字段解释为安全。owner 退出后缺少已提交回执的 Execution 保持 Unknown，并拒绝应用工作区变更。
+Bundle 以 `0600` 写入。schema-6 Bundle 必须匹配 schema-3 Run/Execution 及协议 2 的 `completion.json` 回执，包括 Bundle 摘要。读取器校验绑定与必需的观察字段。owner 退出后缺少已提交回执的 Execution 保持 Unknown，并拒绝应用工作区变更。
 
 命令参数、路径、stdout/stderr、捕获载荷仍可能含秘密；变量值未记录不代表整个 Bundle 已脱敏。分享前检查 Bundle 和它引用的产物。源码类型见 `crates/pvisor/src/runtime/bundle.rs`；目录与清理规则见 [Session 与存储](../concepts/sessions.md)。
 
@@ -44,7 +44,7 @@ Bundle 以 `0600` 写入。新 schema-6 Bundle 必须匹配 schema-3 Run/Executi
 
 | JSON 路径 | Rust 类型 | 出现规则 | 含义 |
 | --- | --- | --- | --- |
-| `schema_version` | `u32` | 必需 | 新记录为 5；旧版本 4 按原契约接受 |
+| `schema_version` | `u32` | 必需 | 6 |
 | `generated_at_unix_ms` | `u64` | 必需 | Bundle 生成时间，Unix 毫秒 |
 | `project_apply_scope` | `Option<super::session_service::ProjectApplyScope>` | 可省略，默认 None；None 时省略 | 启动时的项目写回范围；缺失时为 None，不授予项目写回权限 |
 | `run` | `BundleRun` | 必需 | 执行结果与身份 |
@@ -157,7 +157,7 @@ Bundle 以 `0600` 写入。新 schema-6 Bundle 必须匹配 schema-3 Run/Executi
 `project_apply_scope` 是从 rootfs stage 写回项目时显式 opt-in 的契约。
 运行时在启动前从 RunSpec 的 `pvisor.project_apply_scope` 元数据取得该契约并校验，
 要求 `root` 与记录中的 workspace 一致。
-未 opt-in 时，包括缺少该契约的旧记录，写出时没有此字段，读取时为 `None`；
+未 opt-in 时，写出时没有此字段，读取时为 `None`；
 不会从当前目录或文件系统摘要推断授权。
 
 对象存在时，下列字段均必填；未知字段会被拒绝：
@@ -169,20 +169,20 @@ Bundle 以 `0600` 写入。新 schema-6 Bundle 必须匹配 schema-3 Run/Executi
 | `project_apply_scope.device` | `u64` | 不跟随符号链接打开目录后取得的设备身份 |
 | `project_apply_scope.inode` | `u64` | 从同一目录取得的 inode 身份 |
 
-Bundle 从 RunRecord 复制 scope。Schema-5 读取要求它与该记录一致，
+Bundle 从 RunRecord 复制 scope。读取时要核对它与该记录一致，
 并要求已提交的 completion receipt；回执中的 Bundle 摘要绑定这些字节。
 完成提交后，不能脱离该绑定单独改变 scope。
 Apply 会重新校验版本、规范根路径及 device/inode 身份；仅反序列化对象不授予权限。
 绑定缺失或矛盾、目录身份改变都会阻塞 rootstage 项目写回。
-普通旧式工作区 apply 保留独立的兼容契约，见 [apply 范围](cli.md#apply-scope)。
+[Apply 范围](cli.md#apply-scope)
 
 该对象标识写回边界，不是项目内容快照、冻结的宿主 lower，也不代表通用快照或恢复支持。
 它不阻止并发写入者修改项目，也不授权系统根目录写回。
 
 ## 区分净变更与访问操作 {#changes}
 
-[真实样例](../assets/examples/json/run-bundle.json) 中，`obsolete.txt` 为 `deleted`，`src` 是新增目录，`src/result.txt` 是新增文件。`filesystem.changes` 描述暂存的净结果；`run_observation.filesystem` 描述实际访问、允许/拒绝决定及计数。一个文件被反复写入，变更清单里仍可能只出现一次；被拒绝的读取可以出现在观察中而不产生文件变更。
+[macOS Host 实采样例](../assets/examples/json/run-bundle.json) 中，`obsolete.txt` 为 `deleted`，`src` 是新增目录，`src/result.txt` 是新增文件。`filesystem.changes` 描述暂存的净结果；`run_observation.filesystem` 描述实际访问、允许/拒绝决定及计数。一个文件被反复写入，变更清单里仍可能只出现一次；被拒绝的读取可以出现在观察中而不产生文件变更。
 
 `path` 用于展示。如果存在 `path_bytes`，路径身份应使用这组 Unix 字节，不要只按展示文本授权修改。目录变更与 `opaque` 条目有子树影响，选择 apply 路径时需一并考虑。使用 CLI 的选择性 apply，不要把 upper 层的 whiteout 原样复制进项目。
 
-已保存的 `run-bundle.json` 描述采集时的执行结果。`review --json` 额外提供 `review_context` 并刷新所选文件视图，不会重新生成执行器观察。见 [JSON 响应结构与样例](json-output.md#envelopes)。
+已保存的 `run-bundle.json` 描述采集时的执行结果。`review --json` 额外提供 `review_context` 并刷新所选文件视图，不会重新生成执行器观察。可下载样例为归一化的审查输出。生命周期与恢复操作应使用实际暂存区、RunRecord 和完成回执。[JSON 响应结构](json-output.md#envelopes)

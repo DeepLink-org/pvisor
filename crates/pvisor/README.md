@@ -158,12 +158,11 @@ Docker containers are not linked to a second Session: their compatibility
 owns managed completion. Executors receive an `ExecutionContext` for the current
 execution. Its `execution_id` changes across restored executions so stale replies
 cannot affect a successor. Teardown releases live resources while retained stages
-remain available for review, apply and drop. Source and wire formats changed;
-see [stability](../../docs/src/en/reference/stability.md) before upgrading.
+remain available for review, apply and drop.
 
-### Session unification: first migration step
+### Task and container Session records
 
-All newly persisted managed tasks (including Host) and container instances use
+Managed tasks (including Host) and container instances use
 schema 4 `session.json`, written/read by the same Session implementation.
 These bounded private records use compact JSON. Offline status reconciles and
 projects one freshly leased Session snapshot, without caching file authority or
@@ -177,18 +176,9 @@ ownership metadata, not another lifecycle or the owner of health configuration.
 Task checkpoint transitions remain private to their profile. Review/apply do not
 become mandatory for ordinary container writable layers.
 
-This step unifies the aggregate and durable authority. Backend execution drivers,
-their control transports and storage-root selection are still distinct; it does
-not claim that every container operation already uses the native managed-Run
-execution pipeline. Converging those drivers is a subsequent focused step, not a
-second mutable container record or a `session_id` pointer alongside old state.
-
-There is no implicit persistent-format migration. Old `instance.json` container
-records and `execution-session.json` task records require their owning binary;
-stop/review/apply/drop/clean them there before recreating in a fresh store.
-New code never rewrites or deletes those records to make admission succeed.
-The existing `execution-session-root.json` remains a stage-to-Session root link,
-not an independent lifecycle authority. Image/volume stores are not reformatted.
+Task and container profiles select their backend execution drivers, control
+transports and storage roots. `execution-session-root.json` links a stage to
+the Session root.
 
 ```mermaid
 flowchart TD

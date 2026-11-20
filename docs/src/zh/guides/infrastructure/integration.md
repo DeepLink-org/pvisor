@@ -7,6 +7,7 @@
 | 入口 | 适合的调用方 | 管理的身份与生命周期 | 接入前提 |
 | --- | --- | --- | --- |
 | `pvisor spawn` CLI | 开发者、脚本、CI、通过子进程集成的 evaluator | 原生 Session/Execution；命令管理运行、审查和状态操作 | 按所选 host、OCI 或 VM 执行器准备环境；用机器可读输出关联任务 |
+| Docker 风格 CLI | 容器用户与多服务工具负载 | Unix 上每个 VM 对应一个容器型 Session，实验性 Compose 管理项目资源 | VM 支持、适合宿主架构的镜像及所选[容器命令](../../reference/cli.md#container-commands) |
 | Rust `pvisor` Runtime | 需要直接控制执行与清理的 Rust 应用 | `PVisor`、`RunHandle` 与 Session service；应用持有运行时并完成等待与清理 | 固定 crate 版本，配置 executor/drivers，并遵守生命周期与持久化合同 |
 | `pvisor-daemon serve --sandbox` | 使用 HTTP 生命周期 API 的平台服务 | daemon sandbox ID；本机准入、TTL、supervisor 与持久状态 | Linux x86_64、KVM、委派 cgroup v2、可信 prepared image 与受支持的 guest 执行引擎 |
 | `containerd-shim-pvisor-v2` | containerd / CRI 调用链 | containerd task / exec 身份及相应任务生命周期 | Linux 与 containerd 配置；VM 路径另需 `vm` 构建特性及 KVM |
@@ -36,13 +37,20 @@ daemon 实现部分 OpenSandbox 1.1.0 和 E2B Python SDK 2.59.0 profile。`prepa
 
 先通过[离线任务](../../start/first-run.md)验证本机环境，再决定是否需要嵌入 Runtime。脚本或现有训练器可以调用 CLI，并用[机器可读输出](../../reference/json-output.md)保留任务与执行结果的关联。
 
-Rust 应用直接管理 executor、drivers、等待和清理。取消请求、进程退出、资源回收与终态发布有不同时间点；接入时需要按照[执行模型](../../design/execution-model.md)保留相应所有者。API 入口见 [Runtime README](https://github.com/DeepLink-org/pvisor/blob/main/crates/pvisor/README.md)，接口兼容性见[稳定性说明](../../reference/stability.md)。
+Rust 应用直接管理 executor、drivers、等待和清理。取消请求、进程退出、资源回收与终态发布有不同时间点；接入时需要按照[执行模型](../../design/execution-model.md)保留相应所有者。API 入口见 [Runtime README](https://github.com/DeepLink-org/pvisor/blob/main/crates/pvisor/README.md)，验证步骤见[集成检查](../../reference/stability.md)。
 
 ## containerd 集成 {#containerd}
 
 shim 将 containerd task/exec 操作接到 host 或显式选择的 VM 路径。它与原生 CLI 的 OCI executor 是不同入口：后者通过 `pvisor spawn --executor container` 调用 `runc`/`crun` 并保持 Session 流程。
 
 VM shim 的 CPU/RAM 注解配置 VM 形状；部分宿主 OCI 约束被接受为 no-op，不能据此推断对应限制已在 guest 中强制生效。注册、guest exec、挂载和支持范围见 [shim README](https://github.com/DeepLink-org/pvisor/blob/main/crates/pvisor-shim/README.md)。从注册成功到实际部署，还需验证工作负载要求的控制和数据路径。
+
+在 Linux 节点上，可通过 `/etc/pvisor-shim/config.json`（或
+`PVISOR_SHIM_CONFIG` 指定的文件）的 `vm.default_network` 为没有
+`io.pvisor.vm.network` 注解的 VM 任务设置默认出口策略。启用 `vm.auto_expose`
+后，符合条件的 guest TCP 监听端口会转发到 Pod 网络命名空间。转发需要 guest
+控制通道，由 Pod NetworkPolicy 和服务本身的认证控制访问。
+[Shim 节点配置](https://github.com/DeepLink-org/pvisor/blob/main/crates/pvisor-shim/README.md#node-config)
 
 ## 镜像缓存是共享服务 {#cache}
 

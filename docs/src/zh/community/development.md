@@ -88,7 +88,7 @@ core, guest ──> 不依赖其他 workspace crate
 
 CLI 拥有参数和展示；runtime 拥有执行与持久 Session；VM、文件系统和网络实现分别留在所属 crate。共享策略与 wire DTO 由 Core 定义，普通 Session 与 daemon 复用进程内控制，但保留各自鉴权、准入、存储与确认清理。
 
-公开接口与迁移状态以[核心架构](../design/architecture.md#api-boundaries)为准。当前仅 VM、OverlayFS 与 Journal 采用唯一 `api` 入口；其他 crate 继续使用实际导出，不能按这张逻辑表假定 Rust 可见性或稳定性已统一。
+公开接口与迁移状态以[核心架构](../design/architecture.md#api-boundaries)为准。
 
 ### 核心实现边界
 

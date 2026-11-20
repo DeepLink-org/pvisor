@@ -32,6 +32,8 @@ pvisor apply last --all
 
 `apply-ledger.json` 持久记录批次进度，用于中断后的恢复。恢复只接受与预期结果一致的已应用内容；目标出现其他变化时仍然报错。重试前先检查冲突并保留外部改动。
 
+`apply --json` 返回 `execution.recovery_required` 时，保留暂存区与 ledger，用 `apply_id` 关联该次操作。已应用数量缺失或 ledger 未确认，表示响应中缺少经验证的写入结果。重试或丢弃暂存区前先核对原批次。
+
 ## 丢弃剩余改动
 
 ```bash

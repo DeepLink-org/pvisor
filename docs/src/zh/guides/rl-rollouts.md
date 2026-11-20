@@ -32,10 +32,11 @@ pvisor inspect ../rollout-001 -- cat answer.txt
 
 ## 评分并保留训练样本 {#score}
 
-前面的离线任务可用下面的最小 evaluator 评分。它先检查执行结果，再检查候选文件内容；示例依赖 `jq`。
+在装有 `jq` 的 shell 中运行以下 evaluator。执行结果或候选文件读取失败时停止评分。
 
 ```bash
-jq -e '.schema_version == 4 and .run.state == "completed" and .run.exit_code == 0' \
+set -e
+jq -e '.schema_version == 6 and .run.state == "completed" and .run.exit_code == 0' \
   rollout-001.bundle.json
 pvisor inspect ../rollout-001 -- cat answer.txt > rollout-001.answer.txt
 reward=0

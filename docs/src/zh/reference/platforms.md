@@ -2,7 +2,7 @@
 
 Linux x86_64 和 macOS Apple Silicon 提供完整 CLI 安装。Windows x86_64 支持
 源码构建的 `pvisor vm-run` 和实验性的原生 WHP 容器 profile，
-还不能运行 Session、TUI、replay 或本地 Daemon。
+还不能运行 Session、replay 或本地 Daemon。
 
 一个 `pvisor.exe` 足够运行这个 VM 入口，但仍需 `libkrunfw.dll`、Linux rootfs 和
 其中的工作负载。CI 自动运行 Linux/KVM 和 Windows/WHP 的共同 VM 负载。
@@ -11,13 +11,12 @@ macOS 托管 runner 保留构建和常规测试，暂不运行 HVF 实机用例�
 
 ## 安装组件 {#binaries}
 
-Linux/macOS 的完整 wheel 和 native archive 包含四个同版本、同目录的宿主程序。
+Linux/macOS 的完整 wheel 和 native archive 包含三个同版本、同目录的宿主程序。
 普通非交互 Session 不要求常驻 Daemon；其他组件按所用功能调用。
 
 | 程序与归属 | 何时使用 | Windows 状态 |
 | --- | --- | --- |
 | `pvisor` / `pvisor-cli` | 命令入口；自行启动普通 Session owner，`vm-run` 在当前进程执行 VM | `pvisor.exe`：`vm-run` 和原生容器命令子集；不支持 Session |
-| `pvisor-tui` / `pvisor-cli` | `pvisor tui`、`spawn --tui/--ask`、交互 resume；TUI 启动同目录 `pvisor`，管理 PTY、终端和审查面板 | 未移植 |
 | `pvisor-replay` / `pvisor-cli` | `pvisor replay`；managed replay 再调用同目录 `pvisor`，沿用 Session/轨迹契约 | 未移植 |
 | `pvisor-daemon` / 独立 crate | `pvisor daemon`、cache/sandbox 服务；`--vm-memory-pool auto` 通过它发现或启动共享内存池 | 未移植 |
 
@@ -42,6 +41,8 @@ Linux payload，不需要安装宿主 `pvisor-guest.exe`。`whp_smoke.exe` 是 C
 | Host Session（`spawn`）、OverlayFS、review/apply/drop | 暂存需要 FUSE；sandbox 需要 user namespace 和 Landlock | 暂存需要 macFUSE 5.4.0+ FSKit；文件/网络控制使用 Seatbelt | 未移植 |
 | 原生 OCI Session（`container` / `--executor container`） | `crun`/`runc` 和匹配的静态 Linux 注入程序 | 不支持 | 不支持 |
 | Docker 风格 VM 容器及网络策略 | 有实现和独立契约 | 有实现，各能力需 HVF 验证 | 实验性 WHP profile：镜像/生命周期、bridge/none 和 stdin/PTY |
+| 实验性 Compose | 原生 KVM VM | 原生 HVF VM | 不支持 |
+| 活体容器 CoW 分叉与受管内存 | Linux x86_64/KVM，显式启用 | 不支持 | 不支持 |
 | Linux host-root `stage`、`:stage` bind | Linux 专用路径 | 不支持 Linux host-root；staged bind 不推定与 Linux 等价 | 不支持 |
 | VM 快照、恢复、冷 RAM | 有 API 和测试，受 backing/profile 限制 | 有 API 和测试，受 HVF/backing 限制 | Unsupported；仅有暂停/继续 |
 | Gateway | 按所选执行器和配置启用 | 有宿主执行路径 | 此次 CLI 不包含 |
@@ -100,7 +101,7 @@ virtio-fs → Rust PID 1 supervisor → Linux workload → token 认证退出`�
 | --- | --- | --- | --- |
 | CLI 与进程 | 完整命令树、Session owner、信号和后代清理 | 相同 Session/companion 结构，终端与资源控制受 macOS 限制 | `vm-run` 及容器 owner、绑定 generation 的 named pipe 和 runner Job；无 Session 状态 |
 | companion | 同目录发现、Unix uid/mode 检查、`exec` 派发 | 相同检查；解析 Homebrew 入口的真实安装目录 | 无 companion 派发；完整移植需定义 `.exe` 查找、ACL 信任及进程启动/退出传播 |
-| 终端 | PTY、终端前台归属和信号 | PTY、终端恢复；TUI 为独立程序 | 容器 stdin/guest PTY、控制台模式恢复及可取消输入；原生 ConPTY 测试 |
+| 终端 | PTY、终端前台归属和信号 | PTY 与终端恢复 | 容器 stdin/guest PTY、控制台模式恢复及可取消输入；原生 ConPTY 测试 |
 | 共享服务 | Unix socket、同用户认证、锁和 readiness；sandbox 另需 cgroup/KVM | 使用 Unix IPC；支持缓存/池，sandbox API 不支持 | IPC、端点 ACL、锁、取消和服务回收尚未移植；连接远端 Linux API 不等于本地服务可用 |
 | VM 与文件系统 | KVM ioctl、Unix virtio-fs；完整运行时还有 overlay/network 配置 | HVF、Unix virtio-fs；受签名、页大小和宿主权限影响 | WHP 分区、APIC/PIT/TSC、Win32 waitable handle 和目录共享；Linux wire errno、标志位及 ABI 宽度需转换 |
 
@@ -108,7 +109,7 @@ virtio-fs → Rust PID 1 supervisor → Linux workload → token 认证退出`�
 不提供完整 POSIX 元数据语义。调用方须独占管理 rootfs，避免不可信宿主进程改写
 共享树。
 
-完整 Windows 移植还需验证同目录安装、版本/权限检查，以及 CLI→TUI→CLI、
+完整 Windows 移植还需验证同目录安装、版本/权限检查，以及
 CLI→replay→CLI、CLI→Daemon 的实际调用。测试须覆盖终端恢复、取消/超时、
 后代回收、服务就绪和失败恢复，并分别核对 Session JSON/Bundle、review/apply 和
 服务协议。只有 `--help` 或 VM 负载通过，尚不足以验收这些调用。

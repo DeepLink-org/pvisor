@@ -103,13 +103,13 @@ Conservative reservations trade utilization for explicit cleanup accounting: pau
 
 Native pause/resume controls the same Execution's live vCPUs through the RunHandle; it is not cgroup freeze, memory offload, checkpoint/restore or VM reconstruction. Admission accounting is retained. Execd forwarding is not Gateway routing, capture or inference-idle CPU release.
 
-Ordinary Sessions keep their independent [checkpoint/fork semantics](../execution-model.md). The daemon cannot stage/apply files, restore native VM state, acquire node backing or coordinate model responses. Wiring those paths requires explicit adapters with lifecycle/evidence contracts, not renaming the retired distributed control.
+Ordinary Sessions keep their independent [checkpoint/fork semantics](../execution-model.md). The Sandbox API does not expose stage/apply or VM checkpoint, restore and offload. For caller-owned OCI VMs, the separate Linux pressure service uses explicit enrollment and wait boundaries. See [managed container memory](../../guides/infrastructure/lifecycle.md#container-memory).
 
-## Compatibility and evidence {#invariants}
+## Validation scope {#invariants}
 
 Partial profiles are pinned to OpenSandbox 1.1.0 and E2B Python SDK 2.59.0. The default guest engine, explicit upstream templates, SDK core flows and API-restart checks have distinct acceptance entry points; see [evidence scope](operations.md#validation). Validated core flows do not establish full service conformance.
 
-Native VM execution is wired in the runtime. Stage/apply, checkpoint/fork and offload APIs, Gateway inference-wait coordination and automatic node-resource acquisition are not implemented. Historical Cluster results do not validate daemon SDK conformance, performance or density; no node-wide physical-memory gain is established.
+The pressure service has its own validation scope and provides no node-wide memory savings guarantee.
 
 Implementation ownership: `daemon/models.rs` defines schemas/resource validation; `daemon/store.rs` persists per-sandbox records; `daemon/mod.rs` orchestrates admission/lifecycle; `daemon/http.rs` and `daemon/e2b.rs` provide the HTTP profiles. `runtime.rs` owns native supervisors, IPC/cgroups and VM ownership; `native.rs`/`native/` adapt guest process/file protocols; `prepared_image.rs` publishes templates; `cache_component.rs` and `memory_pool.rs` supervise independent components.
 

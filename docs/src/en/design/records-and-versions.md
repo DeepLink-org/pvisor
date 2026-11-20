@@ -1,6 +1,6 @@
 # Records and version matrix
 
-pVisor execution identity, fact logs, file publication and machine snapshots each own their records. One Session may contain schema-3 `run.json` with completion protocol 2, a schema-6 Bundle, version-5 Events and a version-3 Session. Those numbers constrain separate readers; they neither substitute for each other nor equal the Cargo package version.
+pVisor execution identity, fact logs, file publication and machine snapshots each own their records. One Session may contain schema-3 `run.json` with completion protocol 2, a schema-6 Bundle, version-5 Events and a version-4 Session. Those numbers constrain separate readers; they neither substitute for each other nor equal the Cargo package version.
 
 ## What each record establishes {#ownership}
 
@@ -19,16 +19,16 @@ Event IDs and Journal positions, Host `request_id`, Session lifecycle request ID
 
 The matrix follows current source declarations and reader branches. Format changes require checking writers, readers, callers and existing records together. Detailed fields remain in their owning topics.
 
-| Object | Current writer version | Reader and compatibility boundary | Source owner, under `crates/` |
+| Object | Current writer version | Reader checks | Source owner, under `crates/` |
 | --- | --- | --- | --- |
 | RunSpec | `schema_version = 1` | Runtime rejects mismatched versions; input validation does not establish execution success | `pvisor-core/src/execution.rs`, `pvisor/src/runtime/run.rs` |
 | Operation | `version = 1` | Exact `OPERATION_VERSION` check plus identity, kind and rewrite validation | `pvisor-core/src/operation.rs` |
 | Event | `version = 5` | Exact `VERSION` check; Observation `domain/name/version` separately identifies its payload | `pvisor-core/src/event.rs` |
-| Journal Header / Record | `pvisor.trace/5` | Header and Event validation work together; complete old formats are rejected rather than truncated as incomplete tails | `pvisor-journal/src/journal.rs` |
-| Run Bundle | `schema_version = 6` | Requires matching Run/Execution completion receipt and Bundle digest; legacy 4 retains its original rules; unknown versions reject | `pvisor/src/runtime/bundle.rs` |
-| RunRecord (`run.json`) | `schema_version = 3` | Completion protocol 2 binds the terminal result and Bundle; a dead owner without a receipt yields Unknown; schema 1 retains legacy rules; live control is cleared at termination | `pvisor/src/runtime/registry.rs` |
+| Journal Header / Record | `pvisor.trace/5` | Validates the Header and each Event | `pvisor-journal/src/journal.rs` |
+| Run Bundle | `schema_version = 6` | Requires matching Run/Execution completion receipt and Bundle digest | `pvisor/src/runtime/bundle.rs` |
+| RunRecord (`run.json`) | `schema_version = 3` | Completion protocol 2 binds the terminal result and Bundle; a dead owner without a receipt yields Unknown; live control is cleared at termination | `pvisor/src/runtime/registry.rs` |
 | Execution completion receipt (`completion.json`) | `version = 2` | Binds `RunResult` and Bundle BLAKE3; missing or inconsistent data cannot establish success | `pvisor/src/runtime/completion.rs` |
-| Execution Session (`execution-session.json`) | `version = 3` | Exact version and Session/root/stage binding checks; no automatic old-record conversion | `pvisor/src/runtime/session_execution.rs` |
+| Task / Unix container Session (`session.json`) | `version = 4` | Validates version, profile and ownership bindings | `pvisor/src/runtime/execution/session.rs`, `pvisor/src/docker/session.rs` |
 
 Event version 5 and Journal format 5 currently share the Event version constant. Other versions have no such relationship. An Observation payload change also cannot be judged compatible solely from outer Event version 5. Successful JSON parsing establishes syntax; each record still needs its own validation.
 
@@ -39,35 +39,38 @@ Public persisted fields are in [Run Bundle](../reference/run-bundle.md); event b
 | Object | Current format | Reader and publication boundary | Source owner, under `crates/` |
 | --- | --- | --- | --- |
 | Workspace checkpoint | `schema_version = 3`, explicit `kind = workspace` | Reader requires schema 3; it is not interpreted as execution machine state | `pvisor/src/runtime/checkpoint.rs` |
-| EnvironmentManifest | Writer selects 2, 3, 4 or 5 by profile | Reader accepts explicit v1–v5/RAM-field combinations and checks file layout, digests, platform conditions and `SnapshotCompatibility` | `pvisor/src/environment_snapshot/store.rs` |
-| Immutable base seal | `version = 2` | Requires the digest-bound content index; old seals are rejected | `pvisor/src/environment_snapshot/base.rs` |
-| Compact preimage log | `pvisor.preimages/2`, frame `PVR2` | First observations and completion records have independent contracts; legacy per-file journals use their existing reader without forced in-place conversion | `pvisor-overlay-core/src/preimage_log.rs`, `core.rs` |
+| EnvironmentManifest | Writer selects 2, 3, 4 or 5 by profile | Checks RAM fields, file layout, digests and restore prerequisites | `pvisor/src/environment_snapshot/store.rs` |
+| Immutable base seal | `version = 2` | Requires the digest-bound content index | `pvisor/src/environment_snapshot/base.rs` |
+| Compact preimage log | `pvisor.preimages/2`, frame `PVR2` | First observations and completion records have independent contracts | `pvisor-overlay-core/src/preimage_log.rs`, `core.rs` |
 | Stage durability / seal | `durability-v1`, `sealed-v1` | Missing policy retains the original strict contract; unknown policy is rejected; managed stages require complete seals for reuse or apply | `pvisor-overlay-core/src/stage.rs` |
-| Apply ledger / ApplyRecord | Current schema 2; reader accepts 1 or 2 | Compatibility does not invent new guarantees for old records; recovery follows recorded phases under the target lock | `pvisor-overlay-core/src/apply.rs` |
+| Apply ledger / ApplyRecord | Schema 2 for ordinary apply, schema 3 for project-scoped apply | Recovery follows recorded phases under the target lock | `pvisor-overlay-core/src/apply.rs` |
 | `vm.ram` descriptor | `PVZRAM`, descriptor version 2 | Validates descriptor, absolute generation directory and head records; versioning is separate from environment manifests | `pvisor/src/ram_backing.rs` |
 
-Environment manifest versions describe different RAM/filesystem combinations. A maximum version of 5 does not mean every new snapshot writes 5. Stage profiles use v4 for raw RAM and v5 for compressed RAM; other profiles follow their field combinations. SDK readability of a storage format does not mean the current Session CLI can adopt arbitrary historical standalone snapshot stores.
+Environment manifest versions describe different RAM/filesystem combinations. A maximum version of 5 does not mean every new snapshot writes 5. Stage profiles use v4 for raw RAM and v5 for compressed RAM; other profiles follow their field combinations.
 
 [Session checkpoint design](session-checkpoint-cli.md#10-当前实现与验收边界) owns entries and compatible profiles. [Environment snapshots](environment-snapshot.md#storage-contract) owns machine and file references, [Offload format](offload/disk-layout-and-schema.md) owns RAM subformats, and [Shared image cache](lazy-image-v2.md) owns image metadata/content versions.
 
 ## Control protocols and build identity {#control-protocols}
 
-| Image index/content pool | `format_version=2`, `pvisor-radix-v2`, `pvisor-v2:` | V1 explicitly rejected; republish OCI into a new prefix, HEAD CAS commits; transport versions are independent | `pvisor/src/image/cache/portable.rs`, `portable/`, `pool.rs` |
-| Protocol | Version and additional bindings | Authority and compatibility scope |
+| Image index/content pool | `format_version=2`, `pvisor-radix-v2`, `pvisor-v2:` | Conditional HEAD update commits publication | `pvisor/src/image/cache/portable.rs`, `portable/`, `pool.rs` |
+| Protocol | Version and additional bindings | Authority and scope |
 | --- | --- | --- |
 | Host AgentCtl envelope | `AGENTCTL_HOST_VERSION = 2` | Endpoint owners validate Session/Execution/generation targets; Guest tokens grant no Host authority |
 | Guest AgentCtl | `AGENTCTL_VERSION = 1` | Workload `Hello`/`Sync`, state and cooperation; a separate protocol from Host |
-| Session owner instance control | `pvisor-instance-control-3`, version-2 Host envelope, exact Session/Execution and recorded socket device/inode | Same UID; different caller binaries are accepted by instance-protocol compatibility; mismatch rejects only that Session |
+| Session owner instance control | `pvisor-instance-control-3`, version-2 Host envelope, exact Session/Execution and recorded socket device/inode | Same-UID callers address the recorded owner socket |
 | CLI owner bootstrap | Inherited private socketpair, internal DTO and same-binary BLAKE3 check | Only the frontend launches its own owner; subsequent commands do not use this DTO |
-| Durable Session operation lock | `session.lock` diagnostic protocol `pvisor-session-lock-1`, PID and operation | Exclusive flock, 0600 and one hard link; different binaries with compatible disk readers share the lock; unknown formats reject mutation |
-| Daemon native supervisor | Version-1 Host envelope, owner/token and exact target | Credentials and admission remain independent of the Session owner protocol; no transparent legacy-supervisor adoption |
+| Durable Session operation lock | `session.lock` diagnostic protocol `pvisor-session-lock-1`, PID and operation | Exclusive flock, 0600 and one hard link |
+| Daemon native supervisor | Version-2 Host envelope, owner/token and exact target | Credentials and admission remain independent of the Session owner protocol |
 
-Source entries are `pvisor-core/src/host_protocol.rs`, `protocol.rs`, `pvisor-cli/src/cli/host_service.rs` and `host_transport.rs`, `registry.rs` and `supervisor.rs` under `pvisor/src/runtime/`. [Host AgentCtl](architecture.md#host-wire) owns wire framing, same-UID boundaries and upgrade order. Rust `api` organization and wire compatibility are separate concerns; see [API boundaries and migration status](architecture.md#api-boundaries).
+[Host AgentCtl](architecture.md#host-wire) defines framing and socket
+authority. [Rust API boundaries](architecture.md#api-boundaries) list public
+crate entry points.
 
-## Relationships to check during version changes {#evolution}
+## Validate record bindings {#evolution}
 
-1. Identify whether the change affects an input DTO, stored object, domain payload or live protocol, and locate its actual reader.
-2. Explicitly choose old-format acceptance, conversion or rejection. Changing a version number cannot bypass structural or binding checks.
-3. For stored objects, check digests, dependency references, stage/Execution ownership and restore profile. For live protocols, check authority, endpoint-supported target fields, instance-protocol name and socket identity. Same-binary verification applies only when the frontend launches its own owner.
-4. Handle active requests and instances belonging to old listeners/supervisors before upgrades. File compatibility does not establish live-process takeover.
-5. After timeout, disconnect or publication failure, locate the original request's commit boundary and reconcile it using [Failure semantics and retries](failure-semantics.md) before retrying.
+1. Check the record's schema and required fields at its owning reader.
+2. For persisted state, check digests, dependency references and Session,
+   Execution and stage ownership. For live control, check the endpoint and
+   recorded socket identity.
+3. After timeout, disconnect or publication failure, locate the original
+   request's commit point and reconcile it using [failure semantics](failure-semantics.md).

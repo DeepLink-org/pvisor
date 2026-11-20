@@ -1,10 +1,8 @@
 {
   "checkpoints": [],
-  "session_id": "run-bundle-run_id",
+  "execution_blocker": "CAPABILITY_UNSUPPORTED: native execution capture/restore requires a VM profile",
   "kind_filter": null,
   "operation": "checkpoint.list",
   "schema_version": 1,
-  "supported_kinds": [
-    "workspace"
-  ]
+  "session_id": "run-bundle-run_id"
 }

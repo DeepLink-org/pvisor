@@ -1,6 +1,6 @@
 # pVisor command model
 
-The CLI has two execution entries: `pvisor run` creates an independent container VM, while `pvisor spawn` creates a Session. Omitting the subcommand selects `spawn`. `status`, `kill`, `inspect`, `fork`, `apply` and `drop` operate on Sessions directly; `replay` creates a Session from a trajectory. See [Execution model](execution-model.md) for Session, Run and Execution. Internal records still use Run and configuration still uses `RunConfig`. Configuration files must be passed explicitly; they are not implicit project policies.
+On Unix, `pvisor run` creates a container-profile Session with its own VM and `pvisor spawn` creates a task-profile Session. Omitting the subcommand selects `spawn`. `status`, `kill`, `inspect`, `fork`, `apply` and `drop` operate on Sessions directly; `replay` creates a Session from a trajectory. See [Execution model](execution-model.md) for Session, Run and Execution. Internal records still use Run and configuration still uses `RunConfig`. Configuration files must be passed explicitly; they are not implicit project policies.
 
 ## Start with spawn
 
@@ -76,7 +76,7 @@ Top-level commands follow their objects: container commands manage independent V
 
 `status --review` is a shortcut; `review` is the detailed review entry. Session operations are top-level commands, without a `session` command layer.
 
-Resource tools use their own executables. Native execution capture, restoration and storage management use Session commands, with support determined by the VM profile. Other unknown names follow ordinary default execution rules. Direct `pvisor ctrl`, `pvisor ctrl --help` and `pvisor help ctrl` explicitly reject with migration guidance instead of default-running a workload; `pvisor spawn -- ctrl` remains explicit workload intent, not a control API alias.
+Resource tools use their own executables. Native execution capture, restoration and storage management use Session commands, with support determined by the VM profile. Unknown command names fail during parsing. Direct `pvisor ctrl`, `pvisor ctrl --help` and `pvisor help ctrl` explicitly reject with migration guidance instead of default-running a workload; `pvisor spawn -- ctrl` remains explicit workload intent, not a control API alias.
 
 ```bash
 pvisor-daemon serve --help
@@ -85,7 +85,7 @@ pvisor push --help
 pvisor-daemon memory-pool --help
 ```
 
-Use `pvisor-daemon` directly for sandbox lifecycle and optional pool ownership. Cache and replay remain separate from Session commands; replay companion lookup reports missing tools explicitly. The daemon CLI constructs the native VM runtime and dispatches supervisors, with synchronous internal VM dispatch before Tokio. Node resource protocols belong to the runtime and have no daemon acquire/release adapter. Packaging does not expose staging/checkpoint APIs or automatically acquire node resources.
+Use `pvisor-daemon` directly for sandbox lifecycle and optional pool ownership. Cache and replay remain separate from Session commands; replay companion lookup reports missing tools explicitly. The daemon CLI constructs the native VM runtime and dispatches supervisors, with synchronous internal VM dispatch before Tokio. The separate pressure service requires explicit enrollment for caller-owned VMs. See [managed container memory](../guides/infrastructure/lifecycle.md#container-memory). Packaging does not expose staging/checkpoint APIs or automatically acquire node resources.
 
 Tools come from a static table and only a trusted installation directory; discovery neither searches PATH nor executes companions. The directory/executables belong to the current user or root, must not be group/world writable, and reject symlinks. Unix `exec` preserves argv, stdio, signals and exit codes. Tool `--help`/`--version` arguments pass through unchanged, and tools cannot shadow Session commands. See the [daemon architecture](daemon/index.md) and [operations](daemon/operations.md) for sandbox deployment and native resource budgets.
 

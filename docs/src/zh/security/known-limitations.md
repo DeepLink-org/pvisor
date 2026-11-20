@@ -13,7 +13,7 @@
 | 开启 deny 规则时，多硬链接普通文件和新建硬链接被保守拒绝 | 依赖硬链接的工具可能失败 | 对该工具关闭相应规则或改用其他执行方式 | [文件访问规则](../reference/cli.md) |
 | 文件规则不承诺抵抗宿主其他进程同时改写底层文件的竞态 | 底层被并发改写时规则可能失效 | 底层目录交给可信的监督进程管理 | [文件访问规则](../reference/cli.md) |
 | `warn` 计数是文件系统访问尝试，不是内容读取次数 | 计数不精确，内核缓存可能合并访问 | 只把它当作信号 | [文件访问规则](../reference/cli.md) |
-| macOS host 的 `--safe` 文档描述为强制 Seatbelt 读取范围，但 Run 证据把读取报告为 ambient | 文档与证据不一致，读取边界需以证据为准 | 读 `status --review` 的 Safety boundary；需要读取边界时使用 VM | 2026-10 实测 `--safe` Run 输出；待研发确认 |
+| macOS Host 的通用审查警告可能提示读取共享，即使后端已记录安装 Seatbelt 读取策略 | 仅凭警告无法确定实际读取范围 | 核对 `executor_observations.enforcement.dimensions.filesystem_read`，并验证策略需保护的路径 | [实采 Host Bundle](../assets/examples/json/run-bundle.json) |
 
 ## 凭据与敏感文件
 
@@ -30,7 +30,7 @@
 | host/container 的选择性代理是协作式的 | 忽略代理、加入 `NO_PROXY` 或直接建 socket 的客户端可以绕过 | VM `auto`、host `--overlaynet-deny-all` 或容器离线模式 |
 | 网络观察只覆盖经过代理的请求 | 记录中没有出现的目标，不代表从未访问 | 需要完整结论时使用强制边界 |
 | 域名规则无法区分同一域名下的推理、遥测与上传 API | 授权目标可能被用于外传 | 使用 Gateway 并限制路由 |
-| VM 数据面不支持 UDP、IPv6、ICMP、QUIC 与入站转发 | 依赖这些协议的工具失败（失败关闭） | 改用 host 执行 |
+| 原生 VM Session 的 `auto` 出口支持 IPv4 TCP 与 DNS | 依赖其他协议的工具需要选择其他执行 profile | 见[网络边界](../guides/policies/network.md#网络边界)。Docker 风格的同网互访和 TCP 端口发布有[独立规则](../reference/cli.md#container-networks)。 |
 
 ## 进程与执行器
 

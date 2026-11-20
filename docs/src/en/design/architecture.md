@@ -60,7 +60,7 @@ Source entry points: `pvisor/src/execution_context/lifecycle.rs`, `pvisor-overla
 
 ## API boundaries and migration status {#api-boundaries}
 
-`pvisor-vm`, `pvisor-overlayfs`, `pvisor-journal`, `pvisor-containers`, `pvisor-replay`, `pvisor-overlaynet` and `pvisor-guest` use a sole `api` entry point. Other crates retain their existing interfaces.
+`pvisor-vm`, `pvisor-overlayfs`, `pvisor-journal`, `pvisor-containers`, `pvisor-replay`, `pvisor-overlaynet` `pvisor-guest`, `pvisor-daemon`, `pvisor-shim` and `pvisor-cli` use a sole `api` entry point. Other crates retain their existing interfaces.
 
 | Crate | Current public boundary | Implementation and resource ownership |
 | --- | --- | --- |
@@ -73,13 +73,16 @@ Source entry points: `pvisor/src/execution_context/lifecycle.rs`, `pvisor-overla
 | `pvisor-overlaynet` | `pvisor_overlaynet::api`; proxy, egress, VM transport and observation traits | Private connectors, peer membership, counters and worker lifecycle; Core owns policy records |
 | `pvisor-replay` | `pvisor_replay::api`; owned requests, one loading/execution trait and result/error records | Private adapters, validation, process supervision and journal ownership |
 | `pvisor-containers` | `pvisor_containers::api`; catalog and lifecycle traits | Private store, image and native transport implementations |
-| `pvisor`, Gateway, Daemon and others | Retain existing entries; no uniform sole-`api` model yet | Continue evolving within actual lifecycle and domain boundaries |
+| `pvisor-daemon` | `pvisor_daemon::api`; runtime, prepared catalog, pressure scheduler and service contracts | Private sandbox registry, supervisor and service implementations |
+| `pvisor-shim` | `pvisor_shim::api`; `Shim` and `ShimRuntime` | Private containerd registration, task and VM adapters |
+| `pvisor-cli` | `pvisor_cli::api`; `Application` and `CommandLine` | Private parsers, dispatch, terminal and companion handling |
+| `pvisor`, Gateway and others | Retain existing entries; no uniform sole-`api` model yet | Continue evolving within actual lifecycle and domain boundaries |
 
 Migrated `api` modules declare public data, fields and trait methods. Opaque owners may be re-exported from private implementations while retaining private state. Method bodies, validation, platform dispatch and resource management live in implementations; public traits have no default bodies. Callers import contracts from the owning crate's `api`. Declarations keep the same shape across supported platforms/features; capability queries and explicit unsupported errors describe actual support.
 
 Migration proceeds one crate at a time, updating its consumers, README, public documentation and boundary checks together while preserving external contract coverage. Unmigrated crates should not gain blanket re-export layers or duplicate DTOs merely to appear uniform, nor expose internals to bypass compilation boundaries. Hardware/private-state checks remain inside the crate; callers rely on ownership, lifecycle, post-failure state and synchronization contracts.
 
-This Rust boundary does not automatically establish stable wire protocols or old-record compatibility. The frontend verifies the same binary when self-executing its owner; later CLIs use instance-protocol compatibility without requiring matching binary digests. Stored formats have independent readers. See [Records and version matrix](records-and-versions.md). Migration status is based on static inspection of `lib.rs`, VM `runtime_modules.rs`, `api.rs` and directory READMEs. Contract tests and platform validation have not been rerun for this status report.
+Stored formats and control envelopes have explicit ownership bindings. See the [record matrix](records-and-versions.md).
 
 ## Host and Guest AgentCtl {#host-agentctl}
 
@@ -145,22 +148,17 @@ always pass zero for `OwnedTree.excluded`; `Completion.signal` has no reader,
 and restoration's `vm_control_socket(None)` always returns None. These cleanups
 are pending for the bootstrap path.
 
-### Wire contract and upgrades {#host-wire}
+### Wire contract {#host-wire}
 
-The instance contract is named `pvisor-instance-control-3`. Core's version-1 Host
+The instance contract is named `pvisor-instance-control-3`. Core's version-2 Host
 envelopes carry correlation, exact Session/Execution targets and typed results/errors.
 `runtime/host_transport.rs` retains newline JSON framing with a 1 MiB frame limit.
 The owner admits at most eight connections and uses existing operation locks for
 mutations. The public socket receives no terminal descriptors or guest tokens.
 Internal CLI DTOs bootstrap only the self-executed owner.
 
-Caller and owner binaries may differ when the instance protocol matches. An
-incompatible Session protocol identifies that owner's recorded binary; it does not
-block other Sessions. Before upgrading, drain old Sessions and stop the old
-`--pvisor-internal-host` with the old binary. New CLIs never connect to old
-`<generation>.sock` endpoints. Records without live discovery expose disk state
-only, and do not discover old running VMs. The daemon supervisor's listener,
-private credentials, framing and admission remain unchanged.
+The CLI locates live owners through the recorded socket identity. See the
+[record matrix](records-and-versions.md#control-protocols) for the daemon supervisor's separate authority.
 
 ### Cancellation and validation limits {#host-limits}
 
