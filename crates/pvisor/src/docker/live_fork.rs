@@ -443,6 +443,67 @@ impl Store {
         names: &[String],
         offload: bool,
     ) -> anyhow::Result<Vec<Instance>> {
+        self.fork_configured(selector, names, offload, &[], None)
+    }
+
+    /// Fork into distinct empty cgroup v2 subtrees reserved by the replay owner.
+    /// The owner must bind each child's generation before issuing guest work.
+    pub fn fork_running_with_pressure(
+        &self,
+        selector: &str,
+        names: &[String],
+        groups: &[PathBuf],
+        pool: Option<&Path>,
+    ) -> anyhow::Result<Vec<Instance>> {
+        use std::os::unix::fs::MetadataExt;
+        ensure!(
+            !groups.is_empty() && names.len() == groups.len(),
+            "supply one pressure cgroup per child"
+        );
+        let mut placements = Vec::with_capacity(groups.len());
+        let mut seen = std::collections::BTreeSet::new();
+        for group in groups {
+            let group = group.canonicalize()?;
+            ensure!(
+                group.starts_with("/sys/fs/cgroup") && group != Path::new("/sys/fs/cgroup"),
+                "expected a delegated cgroup v2 subtree"
+            );
+            let procs = fs::OpenOptions::new()
+                .write(true)
+                .open(group.join("cgroup.procs"))?;
+            let mut info = std::mem::MaybeUninit::<libc::statfs>::uninit();
+            if unsafe { libc::fstatfs(procs.as_raw_fd(), info.as_mut_ptr()) } != 0 {
+                return Err(io::Error::last_os_error().into());
+            }
+            ensure!(
+                unsafe { info.assume_init() }.f_type == libc::CGROUP2_SUPER_MAGIC,
+                "expected cgroup v2"
+            );
+            let meta = procs.metadata()?;
+            ensure!(
+                seen.insert((meta.dev(), meta.ino())),
+                "duplicate child cgroup"
+            );
+            ensure!(
+                fs::read_to_string(group.join("cgroup.events"))?
+                    .lines()
+                    .any(|line| line == "populated 0"),
+                "child cgroup is populated"
+            );
+            placements.push(procs);
+        }
+        let pool = pool.map(fs::canonicalize).transpose()?;
+        self.fork_configured(selector, names, false, &placements, pool.as_deref())
+    }
+
+    fn fork_configured(
+        &self,
+        selector: &str,
+        names: &[String],
+        offload: bool,
+        placements: &[File],
+        pool: Option<&Path>,
+    ) -> anyhow::Result<Vec<Instance>> {
         ensure!(
             !names.is_empty()
                 && names.iter().all(|n| valid_name(n))
@@ -502,7 +563,9 @@ impl Store {
                 );
             }
             fs::hard_link(stage.path().join("fork.json"), dir.join("fork.json"))?;
-            if offload {
+            if !placements.is_empty() {
+                fs::write(dir.join("pressure-managed"), serde_json::to_vec(&pool)?)?;
+            } else if offload {
                 File::create_new(dir.join("offload-enabled"))?;
             }
             register_image(&dir, &saved.image)?;
@@ -548,10 +611,12 @@ impl Store {
             let workers: Vec<_> = children
                 .iter()
                 .zip(leases)
-                .map(|(c, lease)| {
+                .enumerate()
+                .map(|(index, (c, lease))| {
+                    let placement = placements.get(index);
                     let ram = &ram;
                     s.spawn(move || {
-                        if let Err(error) = self.spawn_owner(c, lease, Some(ram)) {
+                        if let Err(error) = self.spawn_owner(c, lease, Some(ram), placement) {
                             let _guard = self.lock()?;
                             finish_instance(self, &mut c.clone(), 125, Some(format!("{error:#}")))?;
                             return Err(error);

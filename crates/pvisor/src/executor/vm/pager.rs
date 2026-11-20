@@ -206,6 +206,20 @@ pub(crate) fn start_diagnostics(handle: &pvisor_vm::api::VmmHandle) -> io::Resul
 /// Failure leaves the socket and pool ownership untouched; dropping the prepared
 /// pager closes the session. No RAM is published until `start` is called.
 pub(crate) fn prepare_pool(path: &Path, metrics: bool) -> io::Result<PreparedPager> {
+    prepare_pool_profile(path, metrics, false)
+}
+
+/// Managed reclaim requires physical mappings; reject other pool modes before
+/// constructing a VM, without falling back or reconnecting to another session.
+pub(crate) fn prepare_managed_pool(path: &Path, metrics: bool) -> io::Result<PreparedPager> {
+    prepare_pool_profile(path, metrics, true)
+}
+
+fn prepare_pool_profile(
+    path: &Path,
+    metrics: bool,
+    physical_required: bool,
+) -> io::Result<PreparedPager> {
     let parent = path
         .parent()
         .ok_or_else(|| io::Error::other("pool parent missing"))?;
@@ -221,6 +235,13 @@ pub(crate) fn prepare_pool(path: &Path, metrics: bool) -> io::Result<PreparedPag
     let stream = UnixStream::connect(path)?;
     crate::host_transport::authorize_host_peer_sync(&stream).map_err(io::Error::other)?;
     let mut pool = PoolClient::new(stream, Duration::from_secs(5))?;
+    if physical_required {
+        pool.enable_shared_mapping()?;
+        return Ok(PreparedPager {
+            store: PagerStore::Physical(pool),
+            metrics,
+        });
+    }
     #[cfg(target_os = "macos")]
     let store = match pool.enable_shared_mapping() {
         Ok(()) => PagerStore::Physical(pool),
@@ -279,6 +300,47 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
         directory
+    }
+
+    #[test]
+    fn managed_pool_rejects_nonphysical_mode_without_fallback_or_reconnect() {
+        use std::io::{Read, Write};
+        let directory = private_directory();
+        let socket = directory.path().join("pool.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let before = std::fs::symlink_metadata(&socket).unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            stream.write_all(b"PVMEMP2\0").unwrap();
+            stream.write_all(&[1; 16]).unwrap();
+            let mut operation = [0];
+            stream.read_exact(&mut operation).unwrap();
+            assert_eq!(operation, [6]);
+            let message = b"physical mapping unsupported";
+            stream.write_all(&[1]).unwrap();
+            stream
+                .write_all(&(message.len() as u32).to_le_bytes())
+                .unwrap();
+            stream.write_all(message).unwrap();
+            assert_eq!(
+                stream.read(&mut operation).unwrap(),
+                0,
+                "must not negotiate a fallback"
+            );
+            listener.set_nonblocking(true).unwrap();
+            assert_eq!(
+                listener.accept().unwrap_err().kind(),
+                io::ErrorKind::WouldBlock
+            );
+        });
+        let error = prepare_managed_pool(&socket, false).err().unwrap();
+        assert!(error.to_string().contains("physical mapping unsupported"));
+        server.join().unwrap();
+        let after = std::fs::symlink_metadata(&socket).unwrap();
+        assert_eq!((before.dev(), before.ino()), (after.dev(), after.ino()));
     }
 
     #[test]

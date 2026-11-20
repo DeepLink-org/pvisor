@@ -1,4 +1,4 @@
-//! Linux snapshot-branch RAM. No scanning for duplicates and no UKSM authority.
+//! Linux snapshot-branch RAM and private delta ownership.
 //!
 //! The immutable restore mapping is the base. A page becomes branch-owned only
 //! after its COW bytes have been saved to the exclusive delta file. Subsequent
@@ -143,6 +143,37 @@ mod tests {
     }
 
     #[test]
+    fn shared_postfork_page_survives_discard_and_one_siblings_rewrite() {
+        let input = restore(true);
+        let pool = tempfile::tempfile().unwrap();
+        pool.write_all_at(&[0x91; 4096], 0).unwrap();
+        let mut branches = (0..4).map(|_| branch(&input)).collect::<Vec<_>>();
+        for (memory, owner) in &mut branches {
+            let host = memory.get_host_address(GuestAddress(0)).unwrap();
+            assert!(!owner.private_candidate(host as u64).unwrap());
+            memory.write_slice(&[0x91; 4096], GuestAddress(0)).unwrap();
+            assert!(owner.private_candidate(host as u64).unwrap());
+            // Reproduce the physical pool's private mapping at its verified commit point.
+            let mapped = unsafe { libc::mmap(host.cast(), 4096, libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_FIXED | libc::MAP_PRIVATE, pool.as_raw_fd(), 0) };
+            assert_eq!(mapped, host.cast());
+            assert!(!owner.private_candidate(host as u64).unwrap());
+        }
+        drop(input);
+        let (first, siblings) = branches.split_first_mut().unwrap();
+        first.0.write_slice(&[0x37], GuestAddress(0)).unwrap();
+        let host = first.0.get_host_address(GuestAddress(0)).unwrap();
+        assert!(first.1.private_candidate(host as u64).unwrap());
+        assert_eq!(unsafe { first.1.offload() }.unwrap().newly_private_bytes, 4096);
+        assert!(!first.1.private_candidate(host as u64).unwrap());
+        assert_eq!(bytes(&first.0)[0], 0x37);
+        for (memory, owner) in siblings {
+            assert_eq!(unsafe { owner.offload() }.unwrap().newly_private_bytes, 0);
+            assert_eq!(&bytes(memory)[..4096], &[0x91; 4096]);
+        }
+    }
+
+    #[test]
     fn modified_to_zero_overrides_nonzero_base_and_new_cow_is_recorded() {
         let input = restore(false);
         let (memory, mut owner) = branch(&input);
@@ -171,6 +202,65 @@ mod tests {
         assert_eq!(bytes(&memory), before);
         let (_, other) = branch(&input);
         assert!(other.private.is_empty());
+    }
+
+    #[test]
+    fn fragmented_delta_preserves_padding_and_isolation_on_repeated_offload() {
+        let mut input = restore(false);
+        let size = (2 * MAX_DELTA_RUNS + 1) * 4096;
+        let base = tempfile::tempfile().unwrap();
+        base.set_len(size as u64).unwrap();
+        base.write_all_at(&[0x93; 4096], 4096).unwrap();
+        input.ram_file = Arc::new(base);
+        input.state.ram[0].len = size as u64;
+        let layout = [(GuestAddress(0), size)];
+        let memory = input.map_ram(&layout).unwrap();
+        let sibling = input.map_ram(&layout).unwrap();
+        let mut owner = BranchRam::new(&memory, &input, Arc::new(tempfile::tempfile().unwrap())).unwrap();
+        for offset in (0..size).step_by(8192) {
+            memory.write_slice(&[0x35], GuestAddress(offset as u64)).unwrap();
+        }
+        let mut expected = vec![0; size];
+        memory.read_slice(&mut expected, GuestAddress(0)).unwrap();
+        let report = unsafe { owner.offload() }.unwrap();
+        assert_eq!(report.delta_runs, MAX_DELTA_RUNS);
+        assert_eq!(owner.padding_pages, 1);
+        let mut actual = vec![0; size];
+        memory.read_slice(&mut actual, GuestAddress(0)).unwrap();
+        assert_eq!(actual, expected);
+        memory.write_slice(&[0x44], GuestAddress(4096)).unwrap();
+        assert_eq!(unsafe { owner.offload() }.unwrap().newly_private_bytes, 0);
+        assert_eq!(memory.read_obj::<u8>(GuestAddress(4096)).unwrap(), 0x44);
+        assert_eq!(sibling.read_obj::<u8>(GuestAddress(4096)).unwrap(), 0x93);
+    }
+
+    #[test]
+    fn compaction_respects_regions_and_cumulative_padding_budget() {
+        let input = restore(false);
+        let (_memory, mut owner) = branch(&input);
+        let page = owner.page;
+        owner.ranges = vec![
+            Range { host: page, length: 16 * page, offset: 0 },
+            Range { host: 100 * page, length: 16 * page, offset: (16 * page) as u64 },
+        ];
+        let pages = |indices: &[usize]| indices.iter().map(|&i| (i * page) as u64).collect::<BTreeSet<_>>();
+        // A two-page gap at the region boundary must remain unmerged.
+        let mut next = pages(&[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 17, 18, 21, 22, 24, 25]);
+        let mut added = BTreeSet::new();
+        let (_, cost) = owner.compact_delta_runs(&mut next, &mut added, 3).unwrap();
+        assert_eq!(cost, 1);
+        assert_eq!(added, pages(&[23]));
+        owner.padding_pages = cost;
+        added.clear();
+        let before = next.clone();
+        assert!(owner.compact_delta_runs(&mut next, &mut added, 2).is_err());
+        assert_eq!(next, before);
+        assert!(added.is_empty());
+        owner.padding_pages = 0;
+        let (runs, cost) = owner.compact_delta_runs(&mut next, &mut added, 2).unwrap();
+        assert_eq!(runs.len(), 2);
+        assert_eq!(cost, 2);
+        assert_eq!(added, pages(&[19, 20]));
     }
 
     #[test]
@@ -243,6 +333,7 @@ pub(super) struct BranchRam {
     page: usize,
     // Logical snapshot offsets, not PFNs or guest addresses.
     private: BTreeSet<u64>,
+    padding_pages: usize,
     poisoned: bool,
 }
 
@@ -309,8 +400,22 @@ impl BranchRam {
             ranges,
             page,
             private: BTreeSet::new(),
+            padding_pages: 0,
             poisoned: false,
         })
+    }
+
+    pub(super) fn private_candidate(&self, address: u64) -> io::Result<bool> {
+        let Some((range, relative)) = self.ranges.iter().find_map(|range| {
+            let offset = address.checked_sub(range.host as u64)?;
+            (offset < range.length as u64).then_some((range, offset))
+        }) else { return Ok(false) };
+        if !relative.is_multiple_of(self.page as u64) || self.private.contains(&(range.offset + relative)) {
+            return Ok(false);
+        }
+        let mut entry = [0; 8];
+        self.pagemap.read_exact_at(&mut entry, address / self.page as u64 * 8)?;
+        Ok(u64::from_ne_bytes(entry) & (PRESENT | SWAPPED | FILE_PAGE) == PRESENT)
     }
 
     fn runs(&self, pages: &BTreeSet<u64>) -> Vec<Range> {
@@ -335,6 +440,56 @@ impl BranchRam {
             }
         }
         out
+    }
+
+    // Consider only gaps internal to one restore region. Fill the cheapest
+    // first, and charge padding to this branch across successive offloads.
+    fn compact_delta_runs(
+        &self,
+        next: &mut BTreeSet<u64>,
+        added: &mut BTreeSet<u64>,
+        limit: usize,
+    ) -> io::Result<(Vec<Range>, usize)> {
+        let runs = self.runs(next);
+        if runs.len() <= limit {
+            return Ok((runs, 0));
+        }
+        let needed = runs.len() - limit;
+        let mut gaps = [Vec::new(), Vec::new()];
+        for region in &self.ranges {
+            let end = region.offset + region.length as u64;
+            let start_index = runs.partition_point(|r| r.offset < region.offset);
+            let end_index = runs.partition_point(|r| r.offset < end);
+            for pair in runs[start_index..end_index].windows(2) {
+                let start = pair[0].offset + pair[0].length as u64;
+                let bytes = pair[1].offset - start;
+                if bytes == self.page as u64 {
+                    gaps[0].push(start);
+                } else if bytes == 2 * self.page as u64 {
+                    gaps[1].push(start);
+                }
+            }
+        }
+        let singles = needed.min(gaps[0].len());
+        let doubles = needed - singles;
+        let padding = singles + 2 * doubles;
+        let data_pages = next.len() - self.padding_pages;
+        if doubles > gaps[1].len() || self.padding_pages + padding > data_pages / 10 {
+            return Err(io::Error::other(format!(
+                "branch delta VMA budget exceeded: {} runs, {} one-page and {} two-page gaps, {} prior padding pages, {} data pages",
+                runs.len(), gaps[0].len(), gaps[1].len(), self.padding_pages, data_pages
+            )));
+        }
+        for (index, count) in [singles, doubles].into_iter().enumerate() {
+            for &start in gaps[index].iter().take(count) {
+                for page in 0..=index {
+                    let offset = start + (page * self.page) as u64;
+                    next.insert(offset);
+                    added.insert(offset);
+                }
+            }
+        }
+        Ok((self.runs(next), padding))
     }
 
     /// # Safety
@@ -372,11 +527,8 @@ impl BranchRam {
                 }
             }
         }
-        let next = self.private.union(&added).copied().collect::<BTreeSet<_>>();
-        let private_runs = self.runs(&next);
-        if private_runs.len() > MAX_DELTA_RUNS {
-            return Err(io::Error::other("branch delta VMA budget exceeded"));
-        }
+        let mut next = self.private.union(&added).copied().collect::<BTreeSet<_>>();
+        let (private_runs, padding) = self.compact_delta_runs(&mut next, &mut added, MAX_DELTA_RUNS)?;
         // Stage every new COW page before changing any mapping. Zero writes are
         // intentional: a modified-to-zero page overrides nonzero baseline bytes.
         let added_runs = self.runs(&added);
@@ -403,6 +555,7 @@ impl BranchRam {
             }
         }
         self.private = next;
+        self.padding_pages += padding;
         // Kernel dirty tracking writes only modified delta pages. Never msync or
         // fadvise the immutable common baseline: other branches may be using it.
         for run in &private_runs {

@@ -1609,6 +1609,29 @@ checks guest-channel readiness before starting the tool deadline. No permission
 is granted by a missing endpoint or an incompatible RAM-pool configuration.
 
 
+### Pressure-managed live OCI fork (Linux x86-64)
+
+Reserve capacity for every child and prepare distinct empty delegated cgroup v2
+leaves under the configured pressure root. Supply the leaves in child-name order:
+
+```sh
+pvisor container branch source --names s0 s1 \
+  --pressure-cgroup "$leaf0" --pressure-cgroup "$leaf1" \
+  --memory-pool "$physical_pool_socket"
+```
+
+Each owner enters its leaf before exec so the VMM and its private allocations
+inherit placement. Bind each returned child's container ID and generation, then
+use Wait/Acquire around guest work. The daemon alone controls offload for those
+children. Account for the source and physical pool within the node budget.
+
+The optional physical pool must belong to the intended sharing domain. The
+scanner checks present private CoW pages at sample and commit under the VM
+barrier. Clean restored pages retain their existing backing. Pages already
+assigned to the child's writable offload delta remain there. A shared pool
+page that is written again becomes private and is saved on offload. Scanning
+does not enable DAX on the OCI overlay root.
+
 ### Replay-owner checks and contained failures
 
 Process inspection is an owner operation, not a scheduler control timeout.

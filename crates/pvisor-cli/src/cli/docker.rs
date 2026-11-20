@@ -101,6 +101,12 @@ pub(super) enum ContainerCommand {
         /// Allow each child to offload private RAM to its own sparse backing.
         #[arg(long)]
         offload: bool,
+        /// Delegated cgroup v2 path per child, in name order, for pressure-managed offload.
+        #[arg(long, value_name = "PATH", conflicts_with = "offload")]
+        pressure_cgroup: Vec<PathBuf>,
+        /// Physical page-sharing pool for post-fork private guest pages.
+        #[arg(long, requires = "pressure_cgroup")]
+        memory_pool: Option<PathBuf>,
         #[arg(long, required=true, num_args=1..)]
         names: Vec<String>,
     },
@@ -512,10 +518,21 @@ pub(super) fn run(command: DockerCommand) -> anyhow::Result<i32> {
                 source,
                 names,
                 offload,
+                pressure_cgroup,
+                memory_pool,
             } => {
-                for child in
-                    Store::discover()?.fork_running_with_offload(source, names, *offload)?
-                {
+                let store = Store::discover()?;
+                let children = if pressure_cgroup.is_empty() {
+                    store.fork_running_with_offload(source, names, *offload)?
+                } else {
+                    store.fork_running_with_pressure(
+                        source,
+                        names,
+                        pressure_cgroup,
+                        memory_pool.as_deref(),
+                    )?
+                };
+                for child in children {
                     println!("{}", child.name);
                 }
                 return Ok(0);

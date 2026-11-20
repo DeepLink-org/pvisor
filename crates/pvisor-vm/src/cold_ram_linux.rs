@@ -994,7 +994,7 @@ pub(crate) fn start<S: ColdRamStore + 'static>(
     } else {
         None
     };
-    let (memory, mappings, kernel) = {
+    let (memory, mappings, kernel, branch) = {
         let _transition = handle
             .transition
             .lock()
@@ -1006,10 +1006,11 @@ pub(crate) fn start<S: ColdRamStore + 'static>(
         let locked = vmm
             .lock()
             .map_err(|_| io::Error::other("VMM lock poisoned"))?;
-        if locked.has_branch_ram() {
+        let branch = locked.has_branch_ram();
+        if branch && !options.share_resident {
             return Err(io::Error::other("cold pager cannot replace branch delta mappings"));
         }
-        if locked.has_compact_restore_ram() || locked.is_paused()
+        if (locked.has_compact_restore_ram() && !branch) || locked.is_paused()
             || locked.device_memory_gate().has_prepare()
             || locked.device_memory_gate().has_dedup_advice()
         {
@@ -1019,7 +1020,9 @@ pub(crate) fn start<S: ColdRamStore + 'static>(
         }
         let memory = locked.guest_memory().clone();
         let kernel = locked.raw_kernel_mapping();
-        let mappings = ranges_excluding_kernel(&memory, locked.ram_device_window_start(), kernel)?;
+        let mappings = if branch {
+            memory.iter().filter(|region| region.start_addr().0.checked_add(region.len()).is_some_and(|end| end <= locked.ram_device_window_start())).map(|region| Range { start: region.as_ptr() as u64, len: region.len() }).collect()
+        } else { ranges_excluding_kernel(&memory, locked.ram_device_window_start(), kernel)? };
         handle
             .cold_pager_started
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
@@ -1029,10 +1032,9 @@ pub(crate) fn start<S: ColdRamStore + 'static>(
                     "cold RAM pager already started",
                 )
             })?;
-        (memory, mappings, kernel)
+        (memory, mappings, kernel, branch)
     };
-    let free_reports = options
-        .share_resident
+    let free_reports = (options.share_resident && !branch)
         .then(|| Arc::new(crate::devices::virtio::memory_gate::SharedFreeReports::default()));
     let initialized = (|| {
         let uffd = if options.share_resident {
@@ -1046,8 +1048,7 @@ pub(crate) fn start<S: ColdRamStore + 'static>(
             None
         };
         let faults = Arc::new(crate::devices::virtio::memory_gate::ColdFaultActivity::default());
-        let pages = handle
-            .ram_quiesced(|vmm| {
+        let register = || handle.ram_quiesced(|vmm| {
                 // Disable the other destructive RAM owner before registration.
                 // A closed idle gate guarantees every old balloon lease drained.
                 vmm.device_memory_gate()
@@ -1078,13 +1079,17 @@ pub(crate) fn start<S: ColdRamStore + 'static>(
                 }
                 Ok(pages)
             })
-            .map_err(io::Error::other)?
-            .ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::WouldBlock,
-                    "VM busy during cold RAM registration",
-                )
-            })?;
+            .map_err(io::Error::other);
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let pages = loop {
+            if let Some(pages) = register()? {
+                break pages;
+            }
+            if !branch || Instant::now() >= deadline {
+                return Err(io::Error::new(io::ErrorKind::WouldBlock, "VM busy during cold RAM registration"));
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        };
         Ok::<_, io::Error>(Arc::new(Mutex::new(Pager {
             memory,
             shared_scan: options
@@ -1226,8 +1231,18 @@ pub(crate) fn start<S: ColdRamStore + 'static>(
                 }
             }
             let mut candidates = worker_pager.lock().unwrap_or_else(|_| fatal("pager poisoned")).candidates();
-            let sampled = quiesce_nonempty(&mut candidates, |candidates| handle.ram_quiesced(|_| {
-                Ok(worker_pager.lock().map_err(|_| "pager poisoned")?.sample_candidates(candidates))
+            let sampled = quiesce_nonempty(&mut candidates, |candidates| handle.ram_quiesced(|vmm| {
+                let mut pager = worker_pager.lock().map_err(|_| "pager poisoned")?;
+                if branch {
+                    let mut selected = Vec::new();
+                    for &index in candidates.iter() {
+                        if vmm.branch_share_candidate(pager.pages.range(index).start).map_err(|e| e.to_string())? {
+                            selected.push(index);
+                        }
+                    }
+                    return Ok(pager.sample_candidates(&selected));
+                }
+                Ok(pager.sample_candidates(candidates))
             }));
             let batch = match sampled {
                 Ok(Some(batch)) => batch,
@@ -1254,9 +1269,12 @@ pub(crate) fn start<S: ColdRamStore + 'static>(
                 }
             }
             worker_pager.lock().unwrap_or_else(|_| fatal("pager poisoned")).put_rejections += put_rejections;
-            let committed = quiesce_nonempty(&mut objects, |objects| handle.ram_quiesced(|_| {
+            let committed = quiesce_nonempty(&mut objects, |objects| handle.ram_quiesced(|vmm| {
                 let mut pager = worker_pager.lock().map_err(|_| "pager poisoned")?;
                 for (snapshot, object) in objects {
+                    if branch && !vmm.branch_share_candidate(pager.pages.range(snapshot.index).start).map_err(|e| e.to_string())? {
+                        continue;
+                    }
                     // Successful publication still needs the live-byte recheck
                     // under the second barrier before destructive discard.
                     if let Some(published) = object.take() {

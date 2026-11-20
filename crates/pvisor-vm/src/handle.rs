@@ -265,13 +265,11 @@ impl VmmHandle {
             .transition
             .lock()
             .map_err(|_| "VM transition lock poisoned")?;
-        if self
-            .cold_pager_started
-            .load(std::sync::atomic::Ordering::Acquire)
-        {
+        let vmm = self.vmm.upgrade().ok_or("VMM has stopped")?;
+        if self.cold_pager_started.load(std::sync::atomic::Ordering::Acquire)
+            && !vmm.lock().map_err(|_| "VMM lock poisoned")?.has_branch_ram() {
             return Err("whole-VM offload is incompatible with the experimental cold pager".into());
         }
-        let vmm = self.vmm.upgrade().ok_or("VMM has stopped")?;
         let gate = {
             let mut locked = vmm.lock().map_err(|_| "VMM lock poisoned")?;
             if locked.device_memory_gate().has_prepare() {
