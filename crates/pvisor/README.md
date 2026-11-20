@@ -2563,12 +2563,21 @@ node-owned views, compressed snapshots and other platforms retain their previous
 path. This optimization does not enable offload on restored COW memory and does
 not promise a measured total-memory saving before workload validation.
 
-An explicit execution-fork Physical pool socket is part of durable request identity.
-The runtime derives the child-only setting from the request and uses that same
-configuration for restore and the child Session. Omission leaves sharing disabled
-for descendants. New requests with that setting return `CAPABILITY_UNSUPPORTED`
-before child admission pending qualification of Physical pager attachment to
-indexed Raw RAM.
+A Linux x86_64 execution fork from a named indexed Raw checkpoint may opt into a
+Physical page pool by supplying its absolute private same-user socket path.
+The socket is part of the fork's durable request identity and applies to that
+child. The daemon generation reached through that socket is the sharing domain
+for all clients that opt in. Use a separate daemon instance for each group that
+may compare page contents. The runner holds its own negotiated connection and
+checks its identity against the supervisor's preflight.
+
+Admission authenticates the Raw source and requires a compact zero-extent plan.
+Guest RAM still faults lazily from the read-only snapshot. The pool only replaces
+present, exclusively mapped anonymous pages in ordinary RAM after private writes.
+The snapshot, untouched zero pages, kernel and device mappings keep their original
+ownership. An active pool disables balloon discard, snapshot capture and whole-VM
+offload. Owner or transport loss stops the runner. Native KVM qualification is
+pending.
 
 ### Existing immutable OCI pool objects
 

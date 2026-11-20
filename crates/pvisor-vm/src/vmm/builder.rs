@@ -1012,6 +1012,20 @@ pub fn build_microvm_for_arch<A: crate::backend::Architecture>(
     let mut vmm = Vmm {
         #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
         branch_ram,
+        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+        initial_compact_readonly_restore: compact_restore_ram
+            && vm_resources
+                .machine_restore
+                .as_ref()
+                .is_some_and(|restore| {
+                    let flags = unsafe { libc::fcntl(restore.ram_file.as_raw_fd(), libc::F_GETFL) };
+                    flags >= 0 && flags & libc::O_ACCMODE == libc::O_RDONLY
+                }),
+        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+        restored_kernel: vm_resources
+            .machine_restore
+            .as_ref()
+            .and_then(|restore| restore.state.kernel_layout),
         compact_restore_ram,
         device_memory_gate,
         guest_memory,

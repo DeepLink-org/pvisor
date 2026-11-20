@@ -597,6 +597,20 @@ pub trait ColdRamControl: VmControl {
         store: S,
         options: ColdRamOptions,
     ) -> io::Result<()>;
+    /// Attach a Physical page store before the first resume of an authenticated
+    /// compact Raw snapshot restore on Linux x86_64. The caller must authenticate
+    /// the original contents and extent plan and pin the backing over VM lifetime.
+    /// The store must keep mapped slots immutable until release or runner exit.
+    /// Only present, exclusively mapped anonymous pages in ordinary guest RAM
+    /// are candidates. Untouched file/zero pages, bundled kernel and device ranges
+    /// remain with their restore source. Balloon free reports do not discard RAM.
+    /// No file mapping changes during attachment. On error, end the failed launch
+    /// while it is still parked. Unsupported backends return an explicit error.
+    fn start_restored_physical_pool<S: ColdRamStore + 'static>(
+        &self,
+        store: S,
+        metrics: bool,
+    ) -> io::Result<()>;
     /// Run action behind the supported cold-RAM CPU/device barrier. None means
     /// no eligible RAM; errors require the caller to terminate after failed drain.
     /// Unavailable backends return Unsupported without invoking action.

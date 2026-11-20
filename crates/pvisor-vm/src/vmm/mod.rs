@@ -219,6 +219,10 @@ pub struct Vmm {
     // region-level file_offset alone. Retain explicit restore ownership.
     compact_restore_ram: bool,
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    initial_compact_readonly_restore: bool,
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    restored_kernel: Option<snapshot::KernelLayout>,
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     branch_ram: Option<branch_ram::BranchRam>,
     arch_memory_info: ArchMemoryInfo,
 
@@ -401,6 +405,10 @@ impl Vmm {
             return Err(Error::VcpuControl(
                 "previous transition failed; terminate VMM".into(),
             ));
+        }
+        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+        {
+            self.initial_compact_readonly_restore = false;
         }
         // Pause does not freeze guest time. Frozen-time semantics require
         // coordinated HVF WFE offsets and KVM clock handling.
@@ -750,6 +758,20 @@ impl Vmm {
     /// Returns a reference to the inner `GuestMemoryMmap` object if present, or `None` otherwise.
     pub(crate) fn has_compact_restore_ram(&self) -> bool {
         self.compact_restore_ram
+    }
+
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    pub(crate) fn compact_restore_kernel(
+        &self,
+    ) -> std::result::Result<Option<snapshot::KernelLayout>, String> {
+        self.require_ram_quiesced()?;
+        if !self.initial_compact_readonly_restore
+            || !self.snapshot_devices_frozen
+            || self.has_branch_ram()
+        {
+            return Err("Physical restore requires parked compact read-only snapshot RAM".into());
+        }
+        Ok(self.restored_kernel)
     }
 
     pub fn guest_memory(&self) -> &GuestMemoryMmap {

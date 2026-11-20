@@ -185,6 +185,33 @@ mod cold_ram_tests {
     }
 
     #[test]
+    fn linux_physical_restore_rejects_without_a_live_vmm_or_store_activity() {
+        let handle = inactive_handle();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let drops = Arc::new(AtomicUsize::new(0));
+        let error = handle
+            .start_restored_physical_pool(
+                UnusedStore {
+                    calls: calls.clone(),
+                    drops: drops.clone(),
+                },
+                false,
+            )
+            .unwrap_err();
+        if cfg!(all(
+            target_arch = "x86_64",
+            not(any(feature = "tee", feature = "aws-nitro"))
+        )) {
+            assert_eq!(error.to_string(), "VMM has stopped");
+        } else {
+            assert_eq!(error.kind(), io::ErrorKind::Unsupported);
+        }
+        assert!(!handle.cold_pager_started.load(Ordering::SeqCst));
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        assert_eq!(drops.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
     fn linux_cold_controls_reject_without_running_callbacks() {
         let handle = inactive_handle();
         let error = handle
@@ -588,6 +615,24 @@ impl ColdRamControl for VmmHandle {
         {
             let _ = (store, options);
             Err(unsupported("experimental cold RAM pager"))
+        }
+    }
+    fn start_restored_physical_pool<S: ColdRamStore + 'static>(
+        &self,
+        store: S,
+        metrics: bool,
+    ) -> io::Result<()> {
+        if self.idle.status().enabled {
+            return Err(unsupported("Physical restore with guest idle handoff"));
+        }
+        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+        {
+            crate::cold_ram_linux::start_restored_physical(self.clone(), store, metrics)
+        }
+        #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+        {
+            let _ = (store, metrics);
+            Err(unsupported("Physical snapshot restore"))
         }
     }
     fn with_ram_quiesced<T>(

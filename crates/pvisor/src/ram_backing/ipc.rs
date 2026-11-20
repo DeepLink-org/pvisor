@@ -918,6 +918,12 @@ impl PoolClient {
         self.shared_file = Some(file);
         Ok(())
     }
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    pub(crate) fn shared_file(&self) -> io::Result<Arc<std::fs::File>> {
+        self.shared_file
+            .clone()
+            .ok_or_else(|| io::Error::other("physical pool mapping is missing"))
+    }
     pub fn shared_mapping(
         &self,
         object: &RemoteObject,

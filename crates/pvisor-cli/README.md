@@ -80,10 +80,12 @@ references and request replay; the source retains its live Execution lease.
 The CLI's policy preflight reads under that execution-operation lease without
 claiming mutation ownership of the source Execution. Workspace fork and stopped
 resume retain the source-directory exclusion required for their mutations.
-The hidden `--restore-physical-pool SOCKET` option accepts an absolute socket
-path on lazy execution forks from a named checkpoint. New requests return
-`CAPABILITY_UNSUPPORTED` before child admission pending qualification of Physical
-pager attachment to indexed Raw RAM.
+The hidden `--restore-physical-pool SOCKET` option opts a Linux x86_64 execution
+fork into an existing Physical page pool using an absolute private same-user
+socket path. It requires a named indexed Raw checkpoint with compatible compact
+zero extents and lazy RAM restore. The socket is part of the fork request identity.
+Clients on the same pool generation may share identical private pages after COW.
+Native KVM qualification is pending.
 Repeated suspend of an already suspended Session resolves its confirmed durable head
 through the runtime, without requiring a live owner. Missing control endpoints
 on running Sessions remain errors, not permission to treat them as suspended.

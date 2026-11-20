@@ -126,6 +126,8 @@ pub(super) struct PreparedRestore {
     pub guest: pvisor_guest::api::GuestConfig,
     pub ram: std::sync::Arc<fs::File>,
     pub ram_path: PathBuf,
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    pub(super) physical_pool: Option<super::pager::BoundRestorePool>,
     pub _eager_ram: Option<tempfile::NamedTempFile>,
     pub _ram_owner: std::sync::Arc<super::restore_ram::SharedRam>,
     pub _filesystem_owners: Vec<std::sync::Arc<crate::environment_snapshot::SharedFilesystemLayer>>,
@@ -151,6 +153,19 @@ pub(super) fn binding(
     execution_id: String,
     firmware: Option<&Path>,
     filesystem_pool: Option<&Path>,
+) -> anyhow::Result<LaunchBinding> {
+    binding_with_compatibility(store, run_id, execution_id, filesystem_pool, || {
+        compatibility(firmware)
+    })
+}
+
+#[cfg(not(all(target_os = "macos", target_arch = "x86_64")))]
+fn binding_with_compatibility(
+    store: PathBuf,
+    run_id: String,
+    execution_id: String,
+    filesystem_pool: Option<&Path>,
+    compatibility: impl FnOnce() -> anyhow::Result<Compatibility>,
 ) -> anyhow::Result<LaunchBinding> {
     Persistence::create_dir_all_durable(&store)?;
     let store = store.canonicalize()?;
@@ -179,7 +194,7 @@ pub(super) fn binding(
         filesystem_pool,
         readonly_lowers: vec![],
         private_roots: vec![],
-        compatibility: compatibility(firmware)?,
+        compatibility: compatibility()?,
         run_id,
         execution_id,
     })
@@ -1484,6 +1499,83 @@ pub(super) mod native {
         ));
     }
 
+    fn authenticate_physical_snapshot(
+        store: &SnapshotStore,
+        id: &str,
+        compatibility: &Compatibility,
+    ) -> anyhow::Result<(
+        crate::environment_snapshot::PublishedEnvironment,
+        Vec<pvisor_vm::api::RamRestoreExtent>,
+    )> {
+        // Authenticate all source bytes before attaching the optional sharing
+        // owner. Runtime reads still verify indexed blocks on the pinned reader.
+        let published = store.open(id, compatibility)?;
+        let extents = published.ram_reader()?.compact_zero_restore()?;
+        ensure!(
+            !extents.is_empty(),
+            "CAPABILITY_UNSUPPORTED: Physical restore requires compact indexed Raw extents"
+        );
+        Ok((published, extents))
+    }
+
+    #[cfg(all(test, target_os = "linux"))]
+    #[test]
+    fn physical_restore_rejects_corrupt_or_ineligible_snapshot_before_mapping() {
+        use std::{io::Write, os::unix::fs::FileExt};
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("source");
+        fs::create_dir(&source).unwrap();
+        fs::write(source.join("content"), b"source").unwrap();
+        let store = SnapshotStore::new(&root.path().join("snapshots")).unwrap();
+        let compatibility = Compatibility {
+            host_boot: "boot".into(),
+            build: "build".into(),
+            firmware: "firmware".into(),
+            profile: "physical-restore-contract".into(),
+        };
+        let block = crate::ram_backing::BLOCK_BYTES;
+        let publish = |ram: &[u8]| {
+            let pending = store.begin().unwrap();
+            pending.create_ram().unwrap().write_all(ram).unwrap();
+            pending
+                .publish(&source, b"opaque-machine", compatibility.clone())
+                .unwrap()
+        };
+        let full = publish(&vec![0x1c; block]);
+        let err = authenticate_physical_snapshot(&store, &full, &compatibility)
+            .err()
+            .unwrap();
+        assert!(
+            err.to_string().contains("compact indexed Raw extents"),
+            "{err:#}"
+        );
+
+        let mut mixed = vec![0x5a; 2 * block];
+        mixed[..block].fill(0);
+        let compact = publish(&mixed);
+        let (published, extents) =
+            authenticate_physical_snapshot(&store, &compact, &compatibility).unwrap();
+        assert_eq!(extents.len(), 2);
+        assert_eq!(extents[0].backing_offset, None);
+        assert_eq!(extents[1].backing_offset, Some(0));
+        drop(published);
+
+        let ram = fs::OpenOptions::new()
+            .write(true)
+            .open(
+                root.path()
+                    .join("snapshots/objects")
+                    .join(&compact)
+                    .join("ram.bin"),
+            )
+            .unwrap();
+        ram.write_all_at(&[4], block as u64).unwrap();
+        let err = authenticate_physical_snapshot(&store, &compact, &compatibility)
+            .err()
+            .unwrap();
+        assert!(err.to_string().contains("RAM digest mismatch"), "{err:#}");
+    }
+
     pub(in crate::executor::vm) fn prepare_restore(
         checkpoint: ExecutionCheckpoint,
         settings: &crate::VmSettings,
@@ -1498,20 +1590,23 @@ pub(super) mod native {
                 && settings.ram_backing.is_none(),
             "snapshot restore requires private COW RAM, without a writable backing or cold pager"
         );
-        Persistence::create_dir_all_durable(storage)?;
-        let storage = storage.canonicalize()?;
+        let physical = settings.restore_physical_pool.is_some();
+        let storage = crate::session_service::paths::fork_stage_candidate(storage)?;
         ensure!(
             !storage.starts_with(&checkpoint.store) && !checkpoint.store.starts_with(&storage),
             "restored Execution and source snapshot store must be independent"
         );
-        let restore_binding = binding(
-            storage.join("execution-snapshots"),
-            "restore-preparation".into(),
-            "restore-preparation".into(),
-            firmware,
-            settings.snapshot_filesystem_pool.as_deref(),
-        )?;
-        let compatibility = restore_binding.compatibility.clone();
+        if physical {
+            ensure!(
+                checkpoint.store.is_dir()
+                    && settings
+                        .snapshot_filesystem_pool
+                        .as_ref()
+                        .is_none_or(|pool| pool.is_dir()),
+                "Physical restore requires existing snapshot storage"
+            );
+        }
+        let compatibility = compatibility(firmware)?;
         let store = match settings.snapshot_filesystem_pool.as_deref() {
             Some(pool) => SnapshotStore::with_filesystem_pool(&checkpoint.store, pool)?,
             None => SnapshotStore::new(&checkpoint.store)?,
@@ -1521,11 +1616,16 @@ pub(super) mod native {
             &checkpoint.store,
             &checkpoint.snapshot_id,
         );
-        let published = store.open_for_restore(&checkpoint.snapshot_id, &compatibility)?;
-        #[cfg(target_os = "linux")]
-        let private_files = published.pin_private_files(&restore_binding.snapshot_store()?)?;
-        #[cfg(not(target_os = "linux"))]
-        let private_files = None;
+        let (published, expected_extents) = if physical {
+            let (published, extents) =
+                authenticate_physical_snapshot(&store, &checkpoint.snapshot_id, &compatibility)?;
+            (published, Some(extents))
+        } else {
+            (
+                store.open_for_restore(&checkpoint.snapshot_id, &compatibility)?,
+                None,
+            )
+        };
         let mut saved: SavedExecution = serde_json::from_slice(&published.machine_bytes()?)?;
         ensure!(
             (saved.version == 1 && saved.private_sources.is_empty()
@@ -1653,6 +1753,22 @@ pub(super) mod native {
             source.is_absolute() && source != Path::new("/"),
             "invalid snapshot filesystem root"
         );
+        Persistence::create_dir_all_durable(&storage)?;
+        ensure!(
+            storage == storage.canonicalize()?,
+            "restore storage path changed during preparation"
+        );
+        let restore_binding = binding_with_compatibility(
+            storage.join("execution-snapshots"),
+            "restore-preparation".into(),
+            "restore-preparation".into(),
+            settings.snapshot_filesystem_pool.as_deref(),
+            || Ok(compatibility),
+        )?;
+        #[cfg(target_os = "linux")]
+        let private_files = published.pin_private_files(&restore_binding.snapshot_store()?)?;
+        #[cfg(not(target_os = "linux"))]
+        let private_files = None;
         let preparation = storage.join("execution-restore");
         fs::create_dir(&preparation).context("Execution restore preparation already exists")?;
         // V5 captures retain authenticated original backing paths. A Session stage
@@ -1870,6 +1986,10 @@ pub(super) mod native {
             settings.node_socket.as_deref(),
             settings.snapshot_filesystem_pool.as_deref(),
         )?;
+        ensure!(
+            expected_extents.is_none_or(|extents| extents == ram_owner.extents),
+            "Physical restore RAM geometry differs from the authenticated Raw extents"
+        );
         let ram = ram_owner.file.clone();
         pvisor_vm::api::MachineRestore {
             ram_extents: ram_owner.extents.clone(),
@@ -1898,6 +2018,8 @@ pub(super) mod native {
             guest: saved.guest,
             ram,
             ram_path,
+            #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+            physical_pool: None,
             _eager_ram: None,
             _ram_owner: ram_owner,
             _filesystem_owners: filesystem_owners,
@@ -1920,6 +2042,8 @@ pub(super) mod native {
         ensure!(
             saved.cpu_qos == spec.cpu_qos
                 && matches!(saved.version, 1 | 2)
+                && (!spec.ram_pager.is_restore_physical()
+                    || saved.ram_storage == SnapshotRamStorage::Raw)
                 && saved.cpus == spec.cpus
                 && saved.memory_mib == spec.memory_mib
                 && serde_json::to_value(&saved.guest)? == serde_json::to_value(&spec.guest)?,

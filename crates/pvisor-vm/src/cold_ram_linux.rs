@@ -23,7 +23,8 @@ const BLOCK: usize = 64 * 1024;
 const BATCH_BYTES: usize = 4 * 1024 * 1024;
 const PAGE_PRESENT: u8 = 1;
 const PAGE_FILE: u8 = 2;
-// Keep only these two state bits. PFNs and unrelated pagemap data never escape.
+const PAGE_EXCLUSIVE: u8 = 4;
+// PFNs and unrelated pagemap data never escape.
 fn pagemap_flags(bits: u64) -> u8 {
     let present = if bits & (1 << 63) != 0 {
         PAGE_PRESENT
@@ -31,7 +32,20 @@ fn pagemap_flags(bits: u64) -> u8 {
         0
     };
     let file = if bits & (1 << 61) != 0 { PAGE_FILE } else { 0 };
-    present | file
+    let exclusive = if bits & (1 << 56) != 0 {
+        PAGE_EXCLUSIVE
+    } else {
+        0
+    };
+    present | file | exclusive
+}
+
+fn shared_candidate(flags: u8, mapped: bool, post_cow_only: bool) -> bool {
+    if post_cow_only {
+        flags == PAGE_PRESENT | PAGE_EXCLUSIVE
+    } else {
+        flags & PAGE_PRESENT != 0 && !(mapped && flags & PAGE_FILE != 0)
+    }
 }
 static PENDING: AtomicU64 = AtomicU64::new(0);
 const API: u64 = 0xaa;
@@ -310,6 +324,7 @@ struct Pager<S: ColdRamStore> {
     uffd: Option<Arc<Uffd>>,
     pagemap: Option<std::fs::File>,
     share_resident: bool,
+    post_cow_only: bool,
     shared_scan: Option<scan::Scanner>,
     read_hints: Option<Arc<ReadHints>>,
     file_hint_candidates: u64,
@@ -466,6 +481,66 @@ fn ranges_excluding_kernel(
     }
     Ok(result)
 }
+// Compact restore's vm-memory reservation describes mixed private VMAs. This
+// path only receives it from the builder-validated snapshot mapper.
+fn compact_restore_ranges(
+    memory: &GuestMemoryMmap,
+    device_start: u64,
+    kernel: Option<crate::vmm::snapshot::KernelLayout>,
+) -> io::Result<Vec<Range>> {
+    if unsafe { libc::sysconf(libc::_SC_PAGESIZE) } != 4096 {
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "Physical restore requires 4 KiB host pages",
+        ));
+    }
+    let mut ordinary = Vec::new();
+    let mut kernel_seen = kernel.is_none();
+    for region in memory.iter() {
+        let start = region.start_addr().0;
+        let length = region.len();
+        let end = start
+            .checked_add(length)
+            .ok_or_else(|| io::Error::other("restore RAM address overflow"))?;
+        if kernel.is_some_and(|kernel| start == kernel.guest_addr && length == kernel.size) {
+            kernel_seen = true;
+            continue;
+        }
+        if start >= device_start {
+            continue;
+        }
+        if end > device_start {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "restore RAM crosses the device aperture",
+            ));
+        }
+        if region.file_offset().is_some()
+            || region.flags() != libc::MAP_PRIVATE | libc::MAP_ANONYMOUS
+            || region.prot() != libc::PROT_READ | libc::PROT_WRITE
+            || !(region.as_ptr() as usize).is_multiple_of(4096)
+            || !start.is_multiple_of(4096)
+            || !length.is_multiple_of(4096)
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "invalid compact restore RAM reservation",
+            ));
+        }
+        ordinary.push(Range {
+            start: region.as_ptr() as u64,
+            len: length,
+        });
+    }
+    if ordinary.is_empty() || !kernel_seen {
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "invalid compact restore RAM topology",
+        ));
+    }
+    Ok(ordinary)
+}
+
 fn publish_snapshot<S: ColdRamStore>(
     pager: &Mutex<Pager<S>>,
     pool: &Mutex<S>,
@@ -479,7 +554,8 @@ fn publish_snapshot<S: ColdRamStore>(
             .lock()
             .map_err(|_| io::Error::other("pager poisoned"))?;
         if state.share_resident
-            && state.page_flags(state.pages.range(snapshot.index))? == PAGE_PRESENT
+            && state.page_flags(state.pages.range(snapshot.index))? & (PAGE_PRESENT | PAGE_FILE)
+                == PAGE_PRESENT
         {
             let retired = state.pages[snapshot.index].cold.take().map(|cold| *cold);
             if retired.is_some() {
@@ -605,7 +681,7 @@ impl<S: ColdRamStore> Pager<S> {
         Ok(pagemap_flags(u64::from_ne_bytes(bytes)))
     }
     fn file_page(&self, range: Range) -> io::Result<bool> {
-        Ok(self.page_flags(range)? == PAGE_PRESENT | PAGE_FILE)
+        Ok(self.page_flags(range)? & (PAGE_PRESENT | PAGE_FILE) == PAGE_PRESENT | PAGE_FILE)
     }
     fn hinted_candidates(&mut self, limit: usize, now: Instant) -> Vec<usize> {
         let mut selected = Vec::new();
@@ -636,7 +712,7 @@ impl<S: ColdRamStore> Pager<S> {
                 let flags = self
                     .page_flags(self.pages.range(index))
                     .unwrap_or_else(|e| fatal(e));
-                if flags & PAGE_PRESENT != 0 && !(page.cold.is_some() && flags & PAGE_FILE != 0) {
+                if shared_candidate(flags, page.cold.is_some(), self.post_cow_only) {
                     selected.push(index);
                 }
             }
@@ -666,6 +742,7 @@ impl<S: ColdRamStore> Pager<S> {
         let priority_len = candidates.len();
         let pages = &self.pages;
         let pagemap = self.pagemap.as_ref();
+        let post_cow_only = self.post_cow_only;
         let background = self
             .shared_scan
             .as_mut()
@@ -675,10 +752,9 @@ impl<S: ColdRamStore> Pager<S> {
                 for index in visit.pages {
                     let page = &pages[index];
                     let bits = flags[index - visit.region.start];
-                    if deadline(now) < page.eligible_at || bits & PAGE_PRESENT == 0 {
-                        continue;
-                    }
-                    if page.cold.is_some() && bits & PAGE_FILE != 0 {
+                    if deadline(now) < page.eligible_at
+                        || !shared_candidate(bits, page.cold.is_some(), post_cow_only)
+                    {
                         continue;
                     }
                     selected.push(index);
@@ -758,6 +834,12 @@ impl<S: ColdRamStore> Pager<S> {
             {
                 continue;
             }
+            if self.post_cow_only
+                && self.page_flags(range).unwrap_or_else(|error| fatal(error))
+                    != PAGE_PRESENT | PAGE_EXCLUSIVE
+            {
+                continue;
+            }
             // Never copy a sparse block while holding pager state: that would
             // fault and wait for the resolver, which needs this same lock.
             if !fully_resident(range).unwrap_or_else(|error| fatal(error)) {
@@ -779,6 +861,9 @@ impl<S: ColdRamStore> Pager<S> {
     }
     fn commit(&mut self, snapshot: &Snapshot, object: S::Object) -> io::Result<Option<S::Object>> {
         let range = self.pages.range(snapshot.index);
+        if self.post_cow_only && self.page_flags(range)? != PAGE_PRESENT | PAGE_EXCLUSIVE {
+            return Ok(Some(object));
+        }
         let page = &mut self.pages[snapshot.index];
         if page.cold.is_some() && !self.share_resident {
             return Ok(Some(object));
@@ -823,6 +908,9 @@ impl<S: ColdRamStore> Pager<S> {
                     "shared mapping must be read-only and size-sealed",
                 ));
             }
+            if self.post_cow_only && self.page_flags(range)? != PAGE_PRESENT | PAGE_EXCLUSIVE {
+                return Ok(Some(object));
+            }
             // CPU/device access is drained, bytes were rechecked, and the pool
             // reference pins this slot. Linux invalidates KVM secondary mappings
             // on MAP_FIXED; reads retain the pool page and writes create COW RAM.
@@ -844,7 +932,7 @@ impl<S: ColdRamStore> Pager<S> {
             unsafe {
                 std::ptr::read_volatile(mapped.cast::<u8>());
             }
-            let previous = page.cold.replace(Box::new(object));
+            let previous = self.pages[snapshot.index].cold.replace(Box::new(object));
             let scanner = self.shared_scan.as_mut().unwrap();
             scanner.merged(snapshot.index);
             if previous.is_some() {
@@ -973,6 +1061,32 @@ pub(crate) fn start<S: ColdRamStore + 'static>(
     store: S,
     options: ColdRamOptions,
 ) -> io::Result<()> {
+    start_with_policy(handle, store, options, false)
+}
+
+pub(crate) fn start_restored_physical<S: ColdRamStore + 'static>(
+    handle: VmmHandle,
+    store: S,
+    metrics: bool,
+) -> io::Result<()> {
+    start_with_policy(
+        handle,
+        store,
+        ColdRamOptions {
+            metrics,
+            page_granular: true,
+            share_resident: true,
+        },
+        true,
+    )
+}
+
+fn start_with_policy<S: ColdRamStore + 'static>(
+    handle: VmmHandle,
+    mut store: S,
+    options: ColdRamOptions,
+    post_cow_only: bool,
+) -> io::Result<()> {
     let block_bytes = if options.page_granular { 4096 } else { BLOCK };
     if options.share_resident && !options.page_granular {
         return Err(io::Error::other("shared RAM requires 4 KiB pages"));
@@ -1009,7 +1123,7 @@ pub(crate) fn start<S: ColdRamStore + 'static>(
         if locked.has_branch_ram() {
             return Err(io::Error::other("cold pager cannot replace branch delta mappings"));
         }
-        if locked.has_compact_restore_ram() || locked.is_paused()
+        if (!post_cow_only && (locked.has_compact_restore_ram() || locked.is_paused()))
             || locked.device_memory_gate().has_prepare()
             || locked.device_memory_gate().has_dedup_advice()
         {
@@ -1019,7 +1133,28 @@ pub(crate) fn start<S: ColdRamStore + 'static>(
         }
         let memory = locked.guest_memory().clone();
         let kernel = locked.raw_kernel_mapping();
-        let mappings = ranges_excluding_kernel(&memory, locked.ram_device_window_start(), kernel)?;
+        let device_start = locked.ram_device_window_start();
+        let (mappings, kernel) = if post_cow_only {
+            let restored_kernel = locked.compact_restore_kernel().map_err(io::Error::other)?;
+            let mappings = compact_restore_ranges(&memory, device_start, restored_kernel)?;
+            let kernel = restored_kernel
+                .and_then(|layout| {
+                    memory
+                        .iter()
+                        .find(|r| r.start_addr().0 == layout.guest_addr)
+                })
+                .map(|region| crate::vmm::RawKernelMapping {
+                    guest_address: region.start_addr().0,
+                    host_address: region.as_ptr() as usize,
+                    length: region.len() as usize,
+                });
+            (mappings, kernel)
+        } else {
+            (
+                ranges_excluding_kernel(&memory, device_start, kernel)?,
+                kernel,
+            )
+        };
         handle
             .cold_pager_started
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
@@ -1031,10 +1166,13 @@ pub(crate) fn start<S: ColdRamStore + 'static>(
             })?;
         (memory, mappings, kernel)
     };
-    let free_reports = options
-        .share_resident
+    let free_reports = (options.share_resident && !post_cow_only)
         .then(|| Arc::new(crate::devices::virtio::memory_gate::SharedFreeReports::default()));
     let initialized = (|| {
+        if post_cow_only {
+            // Revalidate after VM construction while restored CPUs are parked.
+            store.stats()?;
+        }
         let uffd = if options.share_resident {
             None
         } else {
@@ -1046,45 +1184,60 @@ pub(crate) fn start<S: ColdRamStore + 'static>(
             None
         };
         let faults = Arc::new(crate::devices::virtio::memory_gate::ColdFaultActivity::default());
-        let pages = handle
-            .ram_quiesced(|vmm| {
-                // Disable the other destructive RAM owner before registration.
-                // A closed idle gate guarantees every old balloon lease drained.
-                vmm.device_memory_gate()
-                    .install_cold_faults(faults.clone())?;
-                if let Some(reports) = &free_reports {
-                    vmm.device_memory_gate()
-                        .install_free_reports(reports.clone())?;
+        let install = |vmm: &mut crate::vmm::Vmm| {
+            // A closed gate excludes all pre-existing balloon leases.
+            let gate = vmm.device_memory_gate();
+            gate.install_cold_faults(faults.clone())?;
+            if let Some(reports) = &free_reports {
+                gate.install_free_reports(reports.clone())?;
+            }
+            if let Some(hints) = &read_hints {
+                gate.install_read_hints(hints.clone())?;
+            }
+            if let Some(uffd) = &uffd {
+                for mapping in &mappings {
+                    // Existing bytes remain mapped; untouched/previously ballooned
+                    // holes remain zero. No new destructive owner can create holes
+                    // after the fault gate is installed. Missing faults without a
+                    // cold object are therefore safe lazy-zero allocations.
+                    uffd.register(*mapping).map_err(|error| error.to_string())?;
                 }
-                if let Some(hints) = &read_hints {
-                    vmm.device_memory_gate().install_read_hints(hints.clone())?;
-                }
-                if let Some(uffd) = &uffd {
-                    for mapping in &mappings {
-                        // Existing bytes remain mapped; untouched/previously ballooned
-                        // holes remain zero. No new destructive owner can create holes
-                        // after the fault gate is installed. Missing faults without a
-                        // cold object are therefore safe lazy-zero allocations.
-                        uffd.register(*mapping).map_err(|error| error.to_string())?;
-                    }
-                }
-                let mut pages = host_sorted_pages(
-                    &mappings,
-                    Instant::now() + Duration::from_secs(1),
-                    block_bytes,
-                );
-                if !options.share_resident {
-                    pages.enable_checksums();
-                }
-                Ok(pages)
-            })
-            .map_err(io::Error::other)?
-            .ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::WouldBlock,
-                    "VM busy during cold RAM registration",
-                )
-            })?;
+            }
+            let mut pages = host_sorted_pages(
+                &mappings,
+                Instant::now() + Duration::from_secs(1),
+                block_bytes,
+            );
+            if !options.share_resident {
+                pages.enable_checksums();
+            }
+            Ok(pages)
+        };
+        let pages = if post_cow_only {
+            let _transition = handle
+                .transition
+                .lock()
+                .map_err(|_| io::Error::other("VM transition lock poisoned"))?;
+            let vmm = handle
+                .vmm
+                .upgrade()
+                .ok_or_else(|| io::Error::other("VMM has stopped"))?;
+            let mut locked = vmm
+                .lock()
+                .map_err(|_| io::Error::other("VMM lock poisoned"))?;
+            locked.compact_restore_kernel().map_err(io::Error::other)?;
+            install(&mut locked).map_err(io::Error::other)?
+        } else {
+            handle
+                .ram_quiesced(install)
+                .map_err(io::Error::other)?
+                .ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::WouldBlock,
+                        "VM busy during cold RAM registration",
+                    )
+                })?
+        };
         Ok::<_, io::Error>(Arc::new(Mutex::new(Pager {
             memory,
             shared_scan: options
@@ -1097,6 +1250,7 @@ pub(crate) fn start<S: ColdRamStore + 'static>(
             uffd,
             pagemap,
             share_resident: options.share_resident,
+            post_cow_only,
             cursor: 0,
             restored: 0,
             discarded: 0,
@@ -1110,7 +1264,9 @@ pub(crate) fn start<S: ColdRamStore + 'static>(
     let pager = match initialized {
         Ok(pager) => pager,
         Err(error) => {
-            handle.cold_pager_started.store(false, Ordering::Release);
+            if !post_cow_only {
+                handle.cold_pager_started.store(false, Ordering::Release);
+            }
             return Err(error);
         }
     };
@@ -1141,8 +1297,15 @@ pub(crate) fn start<S: ColdRamStore + 'static>(
         }
         if let Some(kernel) = kernel {
             eprintln!(
-                "pvisor-cold-linux-kernel-excluded host_start=0x{:x} length={} guest_start=0x{:x} reason=trusted_raw_firmware pid={pid}",
-                kernel.host_address, kernel.length, kernel.guest_address
+                "pvisor-cold-linux-kernel-excluded host_start=0x{:x} length={} guest_start=0x{:x} reason={} pid={pid}",
+                kernel.host_address,
+                kernel.length,
+                kernel.guest_address,
+                if post_cow_only {
+                    "restored_kernel"
+                } else {
+                    "trusted_raw_firmware"
+                }
             );
         }
     }
@@ -1195,6 +1358,7 @@ pub(crate) fn start<S: ColdRamStore + 'static>(
     let worker_stop = stop.clone();
     let worker = std::thread::Builder::new().name("pvisor-cold-pager".into()).spawn(move || {
         let pool = worker_pager.lock().unwrap().store.clone();
+        let mut last_health = Instant::now();
         loop {
             // A full adaptive scan round always yields, even when every region
             // is productive. Empty/sparse rounds cannot spin at the 1 ms pace.
@@ -1204,6 +1368,11 @@ pub(crate) fn start<S: ColdRamStore + 'static>(
             // Empty scans still need to observe VM teardown without a barrier.
             if handle.vmm.upgrade().is_none() {
                 break;
+            }
+            if post_cow_only && last_health.elapsed() >= Duration::from_secs(1) {
+                pool.lock().unwrap_or_else(|_| fatal("store poisoned"))
+                    .stats().unwrap_or_else(|error| fatal(error));
+                last_health = Instant::now();
             }
             if let Some(reports) = &free_reports {
                 if let Some(report) = reports.pending() {
@@ -1300,7 +1469,9 @@ pub(crate) fn start<S: ColdRamStore + 'static>(
                 .map_err(|_| io::Error::other("UFFD resolver panicked"))?;
         }
         pager.lock().unwrap().shutdown()?;
-        reservation.store(false, Ordering::Release);
+        if !post_cow_only {
+            reservation.store(false, Ordering::Release);
+        }
         return Err(error);
     }
     // Workers own pinned memory and store through shutdown. The VM handle is weak.
@@ -1442,6 +1613,7 @@ mod tests {
             uffd: None,
             pagemap: Some(std::fs::File::open("/proc/self/pagemap").unwrap()),
             share_resident: true,
+            post_cow_only: false,
             cursor: 0,
             restored: 0,
             discarded: 0,
@@ -1599,7 +1771,10 @@ mod tests {
             pager
                 .pages
                 .page_bitmap(pager.pagemap.as_ref(), 0..2)
-                .unwrap(),
+                .unwrap()
+                .iter()
+                .map(|bits| bits & (PAGE_PRESENT | PAGE_FILE))
+                .collect::<Vec<_>>(),
             [3, 3]
         );
         memory.write_slice(&[0x72], GuestAddress(0)).unwrap();
@@ -1607,7 +1782,10 @@ mod tests {
             pager
                 .pages
                 .page_bitmap(pager.pagemap.as_ref(), 0..2)
-                .unwrap(),
+                .unwrap()
+                .iter()
+                .map(|bits| bits & (PAGE_PRESENT | PAGE_FILE))
+                .collect::<Vec<_>>(),
             [1, 3]
         );
         assert!(!pager.file_page(pager.pages.range(0)).unwrap());
@@ -1634,6 +1812,169 @@ mod tests {
         pager.shutdown().unwrap();
     }
     #[test]
+    fn compact_raw_pages_share_only_after_private_write_and_release_on_next_cow() {
+        use crate::api::{RamMappingSnapshot, RamRestoreExtent};
+        use std::os::unix::fs::FileExt;
+
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("compact-ram");
+        let seed = vec![0x5a; 3 * BLOCK];
+        std::fs::write(&path, &seed).unwrap();
+        let file = Arc::new(std::fs::File::open(&path).unwrap());
+        let ranges = [
+            (GuestAddress(0), 2 * BLOCK),
+            (GuestAddress(4 * BLOCK as u64), BLOCK),
+            (GuestAddress(8 * BLOCK as u64), BLOCK),
+        ];
+        let ram = ranges
+            .iter()
+            .scan(0, |offset, (address, length)| {
+                let file_offset = *offset;
+                *offset += *length as u64;
+                Some(RamMappingSnapshot {
+                    base: address.0,
+                    len: *length as u64,
+                    file_offset,
+                })
+            })
+            .collect::<Vec<_>>();
+        let extents = [
+            RamRestoreExtent {
+                offset: 0,
+                length: BLOCK as u64,
+                backing_offset: Some(0),
+            },
+            RamRestoreExtent {
+                offset: BLOCK as u64,
+                length: BLOCK as u64,
+                backing_offset: None,
+            },
+            RamRestoreExtent {
+                offset: 2 * BLOCK as u64,
+                length: 2 * BLOCK as u64,
+                backing_offset: Some(BLOCK as u64),
+            },
+        ];
+        let kernel = crate::vmm::snapshot::KernelLayout {
+            guest_addr: ranges[1].0.0,
+            size: BLOCK as u64,
+        };
+        let make_pager = || {
+            let memory =
+                crate::memory::map_snapshot_ram(&ram, file.clone(), &extents, &ranges).unwrap();
+            assert!(compact_restore_ranges(&memory, 4096, Some(kernel)).is_err());
+            assert!(
+                compact_restore_ranges(
+                    &memory,
+                    ranges[2].0.0,
+                    Some(crate::vmm::snapshot::KernelLayout {
+                        guest_addr: kernel.guest_addr,
+                        size: 4096,
+                    })
+                )
+                .is_err()
+            );
+            let ordinary = compact_restore_ranges(&memory, ranges[2].0.0, Some(kernel)).unwrap();
+            assert_eq!(ordinary.len(), 1);
+            assert_eq!(ordinary[0].len, (2 * BLOCK) as u64);
+
+            let mut pager = shared_pager();
+            let pages = host_sorted_pages(&ordinary, Instant::now(), 4096);
+            pager.shared_scan = Some(pages.shared_scanner(0));
+            pager.pages = pages;
+            pager.memory = memory;
+            pager.post_cow_only = true;
+            pager
+        };
+        let mut first = make_pager();
+        let mut second = make_pager();
+        second.store = first.store.clone();
+        let cow = GuestAddress(4096);
+        let zero = GuestAddress(BLOCK as u64);
+        let zero_read = GuestAddress(BLOCK as u64 + 4096);
+        for pager in [&mut first, &mut second] {
+            assert_eq!(pager.memory.read_obj::<u8>(GuestAddress(0)).unwrap(), 0x5a);
+            assert_eq!(pager.memory.read_obj::<u8>(zero_read).unwrap(), 0);
+            assert!(pager.sample_candidates(&[0, 1, 16, 17]).0.is_empty());
+
+            // The file COW page and written demand-zero page now have anonymous
+            // PTEs; writes in firmware and device windows are outside the pager.
+            for address in [cow, zero, ranges[1].0, ranges[2].0] {
+                pager.memory.write_slice(&[0x77; 4096], address).unwrap();
+            }
+            for address in [ranges[1].0, ranges[2].0] {
+                let host = pager.memory.get_host_address(address).unwrap() as u64;
+                assert!(pager.fault_index(host).is_none());
+            }
+            let mut candidates = pager.shared_candidates();
+            candidates.extend(pager.shared_candidates());
+            candidates.sort_unstable();
+            candidates.dedup();
+            assert_eq!(candidates, [1, 16]);
+            let batch = pager.sample_candidates(&candidates);
+            assert_eq!(batch.0.len(), 2);
+            for snapshot in &batch.0 {
+                let object = pager.store.lock().unwrap().put(&snapshot.bytes).unwrap();
+                assert!(pager.commit(snapshot, object).unwrap().is_none());
+                assert!(pager.file_page(pager.pages.range(snapshot.index)).unwrap());
+            }
+            assert!(pager.sample_candidates(&[0, 1, 16, 17]).0.is_empty());
+        }
+        let old = first.pages[1].cold.as_deref().unwrap().clone();
+        assert!(Arc::ptr_eq(&old, second.pages[1].cold.as_deref().unwrap()));
+        assert_eq!(first.store.lock().unwrap().files.len(), 1);
+        first.memory.write_obj(0x99u8, cow).unwrap();
+        assert_eq!(second.memory.read_obj::<u8>(cow).unwrap(), 0x77);
+        assert_eq!(first.memory.read_obj::<u8>(cow).unwrap(), 0x99);
+        first.store.lock().unwrap().reject_new = true;
+        let batch = first.sample_candidates(&[1]);
+        assert_eq!(batch.0.len(), 1);
+        let store = first.store.clone();
+        let first = Mutex::new(first);
+        assert!(
+            publish_snapshot(&first, &store, &batch.0[0])
+                .unwrap()
+                .is_none()
+        );
+        assert!(first.lock().unwrap().pages[1].cold.is_none());
+        assert_eq!(store.lock().unwrap().releases, 1);
+        drop(first);
+        assert_eq!(second.memory.read_obj::<u8>(cow).unwrap(), 0x77);
+        assert_eq!(second.memory.read_obj::<u8>(zero).unwrap(), 0x77);
+        assert!(second.file_page(second.pages.range(1)).unwrap());
+        let mut bytes = [0; 4096];
+        old.read_exact_at(&mut bytes, 0).unwrap();
+        assert_eq!(bytes, [0x77; 4096]);
+        assert_eq!(std::fs::read(path).unwrap(), seed);
+    }
+
+    #[test]
+    fn compact_raw_commit_rejects_same_bytes_after_anonymous_provenance_is_lost() {
+        let mut pager = shared_pager();
+        pager.post_cow_only = true;
+        let batch = pager.sample_candidates(&[0]);
+        let snapshot = &batch.0[0];
+        let object = pager.store.lock().unwrap().put(&snapshot.bytes).unwrap();
+        let range = pager.pages.range(0);
+        // Simulate a stale candidate whose mapping became file-backed again.
+        let mapped = unsafe {
+            libc::mmap(
+                range.start as *mut libc::c_void,
+                4096,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_PRIVATE | libc::MAP_FIXED,
+                object.as_raw_fd(),
+                0,
+            )
+        };
+        assert_ne!(mapped, libc::MAP_FAILED);
+        assert_eq!(pager.memory.read_obj::<u8>(GuestAddress(0)).unwrap(), 0x5a);
+        assert!(pager.commit(snapshot, object).unwrap().is_some());
+        assert!(pager.pages[0].cold.is_none());
+        assert!(pager.file_page(range).unwrap());
+    }
+
+    #[test]
     fn shared_residency_bitmap_preserves_sparse_pages() {
         let mut pager = shared_pager();
         let empty = pager.pages.range(1);
@@ -1647,7 +1988,8 @@ mod tests {
             .unwrap();
         assert_eq!(bits[0] & 1, 1);
         assert_eq!(bits[1] & 1, 0);
-        assert_eq!(bits, [PAGE_PRESENT, 0]);
+        assert_eq!(bits[0] & (PAGE_PRESENT | PAGE_FILE), PAGE_PRESENT);
+        assert_eq!(bits[1], 0);
         assert!(
             pager
                 .pages
@@ -1892,6 +2234,7 @@ mod tests {
             uffd: Some(Arc::new(uffd)),
             pagemap: None,
             share_resident: false,
+            post_cow_only: false,
             cursor: 0,
             restored: 0,
             discarded: 0,

@@ -147,11 +147,27 @@ pub(super) enum RamPager {
     Disabled,
     Local,
     Pool(PathBuf),
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    RestorePhysical {
+        socket: PathBuf,
+        generation: super::pager::PoolGeneration,
+    },
 }
 
 impl RamPager {
     fn requested(&self) -> bool {
         !matches!(self, Self::Disabled)
+    }
+
+    pub(super) fn is_restore_physical(&self) -> bool {
+        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+        {
+            matches!(self, Self::RestorePhysical { .. })
+        }
+        #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+        {
+            false
+        }
     }
 
     fn from_settings(settings: &VmSettings) -> Self {
@@ -220,6 +236,21 @@ pub(super) struct RunnerSpec {
 
 impl RunnerSpec {
     fn validate_ram(&self) -> anyhow::Result<()> {
+        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+        if let RamPager::RestorePhysical { socket, .. } = &self.ram_pager {
+            anyhow::ensure!(
+                self.restore
+                    .as_ref()
+                    .is_some_and(|restore| !restore.ram_extents.is_empty())
+                    && !self.ram_dedup
+                    && !self.private_ram
+                    && !self.guest_idle
+                    && self.checkpoint.is_none()
+                    && socket.is_absolute(),
+                "Physical pool requires compact snapshot restore without other RAM owners"
+            );
+            return Ok(());
+        }
         anyhow::ensure!(
             !matches!(self.ram_pager, RamPager::Local)
                 || cfg!(all(target_os = "linux", target_arch = "x86_64")),
@@ -480,6 +511,10 @@ impl VmExecutor {
     /// Default restore keeps its lazy shared baseline. CPU mappings remain
     /// private; original owners stay pinned for later incremental captures.
     pub(crate) fn materialize_restore_ram(&mut self, storage: &Path) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            self.settings.restore_physical_pool.is_none(),
+            "Physical restore pool requires lazy snapshot RAM"
+        );
         #[cfg(any(
             all(target_os = "linux", target_arch = "x86_64"),
             all(target_os = "macos", target_arch = "aarch64")
@@ -566,14 +601,20 @@ impl VmExecutor {
         let firmware = resolve_firmware(settings)?;
         super::checkpoint::compatibility(firmware.as_deref())
     }
-    pub fn new(mut settings: VmSettings) -> anyhow::Result<Self> {
+    pub fn new(settings: VmSettings) -> anyhow::Result<Self> {
         anyhow::ensure!(
             settings.restore_physical_pool.is_none(),
             "CAPABILITY_UNSUPPORTED: physical restore pool requires a native execution fork"
         );
-        // The host environment alias is consumed once, at admission. Explicit settings
-        // win; the child receives only the normalized descriptor.
-        resolve_ram_settings(&mut settings, env::os(POOL_ENV))?;
+        Self::new_for_launch(settings, env::os(POOL_ENV))
+    }
+
+    fn new_for_launch(
+        mut settings: VmSettings,
+        legacy_pool: Option<std::ffi::OsString>,
+    ) -> anyhow::Result<Self> {
+        // The child receives only the normalized descriptor.
+        resolve_ram_settings(&mut settings, legacy_pool)?;
         anyhow::ensure!(
             settings.prepared_rootfs.is_none() || settings.snapshot_filesystem_pool.is_none(),
             "CAPABILITY_UNSUPPORTED: prepared rootfs cannot use an execution checkpoint filesystem pool"
@@ -780,9 +821,27 @@ impl VmExecutor {
         ))]
         {
             let mut settings = settings;
-            Persistence::create_dir_all_durable(storage)?;
-            settings.rootfs = Some(storage.to_owned());
-            let mut executor = Self::new(settings)?;
+            let legacy_pool = env::os(POOL_ENV);
+            anyhow::ensure!(
+                settings.restore_physical_pool.is_none() || legacy_pool.is_none(),
+                "CAPABILITY_UNSUPPORTED: Physical restore conflicts with the legacy pool environment"
+            );
+            #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+            let physical_pool = settings
+                .restore_physical_pool
+                .as_deref()
+                .map(super::pager::preflight_restore_pool)
+                .transpose()
+                .context("prepare Physical restore pool")?;
+            settings.rootfs = if settings.restore_physical_pool.is_some() {
+                // The authenticated restore will supply the actual guest lower.
+                // Keep child storage untouched until source validation succeeds.
+                Some(checkpoint.store.clone())
+            } else {
+                Persistence::create_dir_all_durable(storage)?;
+                Some(storage.to_owned())
+            };
+            let mut executor = Self::new_for_launch(settings, legacy_pool)?;
             let (prepared, overlay) = super::checkpoint::native::prepare_restore(
                 checkpoint,
                 &executor.settings,
@@ -797,6 +856,11 @@ impl VmExecutor {
                     .context("restored root has no lower")?
                     .clone(),
             );
+            #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+            let prepared = super::checkpoint::PreparedRestore {
+                physical_pool,
+                ..prepared
+            };
             executor.restore = Some(std::sync::Arc::new(prepared));
             Ok((executor, overlay))
         }
@@ -1044,7 +1108,8 @@ impl RunExecutor for VmExecutor {
                     CapabilityDimension::FilesystemWrite,
                     "libkrun-guest-kernel-virtiofs-overlay",
                 ),
-            supports_checkpoint: self.settings.prepared_rootfs.is_none(),
+            supports_checkpoint: self.settings.prepared_rootfs.is_none()
+                && self.settings.restore_physical_pool.is_none(),
             supports_migration: false,
         }
     }
@@ -1450,6 +1515,7 @@ impl RunExecutor for VmExecutor {
         )) && !vm_network_enabled
             && self.vsock_ports.is_empty()
             && !self.settings.cold_pager_requested()
+            && self.settings.restore_physical_pool.is_none()
             && self.settings.prepared_rootfs.is_none()
         {
             let prepared = if let Some(drivers) = &context.drivers {
@@ -1500,7 +1566,10 @@ impl RunExecutor for VmExecutor {
         {
             return failed_to_start(format!("bind immutable snapshot pool: {error:#}"));
         }
-        if self.settings.snapshot_filesystem_pool.is_some() && checkpoint.is_none() {
+        if self.settings.snapshot_filesystem_pool.is_some()
+            && checkpoint.is_none()
+            && self.settings.restore_physical_pool.is_none()
+        {
             return failed_to_start(
                 "immutable snapshot pool requires the durable no-network native capture profile"
                     .into(),
@@ -1586,6 +1655,10 @@ impl RunExecutor for VmExecutor {
                         "restore host authority exclusions: {error:#}"
                     ));
                 }
+            }
+            #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+            if let Some(pool) = &restore.physical_pool {
+                authority_paths.extend(pool.socket.parent().map(Path::to_owned));
             }
             if let Err(error) = apply_restore(&mut runner, restore, context) {
                 return failed_to_start(format!("restore launch contract: {error:#}"));
@@ -2244,6 +2317,14 @@ fn apply_restore(
     runner.workspace_target = restore.workspace_target.clone();
     runner.guest = restore.guest.clone();
     runner.restore = Some(restore.launch.clone());
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    if let Some(pool) = &restore.physical_pool {
+        runner.ram_pager = RamPager::RestorePhysical {
+            socket: pool.socket.clone(),
+            generation: pool.generation,
+        };
+        runner.validate_ram()?;
+    }
     Ok(())
 }
 
@@ -2547,6 +2628,13 @@ fn run_runner(spec: RunnerSpec) -> anyhow::Result<()> {
     } else {
         None
     };
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    let restore_pager = spec
+        .ram_pager
+        .is_restore_physical()
+        .then(|| super::pager::prepare(&spec.ram_pager, spec.memory_mib))
+        .transpose()
+        .context("negotiate runner Physical restore pool")?;
     #[cfg(target_os = "linux")]
     {
         let mut read_only = spec.root.lowers.clone();
@@ -2579,7 +2667,10 @@ fn run_runner(spec: RunnerSpec) -> anyhow::Result<()> {
         }
         // Only explicitly opted-in runners may open the host-authorized fault
         // device. Landlock does not replace its administrator-granted ACL.
-        if spec.ram_pager.requested() && Path::new("/dev/userfaultfd").exists() {
+        if spec.ram_pager.requested()
+            && !spec.ram_pager.is_restore_physical()
+            && Path::new("/dev/userfaultfd").exists()
+        {
             read_write.push(PathBuf::from("/dev/userfaultfd"));
         }
         read_only.extend(firmware_read_only_paths(spec.firmware_path.as_deref()));
@@ -2591,6 +2682,8 @@ fn run_runner(spec: RunnerSpec) -> anyhow::Result<()> {
         spec,
         attestation,
         &baseline_indexes,
+        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+        restore_pager,
         #[cfg(any(
             all(target_os = "linux", target_arch = "x86_64"),
             all(target_os = "macos", target_arch = "aarch64")
@@ -2663,6 +2756,9 @@ fn run_linked_krun(
     spec: RunnerSpec,
     mut attestation: std::fs::File,
     baseline_indexes: &[Option<pvisor_vm::api::BaselineContentIndex>],
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))] restore_pager: Option<
+        super::pager::PreparedPager,
+    >,
     #[cfg(any(
         all(target_os = "linux", target_arch = "x86_64"),
         all(target_os = "macos", target_arch = "aarch64")
@@ -2816,7 +2912,9 @@ fn run_linked_krun(
         all(target_os = "linux", target_arch = "x86_64"),
         all(target_os = "macos", target_arch = "aarch64")
     ))]
-    let pager = super::pager::prepare(&spec.ram_pager, spec.memory_mib)?;
+    let pager = (!spec.ram_pager.is_restore_physical())
+        .then(|| super::pager::prepare(&spec.ram_pager, spec.memory_mib))
+        .transpose()?;
     crate::util::startup_mark_run("runner.krun_enter", &spec.run_id);
     let started = vm.run( move |handle| {
         crate::util::startup_mark_run("runner.vmm_built", &spec.run_id);
@@ -2838,6 +2936,11 @@ fn run_linked_krun(
                 ),
             }
         }
+        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+        if let Some(pager) = restore_pager {
+            pager.start(handle.clone())
+                .inspect_err(|error| eprintln!("Physical restore pool startup failed: {error}"))?;
+        }
         if spec.restore.is_some() {
             handle.resume().map_err(std::io::Error::other)?;
             #[cfg(target_os = "linux")]
@@ -2855,8 +2958,10 @@ fn run_linked_krun(
         #[cfg(any(all(target_os = "linux", target_arch = "x86_64"), all(target_os = "macos", target_arch = "aarch64")))]
         {
             super::pager::start_diagnostics(&handle)?;
-            pager.start(handle.clone())
-                .inspect_err(|error| eprintln!("cold RAM pager startup failed: {error}"))?;
+            if let Some(pager) = pager {
+                pager.start(handle.clone())
+                    .inspect_err(|error| eprintln!("cold RAM pager startup failed: {error}"))?;
+            }
         }
         std::thread::Builder::new()
             .name("pvisor-vm-control".into())

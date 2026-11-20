@@ -167,6 +167,13 @@ impl ColdRamControl for VmmHandle {
     ) -> io::Result<()> {
         Err(unsupported("start_cold_pager"))
     }
+    fn start_restored_physical_pool<S: ColdRamStore + 'static>(
+        &self,
+        _store: S,
+        _metrics: bool,
+    ) -> io::Result<()> {
+        Err(unsupported("start_restored_physical_pool"))
+    }
     fn with_ram_quiesced<T>(
         &self,
         action: impl FnOnce(&mut FrozenMachine<'_>) -> Result<T, String>,

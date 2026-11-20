@@ -29,6 +29,8 @@ enum PagerStore {
     Disabled,
     Local(crate::ram_backing::resident::LocalColdRamStore),
     Physical(PoolClient),
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    RestorePhysical(PoolClient),
     #[cfg(target_os = "macos")]
     Compressed(PoolClient),
     #[cfg(target_os = "linux")]
@@ -46,6 +48,10 @@ impl PreparedPager {
             PagerStore::Disabled => Ok(()),
             PagerStore::Local(store) => handle.start_cold_pager(store, options(false)),
             PagerStore::Physical(pool) => handle.start_cold_pager(pool, options(true)),
+            #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+            PagerStore::RestorePhysical(pool) => {
+                handle.start_restored_physical_pool(pool, self.metrics)
+            }
             #[cfg(target_os = "macos")]
             PagerStore::Compressed(pool) => handle.start_cold_pager(pool, options(false)),
             #[cfg(target_os = "linux")]
@@ -70,6 +76,17 @@ pub(super) fn prepare(
         );
         return Ok(PreparedPager {
             store: PagerStore::Local(store),
+            metrics,
+        });
+    }
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    if let super::supported::RamPager::RestorePhysical { socket, generation } = selection {
+        let pool = prepare_restore_pool(socket)?;
+        if pool_generation(pool.shared_file()?.as_ref())? != *generation {
+            return Err(io::Error::other("Physical restore pool generation changed"));
+        }
+        return Ok(PreparedPager {
+            store: PagerStore::RestorePhysical(pool),
             metrics,
         });
     }
@@ -202,10 +219,7 @@ pub(crate) fn start_diagnostics(handle: &pvisor_vm::api::VmmHandle) -> io::Resul
     Ok(())
 }
 
-/// Authenticate and negotiate an explicit host-only pool before VMM construction.
-/// Failure leaves the socket and pool ownership untouched; dropping the prepared
-/// pager closes the session. No RAM is published until `start` is called.
-pub(crate) fn prepare_pool(path: &Path, metrics: bool) -> io::Result<PreparedPager> {
+fn connect_pool(path: &Path) -> io::Result<PoolClient> {
     let parent = path
         .parent()
         .ok_or_else(|| io::Error::other("pool parent missing"))?;
@@ -220,7 +234,14 @@ pub(crate) fn prepare_pool(path: &Path, metrics: bool) -> io::Result<PreparedPag
     }
     let stream = UnixStream::connect(path)?;
     crate::host_transport::authorize_host_peer_sync(&stream).map_err(io::Error::other)?;
-    let mut pool = PoolClient::new(stream, Duration::from_secs(5))?;
+    PoolClient::new(stream, Duration::from_secs(5))
+}
+
+/// Authenticate and negotiate an explicit host-only pool before VMM construction.
+/// Failure leaves the socket and pool ownership untouched; dropping the prepared
+/// pager closes the session. No RAM is published until `start` is called.
+pub(crate) fn prepare_pool(path: &Path, metrics: bool) -> io::Result<PreparedPager> {
+    let mut pool = connect_pool(path)?;
     #[cfg(target_os = "macos")]
     let store = match pool.enable_shared_mapping() {
         Ok(()) => PagerStore::Physical(pool),
@@ -242,6 +263,59 @@ pub(crate) fn prepare_pool(path: &Path, metrics: bool) -> io::Result<PreparedPag
         }
     };
     Ok(PreparedPager { store, metrics })
+}
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+pub(super) struct PoolGeneration {
+    device: u64,
+    inode: u64,
+}
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+fn pool_generation(file: &std::fs::File) -> io::Result<PoolGeneration> {
+    let metadata = file.metadata()?;
+    Ok(PoolGeneration {
+        device: metadata.dev(),
+        inode: metadata.ino(),
+    })
+}
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+fn prepare_restore_pool(path: &Path) -> io::Result<PoolClient> {
+    use std::os::unix::fs::FileTypeExt;
+    let metadata = std::fs::symlink_metadata(path)?;
+    if !metadata.file_type().is_socket()
+        || metadata.uid() != unsafe { libc::geteuid() }
+        || metadata.permissions().mode() & 0o077 != 0
+    {
+        return Err(io::Error::other(
+            "Physical restore pool requires a private owned socket",
+        ));
+    }
+    let mut pool = connect_pool(path)?;
+    pool.enable_shared_mapping()?;
+    pool.stats()?;
+    Ok(pool)
+}
+
+// Retain the preflight inode without transferring a supervisor-owned session.
+// Only the runner's connection may publish pages under its own pidfd.
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+pub(super) struct BoundRestorePool {
+    pub(super) socket: std::path::PathBuf,
+    pub(super) generation: PoolGeneration,
+    _mapping: std::sync::Arc<std::fs::File>,
+}
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+pub(super) fn preflight_restore_pool(path: &Path) -> io::Result<BoundRestorePool> {
+    let file = prepare_restore_pool(path)?.shared_file()?;
+    Ok(BoundRestorePool {
+        socket: path.canonicalize()?,
+        generation: pool_generation(&file)?,
+        _mapping: file,
+    })
 }
 
 impl pvisor_vm::api::ColdRamStore for PoolClient {
@@ -415,6 +489,116 @@ mod tests {
         drop(prepared);
         server.join().unwrap();
         assert_eq!(pool.lock().unwrap().object_count(), 0);
+    }
+
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    #[test]
+    fn physical_restore_pool_negotiates_two_sessions_and_rejects_a_different_generation() {
+        use super::super::supported::RamPager;
+        use crate::ram_backing::shared::SharedPool;
+        let directory = private_directory();
+        let socket = directory.path().join("pool.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let pool = Arc::new(Mutex::new(SharedPool::new(1 << 20, 32).unwrap()));
+        let (disconnect, connections) = std::sync::mpsc::channel();
+        let server = std::thread::spawn(move || {
+            std::thread::scope(|scope| {
+                for index in 0..3 {
+                    let (stream, _) = listener.accept().unwrap();
+                    if index == 2 {
+                        disconnect.send(stream.try_clone().unwrap()).unwrap();
+                    }
+                    let pool = pool.clone();
+                    scope.spawn(move || {
+                        crate::ram_backing::ipc::serve_shared(stream, pool, 32).unwrap();
+                    });
+                }
+            });
+        });
+        let bound = preflight_restore_pool(&socket).unwrap();
+        let selection = RamPager::RestorePhysical {
+            socket: bound.socket.clone(),
+            generation: bound.generation,
+        };
+        let connect = || match prepare(&selection, 1).unwrap().store {
+            PagerStore::RestorePhysical(pool) => pool,
+            _ => panic!("Physical restore cannot fall back to a different store"),
+        };
+        let mut first = connect();
+        let mut second = connect();
+        let bytes = [0x42; 4096];
+        assert!(first.put_duplicate(&bytes).is_err());
+        let second_object = second.put_duplicate(&bytes).unwrap();
+        let first_object = first.put_duplicate(&bytes).unwrap();
+        let first_mapping = first.shared_mapping(&first_object).unwrap();
+        let second_mapping = second.shared_mapping(&second_object).unwrap();
+        assert_eq!(first_mapping.offset, second_mapping.offset);
+        assert_eq!(
+            pool_generation(&first_mapping.file).unwrap(),
+            bound.generation
+        );
+        assert_eq!(
+            pool_generation(&second_mapping.file).unwrap(),
+            bound.generation
+        );
+        assert_eq!(second.stats().unwrap().cross_session_objects, 1);
+        first.release(first_object).unwrap();
+        assert_eq!(first.stats().unwrap().session_references, 0);
+        drop(first);
+        let mut output = [0; 4096];
+        second.restore(&second_object, &mut output).unwrap();
+        assert_eq!(output, bytes);
+        assert_eq!(second.stats().unwrap().cross_session_objects, 0);
+        second.release(second_object).unwrap();
+        assert_eq!(second.stats().unwrap().session_references, 0);
+        let connection = connections.recv_timeout(Duration::from_secs(5)).unwrap();
+        connection.shutdown(std::net::Shutdown::Both).unwrap();
+        assert!(second.stats().is_err());
+        assert!(
+            second
+                .stats()
+                .unwrap_err()
+                .to_string()
+                .contains("session has failed")
+        );
+        drop(second);
+        server.join().unwrap();
+
+        let replacement = directory.path().join("replacement.sock");
+        let listener = UnixListener::bind(&replacement).unwrap();
+        std::fs::set_permissions(&replacement, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let server = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let pool = Arc::new(Mutex::new(SharedPool::new(1 << 20, 32).unwrap()));
+            crate::ram_backing::ipc::serve_shared(stream, pool, 32).unwrap();
+        });
+        let selection = RamPager::RestorePhysical {
+            socket: replacement,
+            generation: bound.generation,
+        };
+        let error = prepare(&selection, 1).err().unwrap();
+        assert!(error.to_string().contains("generation changed"));
+        server.join().unwrap();
+    }
+
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    #[test]
+    fn physical_restore_pool_does_not_fall_back_to_sealed_compression() {
+        use crate::ram_backing::sealed::SealedPool;
+        let directory = private_directory();
+        let socket = directory.path().join("pool.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let server = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let pool = Arc::new(Mutex::new(SealedPool::new(1 << 20, 32)));
+            crate::ram_backing::ipc::serve_sealed(stream, pool, 32).unwrap();
+        });
+        let error = preflight_restore_pool(&socket).err().unwrap();
+        assert!(error.to_string().contains("physical sharing unsupported"));
+        assert!(socket.exists());
+        server.join().unwrap();
     }
 
     #[cfg(target_os = "linux")]

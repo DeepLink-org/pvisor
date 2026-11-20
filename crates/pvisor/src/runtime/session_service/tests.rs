@@ -63,7 +63,7 @@ fn durable_request_ids_share_core_bounds_and_reject_controls() {
 
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 #[tokio::test]
-async fn physical_restore_fork_blocks_new_admission_and_fences_request_id_replay() {
+async fn physical_restore_fork_rejects_unavailable_pool_and_fences_request_id_replay() {
     use crate::runtime::execution::SessionTransition;
     use crate::runtime::session_execution::{ForkOptions, ForkRequest};
     use pvisor_core::operation::{ExecutionCheckpoint, SnapshotRamStorage};
@@ -131,7 +131,11 @@ async fn physical_restore_fork_blocks_new_admission_and_fences_request_id_replay
     assert!(
         error
             .to_string()
-            .contains("no qualified Physical pager attachment"),
+            .contains(if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+                "prepare Physical restore pool"
+            } else {
+                "physical restore requires Linux x86_64"
+            }),
         "{error:#}"
     );
     assert!(!child_stage.exists());
@@ -140,6 +144,10 @@ async fn physical_restore_fork_blocks_new_admission_and_fences_request_id_replay
         std::fs::read(parent_stage.join("session.json")).unwrap(),
         initial_parent
     );
+
+    if !cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+        return;
+    }
 
     let mut child_record = fixture(&child_stage);
     child_record.run_id = "child-session".into();

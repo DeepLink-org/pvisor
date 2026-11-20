@@ -318,7 +318,7 @@ pub struct VmSettings {
     /// after service loss. Physical/legacy pools must stay alive. Disabled by default.
     pub memory_pool: Option<PathBuf>,
     /// Physical pool requested for a native execution fork from indexed Raw RAM.
-    /// Restore rejects this setting until it can attach a Physical pager to indexed Raw RAM.
+    /// Linux x86_64 only. The named same-user pool must offer physical page mappings.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub restore_physical_pool: Option<PathBuf>,
     /// Host-owned immutable filesystem pool for native execution checkpoints.
@@ -357,7 +357,7 @@ impl VmSettings {
         &self,
         checkpoint: &pvisor_core::operation::ExecutionCheckpoint,
     ) -> anyhow::Result<()> {
-        if self.restore_physical_pool.is_some() {
+        if let Some(socket) = &self.restore_physical_pool {
             use pvisor_core::operation::SnapshotRamStorage;
             checkpoint.validate()?;
             anyhow::ensure!(
@@ -372,8 +372,17 @@ impl VmSettings {
                     && !self.ram_dedup,
                 "CAPABILITY_UNSUPPORTED: physical restore conflicts with an existing pager, compression, writable RAM backing or kernel dedup"
             );
-            anyhow::bail!(
-                "CAPABILITY_UNSUPPORTED: indexed Raw RAM has no qualified Physical pager attachment"
+            anyhow::ensure!(
+                self.node_socket.is_none(),
+                "CAPABILITY_UNSUPPORTED: physical restore requires the local indexed Raw RAM owner"
+            );
+            anyhow::ensure!(
+                socket.is_absolute()
+                    && socket.file_name().is_some()
+                    && !socket
+                        .components()
+                        .any(|part| part == std::path::Component::ParentDir),
+                "physical restore requires an absolute pool socket path without parent traversal"
             );
         }
         Ok(())

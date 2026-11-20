@@ -2052,6 +2052,15 @@ node-owned views, compressed snapshots and other platforms retain their previous
 path. This optimization does not enable offload on restored COW memory and does
 not promise a measured total-memory saving before workload validation.
 
+On Linux x86_64, `ColdRamControl::start_restored_physical_pool` can attach a
+caller-authorized Physical store to parked compact Raw restore mappings before
+the first resume. The caller authenticates the source, pins the read-only
+backing and negotiates the store. The VMM excludes kernel and device windows
+and rechecks present, exclusive anonymous PTEs before copying or replacing a
+page. Balloon reporting acknowledges free ranges without discarding RAM.
+Physical slots stay pinned through COW or runner exit. Native KVM qualification
+is pending.
+
 ## Shared CLI VM contracts and Windows directory rename
 
 Windows directory rename updates cached paths for the directory and all
