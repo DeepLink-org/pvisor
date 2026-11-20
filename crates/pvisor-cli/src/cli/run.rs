@@ -1895,6 +1895,22 @@ async fn execute_config(
     let managed =
         pvisor::session_service::SessionService::start_managed(&pvisor, spec, config.clone())
             .await?;
+    let registration = resolve_run(Some(&storage), &storage)
+        .and_then(|record| record.register_discovery(&default_run_home()));
+    if let Err(error) = registration {
+        managed.cancel();
+        let drained = match managed.wait().await {
+            Ok(_) => "confirmed".to_owned(),
+            Err(error) => format!("failed: {error:#}"),
+        };
+        return Err(error).with_context(|| {
+            format!(
+                "Session discovery registration failed after launch; workload effects may remain. \
+                 Inspect the explicit stage {}. Cancellation/drain: {drained}",
+                storage.display()
+            )
+        });
+    }
     announce_session_started(managed.handle());
     pvisor::startup_mark_run("cli.session_started", &run_id);
     let result = wait_cli_session(managed).await?;

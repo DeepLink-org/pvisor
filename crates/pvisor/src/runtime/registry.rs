@@ -372,6 +372,74 @@ impl RunRecord {
         Ok(())
     }
 
+    /// Register this existing Run in a caller-selected discovery root.
+    ///
+    /// `root` may be relative to the current directory. Missing root/index
+    /// directories are created durably; a nondirectory or unsupported filesystem
+    /// operation fails. The caller must own and trust the root and its ancestors.
+    /// No HOME/default-root selection or Run-state update is performed.
+    ///
+    /// The complete mode-0600 index is synced before atomic no-replace publication.
+    /// Concurrent registration of the same Run ID and canonical stage is idempotent;
+    /// an existing different, malformed or nonregular entry is never replaced.
+    /// State updates at the same stage require no index update. The referenced Run
+    /// record remains authoritative; registration grants no mutation authority.
+    ///
+    /// Errors can leave created directories or a complete published index (if the
+    /// final directory sync fails). They do not roll back or stop an Execution.
+    /// The caller owns cancellation/draining after an accepted launch.
+    pub fn register_discovery(&self, root: &Path) -> anyhow::Result<()> {
+        use std::io::{Read, Write};
+        use std::os::unix::fs::OpenOptionsExt;
+
+        self.validate_schema()?;
+        let stage = self.stage_dir().canonicalize()?;
+        let current = Self::read(&stage)?;
+        anyhow::ensure!(
+            current.run_id == self.run_id,
+            "Run discovery owner mismatch"
+        );
+        let index = RunIndex {
+            run_id: self.run_id.clone(),
+            stage_dir: stage,
+        };
+        let path = run_index_path(root, &self.run_id);
+        let directory = path.parent().expect("Run index has a parent");
+        Persistence::create_dir_all_durable(directory)?;
+        let mut temporary = tempfile::NamedTempFile::new_in(directory)?;
+        temporary.write_all(&serde_json::to_vec_pretty(&index)?)?;
+        temporary.as_file().sync_all()?;
+        match temporary.persist_noclobber(&path) {
+            Ok(_) => {}
+            Err(error) if error.error.kind() == std::io::ErrorKind::AlreadyExists => {
+                let mut file = OpenOptions::new()
+                    .read(true)
+                    .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC)
+                    .open(&path)?;
+                let metadata = file.metadata()?;
+                anyhow::ensure!(
+                    metadata.is_file(),
+                    "Run discovery index is not a regular file"
+                );
+                let mut bytes = Vec::new();
+                Read::by_ref(&mut file)
+                    .take(65537)
+                    .read_to_end(&mut bytes)?;
+                anyhow::ensure!(bytes.len() <= 65536, "Run discovery index is oversized");
+                let existing: RunIndex = serde_json::from_slice(&bytes)?;
+                anyhow::ensure!(
+                    existing.run_id == index.run_id
+                        && existing.stage_dir.canonicalize()? == index.stage_dir,
+                    "Run discovery index conflicts with {}",
+                    path.display()
+                );
+                file.sync_all()?;
+            }
+            Err(error) => return Err(error.error.into()),
+        }
+        Persistence::sync_directory(directory)
+    }
+
     pub fn read(stage: &Path) -> anyhow::Result<Self> {
         Self::read_with_lease(stage, false)
     }
@@ -433,7 +501,7 @@ impl RunRecord {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct RunIndex {
     run_id: String,
     stage_dir: PathBuf,
@@ -705,6 +773,7 @@ fn lookup_run_id_in(
         if !discovery_present(root)? {
             continue;
         }
+        stores.insert(root.clone());
         for entry in fs::read_dir(root)? {
             let entry = entry?;
             if !entry.file_type()?.is_file() {
@@ -796,6 +865,7 @@ fn default_runs() -> anyhow::Result<Vec<RunRecord>> {
         if !root.is_dir() {
             continue;
         }
+        records.extend(all_runs(&root)?);
         for entry in fs::read_dir(root)? {
             let storage = entry?.path();
             if let Ok(record) = RunRecord::read(&storage) {
@@ -806,6 +876,8 @@ fn default_runs() -> anyhow::Result<Vec<RunRecord>> {
         }
     }
     records.sort_by_key(|record| std::cmp::Reverse(record.started_at_unix_ms));
+    let mut stages = std::collections::BTreeSet::new();
+    records.retain(|record| stages.insert(record.stage_dir()));
     Ok(records)
 }
 
@@ -915,7 +987,9 @@ pub fn all_runs(storage: &Path) -> anyhow::Result<Vec<RunRecord>> {
                 Ok(index) => index,
                 Err(_) => continue,
             };
-            if let Ok(record) = RunRecord::read(&index.stage_dir) {
+            if let Ok(record) = RunRecord::read(&index.stage_dir)
+                && record.run_id == index.run_id
+            {
                 records.push(record);
             }
         }
@@ -990,6 +1064,100 @@ mod tests {
             orchestration: Default::default(),
             operation: None,
         }
+    }
+
+    #[test]
+    fn discovery_registration_is_atomic_idempotent_and_never_replaces_an_owner() {
+        let temp = tempfile::tempdir().unwrap();
+        let stage = temp.path().join("custom/stage");
+        fs::create_dir_all(stage.join("upper")).unwrap();
+        let original = record(&stage, &stage, &stage.join("upper"));
+        original.write().unwrap();
+        let root = temp.path().join("discovery");
+        std::thread::scope(|scope| {
+            let threads: Vec<_> = (0..4)
+                .map(|_| scope.spawn(|| original.register_discovery(&root).unwrap()))
+                .collect();
+            for thread in threads {
+                thread.join().unwrap();
+            }
+        });
+        let path = run_index_path(&root, &original.run_id);
+        let bytes = fs::read(&path).unwrap();
+        let inode = fs::metadata(&path).unwrap().ino();
+        original.register_discovery(&root).unwrap();
+        assert_eq!(fs::metadata(&path).unwrap().ino(), inode);
+        let alias = RunIndex {
+            run_id: original.run_id.clone(),
+            stage_dir: stage.join("."),
+        };
+        fs::write(&path, serde_json::to_vec(&alias).unwrap()).unwrap();
+        let alias_bytes = fs::read(&path).unwrap();
+        original.register_discovery(&root).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), alias_bytes);
+        fs::write(&path, &bytes).unwrap();
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert_eq!(all_runs(&root).unwrap()[0].stage_dir(), stage);
+        assert_eq!(
+            lookup_run_id_in(
+                Path::new(&original.run_id),
+                &temp.path().join("unused"),
+                &[root.clone()]
+            )
+            .unwrap()
+            .unwrap()
+            .stage_dir(),
+            stage
+        );
+        let other = temp.path().join("different/stage");
+        fs::create_dir_all(other.join("upper")).unwrap();
+        let collision = record(&other, &other, &other.join("upper"));
+        collision.write().unwrap();
+        assert!(collision.register_discovery(&root).is_err());
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+        fs::remove_dir_all(&stage).unwrap();
+        assert!(all_runs(&root).unwrap().is_empty());
+        assert!(collision.register_discovery(&root).is_err());
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+        assert_eq!(fs::read_dir(path.parent().unwrap()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn discovery_registration_preserves_invalid_entries_and_checks_the_record() {
+        use std::os::unix::fs::symlink;
+        let temp = tempfile::tempdir().unwrap();
+        let stage = temp.path().join("stage");
+        fs::create_dir_all(stage.join("upper")).unwrap();
+        let run = record(&stage, &stage, &stage.join("upper"));
+        run.write().unwrap();
+        let root = temp.path().join("discovery");
+        let path = run_index_path(&root, &run.run_id);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, b"malformed").unwrap();
+        assert!(run.register_discovery(&root).is_err());
+        assert_eq!(fs::read(&path).unwrap(), b"malformed");
+        fs::remove_file(&path).unwrap();
+        symlink(stage.join(RUN_META_FILENAME), &path).unwrap();
+        let authority = fs::read(stage.join(RUN_META_FILENAME)).unwrap();
+        assert!(run.register_discovery(&root).is_err());
+        assert_eq!(fs::read(stage.join(RUN_META_FILENAME)).unwrap(), authority);
+        assert!(fs::symlink_metadata(&path).unwrap().is_symlink());
+        fs::remove_file(&path).unwrap();
+        fs::create_dir(&path).unwrap();
+        assert!(run.register_discovery(&root).is_err());
+        assert!(path.is_dir());
+        fs::remove_dir(&path).unwrap();
+        let mut wrong_owner = run.clone();
+        wrong_owner.run_id = "different".into();
+        assert!(wrong_owner.register_discovery(&root).is_err());
+        assert_eq!(fs::read_dir(path.parent().unwrap()).unwrap().count(), 0);
+        let nondirectory = temp.path().join("file");
+        fs::write(&nondirectory, b"keep").unwrap();
+        assert!(run.register_discovery(&nondirectory).is_err());
+        assert_eq!(fs::read(nondirectory).unwrap(), b"keep");
     }
 
     #[test]

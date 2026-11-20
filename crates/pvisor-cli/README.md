@@ -327,6 +327,14 @@ credentials and implicit loader paths retain the VM's existing environment scrub
 explicit `-e` values have Docker precedence. Unset entries remain absent, including
 HOME, PATH and TMPDIR.
 
+Accepted `spawn` and `stage` launches register discovery in the selected default
+Run home even when `--stage` points elsewhere. `last` remains scoped to the
+launching workspace and works while running and after failure or timeout.
+Registration does not replace a conflicting index. If it fails after launch,
+the CLI cancels/drains the accepted workload and reports the explicit stage
+for inspection; partial effects may remain. Use the printed stage path if its
+default-home index is stale or unavailable.
+
 ### Applying project changes
 
 For new `stage` Sessions, ordinary `apply` selects only changes beneath the recorded
