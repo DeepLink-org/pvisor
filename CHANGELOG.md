@@ -1,6 +1,20 @@
 # Changelog
 
-## Unreleased
+## 0.4.0
+
+- Use the Session lifecycle for Docker-compatible container commands and add
+  experimental, daemonless `pvisor compose` workflows.
+- Publish lazy images with `pvisor push` and support authenticated registry pulls.
+  The daemon image commands and the `pvisor cache` command group have been removed.
+- Add Agent task monitoring and terminal attachment for running Sessions.
+- Speed up same-host copy-on-write VM forks, let callers offload and resume fork
+  children, and let the Linux daemon offload eligible VMs under memory pressure.
+- Let containerd shim operators configure a default VM network policy and opt
+  into automatic exposure of guest TCP listeners inside the pod network namespace.
+- Add native Windows container execution and Windows Hypervisor Platform CI.
+  Stable release archives and wheels target Linux x86_64 and macOS ARM64.
+
+## 0.3.2 and earlier
 
 ### Unified Session lifecycle terminology
 
