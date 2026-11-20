@@ -142,54 +142,6 @@ impl SessionService {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::child_config;
-    use crate::{RunConfig, Session, runtime::session_execution::ForkOptions};
-
-    #[test]
-    fn physical_restore_fork_projects_and_persists_the_child_configuration() {
-        let root = tempfile::tempdir().unwrap();
-        let parent = RunConfig::default();
-        let mut options: ForkOptions = serde_json::from_value(serde_json::json!({
-            "checkpoint": "raw", "eager_ram": false
-        }))
-        .unwrap();
-        assert!(options.restore_physical_pool.is_none());
-        assert!(
-            serde_json::to_value(&options)
-                .unwrap()
-                .get("restore_physical_pool")
-                .is_none()
-        );
-        assert_eq!(child_config(&parent, &options).vm, parent.vm);
-
-        let pool = root.path().join("physical.sock");
-        options.restore_physical_pool = Some(pool.clone());
-        let config = child_config(&parent, &options);
-        assert_eq!(
-            config.vm.restore_physical_pool.as_deref(),
-            Some(pool.as_path())
-        );
-        assert_eq!(config.vm.memory_pool, parent.vm.memory_pool);
-        assert!(parent.vm.restore_physical_pool.is_none());
-        let child = Session::new(
-            "child".into(),
-            root.path().into(),
-            None,
-            config,
-            pvisor_core::RunSpec::process("child", "sh", "/bin/sh"),
-        )
-        .unwrap();
-        child.write().unwrap();
-        assert_eq!(child.current().unwrap().config().vm, child.config().vm);
-
-        options.restore_physical_pool = None;
-        let next = child_config(child.config(), &options);
-        assert!(next.vm.restore_physical_pool.is_none());
-    }
-}
-
 fn child_config(
     parent: &crate::RunConfig,
     options: &crate::runtime::session_execution::ForkOptions,
@@ -299,4 +251,52 @@ where
     .await?;
     super::lifecycle::confirm_restored_completion(&completed_stage, &child_id)?;
     Ok(ExecutionForkResponse::Finished { exit_code })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::child_config;
+    use crate::{RunConfig, Session, runtime::session_execution::ForkOptions};
+
+    #[test]
+    fn physical_restore_fork_projects_and_persists_the_child_configuration() {
+        let root = tempfile::tempdir().unwrap();
+        let parent = RunConfig::default();
+        let mut options: ForkOptions = serde_json::from_value(serde_json::json!({
+            "checkpoint": "raw", "eager_ram": false
+        }))
+        .unwrap();
+        assert!(options.restore_physical_pool.is_none());
+        assert!(
+            serde_json::to_value(&options)
+                .unwrap()
+                .get("restore_physical_pool")
+                .is_none()
+        );
+        assert_eq!(child_config(&parent, &options).vm, parent.vm);
+
+        let pool = root.path().join("physical.sock");
+        options.restore_physical_pool = Some(pool.clone());
+        let config = child_config(&parent, &options);
+        assert_eq!(
+            config.vm.restore_physical_pool.as_deref(),
+            Some(pool.as_path())
+        );
+        assert_eq!(config.vm.memory_pool, parent.vm.memory_pool);
+        assert!(parent.vm.restore_physical_pool.is_none());
+        let child = Session::new(
+            "child".into(),
+            root.path().into(),
+            None,
+            config,
+            pvisor_core::RunSpec::process("child", "sh", "/bin/sh"),
+        )
+        .unwrap();
+        child.write().unwrap();
+        assert_eq!(child.current().unwrap().config().vm, child.config().vm);
+
+        options.restore_physical_pool = None;
+        let next = child_config(child.config(), &options);
+        assert!(next.vm.restore_physical_pool.is_none());
+    }
 }
