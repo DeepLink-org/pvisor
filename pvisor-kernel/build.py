@@ -153,6 +153,20 @@ def build(args: argparse.Namespace) -> Path:
         env=env,
         text=True,
     )
+    sysroot = Path(
+        subprocess.check_output(
+            ["rustup", "run", toolchain, "rustc", "--print", "sysroot"],
+            env=env,
+            text=True,
+        ).strip()
+    )
+    tool_bin = sysroot / "bin"
+    env.update(
+        CARGO=str(tool_bin / "cargo"),
+        RUSTC=str(tool_bin / "rustc"),
+        RUSTDOC=str(tool_bin / "rustdoc"),
+        PATH=str(tool_bin) + os.pathsep + env.get("PATH", os.defpath),
+    )
     files = source_files()
     identity = {
         "inputs": {file.relative_to(HERE).as_posix(): sha256(file) for file in files},
@@ -188,17 +202,12 @@ def build(args: argparse.Namespace) -> Path:
         env["VDSO_LIBRARY_DIR"] = str(source / "vdso")
         env["CARGO_TARGET_DIR"] = str(work / "target")
         if architecture == "aarch64":
-            sysroot = subprocess.check_output(
-                ["rustup", "run", toolchain, "rustc", "--print", "sysroot"],
-                env=env,
-                text=True,
-            ).strip()
             host = next(
                 line.removeprefix("host: ")
                 for line in tools.splitlines()
                 if line.startswith("host: ")
             )
-            objcopy = Path(sysroot) / "lib/rustlib" / host / "bin/llvm-objcopy"
+            objcopy = sysroot / "lib/rustlib" / host / "bin/llvm-objcopy"
             if not objcopy.is_file():
                 raise RuntimeError("Missing llvm-objcopy; rerun with --prepare-toolchain")
             tool_dir = work / "tools"

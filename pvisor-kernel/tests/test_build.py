@@ -44,6 +44,19 @@ class SourceTests(unittest.TestCase):
             (source / "provenance.json").write_text('{"toolchain":"nightly-fixture"}')
             (source / "build.py").write_text("fixture builder")
             files = [source / "provenance.json", source / "build.py"]
+            nightly_bin = root / "nightly/bin"
+            stable_bin = root / "stable/bin"
+            resources.enter_context(
+                mock.patch.dict(
+                    os.environ,
+                    {
+                        "PATH": str(stable_bin) + os.pathsep + os.environ.get("PATH", os.defpath),
+                        "CARGO": str(stable_bin / "cargo"),
+                        "RUSTC": str(stable_bin / "rustc"),
+                        "RUSTDOC": str(stable_bin / "rustdoc"),
+                    },
+                )
+            )
             resources.enter_context(mock.patch.object(build, "HERE", source))
             resources.enter_context(mock.patch.object(build, "source_files", return_value=files))
             resources.enter_context(mock.patch.object(build.sys, "platform", "linux"))
@@ -54,7 +67,11 @@ class SourceTests(unittest.TestCase):
                 mock.patch.object(
                     build.subprocess,
                     "check_output",
-                    return_value="fixture rustc\n",
+                    side_effect=lambda command, **kwargs: (
+                        str(nightly_bin.parent)
+                        if command[-2:] == ["--print", "sysroot"]
+                        else "fixture rustc\n"
+                    ),
                 )
             )
             resources.enter_context(
@@ -68,6 +85,14 @@ class SourceTests(unittest.TestCase):
             def run(command, **kwargs):
                 self.assertIs(kwargs["stdout"], sys.stderr)
                 if "cargo" in command or command[0].endswith("cargo-osdk"):
+                    env = kwargs["env"]
+                    self.assertEqual(env["PATH"].split(os.pathsep)[0], str(nightly_bin))
+                    for variable, executable in (
+                        ("CARGO", "cargo"),
+                        ("RUSTC", "rustc"),
+                        ("RUSTDOC", "rustdoc"),
+                    ):
+                        self.assertEqual(env[variable], str(nightly_bin / executable))
                     lock = (
                         Path(kwargs["env"]["CARGO_TARGET_DIR"])
                         / "osdk/pvisor-kernel-run-base/Cargo.lock"

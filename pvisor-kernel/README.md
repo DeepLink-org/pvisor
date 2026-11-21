@@ -44,6 +44,9 @@ The first invocation installs the pinned Rust nightly inside
 can omit `--prepare-toolchain`. Rust and Cargo dependency acquisition still
 need network access on the first build. `--offline` requires those dependencies
 to be available locally.
+The builder resolves that nightly's executables and places them before host
+tools for OSDK and its child processes; a stable Cargo from mise or `PATH`
+cannot select the kernel compiler.
 
 Inputs are snapshotted into a fresh content-addressed build directory.
 The command prints a bundle directory containing `kernel.bin`, `kernel.json`
