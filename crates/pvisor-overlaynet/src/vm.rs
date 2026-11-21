@@ -179,6 +179,7 @@ async fn run_backend<T: AsyncRead + AsyncWrite + Unpin>(
     metrics: InterceptionMetrics,
     mut shutdown: oneshot::Receiver<()>,
     mut peer: Option<PeerNetwork>,
+    started: &std::sync::mpsc::SyncSender<Result<(), String>>,
 ) -> anyhow::Result<()> {
     let guest_address = config
         .peer_network
@@ -193,20 +194,20 @@ async fn run_backend<T: AsyncRead + AsyncWrite + Unpin>(
     let mut interface_config = InterfaceConfig::new(HardwareAddress::Ethernet(ROUTER_MAC));
     interface_config.random_seed = random_seed();
     let mut interface = Interface::new(interface_config, &mut frame_device, Instant::ZERO);
+    let mut address_result = Ok(());
     interface.update_ip_addrs(|addresses| {
-        addresses
-            .push(IpCidr::new(IpAddress::Ipv4(router), 24))
-            .expect("one interface address fits");
+        address_result = addresses.push(IpCidr::new(IpAddress::Ipv4(router), 24));
     });
+    address_result.map_err(|_| anyhow::anyhow!("VM interface address capacity exhausted"))?;
     interface.set_any_ip(true);
     interface
         .routes_mut()
         .add_default_ipv4_route(router)
-        .expect("one default route fits");
+        .map_err(|_| anyhow::anyhow!("VM default route capacity exhausted"))?;
 
     let mut sockets = SocketSet::new(Vec::new());
-    let dhcp_handle = sockets.add(udp_socket(4, 8192, 4, 8192, 67));
-    let dns_handle = sockets.add(udp_socket(16, 65_535, 16, 65_535, 53));
+    let dhcp_handle = sockets.add(udp_socket(4, 8192, 4, 8192, 67)?);
+    let dns_handle = sockets.add(udp_socket(16, 65_535, 16, 65_535, 53)?);
     let mut flows = HashMap::<FlowKey, Flow>::new();
     let mut dns = SyntheticDns {
         peers: config.peer_network.clone(),
@@ -214,6 +215,9 @@ async fn run_backend<T: AsyncRead + AsyncWrite + Unpin>(
     };
     let (event_tx, mut event_rx) = mpsc::channel(TCP_CHANNEL_DEPTH);
     let mut poll_delay = Box::pin(tokio::time::sleep(StdDuration::ZERO));
+    started
+        .send(Ok(()))
+        .context("VM network startup receiver disconnected")?;
 
     'backend: loop {
         // Readiness-based peer I/O does not consume Tokio's cooperative budget.
@@ -235,15 +239,17 @@ async fn run_backend<T: AsyncRead + AsyncWrite + Unpin>(
                         metrics.peer_dropped();
                     }
                 }
-                for _ in 1..FRAME_BATCH {
-                    match peer.as_mut().expect("peer enabled").try_receive() {
-                        Ok(Some(frame)) if config.egress.permits_peer_network() => {
-                            frame_device.transmit_queue.push_back(frame);
+                if let Some(peer) = peer.as_mut() {
+                    for _ in 1..FRAME_BATCH {
+                        match peer.try_receive() {
+                            Ok(Some(frame)) if config.egress.permits_peer_network() => {
+                                frame_device.transmit_queue.push_back(frame);
+                            }
+                            Ok(Some(_)) => metrics.peer_dropped(),
+                            Ok(None) => {}
+                            Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
+                            Err(error) => return Err(error).context("receive peer packet batch"),
                         }
-                        Ok(Some(_)) => metrics.peer_dropped(),
-                        Ok(None) => {}
-                        Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
-                        Err(error) => return Err(error).context("receive peer packet batch"),
                     }
                 }
             }
@@ -346,7 +352,7 @@ fn udp_socket(
     tx_packets: usize,
     tx_bytes: usize,
     port: u16,
-) -> udp::Socket<'static> {
+) -> anyhow::Result<udp::Socket<'static>> {
     let rx = udp::PacketBuffer::new(
         vec![udp::PacketMetadata::EMPTY; rx_packets],
         vec![0; rx_bytes],
@@ -356,8 +362,10 @@ fn udp_socket(
         vec![0; tx_bytes],
     );
     let mut socket = udp::Socket::new(rx, tx);
-    socket.bind(port).expect("non-zero UDP service port");
     socket
+        .bind(port)
+        .with_context(|| format!("bind VM UDP service port {port}"))?;
+    Ok(socket)
 }
 
 fn random_seed() -> u64 {
@@ -371,14 +379,18 @@ fn smol_now(clock: std::time::Instant) -> Instant {
     Instant::from_micros(clock.elapsed().as_micros().min(i64::MAX as u128) as i64)
 }
 
-fn next_flow_generation() -> u64 {
+fn next_flow_generation() -> Option<u64> {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-    NEXT.fetch_update(
+    allocate_flow_generation(&NEXT)
+}
+
+fn allocate_flow_generation(next: &std::sync::atomic::AtomicU64) -> Option<u64> {
+    next.fetch_update(
         std::sync::atomic::Ordering::Relaxed,
         std::sync::atomic::Ordering::Relaxed,
         |value| value.checked_add(1),
     )
-    .expect("VM flow generation exhausted")
+    .ok()
 }
 
 fn ensure_listener(
@@ -446,6 +458,10 @@ fn ensure_listener(
             port: key.destination_port,
         }
     };
+    let Some(generation) = next_flow_generation() else {
+        metrics.tcp_flow_denied();
+        return;
+    };
 
     let mut socket = tcp::Socket::new(
         tcp::SocketBuffer::new(vec![0; TCP_BUFFER_BYTES]),
@@ -463,7 +479,7 @@ fn ensure_listener(
     flows.insert(
         key,
         Flow {
-            generation: next_flow_generation(),
+            generation,
             handle,
             destination,
             phase: if local_dns {
@@ -725,7 +741,11 @@ async fn bridge_upstream(
         loop {
             // Bound each flow across both the shared event channel and inbound
             // queue. Reading resumes only after the guest socket accepts data.
-            let permit = credits.clone().acquire_owned().await.unwrap();
+            let permit = credits
+                .clone()
+                .acquire_owned()
+                .await
+                .map_err(io::Error::other)?;
             let length = read.read(&mut buffer).await?;
             if length == 0 {
                 let _ = events.send(FlowEvent::RemoteEof(key, generation)).await;
@@ -1260,14 +1280,10 @@ impl FrameReader {
     }
 
     fn next_frame(&mut self) -> anyhow::Result<Option<&[u8]>> {
-        if self.bytes.len().saturating_sub(self.offset) < 4 {
+        let [a, b, c, d, ..] = &self.bytes[self.offset..] else {
             return Ok(None);
-        }
-        let length = u32::from_be_bytes(
-            self.bytes[self.offset..self.offset + 4]
-                .try_into()
-                .expect("four byte prefix"),
-        ) as usize;
+        };
+        let length = u32::from_be_bytes([*a, *b, *c, *d]) as usize;
         anyhow::ensure!(
             (14..=MAX_FRAME_LEN).contains(&length),
             "invalid libkrun Ethernet frame length {length}"
@@ -1367,6 +1383,168 @@ mod transport_tests {
     use crate::api::EgressControl;
     use pvisor_core::network::{NetworkConfig, NetworkMode, NetworkPolicy};
 
+    #[rstest::rstest]
+    #[case::initial(1, Some(1), Some(2))]
+    #[case::near_exhaustion(u64::MAX - 2, Some(u64::MAX - 2), Some(u64::MAX - 1))]
+    #[case::last_generation(u64::MAX - 1, Some(u64::MAX - 1), None)]
+    #[case::exhausted(u64::MAX, None, None)]
+    fn flow_generations_never_wrap_or_reuse(
+        #[case] initial: u64,
+        #[case] first: Option<u64>,
+        #[case] second: Option<u64>,
+    ) {
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        let next = AtomicU64::new(initial);
+        assert_eq!(allocate_flow_generation(&next), first);
+        assert_eq!(allocate_flow_generation(&next), second);
+        if second.is_none() {
+            for _ in 0..3 {
+                assert_eq!(next.load(Ordering::Relaxed), u64::MAX);
+                assert_eq!(allocate_flow_generation(&next), None);
+            }
+        } else {
+            assert_eq!(next.load(Ordering::Relaxed), initial + 2);
+        }
+    }
+
+    #[rstest::rstest]
+    fn concurrent_generation_exhaustion_preserves_unique_ids() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        let next = AtomicU64::new(u64::MAX - 24);
+        let results = thread::scope(|scope| {
+            let handles: Vec<_> = (0..4)
+                .map(|_| {
+                    scope.spawn(|| {
+                        (0..8)
+                            .map(|_| allocate_flow_generation(&next))
+                            .collect::<Vec<_>>()
+                    })
+                })
+                .collect();
+            handles
+                .into_iter()
+                .flat_map(|handle| handle.join().unwrap())
+                .collect::<Vec<_>>()
+        });
+        assert_eq!(results.iter().filter(|id| id.is_none()).count(), 8);
+        let mut allocated: Vec<_> = results.into_iter().flatten().collect();
+        allocated.sort_unstable();
+        assert_eq!(allocated, (u64::MAX - 24..u64::MAX).collect::<Vec<_>>());
+        assert_eq!(next.load(Ordering::Relaxed), u64::MAX);
+        assert_eq!(allocate_flow_generation(&next), None);
+    }
+
+    #[rstest::rstest]
+    #[case::dns(53)]
+    #[case::dhcp(67)]
+    #[case::maximum(65535)]
+    fn udp_service_binds_the_requested_port(#[case] port: u16) {
+        let socket = udp_socket(1, 512, 1, 512, port).unwrap();
+        assert_eq!(socket.endpoint().port, port);
+    }
+
+    #[rstest::rstest]
+    fn udp_service_rejects_zero_port_without_panicking() {
+        let error = udp_socket(1, 512, 1, 512, 0).err().unwrap();
+        assert_eq!(error.to_string(), "bind VM UDP service port 0");
+    }
+
+    #[rstest::rstest]
+    #[case::empty(0)]
+    #[case::one_byte(1)]
+    #[case::two_bytes(2)]
+    #[case::three_bytes(3)]
+    fn frame_reader_retains_partial_prefix_after_a_complete_frame(#[case] prefix_bytes: usize) {
+        let mut reader = FrameReader::default();
+        reader.bytes.extend_from_slice(&14_u32.to_be_bytes());
+        reader.bytes.extend_from_slice(&[1; 14]);
+        let mut next = 15_u32.to_be_bytes().to_vec();
+        next.extend_from_slice(&[2; 15]);
+        reader.bytes.extend_from_slice(&next[..prefix_bytes]);
+        assert_eq!(reader.next_frame().unwrap(), Some([1; 14].as_slice()));
+        let offset = reader.offset;
+        assert!(reader.next_frame().unwrap().is_none());
+        assert_eq!(reader.offset, offset);
+        reader.bytes.extend_from_slice(&next[prefix_bytes..]);
+        assert_eq!(reader.next_frame().unwrap(), Some([2; 15].as_slice()));
+        assert!(reader.next_frame().unwrap().is_none());
+    }
+
+    #[rstest::rstest]
+    #[case::zero(0)]
+    #[case::below_minimum(13)]
+    #[case::above_maximum(65_536)]
+    #[case::maximum_integer(u32::MAX)]
+    fn frame_reader_rejects_invalid_lengths_without_advancing(#[case] length: u32) {
+        let mut reader = FrameReader {
+            bytes: length.to_be_bytes().to_vec(),
+            offset: 0,
+        };
+        assert_eq!(
+            reader.next_frame().unwrap_err().to_string(),
+            format!("invalid libkrun Ethernet frame length {length}")
+        );
+        assert_eq!(reader.offset, 0);
+    }
+
+    #[rstest::rstest]
+    #[case::minimum(14)]
+    #[case::mtu(FRAME_MTU)]
+    #[case::maximum(MAX_FRAME_LEN)]
+    fn frame_reader_waits_for_the_complete_payload(#[case] length: usize) {
+        let mut reader = FrameReader {
+            bytes: (length as u32).to_be_bytes().to_vec(),
+            offset: 0,
+        };
+        reader.bytes.resize(4 + length - 1, 7);
+        assert!(reader.next_frame().unwrap().is_none());
+        assert_eq!(reader.offset, 0);
+        reader.bytes.push(7);
+        assert_eq!(
+            reader.next_frame().unwrap(),
+            Some(vec![7; length].as_slice())
+        );
+        assert_eq!(reader.offset, 4 + length);
+        assert!(reader.next_frame().unwrap().is_none());
+    }
+
+    #[rstest::rstest]
+    #[tokio::test(start_paused = true)]
+    async fn abandoned_startup_returns_an_error_and_releases_transport() {
+        let (host, mut guest) = tokio::io::duplex(4096);
+        let (_shutdown, shutdown_rx) = oneshot::channel();
+        let (started, ready) = std::sync::mpsc::sync_channel(1);
+        drop(ready);
+        let error = tokio::time::timeout(
+            StdDuration::from_secs(1),
+            run_backend(
+                host,
+                config(),
+                InterceptionMetrics::default(),
+                shutdown_rx,
+                None,
+                &started,
+            ),
+        )
+        .await
+        .unwrap()
+        .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "VM network startup receiver disconnected"
+        );
+        assert_eq!(
+            tokio::time::timeout(StdDuration::from_secs(1), guest.read_u8())
+                .await
+                .unwrap()
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::UnexpectedEof
+        );
+    }
+
     fn config() -> VmNetworkConfig {
         let policy = NetworkPolicy::compile(&NetworkConfig {
             mode: NetworkMode::NoNetwork,
@@ -1457,8 +1635,8 @@ impl VmNetworkRuntime for VmNetwork {
                     runtime.block_on(async {
                         let stream = make_stream().context("adopt VM network transport")?;
                         let peer = peer.map(|p| p.adopt(thread_metrics.clone())).transpose()?;
-                        let _ = started.send(Ok::<_, String>(()));
-                        run_backend(stream, config, thread_metrics, shutdown_rx, peer).await
+                        run_backend(stream, config, thread_metrics, shutdown_rx, peer, &started)
+                            .await
                     })
                 })();
                 if let Err(error) = &result {
@@ -1507,7 +1685,7 @@ mod tests {
         let mut input = (query.len() as u16).to_be_bytes().to_vec();
         input.extend_from_slice(&query);
         let mut flow = Flow {
-            generation: next_flow_generation(),
+            generation: next_flow_generation().unwrap(),
             handle,
             destination: FlowDestination::Egress {
                 host: "dns".into(),
@@ -1571,7 +1749,7 @@ mod tests {
             let (events, mut received) = mpsc::channel(TCP_CHANNEL_DEPTH);
             let bridge = tokio::spawn(bridge_upstream(
                 key,
-                next_flow_generation(),
+                next_flow_generation().unwrap(),
                 stream,
                 outbound,
                 Default::default(),
@@ -1632,7 +1810,7 @@ mod tests {
         let mut flows = HashMap::from([(
             key,
             Flow {
-                generation: next_flow_generation(),
+                generation: next_flow_generation().unwrap(),
                 handle,
                 destination: FlowDestination::Egress {
                     host: "blocked.example".into(),
@@ -1733,7 +1911,7 @@ mod tests {
         let mut flows = HashMap::from([(
             key,
             Flow {
-                generation: next_flow_generation(),
+                generation: next_flow_generation().unwrap(),
                 handle,
                 destination: FlowDestination::Egress {
                     host: "slow.example".into(),
@@ -1833,7 +2011,7 @@ mod tests {
         let mut flows = HashMap::from([(
             key,
             Flow {
-                generation: next_flow_generation(),
+                generation: next_flow_generation().unwrap(),
                 handle,
                 destination: FlowDestination::Gateway("127.0.0.1:443".parse().unwrap()),
                 phase: FlowPhase::Connecting,
@@ -2177,7 +2355,7 @@ mod flow_lifecycle_regressions {
         let (events, mut received) = mpsc::channel(TCP_CHANNEL_DEPTH);
         let bridge = tokio::spawn(bridge_upstream(
             key,
-            next_flow_generation(),
+            next_flow_generation().unwrap(),
             stream,
             outbound,
             Default::default(),
@@ -2212,7 +2390,7 @@ mod flow_lifecycle_regressions {
             let (events, mut received) = mpsc::channel(TCP_CHANNEL_DEPTH);
             let bridge = tokio::spawn(bridge_upstream(
                 key,
-                next_flow_generation(),
+                next_flow_generation().unwrap(),
                 stream,
                 outbound,
                 Default::default(),

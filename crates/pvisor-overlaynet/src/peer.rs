@@ -442,8 +442,6 @@ impl PeerNetwork {
             }
             let destination = self.pending[first].destination;
             let link = self.outgoing.get(&destination);
-            let generation = link.map(|link| link.generation);
-            let fd = link.map(|link| link.socket.as_raw_fd());
             let mut slices: [io::IoSlice<'_>; crate::peer_batch::BATCH] =
                 std::array::from_fn(|_| io::IoSlice::new(&[]));
             let mut count = 0;
@@ -456,19 +454,20 @@ impl PeerNetwork {
                     continue;
                 }
                 handled |= 1 << index;
-                if Some(packet.generation) != generation {
+                if link.is_none_or(|link| packet.generation != link.generation) {
                     self.metrics.peer_dropped();
                     continue;
                 }
                 slices[count] = io::IoSlice::new(&packet.bytes[..packet.length]);
                 count += 1;
             }
+            let Some(link) = link else {
+                continue;
+            };
+            let fd = link.socket.as_raw_fd();
             let mut sent = 0;
             while sent < count {
-                match crate::peer_batch::send(
-                    fd.expect("validated outgoing link"),
-                    &slices[sent..count],
-                ) {
+                match crate::peer_batch::send(fd, &slices[sent..count]) {
                     Ok(progress) => {
                         sent += progress;
                         for _ in 0..progress {
@@ -606,4 +605,207 @@ fn private_file(path: &Path, create: bool) -> anyhow::Result<File> {
         path.display()
     );
     Ok(file)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::api::{InterceptionObservation, InterceptionSnapshot};
+
+    #[rstest::fixture]
+    fn directory() -> tempfile::TempDir {
+        tempfile::Builder::new()
+            .permissions(fs::Permissions::from_mode(0o700))
+            .tempdir_in(fs::canonicalize("/tmp").unwrap())
+            .unwrap()
+    }
+
+    fn config(root: &Path) -> PeerNetworkConfig {
+        PeerNetworkConfig {
+            directory: root.to_path_buf(),
+            address: Ipv4Addr::new(192, 0, 2, 11),
+            gateway: Ipv4Addr::new(192, 0, 2, 1),
+            aliases: Vec::new(),
+        }
+    }
+
+    fn stage(network: &mut PeerNetwork, destination: Ipv4Addr, generation: [u8; 16], bytes: &[u8]) {
+        let packet = &mut network.pending[network.pending_count];
+        packet.destination = destination;
+        packet.generation = generation;
+        packet.length = bytes.len();
+        packet.bytes[..bytes.len()].copy_from_slice(bytes);
+        network.pending_count += 1;
+    }
+
+    #[derive(Clone, Copy)]
+    enum LinkState {
+        Available,
+        Missing,
+        MixedGenerations,
+        Disconnected,
+    }
+
+    #[rstest::rstest]
+    #[case::available(LinkState::Available, 6, 0)]
+    #[case::missing(LinkState::Missing, 3, 3)]
+    #[case::mixed_generations(LinkState::MixedGenerations, 4, 2)]
+    #[case::disconnected(LinkState::Disconnected, 3, 3)]
+    #[tokio::test]
+    async fn flush_preserves_healthy_destinations_and_counts_each_packet_once(
+        directory: tempfile::TempDir,
+        #[case] state: LinkState,
+        #[case] sent: u64,
+        #[case] dropped: u64,
+    ) {
+        let mut network = BoundPeer::bind(&config(directory.path()), None)
+            .unwrap()
+            .adopt(InterceptionMetrics::default())
+            .unwrap();
+        let destinations = [Ipv4Addr::new(192, 0, 2, 12), Ipv4Addr::new(192, 0, 2, 13)];
+        let mut receivers = Vec::new();
+        for (index, destination) in destinations.into_iter().enumerate() {
+            let path = directory.path().join(format!("sink-{index}"));
+            let receiver = StdUnixDatagram::bind(&path).unwrap();
+            receiver.set_nonblocking(true).unwrap();
+            let link = Outgoing::bind(
+                network
+                    .membership
+                    .slot
+                    .join(format!("tx-{}.sock", destination.octets()[3])),
+                &path,
+                [1; 16],
+            )
+            .unwrap();
+            network.outgoing.insert(destination, link);
+            network
+                .cache
+                .insert(destination, (Instant::now(), Some([1; 16])));
+            receivers.push(Some(receiver));
+        }
+        let payloads: [&[u8]; 6] = [b"a-0", b"b-0", b"a-1", b"b-1", b"a-2", b"b-2"];
+        for (index, bytes) in payloads.into_iter().enumerate() {
+            let generation =
+                if matches!(state, LinkState::MixedGenerations) && matches!(index, 0 | 4) {
+                    [2; 16]
+                } else {
+                    [1; 16]
+                };
+            stage(&mut network, destinations[index % 2], generation, bytes);
+        }
+        match state {
+            LinkState::Missing => {
+                network.outgoing.remove(&destinations[0]);
+            }
+            LinkState::Disconnected => drop(receivers[0].take()),
+            _ => {}
+        }
+        network.flush();
+        assert_eq!(network.pending_count, 0);
+        let expected = InterceptionSnapshot {
+            peer_packets_sent: sent,
+            peer_packets_dropped: dropped,
+            ..Default::default()
+        };
+        assert_eq!(network.metrics.snapshot(), expected);
+        network.flush();
+        assert_eq!(network.metrics.snapshot(), expected);
+        assert!(network.outgoing.contains_key(&destinations[1]));
+        assert!(network.cache.contains_key(&destinations[1]));
+        assert_eq!(
+            network.outgoing.contains_key(&destinations[0]),
+            matches!(state, LinkState::Available | LinkState::MixedGenerations)
+        );
+        assert_eq!(
+            network.cache.contains_key(&destinations[0]),
+            !matches!(state, LinkState::Disconnected)
+        );
+        for (index, receiver) in receivers.iter().enumerate() {
+            let Some(receiver) = receiver else { continue };
+            let expected: &[&[u8]] = if index == 1 {
+                &[b"b-0", b"b-1", b"b-2"]
+            } else {
+                match state {
+                    LinkState::Available => &[b"a-0", b"a-1", b"a-2"],
+                    LinkState::MixedGenerations => &[b"a-1"],
+                    _ => &[],
+                }
+            };
+            let mut bytes = [0; 64];
+            for packet in expected {
+                let length = receiver.recv(&mut bytes).unwrap();
+                assert_eq!(&bytes[..length], *packet);
+            }
+            assert_eq!(
+                receiver.recv(&mut bytes).unwrap_err().kind(),
+                io::ErrorKind::WouldBlock
+            );
+        }
+        drop(network);
+        for last in [12, 13] {
+            assert!(!directory.path().join(format!("11/tx-{last}.sock")).exists());
+        }
+    }
+
+    #[rstest::rstest]
+    fn failed_outgoing_connect_cleans_up_and_allows_retry(directory: tempfile::TempDir) {
+        let path = directory.path().join("tx.sock");
+        let destination = directory.path().join("sink.sock");
+        let error = Outgoing::bind(path.clone(), &destination, [1; 16])
+            .err()
+            .unwrap();
+        assert_eq!(
+            error.downcast_ref::<io::Error>().unwrap().kind(),
+            io::ErrorKind::NotFound
+        );
+        assert!(!path.exists());
+        let receiver = StdUnixDatagram::bind(&destination).unwrap();
+        receiver.set_nonblocking(true).unwrap();
+        let link = Outgoing::bind(path.clone(), &destination, [2; 16]).unwrap();
+        link.socket.send(b"retry").unwrap();
+        let mut bytes = [0; 16];
+        let length = receiver.recv(&mut bytes).unwrap();
+        assert_eq!(&bytes[..length], b"retry");
+        drop(link);
+        assert!(!path.exists());
+    }
+
+    #[rstest::rstest]
+    fn outgoing_drop_preserves_a_replacement_socket(directory: tempfile::TempDir) {
+        let path = directory.path().join("tx.sock");
+        let destination = directory.path().join("sink.sock");
+        let _receiver = StdUnixDatagram::bind(&destination).unwrap();
+        let link = Outgoing::bind(path.clone(), &destination, [1; 16]).unwrap();
+        fs::rename(&path, directory.path().join("old.sock")).unwrap();
+        let _replacement = StdUnixDatagram::bind(&path).unwrap();
+        let inode = fs::symlink_metadata(&path).unwrap().ino();
+        drop(link);
+        assert_eq!(fs::symlink_metadata(&path).unwrap().ino(), inode);
+    }
+
+    #[rstest::rstest]
+    fn membership_drop_preserves_replacement_publication_and_releases_lease(
+        directory: tempfile::TempDir,
+    ) {
+        let config = config(directory.path());
+        let bound = BoundPeer::bind(&config, None).unwrap();
+        let slot = directory.path().join("11");
+        let path = slot.join("net.sock");
+        fs::rename(&path, slot.join("old.sock")).unwrap();
+        let _replacement = StdUnixDatagram::bind(&path).unwrap();
+        let inode = fs::symlink_metadata(&path).unwrap().ino();
+        fs::write(slot.join("peer.json"), b"replacement publication").unwrap();
+        let lease = private_file(&slot.join("lease.lock"), false).unwrap();
+        assert_eq!(
+            lease.try_lock_exclusive().unwrap_err().kind(),
+            io::ErrorKind::WouldBlock
+        );
+        drop(bound);
+        assert_eq!(fs::symlink_metadata(&path).unwrap().ino(), inode);
+        assert_eq!(
+            fs::read(slot.join("peer.json")).unwrap(),
+            b"replacement publication"
+        );
+        lease.try_lock_exclusive().unwrap();
+    }
 }

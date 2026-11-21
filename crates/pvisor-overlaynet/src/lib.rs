@@ -7,6 +7,7 @@
 //! names from private discovery records.
 
 #![deny(missing_docs)]
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
 
 pub mod api;
 mod bandwidth;
