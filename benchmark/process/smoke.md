@@ -36,4 +36,13 @@ Criterion 保留采样、估计和基线比较。`operations.jsonl` 保留逐操
 正确性预热和 Criterion 调用，不从批次均值推算操作尾延迟。原始命令记录、stdout/stderr、
 来源摘要和冻结 harness 保存在新批次。默认 15% CI 门禁读取 Criterion 的 median estimate；
 同机顺序 cohort 的门禁不是随机交替 A/B，不支持因果改善百分比。
+`resources-*.json` 在操作计时区间外记录前后 boot ID、uptime、内存、swap 累计计数、
+CPU/内存/I/O PSI 及 observer cgroup 配额和节流计数；不可读项显式保留错误。
+跨 boot 或计数器重置不能计算速率，边界采样也不能证明区间内没有压力峰值。
+原始慢样本不因这些观测被删除、重试或放宽阈值。
+
+`--diagnose` 在原测量之外同时启用 `PVISOR_STARTUP_PROFILE=1` 与
+`PVISOR_STARTUP_TIMING=1`，保留各诊断命令的资源边界。Host profile 后接 strace，
+共用新的私有 Run store：前者包含初始化，后者使用已初始化 store，不视为配对样本。
+strace wall time 包含调度和观测开销，不能直接解释为磁盘服务时间或验收结果。
 实验不自动写用户文档或覆盖任何历史表。

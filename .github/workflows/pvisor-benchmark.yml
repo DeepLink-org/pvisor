@@ -189,8 +189,8 @@ jobs:
           if [[ -f "$output/report.md" ]]; then cat "$output/report.md" >> "$GITHUB_STEP_SUMMARY"; fi
           exit "$status"
 
-      - name: Diagnose failed benchmark outside measurement
-        if: failure()
+      - name: Retain persistence diagnostics outside measurement
+        if: ${{ !cancelled() }}
         timeout-minutes: 6
         env:
           BENCHMARK_DATA: ${{ runner.temp }}/.data/pvisor-benchmark

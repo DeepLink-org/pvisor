@@ -96,3 +96,30 @@ Evidence paths below are relative to those worktree roots.
   unchanged. Checks did not authenticate every host namespace.
 - Evidence: `.data/chaos6/`, including `validation-totals.json`,
   `failed-evidence-integrity-baseline.json` and `delayed-audits.jsonl`.
+
+## 2026-11-21 — staged workflows, stopped for host swap-out
+
+- Scope: Linux/KVM stage/review/selective apply/drop, literal and raw-byte
+  filenames, frontend/owner/runner death, one-service Compose and persistent
+  staged containers; generated filesystem, Core, Journal, OverlayNet, Gateway
+  and Replay contracts ran under serial, resource-capped supervision.
+- Results: [PR #177](https://github.com/DeepLink-org/pvisor/pull/177) repaired
+  impossible opaque-directory selection advice for rootfs/project-scoped apply
+  in `51c8857d`. Publication restrictions and no-write refusals were preserved.
+  Final completed domain and CLI selections passed; remote CI was successful
+  for that exact code commit, not a later documentation head.
+- Stop: the six-hour request was **not completed**. Tests stopped at
+  05:50:34 UTC after sustained host swap-out crossed the safety gate, before
+  the 06:20:28 UTC deadline. The interrupted corpus and unstarted tail jobs
+  were not passes. Builds, diagnostics, pacing and the quiescent remainder
+  are not continuous testing.
+- Cleanup: read-only audits found no matching owned process, populated campaign
+  cgroup or fixture mount in the inspected namespace. Two unknown owner-death
+  stages and all pending/aborted evidence were retained unchanged. Four inert
+  global control sockets remain; deleting them requires explicit user confirmation.
+  No outside-worktree paths were manually unlinked or removed.
+- Limits: local coverage is Linux/KVM only; no physical storage failure, power
+  loss, native pending-apply recovery, four-VM daemon/SDK run or live-model
+  acceptance is claimed. The campaign did not approve specifications.
+- Evidence: `target/chaos6h-20261121-002028-3a6cc2/`, with owned temporary
+  fixtures under `target/t3a6cc2/`.

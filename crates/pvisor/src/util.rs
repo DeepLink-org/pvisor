@@ -9,7 +9,27 @@ use pvisor_journal::api::{DurableFiles, Persistence};
 
 /// Publish owner-only JSON using the same durable replacement as Run records.
 pub fn write_private_json(path: &Path, value: &impl serde::Serialize) -> anyhow::Result<()> {
-    atomic_write(path, &serde_json::to_vec_pretty(value)?, |_, _, _| {})
+    write_json_observed(path, value, None)
+}
+
+fn write_json_observed(
+    path: &Path,
+    value: &impl serde::Serialize,
+    mut observe: Option<&mut dyn FnMut(&'static str, std::time::Duration, bool)>,
+) -> anyhow::Result<()> {
+    let body = if let Some(observer) = observe.as_mut() {
+        let start = std::time::Instant::now();
+        let result = serde_json::to_vec_pretty(value);
+        observer("serialize", start.elapsed(), result.is_ok());
+        result?
+    } else {
+        serde_json::to_vec_pretty(value)?
+    };
+    atomic_write(path, &body, |phase, elapsed, success| {
+        if let Some(observer) = observe.as_mut() {
+            observer(phase, elapsed, success);
+        }
+    })
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -99,10 +119,21 @@ pub(crate) fn persistence_log(
     if !startup_logging_enabled() {
         return;
     }
+    #[cfg(target_os = "linux")]
+    let tid = unsafe { libc::syscall(libc::SYS_gettid) } as u64;
+    #[cfg(target_os = "macos")]
+    let tid = {
+        let mut tid = 0;
+        unsafe { libc::pthread_threadid_np(std::ptr::null_mut(), &mut tid) };
+        tid
+    };
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    let tid = 0_u64;
     crate::diagnostics::diagnostic(format_args!(
-        "pvisor-persistence level=info timestamp_ms={} pid={} run_id={} object={} phase={} duration_us={} outcome={}",
+        "pvisor-persistence level=info timestamp_ms={} pid={} tid={} run_id={} object={} phase={} duration_us={} outcome={}",
         unix_now_ms(),
         std::process::id(),
+        tid,
         serde_json::to_string(run_id).unwrap_or_default(),
         object,
         phase,
@@ -129,10 +160,16 @@ pub(crate) fn write_run_json(
     run_id: &str,
     object: &str,
 ) -> anyhow::Result<()> {
-    let body = persistence_step(run_id, object, "serialize", || {
-        serde_json::to_vec_pretty(value)
-    })?;
-    write_run_bytes(path, &body, run_id, object)
+    if !startup_logging_enabled() {
+        return write_private_json(path, value);
+    }
+    write_json_observed(
+        path,
+        value,
+        Some(&mut |phase, elapsed, success| {
+            persistence_log(run_id, object, phase, elapsed, success);
+        }),
+    )
 }
 
 pub(crate) fn write_run_bytes(
@@ -232,7 +269,82 @@ pub(crate) fn encode_hex(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rstest::rstest;
     use std::os::unix::fs::PermissionsExt;
+
+    #[rstest]
+    fn observed_json_reports_serialization_and_durable_publication_in_order() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("receipt.json");
+        let mut phases = Vec::new();
+        write_json_observed(
+            &path,
+            &serde_json::json!({"receipt": true}),
+            Some(&mut |phase, _, success| phases.push((phase, success))),
+        )
+        .unwrap();
+        assert_eq!(
+            phases,
+            [
+                ("serialize", true),
+                ("directory_prepare", true),
+                ("directory_prepare_sync", true),
+                ("file_write", true),
+                ("file_sync", true),
+                ("rename", true),
+                ("directory_sync", true),
+            ]
+        );
+        assert_eq!(fs::read(&path).unwrap(), b"{\n  \"receipt\": true\n}");
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
+
+    #[rstest]
+    #[case::serialization(false)]
+    #[case::rename(true)]
+    fn observed_json_failure_retains_attempted_phase_and_original_destination(
+        #[case] rename: bool,
+    ) {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("receipt.json");
+        if rename {
+            fs::create_dir(&path).unwrap();
+        } else {
+            fs::write(&path, b"original").unwrap();
+        }
+        let mut phases = Vec::new();
+        let mut observer = |phase, _, success| phases.push((phase, success));
+        let error = if rename {
+            write_json_observed(&path, &true, Some(&mut observer)).unwrap_err()
+        } else {
+            let invalid = std::collections::BTreeMap::from([(vec![1, 2], "invalid JSON key")]);
+            write_json_observed(&path, &invalid, Some(&mut observer)).unwrap_err()
+        };
+        if rename {
+            assert_eq!(
+                phases,
+                [
+                    ("serialize", true),
+                    ("directory_prepare", true),
+                    ("directory_prepare_sync", true),
+                    ("file_write", true),
+                    ("file_sync", true),
+                    ("rename", false),
+                ]
+            );
+            assert!(!error.downcast_ref::<PublicationError>().unwrap().published);
+            assert!(error.downcast_ref::<std::io::Error>().is_some());
+            assert!(path.is_dir());
+        } else {
+            assert_eq!(phases, [("serialize", false)]);
+            assert!(error.downcast_ref::<serde_json::Error>().is_some());
+            assert_eq!(fs::read(&path).unwrap(), b"original");
+        }
+        assert_eq!(fs::read_dir(root.path()).unwrap().count(), 1);
+    }
 
     #[cfg(unix)]
     #[test]

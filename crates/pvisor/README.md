@@ -2375,6 +2375,11 @@ requests stay inside the VM; no host process or filesystem fallback is provided.
 checkpoint、持久化计时和 frontend/owner 关联日志默认关闭；设置
 `PVISOR_STARTUP_TIMING=1` 开启，`0` 保持关闭。该开关独立于 profile，
 不改变执行策略、Run 记录或错误、警告与暂存边界提示。
+`pvisor-persistence` 行通过 `run_id`、`object` 和 `phase` 关联持久化操作；
+`completion_receipt` 包含首次完成回执的序列化、文件写入/同步、rename 和父目录同步。
+失败记录保留实际尝试的阶段，不代表回滚；同步顺序和错误语义不变。
+`pid` 标识进程，`tid` 在 Linux/macOS 上标识宿主线程，其他平台为 `0`；
+记录不包含目标路径或序列化内容。关闭时回执发布不生成这些记录或额外的序列化计时。
 
 普通 host 执行另外标记 `process.spawn_begin` / `process.spawn_ready`，供分析器截断启动窗口。
 这些标记说明宿主已创建进程，不证明应用或 VM guest 就绪。不同进程、不同 profiler 的相对
