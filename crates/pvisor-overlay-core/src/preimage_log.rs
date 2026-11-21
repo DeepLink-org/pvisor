@@ -161,8 +161,8 @@ fn refresh(file: &File, state: &mut State, repair: bool, length: u64) -> io::Res
         if header[..available.min(4)] != FRAME_MAGIC[..available.min(4)] {
             return Err(invalid("invalid preimage frame magic"));
         }
+        let bytes = u32::from_le_bytes([header[4], header[5], header[6], header[7]]);
         if available >= 8 {
-            let bytes = u32::from_le_bytes(header[4..8].try_into().unwrap());
             if bytes == 0 || bytes as usize > MAX_RECORD {
                 return Err(invalid("invalid preimage frame length"));
             }
@@ -177,7 +177,6 @@ fn refresh(file: &File, state: &mut State, repair: bool, length: u64) -> io::Res
             }
             return truncate_tail(file, state);
         }
-        let bytes = u32::from_le_bytes(header[4..8].try_into().unwrap());
         let frame_length = HEADER as u64 + u64::from(bytes) + DIGEST as u64;
         if remaining < frame_length {
             if !repair {
@@ -497,6 +496,115 @@ impl PreimageLog {
 mod tests {
     use super::*;
     use std::fs;
+
+    #[rstest::rstest]
+    #[case::zero(0, false)]
+    #[case::minimum(1, true)]
+    #[case::maximum(4_194_304, true)]
+    #[case::above_maximum(4_194_305, false)]
+    #[case::maximum_integer(u32::MAX, false)]
+    fn complete_length_fields_preserve_reader_and_repair_contracts(
+        #[case] length: u32,
+        #[case] valid: bool,
+        #[values(8, 9, 10, 11, 12)] available: usize,
+    ) {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("log");
+        let mut writer = PreimageLog::open(&path).unwrap();
+        writer
+            .observe(Path::new("first"), true, || Ok(PathFingerprint::Absent))
+            .unwrap();
+        drop(writer);
+        let prefix = fs::read(&path).unwrap();
+        let mut header = b"PVR2".to_vec();
+        header.extend(length.to_le_bytes());
+        header.extend((!length).to_le_bytes());
+        let mut candidate = prefix.clone();
+        candidate.extend_from_slice(&header[..available]);
+        fs::write(&path, &candidate).unwrap();
+        let mut recovered = if valid {
+            let observed = PreimageLog::read(&path).unwrap();
+            assert_eq!(observed.len(), 1);
+            assert_eq!(observed[0].relative_path(), Path::new("first"));
+            assert_eq!(observed[0].state, PathFingerprint::Absent);
+            assert_eq!(
+                PreimageLog::read_complete(&path).unwrap_err().to_string(),
+                "incomplete preimage log cannot be sealed"
+            );
+            assert_eq!(fs::read(&path).unwrap(), candidate);
+            PreimageLog::open(&path).unwrap()
+        } else {
+            for result in [PreimageLog::read(&path), PreimageLog::read_complete(&path)] {
+                let error = result.unwrap_err();
+                assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+                assert_eq!(error.to_string(), "invalid preimage frame length");
+                assert_eq!(fs::read(&path).unwrap(), candidate);
+            }
+            let error = PreimageLog::open(&path).unwrap_err();
+            assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+            assert_eq!(error.to_string(), "invalid preimage frame length");
+            assert_eq!(fs::read(&path).unwrap(), candidate);
+            fs::write(&path, &prefix).unwrap();
+            PreimageLog::open(&path).unwrap()
+        };
+        assert_eq!(fs::read(&path).unwrap(), prefix);
+        assert_eq!(recovered.state.cursor, prefix.len() as u64);
+        assert_eq!(recovered.state.synced, prefix.len() as u64);
+        recovered
+            .observe(Path::new("first"), true, || {
+                panic!("first observation must survive")
+            })
+            .unwrap();
+        recovered
+            .observe(Path::new("second"), true, || Ok(PathFingerprint::Absent))
+            .unwrap();
+        drop(recovered);
+        let observed = PreimageLog::read_complete(&path).unwrap();
+        assert_eq!(observed.len(), 2);
+        assert_eq!(observed[0].relative_path(), Path::new("first"));
+        assert_eq!(observed[1].relative_path(), Path::new("second"));
+        assert!(
+            observed
+                .iter()
+                .all(|entry| entry.state == PathFingerprint::Absent)
+        );
+    }
+
+    #[rstest::rstest]
+    #[case::first_byte(8)]
+    #[case::second_byte(9)]
+    #[case::third_byte(10)]
+    #[case::fourth_byte(11)]
+    fn known_bad_complement_bytes_never_authorize_tail_repair(#[case] position: usize) {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("log");
+        let mut writer = PreimageLog::open(&path).unwrap();
+        writer
+            .observe(Path::new("first"), true, || Ok(PathFingerprint::Absent))
+            .unwrap();
+        drop(writer);
+        let prefix = fs::read(&path).unwrap();
+        let mut header = b"PVR2".to_vec();
+        header.extend(1u32.to_le_bytes());
+        header.extend((!1u32).to_le_bytes());
+        header[position] ^= 1;
+        let mut candidate = prefix.clone();
+        candidate.extend_from_slice(&header[..=position]);
+        fs::write(&path, &candidate).unwrap();
+        for result in [PreimageLog::read(&path), PreimageLog::read_complete(&path)] {
+            let error = result.unwrap_err();
+            assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+            assert_eq!(error.to_string(), "invalid preimage frame length");
+            assert_eq!(fs::read(&path).unwrap(), candidate);
+        }
+        let error = PreimageLog::open(&path).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert_eq!(error.to_string(), "invalid preimage frame length");
+        assert_eq!(fs::read(&path).unwrap(), candidate);
+        fs::write(&path, prefix).unwrap();
+        let mut reopened = PreimageLog::open(&path).unwrap();
+        assert_eq!(reopened.observations().unwrap().len(), 1);
+    }
 
     #[test]
     fn checkpoint_observations_wait_for_explicit_sync_and_keep_the_first_value() {

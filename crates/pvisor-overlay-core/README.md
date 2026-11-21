@@ -14,6 +14,9 @@ they must reject view mutations themselves and do not promise fresh observations
 
 ## Validation
 
+Non-test code denies Clippy's `unwrap_used` and `expect_used` lints at the crate
+root. Tests retain assertion-style unwraps; explicit non-panicking fallbacks remain allowed.
+
 ```sh
 mise run test -- pvisor-overlay-core
 mise run test-doc -- pvisor-overlay-core
@@ -238,6 +241,14 @@ Consumers must keep policy/upper composition and reject unsupported snapshots.
 Ordinary registration grants no stability; no contract is inferred from read-only
 permissions, an arbitrary path, or a backend merely returning attributes.
 
+Backend routing derives relative paths during component-prefix matching, selects
+the longest matching attachment root, then validates its relative path without a
+second prefix lookup. Invalid relative paths return EINVAL rather than falling back to
+an ancestor backend. In-flight calls pin their selected attachment after the
+registry lock is released. `tests/backend_routing.rs` checks raw path bytes,
+nested-root retirement and a blocked read versus registration handoff through
+the public backend functions.
+
 Stable leases can return regular-file logical object/length identities for an
 independent guest content cache; these are revision-scoped and never native
 placeholder inode proofs. `ReadOnlyBackend::read_into` delivers verified chunks
@@ -411,6 +422,13 @@ Read-only log observers take no writer lock and neither repair nor sync. They
 read a complete prefix, which may be stale; incomplete final frames are ignored,
 complete corrupt frames still fail. Sealing requires a complete log after writers
 have stopped. Read observations are not a snapshot or durable completion proof.
+
+Compact frame lengths are decoded once from the fixed-size header.
+Private regressions cross the 1-byte/4-MiB record bounds with 8–12 available header
+bytes and corrupt each known complement byte. Read-only observation and sealing
+checks never change bytes; writer recovery truncates only a valid incomplete tail.
+Invalid lengths/complements preserve the complete file and release writer ownership
+on error, allowing explicit repair and retry without changing earlier observations.
 
 A repeated compact-log read can use the owner's published membership to skip
 pre-publication resolution. Every request still resolves the live merged path
@@ -601,6 +619,15 @@ original generation for recovery. Apply reconciles under the Session mutation/Ru
 lease and target lock, then publishes the new runtime fence only after ledger
 commit. Recovery failures are errors, not `AlreadyApplied`. This does not make
 `run.json` and the core ledger an atomic publication.
+
+Private backup helpers require a named leaf and an explicit nonempty parent;
+bare relative names are rejected before initialization. Generated apply backups
+already use canonical parents. Receipt names and backup parents are checked before
+cleanup, and destination parents before replacement renames. Existing directory
+sync barriers still run and propagate errors. Private regressions cover path-byte
+preservation, rejection before initialization, receipt refusal/repair and lock
+ownership through drop; scoped fingerprints retain root, absence and no-follow
+behavior without writing target or staged data.
 
 Private `apply.rs` fixtures cover repeated Prepared recovery conflicts after
 partial file publication, TargetApplied completion failures after pruning, and
@@ -864,6 +891,14 @@ retain recording; incompatible settings, nonempty metadata, unknown markers and
 mixed observation data are rejected. Keep this metadata path in host/VM configs:
 it enforces the ephemeral lifetime and checkpoint/apply refusal even though
 `entries`, `log-v2` and the observation-completeness marker are never created.
+
+Core construction matches the optional journal and its recording policy together.
+No journal retains the original no-journal behavior; only an explicit Off policy
+can disable observations, after checking for mixed observation data. Policy and
+mixed-state errors precede upper/work creation in legacy, compact and existing-open
+constructors. `tests/recording_admission.rs` checks all three entry points,
+policy-marker bytes, retained baselines and rejection without changing journal
+names, inode identities, modes, file bytes or symlink targets.
 
 Core skips first-observation fingerprints, journal publication and the directory
 walk used solely for descendant preimages. Access/path/alias checks, copy-up,

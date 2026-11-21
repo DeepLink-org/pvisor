@@ -1154,15 +1154,16 @@ impl OverlayCore {
         let immutable_lower_negative_cache_enabled = lower_negative_cache_setting(
             std::env::var_os("PVISOR_IMMUTABLE_LOWER_NEGATIVE_CACHE").as_deref(),
         )? && immutable_lower_cache_enabled;
-        let record_observations = preimage_dir
-            .as_deref()
-            .map(crate::stage::recording)
-            .transpose()?
-            .unwrap_or_default()
-            == crate::stage::StageRecording::On;
-        if !record_observations {
-            crate::stage::require_no_observations(preimage_dir.as_deref().unwrap())?;
-        }
+        let record_observations = match preimage_dir.as_deref() {
+            None => true,
+            Some(directory) => match crate::stage::recording(directory)? {
+                crate::stage::StageRecording::On => true,
+                crate::stage::StageRecording::Off => {
+                    crate::stage::require_no_observations(directory)?;
+                    false
+                }
+            },
+        };
         let initialize = !matches!(mode, BuildMode::Existing);
         if initialize {
             fs::create_dir_all(&upper)?;

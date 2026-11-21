@@ -276,7 +276,8 @@ impl TargetApplyLock {
             ));
         }
         let identity = fs::canonicalize(target).unwrap_or_else(|_| target.to_path_buf());
-        let name = CString::new(format!("{}.lock", path_digest(&identity))).unwrap();
+        let name = CString::new(format!("{}.lock", path_digest(&identity)))
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
         use std::os::fd::{AsRawFd, FromRawFd};
         let fd = unsafe {
             libc::openat(
@@ -1252,11 +1253,11 @@ impl ProjectTarget {
         if relative.as_os_str().is_empty() {
             return Ok(fingerprint_at(&fd_directory(&self.root), Path::new(""))?);
         }
+        let name = relative
+            .file_name()
+            .ok_or_else(|| OverlayError::Apply("project-relative path has no file name".into()))?;
         match self.parent(path) {
-            Ok((parent, _)) => Ok(fingerprint_at(
-                &fd_directory(&parent),
-                Path::new(relative.file_name().unwrap()),
-            )?),
+            Ok((parent, _)) => Ok(fingerprint_at(&fd_directory(&parent), Path::new(name))?),
             Err(OverlayError::Io(error)) if error.kind() == io::ErrorKind::NotFound => {
                 Ok(PathFingerprint::Absent)
             }
@@ -1943,6 +1944,27 @@ struct ApplyTarget<'a> {
     kind: ApplyTargetKind,
 }
 
+fn apply_parent(path: &Path) -> Result<&Path, OverlayError> {
+    path.parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .ok_or_else(|| {
+            OverlayError::Apply(format!(
+                "apply path has no parent directory: {}",
+                path.display()
+            ))
+        })
+}
+
+fn backup_parts(path: &Path) -> Result<(&Path, &OsStr), OverlayError> {
+    let name = path.file_name().ok_or_else(|| {
+        OverlayError::Apply(format!(
+            "apply backup path has no file name: {}",
+            path.display()
+        ))
+    })?;
+    Ok((apply_parent(path)?, name))
+}
+
 // Private, same-filesystem backups belong to the durable apply_id. They survive
 // errors and are removed only after the ledger commits, never by temporary Drop.
 fn apply_backup_dir(record: &OverlayRecord, apply_id: &str) -> Result<PathBuf, OverlayError> {
@@ -1986,9 +2008,7 @@ fn publish_backup_dir(
     path: &Path,
     initialize: impl FnOnce(&Path) -> Result<(), OverlayError>,
 ) -> Result<(), OverlayError> {
-    let parent = path
-        .parent()
-        .ok_or_else(|| OverlayError::Apply("backup has no parent".into()))?;
+    let (parent, _) = backup_parts(path)?;
     let temporary = parent.join(format!(".pvisor-apply-init-{}", uuid::Uuid::new_v4()));
     fs::DirBuilder::new().mode(0o700).create(&temporary)?;
     let result = (|| {
@@ -2005,6 +2025,8 @@ fn publish_backup_dir(
 }
 
 fn open_backup_dir(path: &Path) -> Result<File, OverlayError> {
+    let (_, name) = backup_parts(path)?;
+    let expected = name.as_bytes();
     if !path.try_exists()? {
         publish_backup_dir(path, |temporary| {
             let mut file = fs::OpenOptions::new()
@@ -2013,7 +2035,7 @@ fn open_backup_dir(path: &Path) -> Result<File, OverlayError> {
                 .mode(0o600)
                 .custom_flags(libc::O_NOFOLLOW)
                 .open(temporary.join(".pvisor-owner"))?;
-            io::Write::write_all(&mut file, path.file_name().unwrap().as_bytes())?;
+            io::Write::write_all(&mut file, expected)?;
             file.sync_all()?;
             File::open(temporary)?.sync_all()?;
             Ok(())
@@ -2032,7 +2054,6 @@ fn open_backup_dir(path: &Path) -> Result<File, OverlayError> {
     // Permissions alone do not make an existing host directory ours. Only a
     // privately initialized backup may mint this durable ownership receipt.
     let receipt = path.join(".pvisor-owner");
-    let expected = path.file_name().unwrap().as_bytes();
     let mut file = fs::OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
@@ -2067,12 +2088,13 @@ fn back_up_replacements(
     let directory = open_backup_dir(&backup)?;
     for path in paths {
         let destination = record.target.join(&path);
+        let parent = apply_parent(&destination)?;
         let slot = backup.join(path_digest(&path));
         if !path_exists(&slot) && path_exists(&destination) {
             verify_target(&path, true)?;
             fs::rename(&destination, &slot)?;
             directory.sync_all()?;
-            File::open(destination.parent().unwrap())?.sync_all()?;
+            File::open(parent)?.sync_all()?;
         }
     }
     Ok(())
@@ -2092,6 +2114,7 @@ fn restore_interrupted_replacements(
     for path in replacement_paths(changes)? {
         let slot = backup.join(path_digest(&path));
         let destination = record.target.join(&path);
+        let parent = apply_parent(&destination)?;
         if !path_exists(&slot) {
             continue;
         }
@@ -2114,7 +2137,7 @@ fn restore_interrupted_replacements(
             continue;
         }
         fs::rename(&slot, &destination)?;
-        File::open(destination.parent().unwrap())?.sync_all()?;
+        File::open(parent)?.sync_all()?;
         directory.sync_all()?;
     }
     Ok(())
@@ -2143,6 +2166,7 @@ fn install_replacement_directories(
     let directory = open_backup_dir(&backup)?;
     for path in &roots {
         let destination = record.target.join(path);
+        let parent = apply_parent(&destination)?;
         let source = record.upper.path().join(path);
         if path_exists(&destination) {
             if !replacement_tree_matches(&source, &destination)? {
@@ -2181,7 +2205,7 @@ fn install_replacement_directories(
                 *linked = destination.join(suffix);
             }
         }
-        File::open(destination.parent().unwrap())?.sync_all()?;
+        File::open(parent)?.sync_all()?;
         directory.sync_all()?;
     }
     Ok(roots)
@@ -2224,13 +2248,14 @@ fn cleanup_apply_backups(
     let Some(backup) = target_kind.backup_dir(record, apply_id)? else {
         return Ok(());
     };
+    let (parent, name) = backup_parts(&backup)?;
     if path_exists(&backup) {
         let directory = open_backup_dir(&backup)?;
         if let Err(error) = fs::remove_dir_all(&backup) {
             // Recursive removal can unlink the verified receipt before failing
             // to remove the directory itself. Preserve live-error retry
             // authority only in that same held directory, never a rebound path.
-            if let Err(restore) = restore_backup_receipt(&directory, backup.file_name().unwrap()) {
+            if let Err(restore) = restore_backup_receipt(&directory, name) {
                 return Err(io::Error::new(
                     error.kind(),
                     format!("{error}; restoring apply backup ownership receipt failed: {restore}"),
@@ -2239,7 +2264,7 @@ fn cleanup_apply_backups(
             }
             return Err(error.into());
         }
-        File::open(backup.parent().unwrap())?.sync_all()?;
+        File::open(parent)?.sync_all()?;
     }
     Ok(())
 }
@@ -3732,6 +3757,184 @@ fn walk_upper_metadata(
 
 #[cfg(test)]
 mod tests {
+    #[rstest::rstest]
+    #[case::empty("")]
+    #[case::root("/")]
+    #[case::current(".")]
+    #[case::parent("..")]
+    #[case::implicit_parent("backup")]
+    fn backup_paths_require_a_name_and_explicit_parent(#[case] path: &str) {
+        assert!(matches!(
+            backup_parts(Path::new(path)),
+            Err(OverlayError::Apply(_))
+        ));
+    }
+
+    #[rstest::rstest]
+    #[case::explicit_current(b"./backup", b".", b"backup")]
+    #[case::relative(b"parent/backup", b"parent", b"backup")]
+    #[case::absolute(b"/tmp/backup", b"/tmp", b"backup")]
+    #[case::raw_name(b"./\xff-backup", b".", b"\xff-backup")]
+    fn checked_backup_parts_preserve_path_bytes(
+        #[case] path: &[u8],
+        #[case] parent: &[u8],
+        #[case] name: &[u8],
+    ) {
+        let (actual_parent, actual_name) =
+            backup_parts(Path::new(OsStr::from_bytes(path))).unwrap();
+        assert_eq!(actual_parent.as_os_str().as_bytes(), parent);
+        assert_eq!(actual_name.as_bytes(), name);
+    }
+
+    #[rstest::rstest]
+    fn nameless_backup_paths_fail_before_initialization_or_receipt_access() {
+        let tmp = tempdir().unwrap();
+        let child = tmp.path().join("child");
+        fs::create_dir(&child).unwrap();
+        fs::write(tmp.path().join("keep"), b"retained").unwrap();
+        let path = child.join("..");
+        let initialized = std::cell::Cell::new(false);
+        assert!(
+            publish_backup_dir(&path, |_| {
+                initialized.set(true);
+                Ok(())
+            })
+            .is_err()
+        );
+        assert!(!initialized.get());
+        assert!(open_backup_dir(&path).is_err());
+        assert!(!tmp.path().join(".pvisor-owner").exists());
+        assert_eq!(fs::read(tmp.path().join("keep")).unwrap(), b"retained");
+        assert_eq!(fs::read_dir(&child).unwrap().count(), 0);
+        assert_eq!(fs::read_dir(tmp.path()).unwrap().count(), 2);
+    }
+
+    #[rstest::rstest]
+    #[case::ascii("backup")]
+    #[case::unicode("备份-é")]
+    fn backup_receipts_reject_invalid_state_without_adopting_or_deleting_data(
+        #[case] name: &str,
+        #[values("missing", "mismatch", "directory")] fault: &str,
+    ) {
+        let tmp = tempdir().unwrap();
+        let backup = tmp.path().join(name);
+        let directory = open_backup_dir(&backup).unwrap();
+        let inode = directory.metadata().unwrap().ino();
+        let receipt = backup.join(".pvisor-owner");
+        assert_eq!(fs::read(&receipt).unwrap(), name.as_bytes());
+        fs::write(backup.join("keep"), b"retained").unwrap();
+        drop(directory);
+        match fault {
+            "missing" => fs::remove_file(&receipt).unwrap(),
+            "mismatch" => fs::write(&receipt, vec![b'x'; name.len()]).unwrap(),
+            "directory" => {
+                fs::remove_file(&receipt).unwrap();
+                fs::create_dir(&receipt).unwrap();
+            }
+            _ => unreachable!(),
+        }
+        let error = open_backup_dir(&backup).unwrap_err();
+        match fault {
+            "missing" => assert!(
+                matches!(error, OverlayError::Io(ref error) if error.kind() == io::ErrorKind::NotFound)
+            ),
+            "mismatch" => assert!(error.to_string().contains("receipt mismatch")),
+            "directory" => assert!(error.to_string().contains("unowned apply backup")),
+            _ => unreachable!(),
+        }
+        assert_eq!(fs::symlink_metadata(&backup).unwrap().ino(), inode);
+        assert_eq!(fs::read(backup.join("keep")).unwrap(), b"retained");
+        assert_eq!(fs::read_dir(tmp.path()).unwrap().count(), 1);
+        match fault {
+            "missing" => assert!(!receipt.exists()),
+            "mismatch" => assert_eq!(fs::read(&receipt).unwrap(), vec![b'x'; name.len()]),
+            "directory" => {
+                assert!(receipt.is_dir());
+                fs::remove_dir(&receipt).unwrap();
+            }
+            _ => unreachable!(),
+        }
+        fs::write(&receipt, name.as_bytes()).unwrap();
+        let reopened = open_backup_dir(&backup).unwrap();
+        assert_eq!(reopened.metadata().unwrap().ino(), inode);
+        assert_eq!(fs::read(&receipt).unwrap(), name.as_bytes());
+        assert_eq!(fs::read(backup.join("keep")).unwrap(), b"retained");
+    }
+
+    #[rstest::rstest]
+    #[case::existing(b"target")]
+    #[case::missing(b"nested/missing")]
+    #[case::raw_bytes(b"\xff-target")]
+    #[case::nul_byte(b"target\0suffix")]
+    fn target_lock_names_are_bounded_ascii_and_retain_ownership_until_drop(#[case] name: &[u8]) {
+        let tmp = tempdir().unwrap();
+        let target = tmp.path().join(OsStr::from_bytes(name));
+        if name == b"target" {
+            fs::create_dir(&target).unwrap();
+        }
+        let locks = tmp.path().join("locks");
+        let owner = TargetApplyLock::acquire_in(&target, &locks).unwrap();
+        let entries = fs::read_dir(&locks)
+            .unwrap()
+            .collect::<io::Result<Vec<_>>>()
+            .unwrap();
+        assert_eq!(entries.len(), 1);
+        let name = entries[0].file_name();
+        let bytes = name.as_bytes();
+        assert_eq!(bytes.len(), 69);
+        assert_eq!(&bytes[64..], b".lock");
+        assert!(
+            bytes[..64]
+                .iter()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(byte))
+        );
+        let contender = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(entries[0].path())
+            .unwrap();
+        assert_eq!(
+            fs2::FileExt::try_lock_exclusive(&contender)
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::WouldBlock
+        );
+        drop(owner);
+        fs2::FileExt::try_lock_exclusive(&contender).unwrap();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[rstest::rstest]
+    fn scoped_fingerprints_preserve_root_leaf_absence_and_no_follow_semantics() {
+        let tmp = tempdir().unwrap();
+        let (record, _, boundary) = project_fixture(tmp.path());
+        std::os::unix::fs::symlink("../outside", boundary.target.join("link")).unwrap();
+        let target = ProjectTarget::open(&record, &boundary).unwrap();
+        for relative in ["", "a", "missing", "missing/leaf", "link"] {
+            assert_eq!(
+                target
+                    .fingerprint(&Path::new("project").join(relative))
+                    .unwrap(),
+                fingerprint_at(&boundary.target, Path::new(relative)).unwrap()
+            );
+        }
+        for path in [
+            "",
+            "../project/a",
+            "project/../outside",
+            "outside",
+            "/project/a",
+        ] {
+            assert!(target.fingerprint(Path::new(path)).is_err());
+        }
+        assert_eq!(fs::read(record.target.join("project/a")).unwrap(), b"old");
+        assert_eq!(fs::read(record.target.join("outside")).unwrap(), b"old");
+        assert_eq!(
+            fs::read(record.upper.path().join("project/a")).unwrap(),
+            b"new"
+        );
+    }
+
     // All scoped tests use a temporary root mimic, bypassing only the public
     // target='/' admission check. No test applies to the actual host root.
     #[cfg(target_os = "linux")]
