@@ -58,6 +58,7 @@ pvisor-vm = { workspace = true, features = ["net"] }
 clap = { workspace = true, features = ["derive"] }
 
 proptest.workspace = true
+rstest.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
 tokio-stream.workspace = true
 

@@ -41,6 +41,13 @@ must already be built and provisioned. The tool never publishes documentation.
 Existing Python scripts that read historical evidence or draw figures are a
 display/archive layer, not this measurement path.
 
+The process suite records host pressure, swap counters, boot identity and observer
+cgroup limits/counters before and after each operation, outside its timer.
+Unavailable observations are explicit errors, not zero pressure. These boundaries
+do not attribute an individual thread's wait or capture intervening pressure peaks.
+Measurements disable startup profiling and persistence timing. Separate diagnostics
+enable both in separate invocations and retain their own resource boundaries.
+
 For lazy VM, stage and remote storage experiments, build the cache client probe
 with the product toolchain and profile (`cargo build --locked --release -p pvisor
 --example cache_probe`). Leave it under `examples/` beside the product binaries.

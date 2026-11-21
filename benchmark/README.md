@@ -76,7 +76,10 @@ mise run benchmark-compare -- benchmark/process/.data/criterion \
 CI 并行构建两份产品，在同一测量机使用候选 harness 顺序执行基线和候选。
 Criterion 保存原始统计与基线比较；Rust 的 `benchmark-compare` 只读取 Criterion
 `median.point_estimate` 执行现有 15% 门禁，不另写采样器或统计器。这是工程回归门禁，
-不是随机交替 A/B 的用户加速结论。构建 SHA/归档摘要、原始操作和失败后诊断继续保留。
+不是随机交替 A/B 的用户加速结论。构建 SHA/归档摘要、原始操作和独立诊断继续保留。
+每轮完成后（包括门禁失败）另行保留 profile/persistence timing 和 strace，
+诊断不替换原始采样或门禁结论；同时记录测量命令前后的宿主压力和 observer cgroup
+约束。诊断 trace 的 syscall wall time 包含调度和观测开销，不等同于磁盘服务时间。
 
 ## 证据与历史展示
 

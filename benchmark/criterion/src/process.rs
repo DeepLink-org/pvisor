@@ -11,11 +11,75 @@ use std::{
     io::Write,
     path::{Path, PathBuf},
     process::Command,
-    time::Duration,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 const PROCESS_SAMPLE_SIZE: usize = 50;
 const PROCESS_MEASUREMENT_TIME: Duration = Duration::from_secs(5);
+
+fn read_observation(path: &Path) -> Value {
+    match fs::read_to_string(path) {
+        Ok(text) => json!({"text":text}),
+        Err(error) => json!({"error":error.to_string()}),
+    }
+}
+
+fn resource_snapshot_at(proc: &Path, cgroups: &Path) -> Value {
+    let mut snapshot = json!({
+        "unix_ns":SystemTime::now().duration_since(UNIX_EPOCH).ok().map(|d| d.as_nanos()),
+        "boot_id":read_observation(&proc.join("sys/kernel/random/boot_id")),
+        "uptime":read_observation(&proc.join("uptime")),
+        "meminfo":read_observation(&proc.join("meminfo")),
+    });
+    for resource in ["cpu", "memory", "io"] {
+        snapshot["pressure"][resource] = read_observation(&proc.join("pressure").join(resource));
+    }
+    snapshot["vmstat"] = match fs::read_to_string(proc.join("vmstat")) {
+        Ok(text) => json!({"text":text.lines().filter(|line| {
+            matches!(line.split_whitespace().next(),
+                Some("pswpin" | "pswpout" | "pgmajfault" | "nr_dirty" | "nr_writeback"))
+        }).collect::<Vec<_>>().join("\n")}),
+        Err(error) => json!({"error":error.to_string()}),
+    };
+    snapshot["cgroup"] = match fs::read_to_string(proc.join("self/cgroup")) {
+        Ok(text) => match text.lines().find_map(|line| line.strip_prefix("0::")) {
+            Some(path)
+                if path.starts_with('/')
+                    && Path::new(path).components().all(|part| {
+                        matches!(
+                            part,
+                            std::path::Component::RootDir | std::path::Component::Normal(_)
+                        )
+                    }) =>
+            {
+                let root = cgroups.join(path.trim_start_matches('/'));
+                let mut group = json!({"path":path});
+                for name in [
+                    "cpu.max",
+                    "cpu.stat",
+                    "cpuset.cpus.effective",
+                    "memory.current",
+                    "memory.high",
+                    "memory.max",
+                    "memory.events",
+                    "memory.swap.current",
+                    "memory.swap.max",
+                    "pids.events",
+                ] {
+                    group[name] = read_observation(&root.join(name));
+                }
+                group
+            }
+            _ => json!({"error":"unified cgroup path unavailable"}),
+        },
+        Err(error) => json!({"error":error.to_string()}),
+    };
+    snapshot
+}
+
+fn resource_snapshot() -> Value {
+    resource_snapshot_at(Path::new("/proc"), Path::new("/sys/fs/cgroup"))
+}
 
 fn bundle_paths(root: &Path) -> Result<BTreeSet<PathBuf>> {
     let mut paths = BTreeSet::new();
@@ -84,6 +148,7 @@ impl Suite {
         command
             .current_dir(self.batch.join("workspace"))
             .env("PVISOR_RUN_HOME", self.batch.join("runs"))
+            .env("PVISOR_STARTUP_PROFILE", "0")
             .env("PVISOR_STARTUP_TIMING", "0")
             .env("PVISOR_FS_PROFILE", "0");
         Ok(command)
@@ -98,8 +163,21 @@ impl Suite {
             fs::read(self.batch.join("workspace/sentinel"))? == b"pvisor benchmark sentinel\n",
             "workspace sentinel changed"
         );
-        let record = observe(&mut self.command(condition)?, Duration::from_secs(120))?;
+        let mut command = self.command(condition)?;
+        let before = resource_snapshot();
+        let observation = observe(&mut command, Duration::from_secs(120));
+        let after = resource_snapshot();
         self.sequence += 1;
+        fs::write(
+            self.batch
+                .join(format!("resources-{:08}.json", self.sequence)),
+            serde_json::to_vec_pretty(&json!({
+                "condition":condition, "phase":self.phase,
+                "scope":"host and observer cgroup; boundary snapshots, not per-thread attribution",
+                "before":before, "after":after,
+            }))?,
+        )?;
+        let record = observation?;
         // Persist before checking: failed invocations remain evidence.
         fs::write(
             self.batch
@@ -255,6 +333,7 @@ fn prepare(binary: &Path, batch: &Path) -> Result<Suite> {
                 "cwd": command.get_current_dir(),
                 "env": {
                     "PVISOR_RUN_HOME": suite.batch.join("runs"),
+                    "PVISOR_STARTUP_PROFILE":"0",
                     "PVISOR_STARTUP_TIMING":"0", "PVISOR_FS_PROFILE":"0"
                 }
             }),
@@ -267,6 +346,39 @@ fn prepare(binary: &Path, batch: &Path) -> Result<Suite> {
     Ok(suite)
 }
 
+fn diagnostic_command(spec: &Value, output: &Path, condition: &str, mode: &str) -> Result<Command> {
+    let argv: Vec<&str> = spec["argv"]
+        .as_array()
+        .context("argv")?
+        .iter()
+        .map(|v| v.as_str().context("argv string"))
+        .collect::<Result<_>>()?;
+    let program = argv.first().context("empty argv")?;
+    let mut command = if mode == "strace" {
+        let mut c = Command::new("strace");
+        c.args(["-f", "-ttt", "-T", "-yy", "-o"])
+            .arg(output.join(format!("{condition}.strace")))
+            .arg("--")
+            .arg(program);
+        c
+    } else {
+        Command::new(program)
+    };
+    command
+        .args(&argv[1..])
+        .current_dir(spec["cwd"].as_str().context("cwd")?);
+    for (key, value) in spec["env"].as_object().context("env")? {
+        command.env(key, value.as_str().context("env string")?);
+    }
+    command
+        .env("PVISOR_STARTUP_PROFILE", "1")
+        .env("PVISOR_STARTUP_TIMING", "1");
+    if condition == "host-run" {
+        command.env("PVISOR_RUN_HOME", output.join("host-run-runs"));
+    }
+    Ok(command)
+}
+
 /// Re-execute retained argv solely for failure diagnosis, never as samples.
 pub(crate) fn diagnose(batch: &Path) -> Result<()> {
     let commands: Value = serde_json::from_slice(&fs::read(batch.join("commands.json"))?)?;
@@ -274,34 +386,20 @@ pub(crate) fn diagnose(batch: &Path) -> Result<()> {
     fs::create_dir(&output).context("diagnostics must not already exist")?;
     for condition in ["host-run", "status", "review"] {
         let spec = &commands[condition];
-        let argv: Vec<&str> = spec["argv"]
-            .as_array()
-            .context("argv")?
-            .iter()
-            .map(|v| v.as_str().context("argv string"))
-            .collect::<Result<_>>()?;
         for mode in ["profile", "strace"] {
-            let mut command = if mode == "strace" {
-                let mut c = Command::new("strace");
-                c.args(["-f", "-ttt", "-T", "-yy", "-o"])
-                    .arg(output.join(format!("{condition}.strace")))
-                    .arg("--");
-                c.arg(argv[0]);
-                c
-            } else {
-                Command::new(argv[0])
-            };
-            command
-                .args(&argv[1..])
-                .current_dir(spec["cwd"].as_str().context("cwd")?);
-            for (key, value) in spec["env"].as_object().context("env")? {
-                command.env(key, value.as_str().context("env string")?);
-            }
-            command.env("PVISOR_STARTUP_PROFILE", "1");
-            if condition == "host-run" {
-                command.env("PVISOR_RUN_HOME", output.join("host-run-runs"));
-            }
-            match observe(&mut command, Duration::from_secs(30)) {
+            let mut command = diagnostic_command(spec, &output, condition, mode)?;
+            let before = resource_snapshot();
+            let observation = observe(&mut command, Duration::from_secs(30));
+            let after = resource_snapshot();
+            fs::write(
+                output.join(format!("{condition}.{mode}.resources.json")),
+                serde_json::to_vec_pretty(&json!({
+                    "condition":condition, "mode":mode,
+                    "scope":"diagnostic only; profile precedes strace in the same private store",
+                    "before":before, "after":after,
+                }))?,
+            )?;
+            match observation {
                 Ok(record) => fs::write(
                     output.join(format!("{condition}.{mode}.json")),
                     serde_json::to_vec_pretty(&record)?,
@@ -374,6 +472,104 @@ pub(crate) fn register(c: &mut Criterion, nightly: bool) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn resource_snapshots_preserve_epoch_pressure_and_quota_evidence() {
+        let directory = tempfile::tempdir().unwrap();
+        let proc = directory.path().join("proc");
+        let cgroups = directory.path().join("cgroups");
+        fs::create_dir_all(proc.join("sys/kernel/random")).unwrap();
+        fs::create_dir_all(proc.join("self")).unwrap();
+        fs::create_dir_all(proc.join("pressure")).unwrap();
+        fs::create_dir_all(cgroups.join("owned")).unwrap();
+        fs::write(proc.join("sys/kernel/random/boot_id"), "fixture-boot\n").unwrap();
+        fs::write(proc.join("uptime"), "42.0 1.0\n").unwrap();
+        fs::write(proc.join("meminfo"), "MemAvailable: 8192 kB\n").unwrap();
+        fs::write(
+            proc.join("vmstat"),
+            "pswpin 3\npswpout 7\npgmajfault 11\nnr_dirty 2\nnr_writeback 1\nother 99\n",
+        )
+        .unwrap();
+        fs::write(proc.join("self/cgroup"), "0::/owned\n").unwrap();
+        fs::write(cgroups.join("owned/cpu.max"), "100000 100000\n").unwrap();
+        fs::write(
+            cgroups.join("owned/cpu.stat"),
+            "nr_throttled 4\nthrottled_usec 1234\n",
+        )
+        .unwrap();
+        fs::write(
+            proc.join("pressure/io"),
+            "full avg10=2.00 avg60=0.00 avg300=0.00 total=10\n",
+        )
+        .unwrap();
+        let snapshot = resource_snapshot_at(&proc, &cgroups);
+        assert_eq!(snapshot["boot_id"]["text"], "fixture-boot\n");
+        assert_eq!(snapshot["uptime"]["text"], "42.0 1.0\n");
+        assert_eq!(
+            snapshot["vmstat"]["text"],
+            "pswpin 3\npswpout 7\npgmajfault 11\nnr_dirty 2\nnr_writeback 1"
+        );
+        assert_eq!(snapshot["cgroup"]["path"], "/owned");
+        assert_eq!(snapshot["cgroup"]["cpu.max"]["text"], "100000 100000\n");
+        assert_eq!(
+            snapshot["cgroup"]["cpu.stat"]["text"],
+            "nr_throttled 4\nthrottled_usec 1234\n"
+        );
+        assert!(
+            snapshot["pressure"]["io"]["text"]
+                .as_str()
+                .unwrap()
+                .contains("avg10=2.00")
+        );
+        assert!(snapshot["cgroup"]["memory.max"]["error"].is_string());
+
+        fs::write(proc.join("self/cgroup"), "0::/../outside\n").unwrap();
+        let invalid = resource_snapshot_at(&proc, &cgroups);
+        assert_eq!(
+            invalid["cgroup"]["error"],
+            "unified cgroup path unavailable"
+        );
+        let missing = resource_snapshot_at(&directory.path().join("absent"), &cgroups);
+        assert!(missing["boot_id"]["error"].is_string());
+        assert!(missing["vmstat"]["error"].is_string());
+    }
+
+    #[test]
+    fn diagnostics_override_retained_disabled_timing_without_mutating_spec() {
+        let spec = json!({
+            "argv":["/prepared/pvisor", "spawn", "--", "/usr/bin/true"],
+            "cwd":"/workspace",
+            "env":{
+                "PVISOR_STARTUP_PROFILE":"0", "PVISOR_STARTUP_TIMING":"0",
+                "PVISOR_FS_PROFILE":"0", "PVISOR_RUN_HOME":"/original/runs"
+            }
+        });
+        for mode in ["profile", "strace"] {
+            let command =
+                diagnostic_command(&spec, Path::new("/diagnostics"), "host-run", mode).unwrap();
+            let environment: std::collections::BTreeMap<_, _> = command
+                .get_envs()
+                .map(|(key, value)| (key.to_str().unwrap(), value.unwrap().to_str().unwrap()))
+                .collect();
+            assert_eq!(environment["PVISOR_STARTUP_PROFILE"], "1");
+            assert_eq!(environment["PVISOR_STARTUP_TIMING"], "1");
+            assert_eq!(environment["PVISOR_FS_PROFILE"], "0");
+            assert_eq!(environment["PVISOR_RUN_HOME"], "/diagnostics/host-run-runs");
+            assert_eq!(command.get_current_dir(), Some(Path::new("/workspace")));
+            let arguments: Vec<_> = command.get_args().collect();
+            assert!(arguments.ends_with(&[
+                std::ffi::OsStr::new("spawn"),
+                std::ffi::OsStr::new("--"),
+                std::ffi::OsStr::new("/usr/bin/true")
+            ]));
+        }
+        assert_eq!(spec["env"]["PVISOR_STARTUP_TIMING"], "0");
+        assert_eq!(spec["env"]["PVISOR_RUN_HOME"], "/original/runs");
+        let mut empty = spec;
+        empty["argv"] = json!([]);
+        assert!(diagnostic_command(&empty, Path::new("/out"), "host-run", "profile").is_err());
+    }
+
     #[test]
     fn bundle_success_is_not_inferred_from_process_exit() {
         let directory = tempfile::tempdir().unwrap();
@@ -410,10 +606,24 @@ fi
         let relative = directory.path().strip_prefix(&cwd).unwrap().join("batch");
         let mut suite = prepare(&binary, &relative).unwrap();
         assert!(suite.batch.is_absolute());
+        let command = suite.command("host-run").unwrap();
+        for key in ["PVISOR_STARTUP_PROFILE", "PVISOR_STARTUP_TIMING"] {
+            assert!(
+                command.get_envs().any(|(name, value)| {
+                    name == key && value == Some(std::ffi::OsStr::new("0"))
+                })
+            );
+        }
         suite.operation("host-run").unwrap();
         suite.operation("status").unwrap();
         suite.operation("review").unwrap();
         assert_eq!(suite.checked.len(), 2);
         assert!(!suite.batch.join("workspace").join(&relative).exists());
+        let resources: Value =
+            serde_json::from_slice(&fs::read(suite.batch.join("resources-00000002.json")).unwrap())
+                .unwrap();
+        assert_eq!(resources["condition"], "host-run");
+        assert!(resources["before"].is_object());
+        assert!(resources["after"].is_object());
     }
 }
