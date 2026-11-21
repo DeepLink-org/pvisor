@@ -364,3 +364,97 @@ fn opt_in_profiles_use_diagnostics_routing_and_leave_workload_stdout_clean() {
         );
     }
 }
+
+#[test]
+#[cfg(unix)]
+#[cfg_attr(target_os = "macos", ignore = "requires macFUSE")]
+fn printed_stage_guidance_runs_unchanged_in_a_posix_shell() {
+    fn output(command: &mut Command) -> std::process::Output {
+        use std::process::Stdio;
+        use std::time::{Duration, Instant};
+        let mut child = command
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(15);
+        while child.try_wait().unwrap().is_none() {
+            if Instant::now() >= deadline {
+                child.kill().unwrap();
+                let captured = child.wait_with_output().unwrap();
+                panic!("guidance command timed out: {:?}", captured.stderr);
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        child.wait_with_output().unwrap()
+    }
+
+    for name in ["stage with spaces", "owner's stage", "stage$literal[1]"] {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = temp.path().join("project");
+        std::fs::create_dir(&workspace).unwrap();
+        let stage = temp.path().join(name);
+        let binary = std::path::Path::new(env!("CARGO_BIN_EXE_pvisor"));
+        let path = std::env::join_paths(
+            std::iter::once(binary.parent().unwrap().to_path_buf()).chain(std::env::split_paths(
+                &std::env::var_os("PATH").unwrap_or_default(),
+            )),
+        )
+        .unwrap();
+        let command = |program| {
+            let mut command = Command::new(program);
+            command
+                .current_dir(&workspace)
+                .env("HOME", temp.path().join("home"))
+                .env("XDG_CONFIG_HOME", temp.path().join("config"))
+                .env("PVISOR_RUN_HOME", temp.path().join("runs"))
+                .env("PATH", &path)
+                .env_remove("PVISOR_DIAGNOSTICS_FD")
+                .env_remove("PVISOR_UI_CHILD");
+            command
+        };
+        let spawned = output(command(binary).args([
+            "spawn",
+            "--no-agent-defaults",
+            "--filesystem",
+            "host",
+            "--overlaynet",
+            "off",
+            "--stage",
+            stage.to_str().unwrap(),
+            "--",
+            "/bin/sh",
+            "-c",
+            "printf candidate > result.txt",
+        ]));
+        assert!(spawned.status.success(), "{:?}", spawned.stderr);
+        let text = String::from_utf8(spawned.stderr).unwrap();
+        let review = text
+            .lines()
+            .find_map(|line| line.strip_prefix("Review: "))
+            .unwrap();
+        let copied = output(command(std::path::Path::new("/bin/sh")).args(["-c", review]));
+        assert!(copied.status.success(), "{name}: {:?}", copied.stderr);
+        let reviewed = output(command(binary).args(["review", stage.to_str().unwrap(), "--diff"]));
+        assert!(reviewed.status.success(), "{:?}", reviewed.stderr);
+        let text = String::from_utf8(reviewed.stdout).unwrap();
+        for prefix in ["pvisor inspect ", "pvisor drop "] {
+            let instruction = text
+                .lines()
+                .map(str::trim_start)
+                .find(|line| line.starts_with(prefix))
+                .unwrap();
+            let copied = output(command(std::path::Path::new("/bin/sh")).args(["-c", instruction]));
+            assert!(
+                copied.status.success(),
+                "{name}: {instruction}: {:?}",
+                copied.stderr
+            );
+        }
+        assert!(!workspace.join("result.txt").exists());
+        let status = output(command(binary).args(["status", stage.to_str().unwrap(), "--json"]));
+        assert!(status.status.success());
+        let state: serde_json::Value = serde_json::from_slice(&status.stdout).unwrap();
+        assert_eq!(state["run"]["overlay"]["state"], "discarded");
+    }
+}

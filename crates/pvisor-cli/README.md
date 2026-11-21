@@ -266,6 +266,8 @@ persistence timings and frontend/owner correlation records. This changes diagnos
 only; workload output, boundary/staging notices, warnings, errors and Run Bundle/review
 guidance remain visible. Enabled markers are emitted after command parsing and do
 not measure complete process entry.
+Stage arguments in printed next-step commands use POSIX shell quoting, so paths
+containing spaces, apostrophes or expansion characters remain one literal argument.
 Execution lets clap build the selected parsing path; grouped root help still
 builds the full tree. The generated `help` command never defaults to `spawn`.
 `PVISOR_STARTUP_PROFILE=1` additionally records `cli.entry_to_parsed`, measured
@@ -326,6 +328,14 @@ visible: this is write staging, not a confidentiality boundary. Cache management
 credentials and implicit loader paths retain the VM's existing environment scrub;
 explicit `-e` values have Docker precedence. Unset entries remain absent, including
 HOME, PATH and TMPDIR.
+
+Accepted `spawn` and `stage` launches register discovery in the selected default
+Run home even when `--stage` points elsewhere. `last` remains scoped to the
+launching workspace and works while running and after failure or timeout.
+Registration does not replace a conflicting index. If it fails after launch,
+the CLI cancels/drains the accepted workload and reports the explicit stage
+for inspection; partial effects may remain. Use the printed stage path if its
+default-home index is stale or unavailable.
 
 ### Applying project changes
 

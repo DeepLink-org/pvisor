@@ -346,13 +346,14 @@ pub(super) fn review(args: ReviewArgs) -> anyhow::Result<()> {
         RunBundle::path(&record.stage_dir()).display()
     );
     if bundle.filesystem.is_some() {
+        let stage_argument = super::shell::quote_path(&record.stage_dir());
         println!("Next:");
-        println!("  pvisor inspect {}", record.stage_dir().display());
-        println!("  pvisor fork {} -- <agent>", record.stage_dir().display());
+        println!("  pvisor inspect {stage_argument}");
+        println!("  pvisor fork {stage_argument} -- <agent>");
         if handoff.non_root_export_available {
             println!(
                 "  pvisor export {} --output NEWDIR --path src",
-                record.stage_dir().display()
+                stage_argument
             );
             println!(
                 "  Review the export manifest before accepting artifacts; deletions are informational, not applied. Export revalidates eligibility and may refuse unsupported selections."
@@ -367,17 +368,17 @@ pub(super) fn review(args: ReviewArgs) -> anyhow::Result<()> {
         {
             println!(
                 "  pvisor apply {} --path <project-relative-path> --dry-run  # preview; omit --dry-run to accept",
-                record.stage_dir().display()
+                stage_argument
             );
             println!(
                 "  pvisor apply {}  # interactive project picker; unselected environment changes stay staged",
-                record.stage_dir().display()
+                stage_argument
             );
         }
         println!(
             "  Selection does not include dependency closure; stop concurrent writers before accepting changes. Rootfs system publication is a separate advanced operation."
         );
-        println!("  pvisor drop {}", record.stage_dir().display());
+        println!("  pvisor drop {stage_argument}");
     }
     Ok(())
 }
