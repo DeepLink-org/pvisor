@@ -124,7 +124,7 @@ pub(crate) fn persistence_log(
     #[cfg(target_os = "macos")]
     let tid = {
         let mut tid = 0;
-        unsafe { libc::pthread_threadid_np(std::ptr::null_mut(), &mut tid) };
+        unsafe { libc::pthread_threadid_np(libc::pthread_self(), &mut tid) };
         tid
     };
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
