@@ -115,9 +115,7 @@ pub(crate) use options::VmoOptions;
 /// committed.
 pub struct Vmo {
     /// The backend that provides disk I/O operations, if any.
-    //
-    // TODO: Using `Weak` here is to avoid circular references in exfat file systems.
-    // We should avoid the circular reference by design, and then we can change this to `Arc`.
+    /// A weak reference avoids retaining an inode that owns this VMO.
     pub(super) backend: Option<Weak<dyn PageCacheBackend>>,
     /// Flags
     pub(super) flags: VmoFlags,

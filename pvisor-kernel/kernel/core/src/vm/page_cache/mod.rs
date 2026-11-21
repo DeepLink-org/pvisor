@@ -351,9 +351,6 @@ impl VmIo for PageCache {
         Ok(())
     }
 
-    // TODO: This should require `&mut` to ensure that the caller holds the
-    // inode lock. However, we need to fix the exfat code first, since it does
-    // not hold the write lock when handling `write()`.
     fn write(&self, offset: usize, reader: &mut VmReader) -> ostd::Result<()> {
         self.0.write(offset, reader)?;
         Ok(())

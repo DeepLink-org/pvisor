@@ -54,7 +54,7 @@ pub(crate) fn load(directory: &Path, architecture: &str) -> io::Result<(Vec<u8>,
         || metadata.architecture != architecture
         || metadata.boot_protocol != layout.0
         || !(1..=MAX_IMAGE_SIZE).contains(&metadata.size)
-        || metadata.size % 4096 != 0
+        || !metadata.size.is_multiple_of(4096)
         || metadata.guest_addr != layout.1
         || metadata.entry_addr != layout.2
     {

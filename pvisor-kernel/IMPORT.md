@@ -11,7 +11,7 @@ These are provenance records, not an approval ledger.
 Included: x86_64/aarch64 kernel, OSTD, local OSDK build tooling, allocators and shared
 libraries needed for the existing virtio-MMIO/virtio-fs execution model.
 Excluded: RISC-V/LoongArch kernel architectures, DRM/simpledrm, i8042, NVMe, MLS disk,
-virtio block/input drivers, upstream CI, distribution, application tests and
+virtio block/input drivers, ext2/exFAT disk filesystems, upstream CI, distribution, application tests and
 the upstream logo. Generic input/framebuffer/PCI abstractions remain where
 the selected kernel still uses them.
 
@@ -20,6 +20,8 @@ Local changes:
 - Use the pVisor Rust native kernel identity and package name `pvisor-kernel`.
   Upstream URLs, copyright and license notices retain their actual attribution.
 - Boot from the existing `/dev/root` virtio-fs tag without a block rootfs.
+- Remove ext2/exFAT implementations and registration; reject block-device root
+  selection instead of retaining a second root filesystem boot path.
 - Derive FUSE request credentials from kernel tasks; forward only the existing
   PID-1 claim/report directory ioctls.
 - Initialize the primary console using the virtio-console control protocol.

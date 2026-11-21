@@ -99,7 +99,7 @@ mod tests {
         assert_eq!(fadt[128], 0xfe);
         assert_eq!(&madt[4..8], &(madt.len() as u32).to_le_bytes());
         assert_eq!(&madt[44..52], &[0, 8, 0, 0, 1, 0, 0, 0]);
-        assert!(RSDP > super::super::layout::EBDA_START);
+        const { assert!(RSDP > super::super::layout::EBDA_START) };
         assert!(MADT + madt.len() as u64 <= super::super::layout::HIMEM_START);
         assert!(FADT + fadt.len() as u64 <= super::super::layout::HIMEM_START);
     }

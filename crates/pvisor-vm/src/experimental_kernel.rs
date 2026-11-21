@@ -61,8 +61,8 @@ mod tests {
 
     #[rstest::rstest]
     #[case::arm_offset(0x8020_0000, 0x4000, 0x8000_0000, 0x1000_0000, 0x20_0000, true)]
-    #[case::arm_fdt_boundary(0x8020_0000, 0xfc00_000, 0x8000_0000, 0x1000_0000, 0x20_0000, true)]
-    #[case::arm_fdt_overlap(0x8020_0000, 0xfc00_001, 0x8000_0000, 0x1000_0000, 0x20_0000, false)]
+    #[case::arm_fdt_boundary(0x8020_0000, 0x0fc0_0000, 0x8000_0000, 0x1000_0000, 0x20_0000, true)]
+    #[case::arm_fdt_overlap(0x8020_0000, 0x0fc0_0001, 0x8000_0000, 0x1000_0000, 0x20_0000, false)]
     #[case::below_ram(0x4020_0000, 0x4000, 0x8000_0000, 0x1000_0000, 0x20_0000, false)]
     #[case::address_wrap(u64::MAX, 0x4000, 0, 0x1000_0000, 0, false)]
     #[case::reservation_exceeds_ram(0, 4096, 0, 4096, 8192, false)]

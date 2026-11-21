@@ -6,15 +6,15 @@
 //! `/init` when `rdinit` is not provided. If the selected path is accessible, Rust native kernel runs it as
 //! the first userspace process. Otherwise, Rust native kernel boots from the root filesystem.
 //!
-//! For root filesystem boot, this module mounts a supported filesystem from the block device
-//! specified by `root`. The mounted filesystem replaces the bootstrap root in the initial mount
+//! Root filesystem boot mounts the `/dev/root` virtio-fs tag, not a block device.
+//! The mounted filesystem replaces the bootstrap root in the initial mount
 //! namespace and becomes the root and working directory of the first userspace process. The
 //! bootstrap root is then detached. The `root` parameter is required when this boot path is
 //! selected, and [`SUPPORTED_ROOTFS_TYPES`] lists the supported filesystem types.
 //!
 //! The following kernel parameters configure root filesystem boot:
 //!
-//! - `root` specifies the block device to mount.
+//! - `root` must specify `/dev/root`.
 //! - `rootfstype` specifies a comma-separated list of filesystem type candidates. All supported
 //!   types are tried when it is not provided.
 //! - `ro` and `rw` select read-only or read-write mounting. The root filesystem is read-only by
@@ -38,18 +38,15 @@ use core::{
 use aster_cmdline::parse::ParamStorage;
 use spin::once::Once;
 
-use super::{
-    ext2,
-    vfs::{
-        file_system::FsFlags,
-        path::{FsPath, Mount, MountNamespace, Path, PathResolver, PerMountFlags},
-        registry::{DynFsType, FsAndRoot, FsCreationCtx},
-    },
+use super::vfs::{
+    file_system::FsFlags,
+    path::{FsPath, Mount, MountNamespace, Path, PathResolver, PerMountFlags},
+    registry::{FsAndRoot, FsCreationCtx},
 };
 use crate::prelude::*;
 
 /// Filesystem types supported for the root filesystem.
-pub(crate) static SUPPORTED_ROOTFS_TYPES: &[&dyn DynFsType] = &[&ext2::EXT2_TYPE];
+pub(crate) static SUPPORTED_ROOTFS_TYPES: &[&str] = &["virtiofs"];
 
 /// Mounts and switches to the root filesystem configured by the kernel command line.
 ///
@@ -89,37 +86,15 @@ pub(crate) fn find_init(path_resolver: &PathResolver) -> Result<Option<(Path, &'
 }
 
 fn open_rootfs(root: &str, fs_flags: FsFlags) -> Result<FsAndRoot> {
-    if root == "/dev/root" {
-        let fs_type = super::vfs::registry::look_up("virtiofs")
-            .ok_or_else(|| Error::with_message(Errno::ENODEV, "virtiofs is unavailable"))?;
-        return fs_type.get_or_create(&mut FsCreationCtx::from_source(root, fs_flags));
+    if root != "/dev/root" {
+        return_errno_with_message!(Errno::ENODEV, "root must name the /dev/root virtio-fs tag");
     }
-    // Treat a `/dev/...` value of `root` as a Linux-compatible root device spec, not as a VFS path
-    // lookup.
-    // Reference: <https://elixir.bootlin.com/linux/v6.18/source/drivers/base/devtmpfs.c#L358-L359>.
-    let device_name = root
-        .strip_prefix("/dev/")
-        .ok_or_else(|| Error::with_message(Errno::EINVAL, "root must name a /dev block device"))?;
-    let device = aster_block::lookup_by_name(device_name)
-        .ok_or_else(|| Error::with_message(Errno::ENODEV, "root block device not found"))?;
-    open_rootfs_from_candidates(device, rootfs_types(), fs_flags)
-}
-
-fn open_rootfs_from_candidates(
-    device: Arc<dyn aster_block::BlockDevice>,
-    rootfs_types: &[&dyn DynFsType],
-    fs_flags: FsFlags,
-) -> Result<FsAndRoot> {
-    let mut fs_creation_ctx = FsCreationCtx::from_block_device(device, fs_flags, None);
-    for rootfs_type in rootfs_types {
-        match rootfs_type.get_or_create(&mut fs_creation_ctx) {
-            Ok(fs_and_root) => return Ok(fs_and_root),
-            Err(err) if err.error() == Errno::EINVAL => continue,
-            Err(err) => return Err(err),
-        }
-    }
-
-    return_errno_with_message!(Errno::ENODEV, "no root filesystem type could mount root")
+    let type_name = rootfs_types().first().ok_or_else(|| {
+        Error::with_message(Errno::ENODEV, "no supported root filesystem type was selected")
+    })?;
+    let fs_type = super::vfs::registry::look_up(type_name)
+        .ok_or_else(|| Error::with_message(Errno::ENODEV, "virtiofs is unavailable"))?;
+    fs_type.get_or_create(&mut FsCreationCtx::from_source(root, fs_flags))
 }
 
 fn rootfs_flags() -> (FsFlags, PerMountFlags) {
@@ -132,7 +107,7 @@ fn rootfs_flags() -> (FsFlags, PerMountFlags) {
     (fs_flags, mount_flags)
 }
 
-fn rootfs_types() -> &'static [&'static dyn DynFsType] {
+fn rootfs_types() -> &'static [&'static str] {
     ROOTFS_TYPES
         .get()
         .map(RootFsTypes::as_slice)
@@ -146,11 +121,11 @@ static INIT_PATH: Once<String> = Once::new();
 aster_cmdline::define_kv_param!("init", INIT_PATH);
 
 /// Root filesystem type candidates.
-struct RootFsTypes(Vec<&'static dyn DynFsType>);
+struct RootFsTypes(Vec<&'static str>);
 
 impl RootFsTypes {
     /// Returns the root filesystem type candidates as a slice.
-    fn as_slice(&self) -> &[&'static dyn DynFsType] {
+    fn as_slice(&self) -> &[&'static str] {
         self.0.as_slice()
     }
 }
@@ -166,7 +141,7 @@ impl FromStr for RootFsTypes {
                 SUPPORTED_ROOTFS_TYPES
                     .iter()
                     .copied()
-                    .find(|fs_type| fs_type.name() == type_name)
+                    .find(|fs_type| *fs_type == type_name)
             })
             .collect();
 
@@ -206,3 +181,33 @@ static RO_PARAM: SetRootMountReadOnly = SetRootMountReadOnly;
 static RW_PARAM: SetRootMountReadWrite = SetRootMountReadWrite;
 aster_cmdline::define_flag_param!("ro", RO_PARAM);
 aster_cmdline::define_flag_param!("rw", RW_PARAM);
+
+#[cfg(ktest)]
+mod tests {
+    use ostd::prelude::ktest;
+
+    use super::*;
+
+    #[ktest]
+    fn rootfs_candidates_select_only_virtiofs() {
+        for (value, expected) in [
+            ("virtiofs", &["virtiofs"][..]),
+            ("ext2,virtiofs,exfat", &["virtiofs"][..]),
+            ("ext2", &[][..]),
+            ("exfat", &[][..]),
+            ("", &[][..]),
+        ] {
+            assert_eq!(value.parse::<RootFsTypes>().unwrap().as_slice(), expected);
+        }
+    }
+
+    #[ktest]
+    fn block_roots_are_rejected_before_filesystem_lookup() {
+        for root in ["/dev/vda", "/dev/sda", "/", "root"] {
+            match open_rootfs(root, FsFlags::empty()) {
+                Err(error) => assert_eq!(error.error(), Errno::ENODEV),
+                Ok(_) => panic!("unsupported root was mounted"),
+            }
+        }
+    }
+}

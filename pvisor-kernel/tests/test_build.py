@@ -2,7 +2,9 @@
 
 import io
 import json
+import os
 import struct
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -108,6 +110,8 @@ class SourceTests(unittest.TestCase):
             "kernel/core/comps/mlsdisk",
             "kernel/core/comps/virtio/src/device/block",
             "kernel/core/comps/virtio/src/device/input",
+            "kernel/core/src/fs/fs_impls/ext2",
+            "kernel/core/src/fs/fs_impls/exfat",
         ):
             with self.subTest(path=removed):
                 self.assertFalse((build.HERE / removed).exists())
@@ -136,6 +140,57 @@ class SourceTests(unittest.TestCase):
         self.assertIn(
             build.HERE / "kernel/core/comps/virtio/src/transport/mmio/bus/arch/arm.rs", files
         )
+        for name in ("mod.rs", "bin.rs", "grub.rs", "grub.cfg.template", "qcow2.rs"):
+            self.assertIn(build.HERE / "osdk/src/commands/build" / name, files)
+
+    def test_build_inputs_are_not_excluded_by_repository_ignore_rules(self):
+        files = [file.relative_to(build.ROOT) for file in build.source_files()]
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            env = {
+                **os.environ,
+                "GIT_CONFIG_GLOBAL": os.devnull,
+                "GIT_CONFIG_NOSYSTEM": "1",
+            }
+            subprocess.run(
+                ["git", "init", "--quiet", "--template=", str(root)], env=env, check=True
+            )
+            ignores = {build.ROOT / ".gitignore"}
+            for file in files:
+                target = root / file
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.touch()
+                for parent in (build.ROOT / file).parents:
+                    if not parent.is_relative_to(build.ROOT):
+                        break
+                    if (parent / ".gitignore").is_file():
+                        ignores.add(parent / ".gitignore")
+            for ignore in ignores:
+                target = root / ignore.relative_to(build.ROOT)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(ignore.read_bytes())
+
+            def ignored():
+                return subprocess.run(
+                    ["git", "check-ignore", "--no-index", "--stdin"],
+                    cwd=root,
+                    env=env,
+                    input="".join(f"{file.as_posix()}\n" for file in files),
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+
+            result = ignored()
+            self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+            self.assertEqual(result.stdout, "")
+            with (root / ".gitignore").open("a") as stream:
+                stream.write("\n/pvisor-kernel/osdk/src/commands/build/\n")
+            result = ignored()
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn(
+                "pvisor-kernel/osdk/src/commands/build/mod.rs", result.stdout.splitlines()
+            )
 
     def test_provenance_and_licenses_are_retained(self):
         provenance = json.loads((build.HERE / "provenance.json").read_text())

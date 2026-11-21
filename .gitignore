@@ -27,6 +27,8 @@ __pycache__/
 build/
 # Rust source for the Dockerfile builder is not a generated build directory.
 !/crates/pvisor/src/docker/build/
+# The imported OSDK build command is source, not generated output.
+!/pvisor-kernel/osdk/src/commands/build/
 /dist/
 .worktrees/
 review_project/

@@ -15,11 +15,15 @@ supervisor remain the execution architecture. Linux remains the default.
 - `IMPORT.md`, `IMPORT-files.json`, `provenance.json`: original source attribution,
   imported-file hashes and local changes.
 
-DRM/simpledrm, i8042, NVMe, MLS disk, virtio block/input drivers, RISC-V/LoongArch
+ext2/exFAT disk filesystems, DRM/simpledrm, i8042, NVMe, MLS disk,
+virtio block/input drivers, RISC-V/LoongArch
 architectures, upstream CI/distribution and upstream branding assets are not
 imported. Generic PCI, framebuffer and input abstractions remain where shared
 code still depends on them. Legacy PCI probing is disabled on this MMIO profile.
 Confidential-guest default features are disabled.
+Root filesystem boot accepts only the `/dev/root` virtio-fs tag and `virtiofs`
+filesystem type; other root devices or unsupported filesystem candidates fail.
+Pseudo-filesystems and the in-memory bootstrap filesystem remain available.
 
 Upstream dependency names, URLs, copyright and license notices retain their
 real attribution. The kernel package, runtime selection and diagnostics use
@@ -110,7 +114,10 @@ mise run test-doc -- pvisor-vm
 ```
 
 Tests cover source trimming, local build inputs, ELF layout, selector
-validation and bundle integrity. Real VM acceptance additionally requires
+validation and bundle integrity. They also check that repository ignore rules
+do not exclude build inputs, including the OSDK's source directory named `build`.
+Clean-source build validation must use a Git export rather than local untracked files.
+Real VM acceptance additionally requires
 shared-rootfs reads/writes, the unmodified guest supervisor and authenticated
 exit codes. A boot or successful compilation alone does not meet that bar.
 
