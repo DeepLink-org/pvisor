@@ -8,6 +8,51 @@ use crate::io::{atomic_write_json, canonicalize, read_regular_file, sha256};
 use crate::journal::Journal;
 use crate::model::{ReplayOutcome, ReplayPlan, ToolBatch, ToolCall};
 
+struct MiniCall {
+    id: String,
+    arguments: Value,
+    native: Value,
+}
+
+fn message_index(batch: &ToolBatch, key: &str) -> Result<usize, ReplayError> {
+    batch
+        .native
+        .get(key)
+        .and_then(Value::as_u64)
+        .and_then(|index| usize::try_from(index).ok())
+        .ok_or_else(|| {
+            ReplayError::new(
+                ReplayErrorKind::Internal,
+                format!("mini-swe-agent batch has invalid {key}"),
+            )
+        })
+}
+
+fn selected_prefix<'a>(
+    messages: &'a [Value],
+    batches: &[ToolBatch],
+    key: &str,
+) -> Result<&'a [Value], ReplayError> {
+    let batch = batches.last().ok_or_else(|| {
+        ReplayError::new(
+            ReplayErrorKind::Internal,
+            "mini-swe-agent plan has no selected batch",
+        )
+    })?;
+    let end = message_index(batch, key)?.checked_add(1).ok_or_else(|| {
+        ReplayError::new(
+            ReplayErrorKind::Internal,
+            "mini-swe-agent prefix boundary overflows",
+        )
+    })?;
+    messages.get(..end).ok_or_else(|| {
+        ReplayError::new(
+            ReplayErrorKind::Internal,
+            "mini-swe-agent prefix boundary is out of bounds",
+        )
+    })
+}
+
 pub(super) fn execute(
     plan: &ReplayPlan,
     context: &RunContext<'_>,
@@ -98,7 +143,11 @@ pub(super) fn build(request: &PlaybackRequest) -> Result<ReplayPlan, ReplayError
             .zip(observations)
             .enumerate()
             .map(|(index, (native, observation))| {
-                let command = native["arguments"]["command"].as_str().unwrap_or_default();
+                let command = native
+                    .arguments
+                    .get("command")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
                 if mini_submission_in_prefix(batch_is_in_prefix, command) {
                     return Err(ReplayError::new(
                         ReplayErrorKind::UnsupportedVersion,
@@ -109,14 +158,19 @@ pub(super) fn build(request: &PlaybackRequest) -> Result<ReplayPlan, ReplayError
                     .get("extra")
                     .and_then(|extra| extra.get("returncode"))
                     .and_then(Value::as_i64);
+                let normalized = json!({
+                    "id": &native.id,
+                    "arguments": &native.arguments,
+                    "native": &native.native,
+                });
                 Ok(ToolCall {
                     ordinal: index + 1,
-                    call_id: native["id"].as_str().unwrap().to_owned(),
+                    call_id: native.id,
                     name: "bash".into(),
-                    arguments: native["arguments"].clone(),
+                    arguments: native.arguments,
                     original_observation: mini_observation(observation),
                     original_is_error: return_code.is_some_and(|code| code != 0),
-                    native,
+                    native: normalized,
                 })
             })
             .collect::<Result<Vec<_>, _>>()?;
@@ -134,9 +188,7 @@ pub(super) fn build(request: &PlaybackRequest) -> Result<ReplayPlan, ReplayError
     }
     check_boundary(request.after_step, batches.len())?;
     let original_next_action = if let Some(batch) = batches.get(request.after_step) {
-        let message_index = batch.native["message_index"].as_u64().ok_or_else(|| {
-            ReplayError::trajectory("mini-swe-agent next action lost message_index")
-        })? as usize;
+        let message_index = message_index(batch, "message_index")?;
         let message = messages.get(message_index).ok_or_else(|| {
             ReplayError::trajectory(format!(
                 "mini-swe-agent next action message index {message_index} is out of bounds"
@@ -147,15 +199,8 @@ pub(super) fn build(request: &PlaybackRequest) -> Result<ReplayPlan, ReplayError
         None
     };
     batches.truncate(request.after_step);
-    let boundary_message_index = batches.last().unwrap().native["message_index"]
-        .as_u64()
-        .ok_or_else(|| ReplayError::trajectory("mini-swe-agent batch lost message_index"))?
-        as usize;
-    let prefix_model_turns = value["messages"]
-        .as_array()
-        .ok_or_else(|| ReplayError::trajectory("mini-swe-agent messages must be an array"))?
+    let prefix_model_turns = selected_prefix(messages, &batches, "message_index")?
         .iter()
-        .take(boundary_message_index + 1)
         .filter(|message| {
             message
                 .get("extra")
@@ -186,7 +231,7 @@ fn mini_submission_in_prefix(batch_is_in_prefix: bool, command: &str) -> bool {
             .starts_with("echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT")
 }
 
-fn mini_calls(message: &Value, message_index: usize) -> Result<Vec<Value>, ReplayError> {
+fn mini_calls(message: &Value, message_index: usize) -> Result<Vec<MiniCall>, ReplayError> {
     if let Some(actions) = message
         .get("extra")
         .and_then(|extra| extra.get("actions"))
@@ -220,11 +265,11 @@ fn mini_calls(message: &Value, message_index: usize) -> Result<Vec<Value>, Repla
                     })
                     .map(str::to_owned)
                     .unwrap_or_else(|| format!("mini-{message_index}-{}", index + 1));
-                Ok(json!({
-                    "id": call_id,
-                    "arguments": {"command": command},
-                    "native": action,
-                }))
+                Ok(MiniCall {
+                    id: call_id,
+                    arguments: json!({"command": command}),
+                    native: action.clone(),
+                })
             })
             .collect();
     }
@@ -263,12 +308,15 @@ fn mini_calls(message: &Value, message_index: usize) -> Result<Vec<Value>, Repla
                 "mini-swe-agent bash action has no command",
             ));
         }
-        result.push(json!({
-            "id": call.get("id").and_then(Value::as_str)
-                .map(str::to_owned).unwrap_or_else(|| format!("mini-{message_index}-{}", index + 1)),
-            "arguments": arguments,
-            "native": call,
-        }));
+        result.push(MiniCall {
+            id: call
+                .get("id")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+                .unwrap_or_else(|| format!("mini-{message_index}-{}", index + 1)),
+            arguments,
+            native: call.clone(),
+        });
     }
     Ok(result)
 }
@@ -295,14 +343,19 @@ fn run_mini(
     } else {
         "message_index"
     };
-    let boundary = plan.batches.last().unwrap().native[boundary_key]
-        .as_u64()
+    let messages = plan
+        .native
+        .get("messages")
+        .and_then(Value::as_array)
         .ok_or_else(|| {
-            ReplayError::trajectory("mini-swe-agent batch lost native prefix boundary")
-        })? as usize;
+            ReplayError::new(
+                ReplayErrorKind::Internal,
+                "mini-swe-agent plan has no messages array",
+            )
+        })?;
+    let prefix = selected_prefix(messages, &plan.batches, boundary_key)?;
     let mut prepared = plan.native.clone();
-    prepared["messages"] =
-        Value::Array(plan.native["messages"].as_array().unwrap()[..=boundary].to_vec());
+    prepared["messages"] = Value::Array(prefix.to_vec());
     let path = context.output_dir.join("native/prepared-prefix.json");
     atomic_write_json(&path, &prepared)?;
     journal.append(
@@ -320,7 +373,113 @@ fn run_mini(
 
 #[cfg(test)]
 mod tests {
-    use super::mini_submission_in_prefix;
+    use super::*;
+    use std::fs;
+
+    #[rstest::rstest]
+    #[case::missing(Value::Null, "boundary")]
+    #[case::negative(json!(-1), "boundary")]
+    #[case::fractional(json!(1.5), "boundary")]
+    #[case::out_of_bounds(json!(2), "boundary")]
+    #[case::maximum(json!(u64::MAX), "boundary")]
+    #[case::no_batches(json!(0), "batches")]
+    #[case::no_messages(json!(0), "messages")]
+    fn invalid_boundaries_fail_before_publication(
+        #[case] boundary: Value,
+        #[case] fault: &str,
+        #[values(ReplayMode::PrepareOnly, ReplayMode::ReplayOnly)] mode: ReplayMode,
+    ) {
+        let root = tempfile::tempdir().unwrap();
+        let request = PlaybackRequest {
+            agent: AgentKind::MiniSweAgent,
+            trajectory: root.path().join("source.json"),
+            after_step: 1,
+            workspace: root.path().join("workspace"),
+            state_dir: root.path().join("state"),
+            output_dir: root.path().join("output"),
+            agent_entrypoint: None,
+            agent_runtime: None,
+            disallowed_tools: vec![],
+            trajectory_assets: None,
+            session_id: None,
+            max_steps: None,
+            mode,
+            allow_stale_observations: false,
+            run_id: Some("mini-boundary".into()),
+            disable_thinking: false,
+            boundary_user_prompt: None,
+        };
+        let mut plan = ReplayPlan {
+            agent: request.agent,
+            source_path: request.trajectory.clone(),
+            source_sha256: String::new(),
+            after_step: 1,
+            prefix_model_turns: 1,
+            batches: vec![ToolBatch {
+                ordinal: 1,
+                native_locator: String::new(),
+                tool_calls: vec![],
+                assistant_text: String::new(),
+                native: json!({"observation_end": boundary, "message_index": boundary}),
+            }],
+            native: json!({"messages": [{"role": "assistant"}]}),
+            original_next_action: None,
+        };
+        let mut journal = Journal::open(&request.state_dir).unwrap();
+        let before = fs::read(&journal.path).unwrap();
+        let context = RunContext {
+            request: &request,
+            state_dir: &request.state_dir,
+            output_dir: &request.output_dir,
+            launch: None,
+            session_id: "fixture",
+            nonce: "fixture",
+        };
+        if fault == "messages" {
+            plan.native = Value::Null;
+        } else if fault == "batches" {
+            plan.batches.clear();
+        }
+        assert_eq!(
+            execute(&plan, &context, &mut journal).unwrap_err().kind,
+            ReplayErrorKind::Internal
+        );
+        assert_eq!(fs::read(&journal.path).unwrap(), before);
+        assert!(!request.output_dir.exists());
+    }
+
+    #[rstest::rstest]
+    fn replay_and_preparation_select_different_valid_prefixes() {
+        let messages = vec![json!("action"), json!("result one"), json!("result two")];
+        let batches = vec![ToolBatch {
+            ordinal: 1,
+            native_locator: String::new(),
+            tool_calls: vec![],
+            assistant_text: String::new(),
+            native: json!({"message_index": 0, "observation_end": 2}),
+        }];
+        assert_eq!(
+            selected_prefix(&messages, &batches, "message_index").unwrap(),
+            &messages[..1]
+        );
+        assert_eq!(
+            selected_prefix(&messages, &batches, "observation_end").unwrap(),
+            messages
+        );
+    }
+
+    #[rstest::rstest]
+    #[case::invalid_native_action(json!({"extra": {"actions": [{"command": 1}]}}), ReplayErrorKind::Trajectory)]
+    #[case::missing_function(json!({"tool_calls": [{}]}), ReplayErrorKind::Trajectory)]
+    #[case::unsupported_tool(json!({"tool_calls": [{"function": {"name": "read"}}]}), ReplayErrorKind::UnsupportedVersion)]
+    #[case::invalid_json(json!({"tool_calls": [{"function": {"name": "bash", "arguments": "{"}}]}), ReplayErrorKind::Trajectory)]
+    #[case::missing_command(json!({"tool_calls": [{"function": {"name": "bash", "arguments": {}}}]}), ReplayErrorKind::Trajectory)]
+    fn malformed_calls_keep_their_error_classification(
+        #[case] message: Value,
+        #[case] kind: ReplayErrorKind,
+    ) {
+        assert_eq!(mini_calls(&message, 0).err().unwrap().kind, kind);
+    }
 
     #[test]
     fn mini_submit_is_rejected_only_inside_the_selected_prefix() {

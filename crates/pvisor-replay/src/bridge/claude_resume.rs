@@ -10,7 +10,7 @@
 use std::collections::BTreeSet;
 
 use crate::io::sha256;
-use anyhow::{Context, Result, ensure};
+use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
@@ -52,19 +52,14 @@ impl ResumeTransportManifest {
         canonical_messages: Vec<Value>,
         nonce: String,
     ) -> Result<Self> {
-        ensure!(
-            canonical_messages.len() >= 2,
-            "canonical messages must end in assistant tool_use and user tool_result"
-        );
+        let [.., boundary_assistant, boundary_message] = canonical_messages.as_slice() else {
+            bail!("canonical messages must end in assistant tool_use and user tool_result");
+        };
         ensure!(
             canonical_messages.iter().all(Value::is_object),
             "canonical messages must be JSON objects"
         );
-        let assistant_ids = tool_use_ids(
-            &canonical_messages[canonical_messages.len() - 2],
-            "canonical boundary assistant",
-        )?;
-        let boundary_message = canonical_messages.last().expect("length checked");
+        let assistant_ids = tool_use_ids(boundary_assistant, "canonical boundary assistant")?;
         ensure!(
             boundary_message.get("role").and_then(Value::as_str) == Some("user"),
             "canonical boundary result must have role=user"
@@ -207,7 +202,7 @@ pub(crate) fn canonical_messages_sha256(messages: &[Value]) -> Result<String> {
         "messages must be a list of JSON objects"
     );
     Ok(sha256(
-        canonical_json(&Value::Array(messages.to_vec())).as_bytes(),
+        canonical_json(&Value::Array(messages.to_vec()))?.as_bytes(),
     ))
 }
 
@@ -223,7 +218,7 @@ pub(crate) fn canonical_observation_sha256(tool_result_block: &Value) -> Result<
             .and_then(Value::as_bool)
             .unwrap_or(false),
     });
-    Ok(sha256(canonical_json(&value).as_bytes()))
+    Ok(sha256(canonical_json(&value)?.as_bytes()))
 }
 
 /// Validate and remove exactly one Claude Code resume envelope.
@@ -429,21 +424,19 @@ fn boundary_result_and_closure(message: &Value) -> Result<(Vec<String>, Vec<Valu
         .get("content")
         .and_then(Value::as_array)
         .context("boundary result envelope must contain tool_result block(s) and closure text")?;
-    ensure!(
-        content.len() >= 2,
-        "boundary result envelope must contain tool_result block(s) and closure text"
-    );
+    let (closure, result_blocks) = content
+        .split_last()
+        .filter(|(_, results)| !results.is_empty())
+        .context("boundary result envelope must contain tool_result block(s) and closure text")?;
     ensure!(
         content.iter().all(Value::is_object),
         "boundary result envelope contains a non-object block"
     );
-    let closure = content.last().expect("length checked");
     ensure!(
         closure.get("type").and_then(Value::as_str) == Some("text")
             && closure.get("text").and_then(Value::as_str) == Some(CONTINUE_TEXT),
         "boundary result envelope does not end with the exact continue closure"
     );
-    let result_blocks = content[..content.len() - 1].to_vec();
     ensure!(
         result_blocks
             .iter()
@@ -458,7 +451,7 @@ fn boundary_result_and_closure(message: &Value) -> Result<(Vec<String>, Vec<Valu
         all_unique(&ids),
         "boundary envelope has duplicate tool_result IDs"
     );
-    Ok((ids, result_blocks))
+    Ok((ids, result_blocks.to_vec()))
 }
 
 fn contains_exact_transport_text(messages: &[Value]) -> bool {
@@ -609,43 +602,203 @@ fn valid_sha256(value: &str) -> bool {
 
 /// Render JSON with recursively sorted object keys, compact separators and
 /// UTF-8 text, matching Python's `json.dumps(sort_keys=True,separators=(",",":"))`.
-fn canonical_json(value: &Value) -> String {
-    match value {
+fn canonical_json(value: &Value) -> Result<String> {
+    Ok(match value {
         Value::Null => "null".to_owned(),
         Value::Bool(value) => value.to_string(),
         Value::Number(value) => value.to_string(),
-        Value::String(value) => serde_json::to_string(value).expect("JSON string serialization"),
+        Value::String(value) => {
+            serde_json::to_string(value).context("JSON string serialization")?
+        }
         Value::Array(values) => format!(
             "[{}]",
             values
                 .iter()
                 .map(canonical_json)
-                .collect::<Vec<_>>()
+                .collect::<Result<Vec<_>>>()?
                 .join(",")
         ),
-        Value::Object(values) => canonical_object(values),
-    }
+        Value::Object(values) => canonical_object(values)?,
+    })
 }
 
-fn canonical_object(values: &Map<String, Value>) -> String {
-    let mut keys = values.keys().collect::<Vec<_>>();
-    keys.sort_unstable();
-    let entries = keys
+fn canonical_object(values: &Map<String, Value>) -> Result<String> {
+    let mut entries = values.iter().collect::<Vec<_>>();
+    entries.sort_unstable_by_key(|(key, _)| *key);
+    let entries = entries
         .into_iter()
-        .map(|key| {
-            format!(
+        .map(|(key, value)| {
+            Ok(format!(
                 "{}:{}",
-                serde_json::to_string(key).expect("JSON key serialization"),
-                canonical_json(&values[key])
-            )
+                serde_json::to_string(key).context("JSON key serialization")?,
+                canonical_json(value)?
+            ))
         })
-        .collect::<Vec<_>>();
-    format!("{{{}}}", entries.join(","))
+        .collect::<Result<Vec<_>>>()?;
+    Ok(format!("{{{}}}", entries.join(",")))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
+
+    #[rstest::rstest]
+    #[case::null(json!(null), "null")]
+    #[case::empty_string(json!(""), r#""""#)]
+    #[case::controls(json!("quote\"\\/\0\u{0008}\u{000c}\n\r\t"), r#""quote\"\\/\u0000\b\f\n\r\t""#)]
+    #[case::unicode(json!("中文é😀"), r#""中文é😀""#)]
+    #[case::numbers(json!([true, false, 0, -1, 12.5, -0.0]), "[true,false,0,-1,12.5,-0.0]")]
+    #[case::signed_minimum(json!(i64::MIN), "-9223372036854775808")]
+    #[case::unsigned_maximum(json!(u64::MAX), "18446744073709551615")]
+    #[case::empty_array(json!([]), "[]")]
+    #[case::empty_object(json!({}), "{}")]
+    #[case::nested(json!({"z": [{"β": 2, "a": 1}], "a": {"y": null, "x": []}}), r#"{"a":{"x":[],"y":null},"z":[{"a":1,"β":2}]}"#)]
+    #[case::escaped_keys(json!({"b": "\n", "\"": "\\", "a": "\0"}), r#"{"\"":"\\","a":"\u0000","b":"\n"}"#)]
+    fn canonical_wire_bytes_remain_exact(#[case] value: Value, #[case] expected: &str) {
+        let wire = canonical_json(&value).unwrap();
+        assert_eq!(wire, expected);
+        assert_eq!(serde_json::from_str::<Value>(&wire).unwrap(), value);
+    }
+
+    #[rstest::rstest]
+    fn unicode_digest_matches_python_utf8_canonical_encoding() {
+        let messages = vec![
+            json!({"role": "user", "content": "中文é😀\n\"\\\0"}),
+            json!({"role": "assistant", "content": {"β": [null, true, 12.5], "a": {"z": 2, "a": 1}}}),
+        ];
+        assert_eq!(
+            canonical_messages_sha256(&messages).unwrap(),
+            "53732038b59fd14593dddd5423fad58627d637c0a6c7344a82fd1a66f6e628f3"
+        );
+    }
+
+    #[rstest::rstest]
+    #[case::empty(|messages: &mut Vec<Value>| messages.clear(), "must end in")]
+    #[case::single(|messages: &mut Vec<Value>| messages.truncate(1), "must end in")]
+    #[case::non_object(|messages: &mut Vec<Value>| messages[0] = Value::Null, "JSON objects")]
+    #[case::result_role(|messages: &mut Vec<Value>| messages[2]["role"] = json!("assistant"), "role=user")]
+    #[case::empty_results(|messages: &mut Vec<Value>| messages[2]["content"] = json!([]), "only tool_result")]
+    #[case::mismatched_id(|messages: &mut Vec<Value>| messages[2]["content"][0]["tool_use_id"] = json!("other"), "tool IDs do not match")]
+    fn invalid_manifest_tails_return_errors(
+        #[case] corrupt: fn(&mut Vec<Value>),
+        #[case] message: &str,
+    ) {
+        let mut messages = canonical_messages();
+        corrupt(&mut messages);
+        let error = ResumeTransportManifest::create(
+            "native-session",
+            vec!["call-1".into(), "call-2".into()],
+            messages,
+            "__SANDBOX_PLAYBACK_TEST_NONCE_0123456789__".into(),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains(message), "{error}");
+    }
+
+    #[rstest::rstest]
+    fn minimal_two_message_manifest_retains_both_boundary_messages() {
+        let messages = canonical_messages()[1..].to_vec();
+        let manifest = ResumeTransportManifest::create(
+            "native-session",
+            vec!["call-1".into(), "call-2".into()],
+            messages.clone(),
+            "__SANDBOX_PLAYBACK_TEST_NONCE_0123456789__".into(),
+        )
+        .unwrap();
+        assert_eq!(manifest.canonical_message_count, 2);
+        assert_eq!(
+            manifest.canonical_prefix_sha256,
+            canonical_messages_sha256(&messages).unwrap()
+        );
+    }
+
+    #[rstest::rstest]
+    #[case::empty(json!([]), "tool_result block(s) and closure text")]
+    #[case::only_closure(json!([{"type": "text", "text": CONTINUE_TEXT}]), "tool_result block(s) and closure text")]
+    #[case::only_result(json!([{"type": "tool_result", "tool_use_id": "call-1"}]), "tool_result block(s) and closure text")]
+    #[case::non_object(json!([null, {"type": "text", "text": CONTINUE_TEXT}]), "non-object")]
+    #[case::wrong_closure(json!([{"type": "tool_result", "tool_use_id": "call-1"}, {"type": "text", "text": "changed"}]), "exact continue closure")]
+    #[case::wrong_block(json!([{"type": "text", "text": "not a result"}, {"type": "text", "text": CONTINUE_TEXT}]), "only tool_result")]
+    #[case::duplicate_ids(json!([
+        {"type": "tool_result", "tool_use_id": "call-1"},
+        {"type": "tool_result", "tool_use_id": "call-1"},
+        {"type": "text", "text": CONTINUE_TEXT}
+    ]), "duplicate tool_result")]
+    fn invalid_result_closures_fail_closed(#[case] content: Value, #[case] message: &str) {
+        let input = json!({"role": "user", "content": content});
+        let before = input.clone();
+        let error = boundary_result_and_closure(&input).unwrap_err();
+        assert!(error.to_string().contains(message), "{error}");
+        assert_eq!(input, before);
+    }
+
+    fn generated_json() -> BoxedStrategy<Value> {
+        let text = prop::collection::vec(any::<char>(), 0..17)
+            .prop_map(|chars| chars.into_iter().collect::<String>());
+        let leaf = prop_oneof![
+            Just(Value::Null),
+            any::<bool>().prop_map(Value::Bool),
+            any::<i64>().prop_map(|number| json!(number)),
+            text.clone().prop_map(Value::String),
+        ];
+        leaf.prop_recursive(3, 64, 4, move |inner| {
+            prop_oneof![
+                prop::collection::vec(inner.clone(), 0..4).prop_map(Value::Array),
+                prop::collection::btree_map(text.clone(), inner, 0..4)
+                    .prop_map(|entries| Value::Object(entries.into_iter().collect())),
+            ]
+        })
+        .boxed()
+    }
+
+    proptest! {
+        #[test]
+        fn generated_canonical_values_round_trip(value in generated_json()) {
+            let wire = canonical_json(&value).unwrap();
+            prop_assert_eq!(serde_json::from_str::<Value>(&wire).unwrap(), value);
+        }
+
+        #[test]
+        fn generated_resume_cleanup_preserves_payload_and_rejects_changed_observations(
+            value in generated_json(),
+            sequence in 1usize..4,
+        ) {
+            let mut canonical = canonical_messages();
+            canonical[2]["content"][0]["content"] = value.clone();
+            let manifest = ResumeTransportManifest::create(
+                "native-session",
+                vec!["call-1".into(), "call-2".into()],
+                canonical.clone(),
+                "__SANDBOX_PLAYBACK_TEST_NONCE_0123456789__".into(),
+            ).unwrap();
+            let mut messages = canonical.clone();
+            messages[2]["content"].as_array_mut().unwrap().push(
+                json!({"type": "text", "text": CONTINUE_TEXT}),
+            );
+            messages.extend([
+                json!({"role": "assistant", "content": NO_RESPONSE_TEXT}),
+                json!({"role": "user", "content": manifest.nonce}),
+                json!({"role": "assistant", "content": "real continuation"}),
+            ]);
+            let payload = json!({"messages": messages, "stream": true});
+            let original = payload.clone();
+            let cleaned = clean_resume_transport_envelope(&payload, &manifest, sequence).unwrap();
+            let mut expected = canonical;
+            if sequence > 1 {
+                expected.push(json!({"role": "assistant", "content": "real continuation"}));
+            }
+            prop_assert_eq!(&cleaned.payload["messages"], &json!(expected));
+            prop_assert_eq!(&payload, &original);
+            prop_assert_eq!(&cleaned.validation.clean_prefix_sha256, &manifest.canonical_prefix_sha256);
+            let mut changed = payload;
+            changed["messages"][2]["content"][0]["content"] = json!({"tampered": value});
+            let before = changed.clone();
+            let error = clean_resume_transport_envelope(&changed, &manifest, sequence).unwrap_err();
+            prop_assert!(error.to_string().contains("observation hash"));
+            prop_assert_eq!(changed, before);
+        }
+    }
 
     fn canonical_messages() -> Vec<Value> {
         vec![

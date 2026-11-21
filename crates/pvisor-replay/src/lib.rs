@@ -6,6 +6,7 @@
 //! Agent-specific bridges handle replay and continuation protocol adjustments.
 
 #![deny(missing_docs)]
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
 
 mod adapter;
 pub mod api;

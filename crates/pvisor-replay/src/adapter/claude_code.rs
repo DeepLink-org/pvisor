@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
 
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 
 use super::{
     MAX_TOOL_OUTPUT_BYTES, RunContext, agent_command, check_boundary, sanitized_environment,
@@ -322,12 +322,14 @@ pub(super) fn build(request: &PlaybackRequest) -> Result<ReplayPlan, ReplayError
         .iter()
         .filter_map(|event| event.get("sessionId").and_then(Value::as_str))
         .collect();
-    if session_ids.len() != 1 {
-        return Err(ReplayError::trajectory(
-            "Claude trajectory must contain exactly one session ID",
-        ));
-    }
-    let session_id = session_ids.iter().next().unwrap().to_string();
+    let session_id = session_ids
+        .first()
+        .copied()
+        .filter(|_| session_ids.len() == 1)
+        .ok_or_else(|| {
+            ReplayError::trajectory("Claude trajectory must contain exactly one session ID")
+        })?
+        .to_owned();
     let (turns, active_chain_uuids) = parse_claude_turns(&events)?;
     let mut batches = Vec::new();
     for (turn_index, turn) in turns.iter().enumerate() {
@@ -424,10 +426,10 @@ fn parse_claude_turns(
             let candidate_index = chain_indices[cursor];
             let candidate = &events[candidate_index];
             if candidate.get("type").and_then(Value::as_str) != Some("assistant") {
-                if assistant_indices.is_empty() {
+                let Some(&previous_index) = assistant_indices.last() else {
                     break;
-                }
-                let previous = &events[*assistant_indices.last().unwrap()];
+                };
+                let previous = &events[previous_index];
                 let response_incomplete = previous
                     .get("message")
                     .and_then(|value| value.get("stop_reason"))
@@ -594,14 +596,15 @@ fn parse_claude_turns(
         let batch = if calls.is_empty() {
             None
         } else {
-            if terminal_results.is_empty() {
-                return Err(ReplayError::trajectory(format!(
-                    "Claude assistant turn {message_id} has no tool_result on its active chain"
-                )));
-            }
             let mut ordered_results = terminal_results.values().copied().collect::<Vec<_>>();
             ordered_results.sort_unstable();
-            for (result_position, _) in ordered_results.iter().take(ordered_results.len() - 1) {
+            let (terminal_result, earlier_results) =
+                ordered_results.split_last().ok_or_else(|| {
+                    ReplayError::trajectory(format!(
+                        "Claude assistant turn {message_id} has no tool_result on its active chain"
+                    ))
+                })?;
+            for (result_position, _) in earlier_results {
                 if !assistant_chain_positions
                     .iter()
                     .any(|assistant_position| assistant_position > result_position)
@@ -611,14 +614,14 @@ fn parse_claude_turns(
                     )));
                 }
             }
-            let terminal_result_index = ordered_results.last().unwrap().1;
+            let terminal_result_index = terminal_result.1;
             Some(ToolBatch {
                 ordinal: 0,
-                native_locator: format!("event:{}", assistant_indices[0]),
+                native_locator: format!("event:{event_index}"),
                 assistant_text: signature["text"].as_str().unwrap_or_default().to_owned(),
                 tool_calls: calls,
                 native: json!({
-                    "assistant_index": assistant_indices[0],
+                    "assistant_index": event_index,
                     "assistant_indices": assistant_indices,
                     "message_id": message_id,
                     "terminal_result_index": terminal_result_index,
@@ -792,7 +795,7 @@ fn run_claude(
             observations: Vec::new(),
             continued_steps: 0,
             metadata: with_boundary_user_prompt_metadata(
-                json!({"native_session_id": session_id}),
+                Map::from_iter([("native_session_id".into(), json!(session_id))]),
                 context.request,
                 false,
             ),
@@ -867,7 +870,7 @@ fn run_claude(
             observations,
             continued_steps: 0,
             metadata: with_boundary_user_prompt_metadata(
-                json!({"native_session_id": session_id}),
+                Map::from_iter([("native_session_id".into(), json!(session_id))]),
                 context.request,
                 false,
             ),
@@ -1021,11 +1024,17 @@ fn run_claude(
         observations,
         continued_steps,
         metadata: with_boundary_user_prompt_metadata(
-            json!({
-                "native_session_id": session_id,
-                "validated_model_requests": validated_model_requests,
-                "model_transport": "sandbox-replay-claude-bridge",
-            }),
+            Map::from_iter([
+                ("native_session_id".into(), json!(session_id)),
+                (
+                    "validated_model_requests".into(),
+                    json!(validated_model_requests),
+                ),
+                (
+                    "model_transport".into(),
+                    json!("sandbox-replay-claude-bridge"),
+                ),
+            ]),
             context.request,
             prompt_injected,
         ),
@@ -1683,12 +1692,15 @@ fn rebuild_claude(
                 .iter()
                 .filter_map(|call_id| owner_by_call.get(call_id.as_str()).copied())
                 .collect();
-            if owners.len() != 1 {
-                return Err(ReplayError::trajectory(
-                    "Claude tool_result event combines calls from different assistant events",
-                ));
-            }
-            let owner = *owners.iter().next().unwrap();
+            let owner = owners
+                .first()
+                .copied()
+                .filter(|_| owners.len() == 1)
+                .ok_or_else(|| {
+                    ReplayError::trajectory(
+                        "Claude tool_result event combines calls from different assistant events",
+                    )
+                })?;
             updated["parentUuid"] = Value::String(owner.to_owned());
             updated["sourceToolAssistantUUID"] = Value::String(owner.to_owned());
             if let Some(object) = updated.as_object_mut() {
@@ -2110,11 +2122,107 @@ mod tests {
         validate_claude_tool_policy, wildcard_match,
     };
     use crate::adapter::{MAX_TOOL_OUTPUT_BYTES, RunContext, build_plan, run};
-    use crate::api::{AgentKind, PlaybackRequest, ReplayMode};
+    use crate::api::{AgentKind, PlaybackRequest, ReplayErrorKind, ReplayMode};
     use crate::bridge::claude_resume::ResumeTransportManifest;
     use crate::io::BoundedFileRead;
     use crate::journal::Journal;
-    use crate::model::{FreshObservation, ToolCall};
+    use crate::model::{FreshObservation, ReplayPlan, ToolBatch, ToolCall};
+
+    #[rstest::rstest]
+    #[case::shared("shared")]
+    #[case::mixed("mixed")]
+    #[case::missing("missing")]
+    fn rebuilt_result_events_require_one_selected_owner(#[case] ownership: &str) {
+        let mut calls = (0..2)
+            .map(|index| {
+                let mut call = claude_tool_call("Bash", json!({"command": "true"}));
+                call.call_id = format!("call-{index}");
+                call.native = json!({
+                    "assistant_uuid": "assistant", "result_uuid": "result", "result_index": 2
+                });
+                call
+            })
+            .collect::<Vec<_>>();
+        if ownership == "mixed" {
+            calls[1].native["assistant_uuid"] = json!("other-assistant");
+        } else if ownership == "missing" {
+            calls[1]
+                .native
+                .as_object_mut()
+                .unwrap()
+                .remove("assistant_uuid");
+        }
+        let replacements = calls
+            .iter()
+            .map(|call| {
+                (
+                    call.call_id.clone(),
+                    FreshObservation {
+                        call_id: call.call_id.clone(),
+                        content: json!("fresh"),
+                        is_error: false,
+                        return_code: Some(0),
+                        duration_ms: 0,
+                        truncated: false,
+                        metadata: BTreeMap::new(),
+                    },
+                )
+            })
+            .collect();
+        let plan = ReplayPlan {
+            agent: AgentKind::ClaudeCode,
+            source_path: PathBuf::new(),
+            source_sha256: String::new(),
+            after_step: 1,
+            prefix_model_turns: 1,
+            original_next_action: None,
+            batches: vec![ToolBatch {
+                ordinal: 1,
+                native_locator: String::new(),
+                assistant_text: String::new(),
+                tool_calls: calls,
+                native: Value::Null,
+            }],
+            native: json!({
+                "boundary_result_index": 2, "active_chain_uuids": ["root", "assistant", "result"],
+                "events": [
+                    {"type": "user", "uuid": "root", "parentUuid": null, "message": {"content": "task"}},
+                    {"type": "assistant", "uuid": "assistant", "parentUuid": "root", "message": {"content": []}},
+                    {"type": "user", "uuid": "result", "parentUuid": "assistant", "sourceToolAssistantUUID": "assistant",
+                     "toolUseResult": "discard", "message": {"content": [
+                        {"type": "tool_result", "tool_use_id": "call-0", "content": "old"},
+                        {"type": "tool_result", "tool_use_id": "call-1", "content": "old"}
+                     ]}}
+                ]
+            }),
+        };
+        let result = rebuild_claude(&plan, &replacements);
+        if ownership == "shared" {
+            let events = result
+                .unwrap()
+                .lines()
+                .map(|line| serde_json::from_str::<Value>(line).unwrap())
+                .collect::<Vec<_>>();
+            assert_eq!(events[2]["parentUuid"], "assistant");
+            assert_eq!(events[2]["sourceToolAssistantUUID"], "assistant");
+            assert!(events[2].get("toolUseResult").is_none());
+            assert!(
+                events[2]["message"]["content"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .all(|block| block["content"] == "fresh")
+            );
+        } else {
+            let error = result.unwrap_err();
+            assert_eq!(error.kind, ReplayErrorKind::Trajectory);
+            assert!(error.message.contains(if ownership == "mixed" {
+                "combines calls from different assistant events"
+            } else {
+                "lost its owner UUID"
+            }));
+        }
+    }
 
     fn claude_tool_call(name: &str, arguments: Value) -> ToolCall {
         ToolCall {

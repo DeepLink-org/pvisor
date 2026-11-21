@@ -4,6 +4,9 @@ Implementation guards scan every Rust source recursively and exempt only the
 crate-root `api.rs` and `lib.rs`. Negative fixtures verify that nested files
 with those names and newly added adapters cannot add public inherent methods.
 
+The crate root denies direct `unwrap`/`expect` in non-test Rust code. Test
+assertions and non-panicking fallbacks remain allowed.
+
 Replay preparation, tool execution and agent continuation for the
 `pvisor-replay` companion. The engine validates recorded trajectories and
 workspace boundaries before continuation; protocol-specific adapters remain
@@ -38,6 +41,134 @@ through `api`; existing lifecycle and recovery tests use the same entry point.
 | Errors/adapters | `api_contract`: every error category, exit code and retry classification; all adapter names and versions; owned diagnostic locations |
 | Execution/lifecycle | `replay_contract`, `continuation_failures`, `sdk_recovery`: preparation, replay, continuation, durable admission, ambiguous effects, publication failures and cleanup |
 | Exposure | `api_boundary`: sole entry, private implementations, declaration-only API, uniform declarations and the exact public behavior inventory |
+
+## Shared adapter outcomes and SDK validation
+
+Outcome prompt metadata accepts a JSON object map, so scalar metadata cannot
+reach its insertion path. Adapter-specific fields remain intact; prompt facts
+retain their hash, Unicode character count, injection count and mode-specific
+reason without copying prompt text into the diagnostic record.
+
+SDK observations are selected from the runner's configured path: Mini and Pi
+read separate observation files, while SWE reads its trajectory. Runner step
+counts use checked integer conversion and checked total-budget addition.
+Invalid output does not publish `continuation_finished` or clear the existing
+execution fence. The shared metadata and SDK-runner functions deny direct
+non-test `unwrap`/`expect`.
+
+`tests/sdk_validation.rs` drives all three SDK paths with local protocol fixtures,
+not real SDKs or models. It checks successful results, malformed and overflowing
+counts, trajectory/count disagreement, missing observation files and blocked
+retry after uncertain execution. Private fixed and generated tests cover prompt
+metadata and budget arithmetic.
+
+## Codex rollout staging
+
+Codex rollout staging uses the shared atomic JSONL writer to create parent
+directories and replace the staged file. There is no separate parent-path
+assertion or directory-creation path. Invalid session IDs remain configuration
+errors; filesystem obstructions remain executor errors.
+
+The dated rollout layout, timestamp precedence, recorded local offset and
+legacy 1970 fallback remain unchanged. Fixed and generated private regressions
+check exact paths, safe IDs, staged metadata and JSONL bytes, parent creation,
+and retry after explicit removal of a filesystem obstruction. They launch no CLI
+or model. Non-test `generic` adapter code denies direct `unwrap`/`expect`.
+
+## Claude session and tool-result ownership
+
+Claude parsing selects a session ID only when the observed set has one member.
+Streamed assistant fragments retain the existing message-ID and stop-reason
+rules. Terminal result selection uses the sorted active-chain tail without a
+length-subtraction or unchecked final-element lookup.
+
+Rebuilt result events require exactly one selected assistant owner and retain
+their parent/source-assistant links. Missing ownership and mixed-owner results
+remain trajectory errors. `tests/claude_preparation.rs` checks exact prefixes,
+streamed/multi-call batches, result errors and source/router identity separation
+through the public API. Invalid source cases publish no run state and can be
+explicitly repaired when no prior state exists. No CLI or model is launched.
+
+## Pi trajectory preparation
+
+The Pi adapter retains validated tool IDs, names and object arguments as typed
+parser output, without unpacking its own normalized JSON again. Empty native IDs
+and omitted arguments (`{}`) remain accepted; observations match calls by ID,
+including when results arrive in a different order.
+
+Before writing the prepared prefix or appending `session_rebuilt`, the adapter
+checks the native event array, selected batch, index conversion and prefix bounds.
+Invalid internal plans return `Internal`; malformed tool fields retain `Trajectory`
+and unsupported tool names retain `UnsupportedVersion`. The module denies
+non-test `unwrap`/`expect` through Clippy. Private boundary regressions cover
+missing, negative, fractional and overflowing indexes without artifact or
+adapter-event publication.
+
+`tests/pi_preparation.rs` uses only the public API and launches no SDK or model.
+Fixed and generated cases check exact logical prefixes, native arguments,
+text-only turns, reordered results, truncated final lines and incomplete final
+batches. Invalid trajectories publish no state/output roots; explicit source
+repair can retry the same run ID when no prior run state exists. Existing ambiguous
+receipts still block admission. PrepareOnly leaves the workspace untouched.
+
+## OpenHands action boundaries
+
+Source parsing and SDK output counting share the replayable-action classifier.
+`run`, `read`, `edit`, `run_ipython` and `think` count as actions; non-agent
+records and `system`, `finish` and `message` do not. Unsupported agent actions
+retain `UnsupportedVersion`.
+
+The selected boundary must contain one action with an `i64` native ID and
+identify a replayable agent event. Missing batches, invalid IDs and malformed
+native containers return `Internal` before publishing prepared events or
+`session_rebuilt`. The module denies non-test `unwrap`/`expect` through Clippy.
+
+SDK output checks reject missing replay batches before ReplayOnly boundary
+crossing, then enforce the total `max_steps` budget. `None` adds no replay-side
+total-action budget. Invalid output does not publish `continuation_finished`.
+Log setup retains the existing start-fence ordering: failure after
+`continuation_started` leaves unresolved continuation state and blocks retry.
+
+`tests/openhands_preparation.rs` checks exact selected native events, arguments
+and causally late observations through the public API, without an SDK or model.
+Fixed and generated cases verify that PrepareOnly executes no tools and leaves
+the workspace and source unchanged. Private regressions cover malformed
+boundaries, signed-ID limits, output budgets and retained continuation fences.
+
+## Mini SWE Agent prefix boundaries
+
+The parser retains validated call IDs, arguments and native actions in typed
+records. Normalized call metadata, explicit empty IDs, generated fallback IDs
+and the two native action encodings retain their existing representation.
+
+Model-turn counting and preparation use checked native message indexes,
+integer conversion and inclusive-prefix bounds. Missing batches or message
+arrays and invalid boundaries return `Internal` before prepared-file or
+`session_rebuilt` publication. PrepareOnly includes all selected batch results;
+live replay stops at the selected action so the SDK can reconstruct fresh results.
+The module denies non-test `unwrap`/`expect` through Clippy.
+
+`tests/mini_preparation.rs` exercises multi-call batches through the public API
+with both native actions and object/string tool arguments. Exact prefixes,
+fallback IDs and text-only model turns are checked with fixed and generated
+inputs; no SDK or model is launched and the workspace stays unchanged.
+
+## SWE Agent history and assets
+
+Encoded `replay_config` strings are decoded by matching the JSON string variant.
+Object configs and asset resolution retain their existing behavior, including
+relative-path validation, canonical root checks and UTF-8 requirements.
+
+Preparation checks the trajectory prefix and the number of assistant history
+messages before publishing an artifact or `session_rebuilt`. Invalid internal
+boundaries return `Internal`; valid prefixes retain non-assistant history through
+the selected assistant message. The module denies non-test `unwrap`/`expect`.
+
+`tests/swe_preparation.rs` checks exact native prefixes, call-ID fallback,
+encoded/object configs and file-backed problem text through the public API.
+Fixed and generated inputs require no SDK or model and leave source files and
+the workspace unchanged. Rejected source and asset cases publish no run state;
+private regressions check both PrepareOnly and live-replay prefix rejection.
 
 ## Interrupted tool execution
 
@@ -79,6 +210,20 @@ cooperative children can drain buffered input to EOF and flush output during
 their termination grace period. This applies to wall/idle deadlines, log quotas,
 and step limits; it does not resume delivery of the remaining input.
 
+Process capture finalization joins both readers before propagating stdout or
+stderr failures, including redirected-tail read errors and reader panics.
+Missing stdout capture state returns `Internal`, not a panic or empty success.
+Redirected tail bytes, total length, truncation and stdout-first error precedence
+retain their existing behavior. Non-test `process` code denies direct
+`unwrap`/`expect`.
+
+Fixed and generated tail tests cover zero retention, exact bounds and binary
+data. A gated reader regression checks completion before error return. A native
+child removes its redirect file before exiting; finalization must report an
+executor error, retain the stderr log, reap the child/group and allow a healthy
+successor using the same redirect path. These checks do not change supervision
+deadlines.
+
 ## Local continuation bridges
 
 Claude, Codex and OpenCode use private loopback bridges. Their protocol handlers
@@ -100,6 +245,16 @@ Claude owns its retry/status policy and uses a two-thread runtime. Codex also us
 two runtime threads; OpenCode uses a current-thread runtime. A failed or
 cancelled transport exchange does not increment the forwarded-request count;
 protocol-specific finish checks still decide continuation validity.
+
+Claude resume cleanup uses checked slice tails for boundary messages and closure
+blocks. Canonical JSON encoding propagates serialization errors through
+the existing hash/manifest results, without substituting empty text or digests.
+Key ordering, string escaping, UTF-8 text, number rendering and manifest versions
+are unchanged.
+Fixed wire and digest regressions include a Python UTF-8 reference vector;
+generated cases check nested values, first/later request cleanup, unchanged input
+and rejection of modified observations. Non-test code throughout `bridge`
+denies direct `unwrap`/`expect`; host startup and shutdown policies are unchanged.
 
 ## Validation
 

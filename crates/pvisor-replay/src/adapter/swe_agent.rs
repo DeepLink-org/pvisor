@@ -54,9 +54,12 @@ pub(super) fn build(request: &PlaybackRequest) -> Result<ReplayPlan, ReplayError
         })
     });
     let mut batches = Vec::new();
-    for index in 0..request.after_step {
-        let step = &trajectory[index];
-        let assistant = history[index];
+    for (index, (step, assistant)) in trajectory
+        .iter()
+        .zip(&history)
+        .take(request.after_step)
+        .enumerate()
+    {
         let action = step
             .get("action")
             .and_then(Value::as_str)
@@ -76,9 +79,8 @@ pub(super) fn build(request: &PlaybackRequest) -> Result<ReplayPlan, ReplayError
             .and_then(Value::as_array)
             .cloned()
             .unwrap_or_default();
-        let call_id = if calls.len() == 1 {
-            calls[0]
-                .get("id")
+        let call_id = if let [call] = calls.as_slice() {
+            call.get("id")
                 .and_then(Value::as_str)
                 .map(str::to_owned)
                 .unwrap_or_else(|| format!("swe-agent-step-{}", index + 1))
@@ -126,8 +128,7 @@ fn resolve_swe_problem_asset(value: &mut Value, assets: Option<&Path>) -> Result
     let replay_config = value
         .get_mut("replay_config")
         .ok_or_else(|| ReplayError::trajectory("SWE-agent replay_config is required"))?;
-    if replay_config.is_string() {
-        let encoded = replay_config.as_str().unwrap();
+    if let Value::String(encoded) = replay_config {
         *replay_config = serde_json::from_str(encoded).replay_context(
             ReplayErrorKind::Trajectory,
             "invalid encoded SWE-agent replay_config",
@@ -179,12 +180,36 @@ fn run_swe(
     context: &RunContext<'_>,
     journal: &mut Journal,
 ) -> Result<ReplayOutcome, ReplayError> {
-    let mut prepared = plan.native.clone();
-    prepared["trajectory"] =
-        Value::Array(plan.native["trajectory"].as_array().unwrap()[..plan.after_step].to_vec());
+    if plan.after_step == 0 {
+        return Err(ReplayError::new(
+            ReplayErrorKind::Internal,
+            "SWE-agent plan has an empty replay boundary",
+        ));
+    }
+    let trajectory = plan
+        .native
+        .get("trajectory")
+        .and_then(Value::as_array)
+        .and_then(|steps| steps.get(..plan.after_step))
+        .ok_or_else(|| {
+            ReplayError::new(
+                ReplayErrorKind::Internal,
+                "SWE-agent plan has an invalid trajectory prefix",
+            )
+        })?;
+    let native_history = plan
+        .native
+        .get("history")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            ReplayError::new(
+                ReplayErrorKind::Internal,
+                "SWE-agent plan has no history array",
+            )
+        })?;
     let mut assistant = 0;
     let mut history = Vec::new();
-    for item in plan.native["history"].as_array().unwrap() {
+    for item in native_history {
         history.push(item.clone());
         if item.get("role").and_then(Value::as_str) == Some("assistant") {
             assistant += 1;
@@ -193,6 +218,14 @@ fn run_swe(
             }
         }
     }
+    if assistant != plan.after_step {
+        return Err(ReplayError::new(
+            ReplayErrorKind::Internal,
+            "SWE-agent plan has fewer assistant messages than selected steps",
+        ));
+    }
+    let mut prepared = plan.native.clone();
+    prepared["trajectory"] = Value::Array(trajectory.to_vec());
     prepared["history"] = Value::Array(history);
     let path = context.output_dir.join("native/prepared-prefix.traj");
     atomic_write_json(&path, &prepared)?;
@@ -207,4 +240,74 @@ fn run_swe(
         return Ok(prepared_outcome(path, context.request));
     }
     run_sdk_bridge(plan, context, journal, AgentKind::SweAgent)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    #[rstest::rstest]
+    #[case::zero_boundary(|plan: &mut ReplayPlan| plan.after_step = 0)]
+    #[case::excessive_boundary(|plan: &mut ReplayPlan| plan.after_step = usize::MAX)]
+    #[case::missing_trajectory(|plan: &mut ReplayPlan| plan.native["trajectory"] = Value::Null)]
+    #[case::short_trajectory(|plan: &mut ReplayPlan| plan.native["trajectory"] = json!([]))]
+    #[case::missing_history(|plan: &mut ReplayPlan| plan.native["history"] = Value::Null)]
+    #[case::short_history(|plan: &mut ReplayPlan| plan.native["history"] = json!([]))]
+    #[case::non_assistant_history(|plan: &mut ReplayPlan| plan.native["history"] = json!([
+        {"role": "user"}, {"role": "tool"}
+    ]))]
+    fn invalid_internal_prefixes_do_not_publish(
+        #[case] corrupt: fn(&mut ReplayPlan),
+        #[values(ReplayMode::PrepareOnly, ReplayMode::ReplayOnly)] mode: ReplayMode,
+    ) {
+        let root = tempfile::tempdir().unwrap();
+        let request = PlaybackRequest {
+            agent: AgentKind::SweAgent,
+            trajectory: root.path().join("source.traj"),
+            after_step: 1,
+            workspace: root.path().join("workspace"),
+            state_dir: root.path().join("state"),
+            output_dir: root.path().join("output"),
+            agent_entrypoint: None,
+            agent_runtime: None,
+            disallowed_tools: vec![],
+            trajectory_assets: None,
+            session_id: None,
+            max_steps: None,
+            mode,
+            allow_stale_observations: false,
+            run_id: Some("swe-boundary".into()),
+            disable_thinking: false,
+            boundary_user_prompt: None,
+        };
+        fs::write(
+            &request.trajectory,
+            serde_json::to_vec(&json!({
+                "trajectory": [{"action": "printf task", "observation": "recorded"}],
+                "history": [{"role": "user"}, {"role": "assistant"}, {"role": "tool"}],
+                "replay_config": {}
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let mut plan = build(&request).unwrap();
+        corrupt(&mut plan);
+        let mut journal = Journal::open(&request.state_dir).unwrap();
+        let before = fs::read(&journal.path).unwrap();
+        let context = RunContext {
+            request: &request,
+            state_dir: &request.state_dir,
+            output_dir: &request.output_dir,
+            launch: None,
+            session_id: "fixture",
+            nonce: "fixture",
+        };
+        assert_eq!(
+            execute(&plan, &context, &mut journal).unwrap_err().kind,
+            ReplayErrorKind::Internal
+        );
+        assert_eq!(fs::read(&journal.path).unwrap(), before);
+        assert!(!request.output_dir.exists());
+    }
 }

@@ -13,7 +13,7 @@ mod pi_agent;
 mod runtime;
 mod swe_agent;
 
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 
 use crate::api::{AgentKind, PlaybackRequest, ReplayMode};
 use crate::api::{ReplayError, ReplayErrorKind};
@@ -88,7 +88,7 @@ fn prepared_outcome(path: PathBuf, request: &PlaybackRequest) -> ReplayOutcome {
         observations: Vec::new(),
         continued_steps: 0,
         metadata: with_boundary_user_prompt_metadata(
-            json!({"replay_only_execution": false}),
+            Map::from_iter([("replay_only_execution".into(), json!(false))]),
             request,
             false,
         ),
@@ -96,7 +96,7 @@ fn prepared_outcome(path: PathBuf, request: &PlaybackRequest) -> ReplayOutcome {
 }
 
 pub(super) fn with_boundary_user_prompt_metadata(
-    mut metadata: Value,
+    mut metadata: Map<String, Value>,
     request: &PlaybackRequest,
     injected: bool,
 ) -> Value {
@@ -119,11 +119,27 @@ pub(super) fn with_boundary_user_prompt_metadata(
             });
         }
     }
-    metadata
-        .as_object_mut()
-        .expect("replay outcome metadata must be an object")
-        .insert("boundary_user_prompt".into(), detail);
-    metadata
+    metadata.insert("boundary_user_prompt".into(), detail);
+    Value::Object(metadata)
+}
+
+fn valid_sdk_terminal_status(
+    mode: ReplayMode,
+    status: &str,
+    continued_steps: usize,
+    prefix_model_turns: usize,
+    max_steps: Option<usize>,
+) -> bool {
+    match mode {
+        ReplayMode::ReplayOnly => status == "not_started" && continued_steps == 0,
+        ReplayMode::ReplayAndContinue => {
+            matches!(status, "completed" | "max_steps")
+                && prefix_model_turns
+                    .checked_add(continued_steps)
+                    .is_some_and(|total| max_steps.is_none_or(|limit| total <= limit))
+        }
+        ReplayMode::PrepareOnly => false,
+    }
 }
 
 fn run_sdk_bridge(
@@ -352,8 +368,10 @@ fn run_sdk_bridge(
     let runner_continued_steps = runner
         .get("continued_steps")
         .and_then(Value::as_u64)
-        .ok_or_else(|| ReplayError::continuation("SDK runner omitted continued_steps"))?
-        as usize;
+        .ok_or_else(|| ReplayError::continuation("SDK runner omitted continued_steps"))?;
+    let runner_continued_steps = usize::try_from(runner_continued_steps).map_err(|_| {
+        ReplayError::continuation("SDK runner continued_steps exceeds platform capacity")
+    })?;
     let runner_agent_status = runner
         .get("agent_status")
         .and_then(Value::as_str)
@@ -372,18 +390,13 @@ fn run_sdk_bridge(
             agent.as_str()
         )));
     }
-    let status_is_valid = match context.request.mode {
-        ReplayMode::ReplayOnly => {
-            runner_agent_status == "not_started" && runner_continued_steps == 0
-        }
-        ReplayMode::ReplayAndContinue => {
-            matches!(runner_agent_status, "completed" | "max_steps")
-                && context.request.max_steps.is_none_or(|max_steps| {
-                    plan.prefix_model_turns + runner_continued_steps <= max_steps
-                })
-        }
-        ReplayMode::PrepareOnly => false,
-    };
+    let status_is_valid = valid_sdk_terminal_status(
+        context.request.mode,
+        runner_agent_status,
+        runner_continued_steps,
+        plan.prefix_model_turns,
+        context.request.max_steps,
+    );
     if !status_is_valid {
         return Err(ReplayError::continuation(format!(
             "{} runner returned an invalid terminal status or step count",
@@ -407,15 +420,13 @@ fn run_sdk_bridge(
         )));
     }
 
-    let (observations, continued_steps) =
-        if matches!(agent, AgentKind::MiniSweAgent | AgentKind::PiAgent) {
-            let raw_observations: Vec<Value> = serde_json::from_slice(&read_regular_file(
-                observations_path.as_ref().expect("SDK observations path"),
-            )?)
-            .replay_context(
-                ReplayErrorKind::Trajectory,
-                format!("parse {} fresh observations", agent.as_str()),
-            )?;
+    let (observations, continued_steps) = match observations_path {
+        Some(observations_path) => {
+            let raw_observations: Vec<Value> =
+                serde_json::from_slice(&read_regular_file(&observations_path)?).replay_context(
+                    ReplayErrorKind::Trajectory,
+                    format!("parse {} fresh observations", agent.as_str()),
+                )?;
             if raw_observations.len() != plan.calls().count() {
                 return Err(ReplayError::trajectory(format!(
                     "{} output lost replayed observations",
@@ -483,7 +494,8 @@ fn run_sdk_bridge(
                 )));
             }
             (observations, measured)
-        } else {
+        }
+        None => {
             let replayed: Value = serde_json::from_slice(&read_regular_file(&runner_trajectory)?)
                 .replay_context(
                 ReplayErrorKind::Trajectory,
@@ -524,7 +536,8 @@ fn run_sdk_bridge(
                 ));
             }
             (observations, continued_steps)
-        };
+        }
+    };
     if context.request.mode == ReplayMode::ReplayAndContinue && continued_steps == 0 {
         return Err(ReplayError::continuation(format!(
             "{} produced no actionable continuation step; see {}",
@@ -569,7 +582,7 @@ fn run_sdk_bridge(
         observations,
         continued_steps,
         metadata: with_boundary_user_prompt_metadata(
-            json!({"sdk_bridge": bridge_name}),
+            Map::from_iter([("sdk_bridge".into(), json!(bridge_name))]),
             context.request,
             prompt_injected,
         ),
@@ -617,7 +630,173 @@ fn environment_name_allowed(rendered: &str, strip_credentials: bool) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::environment_name_allowed;
+    use super::*;
+    use proptest::prelude::*;
+
+    fn metadata_request(mode: ReplayMode, prompt: Option<&str>) -> PlaybackRequest {
+        PlaybackRequest {
+            agent: AgentKind::SweAgent,
+            trajectory: "unused".into(),
+            after_step: 1,
+            workspace: "unused".into(),
+            state_dir: "unused".into(),
+            output_dir: "unused".into(),
+            agent_entrypoint: None,
+            agent_runtime: None,
+            disallowed_tools: vec![],
+            trajectory_assets: None,
+            session_id: None,
+            max_steps: None,
+            mode,
+            allow_stale_observations: false,
+            run_id: None,
+            disable_thinking: false,
+            boundary_user_prompt: prompt.map(str::to_owned),
+        }
+    }
+
+    #[rstest::rstest]
+    #[case::absent(None)]
+    #[case::empty(Some(""))]
+    #[case::unicode(Some("A😀中\n"))]
+    #[case::spaces(Some("  "))]
+    fn metadata_preserves_fields_and_non_injection_reasons(
+        #[case] prompt: Option<&str>,
+        #[values(
+            ReplayMode::PrepareOnly,
+            ReplayMode::ReplayOnly,
+            ReplayMode::ReplayAndContinue
+        )]
+        mode: ReplayMode,
+    ) {
+        let request = metadata_request(mode, prompt);
+        let retained = json!({"nested": [null, true, "unchanged"]});
+        let result = with_boundary_user_prompt_metadata(
+            Map::from_iter([
+                ("retained".into(), retained.clone()),
+                ("boundary_user_prompt".into(), json!("stale")),
+            ]),
+            &request,
+            false,
+        );
+        assert_eq!(result["retained"], retained);
+        let mut expected = json!({
+            "requested": prompt.is_some_and(|prompt| !prompt.is_empty()),
+            "injected": false,
+            "injection_count": 0,
+        });
+        if let Some(prompt) = prompt.filter(|prompt| !prompt.is_empty()) {
+            expected["sha256"] = json!(sha256(prompt.as_bytes()));
+            expected["length"] = json!(if prompt == "A😀中\n" { 4 } else { 2 });
+            expected["reason"] = json!(match mode {
+                ReplayMode::PrepareOnly => "prepare_only",
+                ReplayMode::ReplayOnly => "replay_only",
+                ReplayMode::ReplayAndContinue => "not_injected",
+            });
+        }
+        assert_eq!(result["boundary_user_prompt"], expected);
+    }
+
+    #[rstest::rstest]
+    fn injected_prompt_metadata_contains_only_the_digest_and_position() {
+        let request = metadata_request(ReplayMode::ReplayAndContinue, Some("A😀中\n"));
+        let result = with_boundary_user_prompt_metadata(Map::new(), &request, true);
+        assert_eq!(
+            result["boundary_user_prompt"],
+            json!({
+                "requested": true, "injected": true, "injection_count": 1,
+                "length": 4, "sha256": sha256("A😀中\n".as_bytes()),
+                "position": "after_boundary_observation"
+            })
+        );
+    }
+
+    #[rstest::rstest]
+    #[case::replay(ReplayMode::ReplayOnly, "not_started", 0, 1, None, true)]
+    #[case::replay_wrong_status(ReplayMode::ReplayOnly, "completed", 0, 1, None, false)]
+    #[case::replay_continued(ReplayMode::ReplayOnly, "not_started", 1, 1, None, false)]
+    #[case::continued(ReplayMode::ReplayAndContinue, "completed", 1, 1, Some(2), true)]
+    #[case::at_limit(ReplayMode::ReplayAndContinue, "max_steps", 1, 1, Some(2), true)]
+    #[case::over_limit(ReplayMode::ReplayAndContinue, "completed", 2, 1, Some(2), false)]
+    #[case::unbounded(ReplayMode::ReplayAndContinue, "completed", 3, 1, None, true)]
+    #[case::overflow_unbounded(
+        ReplayMode::ReplayAndContinue,
+        "completed",
+        usize::MAX,
+        1,
+        None,
+        false
+    )]
+    #[case::overflow_bounded(
+        ReplayMode::ReplayAndContinue,
+        "completed",
+        usize::MAX,
+        1,
+        Some(usize::MAX),
+        false
+    )]
+    #[case::maximum(ReplayMode::ReplayAndContinue, "completed", usize::MAX - 1, 1, Some(usize::MAX), true)]
+    #[case::unknown_status(ReplayMode::ReplayAndContinue, "failed", 1, 1, None, false)]
+    #[case::prepare(ReplayMode::PrepareOnly, "not_started", 0, 1, None, false)]
+    fn sdk_terminal_status_keeps_exact_step_boundaries(
+        #[case] mode: ReplayMode,
+        #[case] status: &str,
+        #[case] continued: usize,
+        #[case] prefix: usize,
+        #[case] limit: Option<usize>,
+        #[case] expected: bool,
+    ) {
+        assert_eq!(
+            valid_sdk_terminal_status(mode, status, continued, prefix, limit),
+            expected
+        );
+    }
+
+    proptest! {
+        #[test]
+        fn sdk_total_budget_matches_widened_integer_arithmetic(
+            prefix in any::<usize>(),
+            continued in any::<usize>(),
+            limit in prop::option::of(any::<usize>()),
+        ) {
+            let total = prefix as u128 + continued as u128;
+            let expected = total <= usize::MAX as u128
+                && limit.is_none_or(|limit| total <= limit as u128);
+            prop_assert_eq!(
+                valid_sdk_terminal_status(ReplayMode::ReplayAndContinue, "completed", continued, prefix, limit),
+                expected
+            );
+        }
+
+        #[test]
+        fn metadata_preserves_generated_payloads_without_persisting_prompt_text(
+            payload in prop::collection::vec(any::<char>(), 0..33),
+            prompt in prop::option::of(prop::collection::vec(any::<char>(), 0..33)),
+            injected in any::<bool>(),
+        ) {
+            let prompt = prompt.map(|chars| chars.into_iter().collect::<String>());
+            let payload: String = payload.into_iter().collect();
+            let request = metadata_request(ReplayMode::ReplayAndContinue, prompt.as_deref());
+            let present = prompt.as_ref().is_some_and(|prompt| !prompt.is_empty());
+            let injected = injected && present;
+            let result = with_boundary_user_prompt_metadata(
+                Map::from_iter([("opaque".into(), json!({"nested": [payload]}))]),
+                &request, injected,
+            );
+            prop_assert_eq!(&result["opaque"], &json!({"nested": [payload]}));
+            let detail = &result["boundary_user_prompt"];
+            prop_assert_eq!(&detail["requested"], &json!(present));
+            prop_assert_eq!(&detail["injected"], &json!(injected));
+            prop_assert_eq!(&detail["injection_count"], &json!(usize::from(injected)));
+            prop_assert!(detail.get("text").is_none() && detail.get("prompt").is_none());
+            if let Some(prompt) = prompt.filter(|prompt| !prompt.is_empty()) {
+                prop_assert_eq!(&detail["sha256"], &json!(sha256(prompt.as_bytes())));
+                prop_assert_eq!(&detail["length"], &json!(prompt.chars().count()));
+            } else {
+                prop_assert!(detail.get("sha256").is_none());
+            }
+        }
+    }
 
     #[test]
     fn direct_agents_keep_model_credentials_but_claude_tools_do_not() {
