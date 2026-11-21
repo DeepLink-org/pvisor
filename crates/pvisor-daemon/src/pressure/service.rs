@@ -110,8 +110,11 @@ impl Owner {
                 format!("measure VM {id} cgroup {}", bound.binding.cgroup.display())
             })?;
             ensure!(
-                number(&bound.binding.cgroup.join("memory.max"))?
-                    <= self.policy.snapshot.entries[id].memory_bytes,
+                vm_limit_fits(
+                    &bound.binding.cgroup,
+                    self.policy.snapshot.entries[id].memory_bytes,
+                    &self.policy.config
+                )?,
                 "VM memory limit changed"
             );
             ensure!(
@@ -195,7 +198,7 @@ impl Owner {
                     );
                 }
                 ensure!(
-                    number(&group.join("memory.max"))? <= entry.memory_bytes,
+                    vm_limit_fits(&group, entry.memory_bytes, &self.policy.config)?,
                     "VM hard limit exceeds reservation"
                 );
                 ensure!(
@@ -269,6 +272,15 @@ fn number(path: &Path) -> Result<u64> {
         .trim()
         .parse()
         .with_context(|| format!("invalid counter {}", path.display()))
+}
+
+fn vm_limit_fits(group: &Path, reservation: u64, config: &Config) -> Result<bool> {
+    let limit = fs::read_to_string(group.join("memory.max"))?;
+    if limit.trim() == "max" {
+        return Ok(config.allow_uncapped_vm
+            && number(&config.cgroup_root.join("memory.max"))? >= config.memory_bytes);
+    }
+    Ok(limit.trim().parse::<u64>()? <= reservation)
 }
 
 fn check_budget(root: &Path, budget: u64) -> Result<()> {
@@ -655,6 +667,7 @@ mod tests {
             max_writebacks: 16,
             waiting_memory_margin_bytes: None,
             recovery_reclaim: false,
+            allow_uncapped_vm: false,
             resident_memory_accounting: Default::default(),
             cgroup_root: root,
         })
@@ -842,6 +855,24 @@ mod tests {
                 .to_string()
                 .contains("identity")
         );
+    }
+
+    #[test]
+    fn uncapped_leaf_requires_opt_in_and_a_bounded_node() {
+        let (_tmp, owner) = fixture();
+        let mut config = owner.policy.config;
+        let leaf = config.cgroup_root.join("child");
+        fs::create_dir(&leaf).unwrap();
+        fs::write(leaf.join("memory.max"), "max").unwrap();
+        fs::write(config.cgroup_root.join("memory.max"), "24").unwrap();
+        assert!(!vm_limit_fits(&leaf, 8, &config).unwrap());
+        config.allow_uncapped_vm = true;
+        assert!(Policy::new(config.clone()).is_err());
+        config.resident_memory_accounting = ResidentMemoryAccounting::Measured;
+        Policy::new(config.clone()).unwrap();
+        assert!(vm_limit_fits(&leaf, 8, &config).unwrap());
+        fs::write(config.cgroup_root.join("memory.max"), "max").unwrap();
+        assert!(vm_limit_fits(&leaf, 8, &config).is_err());
     }
 
     #[test]

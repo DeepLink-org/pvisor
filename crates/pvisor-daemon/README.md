@@ -117,6 +117,12 @@ with this mode is rejected. The mode is fixed at scheduler startup:
   high/low pressure latch, and preserves capacity for one offloaded VM to wake.
   Simultaneous startups cannot spend the same headroom twice.
 
+With measured accounting, `allow_uncapped_vm: true` also accepts VM leaves with
+`memory.max=max` under a scheduler root with a finite `memory.max` at least
+as large as the budget. The reservation covers admission and restore. Runtime
+usage can grow beyond it and counts toward the measured node budget. The launcher
+sets the root limit and disables leaf swap. The option defaults to false.
+
 For example, sixteen bound VMs configured for 5 GiB each can all obtain resident
 tool permits when their combined measured node usage is 5 GiB under a 40 GiB
 budget. They do not retain sixteen 5 GiB reservations. The scheduler uses the observed parent charge directly.
@@ -1608,6 +1614,29 @@ and gate every tool through Wait/Acquire. After Ready, the replay owner still
 checks guest-channel readiness before starting the tool deadline. No permission
 is granted by a missing endpoint or an incompatible RAM-pool configuration.
 
+
+### Pressure-managed live OCI fork (Linux x86-64)
+
+Reserve capacity for every child and prepare distinct empty delegated cgroup v2
+leaves under the configured pressure root. Supply the leaves in child-name order:
+
+```sh
+pvisor container branch source --names s0 s1 \
+  --pressure-cgroup "$leaf0" --pressure-cgroup "$leaf1" \
+  --memory-pool "$physical_pool_socket"
+```
+
+Each owner enters its leaf before exec so the VMM and its private allocations
+inherit placement. Bind each returned child's container ID and generation, then
+use Wait/Acquire around guest work. The daemon alone controls offload for those
+children. Account for the source and physical pool within the node budget.
+
+The optional physical pool must belong to the intended sharing domain. The
+scanner checks present private CoW pages at sample and commit under the VM
+barrier. Clean restored pages retain their existing backing. Pages already
+assigned to the child's writable offload delta remain there. A shared pool
+page that is written again becomes private and is saved on offload. Scanning
+does not enable DAX on the OCI overlay root.
 
 ### Replay-owner checks and contained failures
 

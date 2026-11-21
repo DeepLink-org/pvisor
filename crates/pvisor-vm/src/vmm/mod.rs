@@ -740,6 +740,11 @@ impl Vmm {
         Ok(())
     }
 
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    pub(crate) fn branch_share_candidate(&self, address: u64) -> std::io::Result<bool> {
+        self.branch_ram.as_ref().ok_or_else(|| std::io::Error::other("missing branch owner"))?.private_candidate(address)
+    }
+
     pub(crate) fn has_branch_ram(&self) -> bool {
         #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
         { self.branch_ram.is_some() }

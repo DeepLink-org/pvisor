@@ -295,6 +295,7 @@ impl Endpoint {
             .name("docker-memory".into())
             .spawn(move || {
                 // One worker serializes transitions; disconnect never cancels native I/O.
+                let mut last_fd_warning: Option<std::time::Instant> = None;
                 while !stop.load(Ordering::Acquire) {
                     match listener.accept() {
                         Ok((mut stream, _)) => {
@@ -323,6 +324,16 @@ impl Endpoint {
                             std::thread::sleep(Duration::from_millis(10))
                         }
                         Err(e) if e.kind() == io::ErrorKind::Interrupted => (),
+                        Err(e) if matches!(e.raw_os_error(), Some(libc::EMFILE | libc::ENFILE)) => {
+                            if last_fd_warning
+                                .is_none_or(|last| last.elapsed() >= Duration::from_secs(30))
+                            {
+                                tracing::warn!(error = %e, generation = %control.target.generation,
+                                    "waiting for file descriptors on managed VM control socket");
+                                last_fd_warning = Some(std::time::Instant::now());
+                            }
+                            std::thread::sleep(Duration::from_millis(100));
+                        }
                         Err(_) => break,
                     }
                 }
@@ -481,6 +492,66 @@ mod tests {
         drop(ep);
         assert!(!path.exists());
     }
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn endpoint_recovers_after_fd_exhaustion() {
+        const CHILD: &str = "PVISOR_TEST_MANAGED_FD_EXHAUSTION";
+        if std::env::var_os(CHILD).is_none() {
+            // Keep the low process-wide FD limit confined to this test.
+            let status = std::process::Command::new("/bin/sh")
+                .args(["-ec", r#"ulimit -n 96; exec "$@""#, "fd-test"])
+                .arg(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "docker::managed::tests::endpoint_recovers_after_fd_exhaustion",
+                ])
+                .env(CHILD, "1")
+                .status()
+                .unwrap();
+            assert!(status.success());
+            return;
+        }
+
+        let target = target();
+        let mut ep = Endpoint::bind(target.clone(), "/private/ram".into()).unwrap();
+        let mut client = UnixStream::connect(&ep.path).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let request = Request {
+            version: 1,
+            request_id: uuid::Uuid::new_v4().to_string(),
+            target,
+            command: HostVmCommand::Status,
+        };
+        write_host_frame_sync(&mut client, &request).unwrap();
+        let mut files = Vec::new();
+        loop {
+            match fs::File::open("/dev/null") {
+                Ok(f) => files.push(f),
+                Err(e) => {
+                    assert_eq!(e.raw_os_error(), Some(libc::EMFILE));
+                    break;
+                }
+            }
+        }
+        assert_eq!(
+            ep.listener
+                .as_ref()
+                .unwrap()
+                .accept()
+                .unwrap_err()
+                .raw_os_error(),
+            Some(libc::EMFILE)
+        );
+        ep.start(Arc::new(Mock::default())).unwrap();
+        std::thread::sleep(Duration::from_millis(300));
+        drop(files);
+        let reply: Response = read_host_frame_sync(&mut client).unwrap();
+        assert_eq!(reply.request_id, request.request_id);
+        assert_eq!(reply.result.unwrap().state, VmState::Running);
+    }
+
     #[test]
     fn retirement_rejects_replaced_endpoint_and_only_removes_its_generation() {
         let t = target();

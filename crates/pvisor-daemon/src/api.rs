@@ -433,6 +433,10 @@ pub struct PressureConfig {
     /// it does not guarantee that all guests can fill their configured memory.
     #[serde(default)]
     pub resident_memory_accounting: PressureResidentMemoryAccounting,
+    /// In Measured mode, allow a VM leaf with memory.max=max when the node
+    /// has a finite hard limit. The reservation sizes admission and restore.
+    #[serde(default)]
+    pub allow_uncapped_vm: bool,
     /// Reserved-mode opt-in allowance above measured charge for Waiting/Queued VMs
     /// and their in-flight offloads, capped by each VM's full reservation.
     /// Must be positive and no larger than the node budget. None (the default)

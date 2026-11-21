@@ -697,6 +697,16 @@ corrupt records/indexes, conflicting owners, duplicate IDs and discovery I/O
 failures return `RunLookupError`. The result is not a lock or reservation.
 Ordinary `resolve_run` retains its path, workspace and `last` behavior.
 
+The CLI explicitly registers accepted launches in its selected default Run home,
+including stages stored elsewhere. `RunRecord::register_discovery(root)` publishes
+the existing RunIndex format atomically without choosing HOME or changing Run
+authority. Same-ID/same-canonical-stage registration is idempotent; conflicting
+entries are not replaced. Missing stages are ignored by ordinary latest-workspace
+discovery, while strict ID lookup retains its explicit error semantics. Bare
+record writes and embedded launches do not acquire default-home side effects.
+Registration failure after CLI acceptance cancels/drains the Execution and reports
+the retained explicit stage; it does not claim that workload effects were absent.
+
 Apply responses retain schema 1 and add `picker`: an optional admitted inventory
 whose `excluded` entries are zero-based indices into that response's `candidates`.
 Indices preserve non-UTF-8 path identities without a second path encoding.

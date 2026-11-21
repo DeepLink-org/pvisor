@@ -49,6 +49,11 @@ impl Policy {
                 || config.resident_memory_accounting == ResidentMemoryAccounting::Measured,
             "recovery reclaim requires measured resident accounting"
         );
+        ensure!(
+            !config.allow_uncapped_vm
+                || config.resident_memory_accounting == ResidentMemoryAccounting::Measured,
+            "uncapped VM leaves require measured accounting"
+        );
         Ok(Self {
             snapshot: Snapshot {
                 instance: uuid::Uuid::new_v4().to_string(),

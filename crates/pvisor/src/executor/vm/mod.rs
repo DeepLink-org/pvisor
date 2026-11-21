@@ -39,7 +39,7 @@ mod pager;
     all(target_os = "linux", target_arch = "x86_64"),
     all(target_os = "macos", target_arch = "aarch64")
 ))]
-pub(crate) use pager::{prepare_pool, start_diagnostics};
+pub(crate) use pager::{prepare_managed_pool, prepare_pool, start_diagnostics};
 
 impl VmExecutor {
     /// Prepare this process for later native VM launches before starting threads.
