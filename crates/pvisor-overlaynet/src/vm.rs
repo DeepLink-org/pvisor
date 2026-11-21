@@ -385,7 +385,7 @@ fn next_flow_generation() -> Option<u64> {
 }
 
 fn allocate_flow_generation(next: &std::sync::atomic::AtomicU64) -> Option<u64> {
-    next.fetch_update(
+    next.try_update(
         std::sync::atomic::Ordering::Relaxed,
         std::sync::atomic::Ordering::Relaxed,
         |value| value.checked_add(1),

@@ -81,11 +81,9 @@ type PrepareTask = (mpsc::SyncSender<ExchangeResult>, Request);
 
 struct ConnectionPermit(Arc<AtomicUsize>);
 impl ConnectionPermit {
-    // Keep the atomic update spelling supported by Rust versions before 1.99.
-    #[allow(deprecated)]
     fn acquire(active: &Arc<AtomicUsize>) -> anyhow::Result<Self> {
         active
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |count| {
                 (count < CONNECTION_LIMIT).then_some(count + 1)
             })
             .map_err(|_| anyhow::anyhow!("cache connection limit reached"))?;

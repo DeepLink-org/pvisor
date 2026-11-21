@@ -39,9 +39,11 @@ mise run kernel -- build --prepare-toolchain -j4
 mise run kernel -- build --architecture aarch64 --prepare-toolchain -j4
 ```
 
-The first invocation installs the pinned Rust nightly inside
-`target/pvisor-kernel/rustup/`, not the user's Rust installation. Later builds
-can omit `--prepare-toolchain`. Rust and Cargo dependency acquisition still
+The kernel shares the main workspace's dated Rust nightly and selected Rustup
+home (`RUSTUP_HOME`, when set). `--prepare-toolchain` installs the additional
+kernel components and bare-metal target there; toolchain installation is not
+stored inside Cargo's `target/` cache. Later builds can omit this flag.
+Rust and Cargo dependency acquisition still
 need network access on the first build. `--offline` requires those dependencies
 to be available locally.
 The builder resolves that nightly's executables and places them before host

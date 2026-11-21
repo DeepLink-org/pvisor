@@ -24,6 +24,11 @@ mise run setup
 Tool versions live in `mise.toml`; Python development dependencies use `uv.lock`
 and `.venv`. Platform libraries and virtualization permissions are documented in
 the development guide. Task arguments follow `--`.
+The main workspace and Rust native kernel use the same dated nightly, currently
+`nightly-2026-07-21`. Keep `rust-toolchain.toml`, the mise pin and lockfile, and
+the kernel's toolchain/provenance pins synchronized; do not use floating `nightly`.
+Kernel builds reuse the selected Rustup home instead of installing a separate
+toolchain under Cargo's `target/` cache.
 The minimum mise version is a tested compatibility floor. CI and wheel builds
 continue to use mise 2026.10.18 and the committed tool versions and lockfiles.
 

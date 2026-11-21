@@ -122,7 +122,6 @@ def build(args: argparse.Namespace) -> Path:
     ):
         env.pop(variable, None)
     env.update(
-        RUSTUP_HOME=str(cache / "rustup"),
         OSDK_LOCAL_DEV="1",
         CARGO_NET_OFFLINE=str(args.offline).lower(),
         CARGO_BUILD_JOBS=str(args.jobs),

@@ -1,4 +1,4 @@
-include Cargo.toml Cargo.lock mise.toml mise.lock uv.lock .cargo/config.toml NOTICE LICENSE
+include Cargo.toml Cargo.lock rust-toolchain.toml mise.toml mise.lock uv.lock .cargo/config.toml NOTICE LICENSE
 recursive-include crates *
 recursive-include vendor *
 recursive-include scripts *.py *.sh

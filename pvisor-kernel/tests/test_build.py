@@ -19,6 +19,18 @@ import build
 
 
 class SourceTests(unittest.TestCase):
+    def test_main_and_kernel_use_the_same_dated_nightly(self):
+        main = tomllib.loads((build.ROOT / "rust-toolchain.toml").read_text())["toolchain"]
+        mise = tomllib.loads((build.ROOT / "mise.toml").read_text())["tools"]["rust"]
+        lock = tomllib.loads((build.ROOT / "mise.lock").read_text())["tools"]["rust"][0]
+        kernel = tomllib.loads((build.HERE / "rust-toolchain.toml").read_text())["toolchain"]
+        provenance = json.loads((build.HERE / "provenance.json").read_text())
+        self.assertRegex(main["channel"], r"^nightly-\d{4}-\d{2}-\d{2}$")
+        self.assertEqual(
+            [main["channel"]] * 4,
+            [mise["version"], lock["version"], kernel["channel"], provenance["toolchain"]],
+        )
+
     def test_architecture_follows_the_host_or_explicit_cross_target(self):
         for machine, options, expected in (
             ("x86_64", [], "x86_64"),
@@ -54,6 +66,7 @@ class SourceTests(unittest.TestCase):
                         "CARGO": str(stable_bin / "cargo"),
                         "RUSTC": str(stable_bin / "rustc"),
                         "RUSTDOC": str(stable_bin / "rustdoc"),
+                        "RUSTUP_HOME": str(root / "selected-rustup"),
                     },
                 )
             )
@@ -86,6 +99,7 @@ class SourceTests(unittest.TestCase):
                 self.assertIs(kwargs["stdout"], sys.stderr)
                 if "cargo" in command or command[0].endswith("cargo-osdk"):
                     env = kwargs["env"]
+                    self.assertEqual(env["RUSTUP_HOME"], str(root / "selected-rustup"))
                     self.assertEqual(env["PATH"].split(os.pathsep)[0], str(nightly_bin))
                     for variable, executable in (
                         ("CARGO", "cargo"),
