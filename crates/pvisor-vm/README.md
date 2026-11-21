@@ -33,6 +33,11 @@ virtio-fs/console/vsock、网络和 RAM/快照能力；具体限制见各平台�
 不提供 `gpu`、`snd`、`input` 或 `virgl_resource_map2` feature；
 不支持的公开操作返回 `Unsupported`。
 
+Guest kernel/init 诊断通过 `init_or_kernel` debug 日志转发，不作为宿主错误写入
+容器命令的 stderr。需要排查启动时显式设置
+`PVISOR_KRUN_LOG=1 RUST_LOG=init_or_kernel=debug`；
+工作负载的 stdout/stderr 和真正的 VMM 错误不受影响。
+
 `blk` 用于 Windows 原生容器的独占 ext4 磁盘。
 `tee`、`amd-sev`、`tdx`、`aws-nitro`、`efi` 是内部可选实现，
 不属于已验收的产品 profile。
