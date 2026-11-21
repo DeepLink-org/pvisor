@@ -22,6 +22,12 @@ mount/network implementations reside in their drivers. Embedding callers supply
 Core's injected approval channels. Core does not start processes or open
 control sockets. Policy evaluation does not itself prove enforcement.
 
+Non-test Rust code denies direct `unwrap`/`expect` through crate-root Clippy
+lints. Test assertions and non-panicking fallbacks remain allowed. This guard
+does not rule out other panic sources or change the existing public interfaces.
+There are no crate-specific feature variants; platform-gated branches still
+require separate platform validation.
+
 The in-repository CLI and runtime do not install an approval channel; the CLI
 rejects Ask file policies rather than offering interactive approval. The public
 `audit::AuditChannel` contract is an embedding extension: an embedding caller
