@@ -4,7 +4,7 @@ description: "在 pVisor 下运行 Codex CLI：--safe 的网络白名单、独�
 
 # Codex CLI
 
-在自己的项目中运行 Codex，结束后检查暂存改动，再选择要接收的文件。下面使用本机已安装的 Codex 和 API Key；项目文件通过 Host stagebox 暂存。
+在自己的项目中运行 Codex，结束后检查暂存改动，再选择要接收的文件。下面使用本机已安装的 Codex 和 API Key；项目文件通过 Host 执行器暂存。
 
 !!! note "开始前"
     完成[安装与 Host 暂存准备](../../start/installation.md#local-prerequisites)，并安装 Codex CLI。准备一个可测试的小任务和模型访问权限；保留 Codex 自身的审批设置。

@@ -1,10 +1,10 @@
-/* Homepage explanation and interactive stagebox. Scoped away from article layouts. */
+/* Homepage explanation and interactive staged task demo. Scoped away from article layouts. */
 .pc-home { --pv-line: #304964; --pv-muted: #aebed2; --pv-green: #8adbc5; --pv-amber: #f0c17e; --pv-red: #ffaba5; }
 .pc-home-hero { padding-top: 64px; padding-bottom: 64px; }
 .pc-home-hero::before { content: ""; position: absolute; inset: 16px 0 0; z-index: -1; opacity: .35; background-image: radial-gradient(#a8cefa 0.6px, transparent 0.6px); background-size: 18px 18px; mask-image: linear-gradient(110deg, transparent 25%, #000); }
 .pc-home-hero-grid { align-items: center; }
 .pc-home-hero-grid > .pc-home-examples { margin-top: 0; }
-.pc-home-copy .pc-home-tagline { color: #a8cefa; }
+.pc-home-intro h2 { color: #a8cefa; }
 .pv-mechanisms, .pv-demo-section { width: min(var(--pc-home-width), 100%); box-sizing: border-box; padding: 56px var(--pc-home-gutter); margin: auto; scroll-margin-top: 110px; }
 .pv-section-heading { display: flex; align-items: end; justify-content: space-between; gap: 24px; margin-bottom: 26px; }
 .pc-home .pv-kicker { color: #a8cefa; font: 600 10px/1.5 ui-monospace, monospace; letter-spacing: .14em; margin: 0 0 10px; }

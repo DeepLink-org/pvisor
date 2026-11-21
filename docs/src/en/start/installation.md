@@ -1,12 +1,12 @@
 ---
-description: Install pVisor step by step, check Linux or macOS file staging support, and start your first Agent style stagebox task.
+description: Install pVisor and prepare VM support for the container example or file staging for a local agent task.
 ---
 
 # Installation
 
-Install the CLI, prepare your platform, and follow the [quick start](first-run.md) for the mode you want to use.
+Install the CLI, prepare your platform, and follow the [quick start](first-run.md) for your chosen example.
 
-Release packages support Linux x86_64 and Apple Silicon macOS. Python installation needs 3.10+; no Rust toolchain or Docker Daemon is needed. The Docker style path requires virtualization and image downloads. The offline Agent style demo uses your local shell without a VM image or model account.
+Release packages support Linux x86_64 and Apple Silicon macOS. Python installation needs 3.10+; no Rust toolchain or Docker Daemon is needed. Running a container requires virtualization and image downloads. The offline Host Session demo uses your local shell without a VM image or model account.
 
 Windows x86_64 users can build the experimental WHP container CLI from source. See the [Windows profile](../reference/platforms.md#windows-startup) for firmware and host prerequisites.
 
@@ -36,14 +36,14 @@ You can also install into an existing project virtual environment. For installat
 
 ## 2. Prepare your platform {#prepare-environment}
 
-Follow the prerequisites for your chosen mode. Docker style uses VM support and does not need the FUSE setup used by Host staging.
+Prepare VM support for the container example, or FUSE for the Host staging example.
 
 | Path | Preparation |
 | --- | --- |
-| Docker style sandbox | [VM support](#docker-prerequisites), registry access, and cache space. |
-| Offline Agent style stagebox demo | [Host file staging](#local-prerequisites) and a local shell. |
+| Container commands | [VM support](#docker-prerequisites), registry access, and cache space. |
+| Offline staged task | [Host file staging](#local-prerequisites) and a local shell. |
 
-### Docker style sandbox: VM support {#docker-prerequisites}
+### Container commands: VM support {#docker-prerequisites}
 
 On Linux x86_64, check architecture and your account's KVM access:
 
@@ -66,7 +66,7 @@ Inspect `can_create_vm` and `firmware`. This probe creates an empty VM and repor
 
 First use needs Docker Hub access and image-cache space. Start a VM with the [Docker tutorial](first-run.md#docker-style) to confirm that the setup works.
 
-### Agent style stagebox: Host file staging {#local-prerequisites}
+### Agent tasks: Host file staging {#local-prerequisites}
 
 `--safe` needs to mount a staged file view. Complete only the steps for your platform.
 
@@ -148,8 +148,8 @@ Expect the CLI path, version number, and help for both entry points. The selecte
 
 ## 4. Complete your first task {#next-steps}
 
-- VM ready: follow [Docker style sandbox](first-run.md#docker-style) through images, run, exec, stop, and removal.
-- Host staging ready: follow [Agent style stagebox](first-run.md#agent-style) through an offline command, review, acceptance, and cleanup.
+- VM ready: follow [Container commands](first-run.md#docker-style) through images, run, exec, stop, and removal.
+- Host staging ready: follow [Agent tasks](first-run.md#agent-style) through an offline command, review, acceptance, and cleanup.
 
 After the staging demo, try a real agent handoff with the [Claude Code repair task](../guides/agents/claude-code.md#repair-task). For a Python caller collecting VM tool feedback, use the [execution infrastructure example](infrastructure.md).
 

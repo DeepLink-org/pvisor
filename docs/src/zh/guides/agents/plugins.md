@@ -332,7 +332,7 @@ Host workspace fork 要求显式 Host 策略或允许 `auto` 降级。
 现有 Host 工具尚未提供 VM workspace fork、VM Session 终端或 Container 策略。
 Rust 只读共享 profile 也仅用于 Host；VM 工具链需放在准备好的 rootfs 内。
 
-这些是任务级适配器，不覆盖宿主的内置文件、Shell、补丁、后台任务或其他 MCP 工具。任意网络/executor 覆盖、任务 stdin、整个 Agent 的工具路由与工具级保存点不是模型输入。需要整个 Codex 进入 stagebox 时使用已有 [Codex 托管启动](codex.md#run-codex)，不要嵌套任务插件。
+这些是任务级适配器，不覆盖宿主的内置文件、Shell、补丁、后台任务或其他 MCP 工具。任意网络/executor 覆盖、任务 stdin、整个 Agent 的工具路由与工具级保存点不是模型输入。要暂存整个 Codex 进程的文件改动，请使用 [Codex 托管启动](codex.md#run-codex)，不要嵌套任务插件。
 
 ## 验证与维护 {#verify}
 

@@ -1,9 +1,9 @@
-<section class="pv-demo-section" id="stagebox-demo" aria-labelledby="demo-title">
+<section class="pv-demo-section" id="staged-task-demo" aria-labelledby="demo-title">
   <header class="pv-section-heading">
-    <div><p class="pv-kicker">STAGEBOX IN MOTION</p><h2 id="demo-title">{% if zh %}让几个 Agent 一起做，最后把改动接回来。{% else %}Let agents work in parallel. Bring the changes home.{% endif %}</h2></div>
+    <div><p class="pv-kicker">{% if zh %}并行任务示例{% else %}PARALLEL AGENT TASKS{% endif %}</p><h2 id="demo-title">{% if zh %}让几个 Agent 一起做，最后把改动接回来。{% else %}Let agents work in parallel. Bring the changes home.{% endif %}</h2></div>
     <a href="guides/review-apply/">{% if zh %}审查与接收指南 ↗{% else %}Review and apply guide ↗{% endif %}</a>
   </header>
-  <p class="pv-demo-intro">{% if zh %}多个 Agent 分头修改、测试，你继续在原项目里工作。各自的尝试先留在沙盘里，等结果出来，再检查差异和冲突，接收需要的改动。{% else %}Agents edit and test in separate stages while you keep working in the original project. When their results are ready, review the diffs, check for conflicts, and accept the changes you need.{% endif %}</p>
+  <p class="pv-demo-intro">{% if zh %}多个 Agent 分头修改、测试，你继续在原项目里工作。各自的尝试先留在暂存区里，等结果出来，再检查差异和冲突，接收需要的改动。{% else %}Agents edit and test in separate stages while you keep working in the original project. When their results are ready, review the diffs, check for conflicts, and accept the changes you need.{% endif %}</p>
   <div class="pv-demo" data-pv-demo data-locale="{{ 'zh' if zh else 'en' }}">
     <div class="pv-demo-toolbar">
       <span class="pv-demo-label"><span class="pv-status-dot"></span> checkout / {% if zh %}协作演示{% else %}collaboration demo{% endif %}</span>

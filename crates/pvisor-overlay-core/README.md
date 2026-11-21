@@ -204,7 +204,7 @@ Shared helper contracts (exported at this unmigrated crate's existing root):
   state cannot alter the merged view. Adapters must reject direct guest access
   to stored names so control state cannot be forged or enumerated;
   `validate_guest_xattr` keeps rejecting the reserved overlay spellings for
-  adapters without translation (host FUSE stagebox path).
+  adapters without translation (Host FUSE staging path).
 
 Review reports logical modes, including permission-only override modes. Apply
 publishes logical UID/GID/mode through `copy_host_metadata` and strips both

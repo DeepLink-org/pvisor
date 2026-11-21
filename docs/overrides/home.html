@@ -9,21 +9,15 @@
 <div class="pc-home-container" data-md-component="content" id="__skip">
   <article class="pc-home-article md-typeset">
     {% block content %}
-<div class="pc-home" id="{{ (page.toc | first).id if page.toc else '__skip' }}" tabindex="-1">
+<div class="pc-home" tabindex="-1">
   <section class="pc-home-hero">
     <div class="pc-home-hero-grid">
       <div class="pc-home-copy">
-        <p class="pc-home-eyebrow">{% if zh %}面向 Agent 的执行环境{% else %}Execution environments for agents{% endif %}</p>
         <h1>PolicyVisor</h1>
-        <p class="pc-home-tagline">{% if zh %}Agent 原生沙箱框架{% else %}An agent-native sandbox framework{% endif %}</p>
-        <p class="pc-home-promise">{% if zh %}Docker style sandbox 让容器各自在 VM 中运行；Agent style stagebox 让 Agent 先尝试，你看过改动再接收。{% else %}Run containers in their own VMs with Docker style sandbox. In Agent style stagebox, let the agent try changes and review them before accepting.{% endif %}</p>
-        <div class="pc-home-mode-summary" aria-label="{% if zh %}两种模式{% else %}Two modes{% endif %}">
-          <a href="start/first-run/#docker-style"><strong>Docker style sandbox</strong><span>{% if zh %}每个容器一个 VM{% else %}One VM per container{% endif %}</span></a>
-          <a href="start/first-run/#agent-style"><strong>Agent style stagebox</strong><span>{% if zh %}沉浸式氛围编程<br>无需反复权限确认{% else %}Hands-off vibe coding.<br>Coding without sandbox approvals.{% endif %}</span></a>
-        </div>
+        <div class="pc-home-intro">{{ page.content }}</div>
         <div class="pc-home-actions">
           <a class="pc-home-btn primary" href="start/installation/"><span>{% if zh %}安装并开始{% else %}Get started{% endif %}</span><span aria-hidden="true">→</span></a>
-          <a class="pc-home-btn" href="#stagebox-demo">{% if zh %}看看沙盘如何工作{% else %}See stagebox in action{% endif %}<span aria-hidden="true">↓</span></a>
+          <a class="pc-home-btn" href="#staged-task-demo">{% if zh %}查看文件审查示例{% else %}See how staged review works{% endif %}<span aria-hidden="true">↓</span></a>
         </div>
         <pre class="pc-home-install"><code>pip install pvisor-sandbox</code></pre>
         <details class="pc-home-brew">
@@ -36,9 +30,9 @@ brew install DeepLink-org/formula/pvisor</code></pre>
       </div>
       <div class="pc-home-terminal-wrap pc-home-examples" role="group" aria-label="{% if zh %}命令示例{% else %}Command examples{% endif %}">
         <input class="pc-home-example-radio" type="radio" name="pc-home-example" id="pc-home-docker" aria-controls="pc-home-docker-example" checked>
-        <label class="pc-home-example-label" for="pc-home-docker">Docker style sandbox</label>
+        <label class="pc-home-example-label" for="pc-home-docker">{% if zh %}容器命令{% else %}Container commands{% endif %}</label>
         <input class="pc-home-example-radio" type="radio" name="pc-home-example" id="pc-home-session" aria-controls="pc-home-session-example">
-        <label class="pc-home-example-label" for="pc-home-session">Agent style stagebox</label>
+        <label class="pc-home-example-label" for="pc-home-session">{% if zh %}Agent 任务命令{% else %}Agent task commands{% endif %}</label>
         <div class="pc-home-session-example" id="pc-home-session-example">
         <div class="pc-home-terminal" data-ui>
           <div class="pc-home-terminal-bar">{% if zh %}改动先暂存，成果由你选{% else %}Changes stay staged. You decide what to keep.{% endif %}</div>
@@ -69,7 +63,7 @@ pvisor logs demo
 pvisor stop demo
 pvisor rm demo</code></pre>
           </div>
-          <p class="pc-home-requirement">{% if zh %}实验性 Docker 兼容命令子集；不提供 Docker Engine API 或 Compose。{% else %}Experimental Docker-compatible command subset; Docker Engine API and Compose are not supported.{% endif %} <a href="reference/cli/#container-commands">{% if zh %}查看支持范围{% else %}See supported commands{% endif %}</a></p>
+          <p class="pc-home-requirement">{% if zh %}实验性 Docker 兼容命令子集；支持部分 Compose 命令，不提供 Docker Engine API。{% else %}Experimental Docker-compatible command subset; limited Compose support, no Docker Engine API.{% endif %} <a href="reference/cli/#container-commands">{% if zh %}查看支持范围{% else %}See supported commands{% endif %}</a></p>
         </div>
       </div>
     </div>
@@ -97,17 +91,15 @@ pvisor rm demo</code></pre>
     <p class="pc-home-stats-source">{% if zh %}三组独立实验，各自固定配置与样本量。条件与完整表格见 <a href="benchmarks/">基准测试</a>。{% else %}Three separate experiments, each with its own configuration and sample size. Conditions and full tables are in <a href="benchmarks/">benchmarks</a>.{% endif %}</p>
   </section>
   <section class="pc-home-modes">
-    <h2>{% if zh %}一个沙箱框架，两种模式{% else %}One sandbox framework, two modes{% endif %}</h2>
+    <h2>{% if zh %}管理容器与审查任务结果{% else %}Manage containers and review task results{% endif %}</h2>
     <div class="pc-home-mode-grid">
       <a class="pc-home-mode" href="reference/cli/#container-commands">
-        <strong>Docker style sandbox</strong>
+        <strong>{% if zh %}容器命令{% else %}Container commands{% endif %}</strong>
         <span>{% if zh %}熟悉的镜像与容器命令，每个容器对应独立 Linux VM。使用 run、exec、stop、rm 管理环境，获得 VM 执行隔离。{% else %}Familiar image and container commands, with a separate Linux VM for each container. Manage environments with run, exec, stop, and rm, backed by VM isolation.{% endif %}</span>
       </a>
       <a class="pc-home-mode" href="guides/">
-        <strong>Agent style stagebox</strong>
-        <span class="pc-home-mode-feature">{% if zh %}沉浸式氛围编程{% else %}Hands-off vibe coding.{% endif %}</span>
-        <span>{% if zh %}无需反复权限确认{% else %}Coding without sandbox approvals.{% endif %}</span>
-        <span>{% if zh %}pVisor 独创的沙盘模式：Agent 在预设边界内尝试，原生 Session 保存候选文件，你审查后只接收需要的成果。执行隔离由所选执行器提供。{% else %}pVisor's original stagebox mode: let agents experiment within defined boundaries, retain candidate files in a native Session, then review and accept selected results. The chosen executor provides isolation.{% endif %}</span>
+        <strong>{% if zh %}Agent 任务命令{% else %}Agent task commands{% endif %}</strong>
+        <span>{% if zh %}Agent 在预设边界内尝试，原生 Session 保存候选文件，你审查后只接收需要的成果。执行隔离由所选执行器提供。{% else %}Let agents experiment within defined boundaries, retain candidate files in a native Session, then review and accept selected results. The chosen executor provides isolation.{% endif %}</span>
       </a>
     </div>
   <aside class="pc-home-preview">
@@ -116,7 +108,7 @@ pvisor rm demo</code></pre>
     <p class="pc-home-integrations">{% if zh %}平台集成：为推理、评测与 RL 后训练提供执行环境，也可通过本地 daemon 接入受支持的 OpenSandbox / E2B SDK 协议子集。{% else %}Platform integration: execution environments for inference, evaluation, and RL post-training, plus a local daemon for supported OpenSandbox / E2B SDK protocol subsets.{% endif %} <a href="guides/infrastructure/">{% if zh %}部署与集成{% else %}Deployment and integration{% endif %}</a></p>
     <p class="pc-home-lede">{% if zh %}文件改动可以审查后接受或丢弃；远程调用、数据库写入和已发送的消息不受 apply/drop 影响，仍会生效。{% else %}File changes can be reviewed and accepted or dropped. Remote calls, database writes and sent messages are outside apply/drop and stay in effect.{% endif %}</p>
     <p class="pc-home-run-links">
-      <a href="start/first-run/">{% if zh %}两种模式上手{% else %}Try either mode{% endif %}</a>
+      <a href="start/first-run/">{% if zh %}试用容器与 Agent 命令{% else %}Try the commands{% endif %}</a>
       <a href="start/installation/">{% if zh %}安装与平台前置{% else %}Installation and prerequisites{% endif %}</a>
       <a href="guides/daemon/">OpenSandbox / E2B SDK</a>
       <a href="security/">{% if zh %}边界覆盖什么{% else %}What the boundary covers{% endif %}</a>

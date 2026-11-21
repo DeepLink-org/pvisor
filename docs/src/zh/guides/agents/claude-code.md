@@ -4,7 +4,7 @@ description: "在 pVisor 下运行 Claude Code：--safe 放行哪些网络目标
 
 # Claude Code
 
-用 Claude Code 修复一个空白字符处理有误的 Python 函数。测试通过后，只接收源码和测试，丢弃实验笔记。任务使用 Host stagebox、Python 标准库和你自己的模型账号。
+用 Claude Code 修复一个空白字符处理有误的 Python 函数。测试通过后，只接收源码和测试，丢弃实验笔记。任务使用 Host 文件暂存、Python 标准库和你自己的模型账号。
 
 ## 完整任务：修复失败测试 {#repair-task}
 

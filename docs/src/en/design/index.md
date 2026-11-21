@@ -1,12 +1,12 @@
 # Architecture overview
 
-Agent execution requires ongoing management of tool processes, file and network access, task state and resources. In local workflows, pVisor constrains access, isolates file changes and supports result review. On cluster execution nodes, pVisor provides managed sandboxes for inference, evaluation and training frameworks, supporting concurrent tasks and branches through lifecycle management, image and memory optimization, and state reuse. Both scenarios share the same underlying mechanisms; the frameworks own cross-node scheduling and task orchestration.
+A tool running in a pVisor container uses the container's guest kernel. The host manages image content and VM memory, so containers can run separately while reusing read-only content. For local tasks, the host can also retain staged edits for review. On an inference, evaluation, or training node, the same mechanisms manage concurrent tasks and branches. The surrounding system decides where to place a task and whether to retry it.
 
 ## 1. Overall architecture and component responsibilities {#architecture}
 
 ![pVisor technical architecture: runtime and host services, with pvisor-vm expanded into vCPUs, RAM, devices, snapshots and platform backends](assets/pvisor-architecture.svg)
 
-pVisor organizes task execution on the Host and manages execution environments through file, network and state services. The components have the following responsibilities and relationships:
+Two sides participate in a VM tool call: the guest runs the command; the host starts the environment, handles virtual device requests, and saves task state.
 
 | Components | Responsibilities and relationships |
 | --- | --- |

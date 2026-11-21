@@ -1,27 +1,27 @@
 ---
-description: The two modes of the pVisor sandbox framework, their isolation mechanisms and result-acceptance boundaries.
+description: Container and agent task commands, their isolation boundaries, and when changes reach the project.
 ---
 
 # Introduction {#overview}
 
 <span id="what-is-policyvisor"></span>
 
-PolicyVisor (pVisor) is a sandbox framework with two modes. Docker style sandbox runs familiar container commands in isolated VMs. Agent style stagebox is pVisor's original mode for coding agents, with staged file changes that you review before accepting.
+PolicyVisor (pVisor) runs each container in its own Linux VM. The agent's tools use the guest kernel; configure mounts and network access to control what they can reach.
 
-## Two modes {#modes}
+When agents run the same libraries, [page sharing](../benchmarks/vm-memory/index.md) lets their VMs read identical pages from one physical copy. Writes remain private. For a cold start, a [lazy image](../benchmarks/lazy-image-startup.md) fetches the content a tool reads first and leaves unused files on the server. A tool that scans the whole image still pays the cost of those reads.
 
-| Mode | Entry points | Isolation and result management |
+## Container and agent commands {#modes}
+
+On Linux, mount a project with `:stage` to review changes after the container exits and write back selected paths.
+
+| Workflow | Entry points | Isolation and result management |
 | --- | --- | --- |
-| Docker style sandbox | Container commands such as `pvisor run`, `exec`, `stop`, and `rm` | A separate Linux VM for each container; container lifecycle, with a separate staged-bind review/apply/drop contract on Linux. |
-| Agent style stagebox | Start a native Session with `pvisor spawn --safe`, then review and apply/drop | Retain candidate files before selective acceptance; isolation depends on the Host, OCI, or VM executor and installed controls. |
+| Container commands | Container commands such as `pvisor run`, `exec`, `stop`, and `rm` | A separate Linux VM for each container; container lifecycle, with a separate staged-bind review/apply/drop contract on Linux. |
+| Agent tasks | Start a native Session with `pvisor spawn --safe`, then review and apply/drop | Retain candidate files before selective acceptance; isolation depends on the Host, OCI, or VM executor and installed controls. |
 
-Sandbox names the framework and execution isolation. Stagebox refers specifically to the Agent style mode. A stage stores file changes awaiting acceptance. Stagebox does not name a new VM or isolation level, and does not automatically disable agent approvals.
+The CLI supports [Docker-style commands](../reference/cli.md#container-commands) and experimental [Compose projects](../reference/cli.md#compose). Docker Engine API clients require a separate Engine. Try native task commands with the [offline tutorial](../start/first-run.md), then configure authentication and networking using the [agent guides](../guides/agents/index.md). Ordinary Host Sessions write through by default; file review and acceptance require explicit staging.
 
-Docker style sandbox provides [Docker-style commands](../reference/cli.md#container-commands) and experimental [Compose projects](../reference/cli.md#compose). Docker Engine API clients require a separate Engine. Start Agent style stagebox with the [offline tutorial](../start/first-run.md), then configure authentication and networking using the [agent guides](../guides/agents/index.md). Ordinary Host Sessions write through by default; file review and acceptance require explicit staging.
-
-“Hands-off vibe coding. Coding without sandbox approvals.” describes one feature of Agent style stagebox within the sandbox framework. A verified agent/version/configuration matrix for approval-free operation is not yet published. Initial authentication, external-write controls, and final result review still need explicit handling.
-
-The framework also manages VM lifecycles, images, and memory for inference, evaluation, and RL post-training integrations. Capabilities depend on the interface, executor, and platform; capacity benefits require workload-specific measurements.
+The runtime also manages VM lifecycles, images, and memory for inference, evaluation, and RL post-training integrations. Capabilities depend on the interface, executor, and platform; capacity benefits require workload-specific measurements.
 
 <span id="responsibilities-of-the-execution-layer"></span>
 

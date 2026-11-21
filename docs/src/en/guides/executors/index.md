@@ -1,6 +1,6 @@
 # Choose an executor
 
-The two quick-start examples use Host and VM respectively. When you need a different execution environment, choose by the kernel and userspace your command requires.
+`pvisor run` starts a container from an image, with a separate Linux VM per container. `pvisor spawn` starts a native Session on the Host by default. Choose a Session executor based on where your tools are installed and whether they need a separate kernel. In particular, `--executor container` uses the host Linux kernel, unlike a VM-backed `pvisor run` container.
 
 | Executor | Environment | Prerequisites | Guide |
 | --- | --- | --- | --- |

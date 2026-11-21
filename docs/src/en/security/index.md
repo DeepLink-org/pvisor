@@ -2,7 +2,7 @@
 
 <span id="security-overview"></span>
 
-pVisor aims for **bounded, reversible, and checkable** execution: cap the blast radius of mistakes, let you discard file changes before apply, and record truthfully which controls actually took effect.
+pVisor aims for **bounded, reversible, and checkable** execution. A separate kernel isolates container processes from host processes; mounts and network settings determine what data the container can reach. With staging enabled, you can discard edits before they reach the project, but you cannot recall a request that has already been sent. Check the task's own records to see which controls took effect.
 
 ## At a glance
 

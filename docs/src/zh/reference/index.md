@@ -1,6 +1,6 @@
 # 命令与场景参考
 
-把一次任务接入脚本时，分别处理启动参数、执行结果和文件接受决定。普通 host 运行直接写入工作区；需要评审后再接受文件时，使用 `--safe` 或显式 `--stage`。
+脚本用 `spawn` 启动原生任务，用 `status` 读取执行结果，再决定是否用 `apply` 接收文件。普通 Host 任务直接写入工作区；要在写回前审查改动，启动时使用 `--safe` 或显式 `--stage`。
 
 ## 从运行到接受文件
 
@@ -11,7 +11,7 @@ pvisor inspect ../stage-reference-001 -- /bin/cat report.txt
 pvisor apply ../stage-reference-001 --path report.txt
 ```
 
-运行结束后，`report.txt` 留在暂存区；`inspect` 读取提案，`apply` 才接受所选文件。不接受时用 `drop` 丢弃剩余暂存改动。运行与 apply 的退出码分别检查，不能因为任务返回 0 就自动接受文件；冲突和失败处理见[退出码与错误](exit-codes.md)。参数语法与存储默认值由 [CLI 参考](cli.md)定义。
+`spawn` 退出后，`report.txt` 只在暂存区里。`inspect` 读的是暂存副本；直到 `apply` 成功，原项目才会收到文件。不想接收的改动可以用 `drop` 丢弃。脚本要分别检查任务和 `apply` 的退出码：任务成功不代表文件通过审查，写回也可能遇到冲突。见[退出码与错误](exit-codes.md)和 [CLI 参数与存储默认值](cli.md)。
 
 ## 读取记录与使用协议
 

@@ -1,5 +1,5 @@
 ---
-description: 在 Agent style stagebox 模式下接入现有 Agent，配置凭据和网络，审查并选择性接收结果。
+description: 用原生任务命令接入现有 Agent，配置凭据和网络，审查并选择性接收结果。
 ---
 
 # 接入你的 Agent
@@ -20,7 +20,7 @@ description: 在 Agent style stagebox 模式下接入现有 Agent，配置凭据
 
     应输出可执行文件路径。使用 Host 时命令须已安装在本机；使用 VM 或 OCI 时则必须安装在镜像内，宿主安装不会自动带入镜像。
 
-    按 [Claude Code](claude-code.md) 或 [Codex CLI](codex.md) 指南选择模型认证。使用 API Key 时，在当前终端通过你已有的凭据管理方式设置变量，再显式传入；不要把真实 Key 写进项目文件或示例命令。HOME 隔离可能使宿主登录状态不可见，需要检查 Agent 在 stagebox 模式内能否完成认证。
+    按 [Claude Code](claude-code.md) 或 [Codex CLI](codex.md) 指南选择模型认证。使用 API Key 时，在当前终端通过你已有的凭据管理方式设置变量，再显式传入；不要把真实 Key 写进项目文件或示例命令。HOME 隔离可能使宿主登录状态不可见，需要检查 Agent 在 Session 内能否完成认证。
 
 1. ### 从项目目录启动 {#launch-agent}
 
@@ -39,7 +39,7 @@ description: 在 Agent style stagebox 模式下接入现有 Agent，配置凭据
     pvisor review last --diff
     ```
 
-    检查任务状态、候选文件和测试输出后，按实际路径选择合入，再在原项目运行关键测试。具体命令与剩余改动清理见[Agent style stagebox 成果交接](../index.md#handoff)。失败或取消的任务可能仍有候选文件，先检查状态再决定，不要直接删除 stage。
+    检查任务状态、候选文件和测试输出后，按实际路径选择合入，再在原项目运行关键测试。具体命令与剩余改动清理见[Agent 任务成果交接](../index.md#handoff)。失败或取消的任务可能仍有候选文件，先检查状态再决定，不要直接删除 stage。
 
 </div>
 

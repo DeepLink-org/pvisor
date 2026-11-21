@@ -1,12 +1,12 @@
 ---
-description: 逐步安装 pVisor，检查 Linux 或 macOS 的文件暂存支持，再进入第一个 Agent style stagebox 任务。
+description: 安装 pVisor，并为容器示例准备 VM 支持，或为本机 Agent 任务准备文件暂存支持。
 ---
 
 # 安装指南
 
-安装 CLI 后，按所选模式准备平台，再按[快速上手](first-run.md)运行示例并检查结果、清理环境。
+安装 CLI 后，按所选示例准备平台，再按[快速上手](first-run.md)运行示例并检查结果、清理环境。
 
-发布包支持 Linux x86_64 和 Apple Silicon macOS。Python 安装需要 3.10+，无需 Rust 工具链或 Docker Daemon。Docker style 路径需要虚拟化与镜像下载；离线 Agent style 演示使用本机 Shell，无需 VM 镜像或模型账号。
+发布包支持 Linux x86_64 和 Apple Silicon macOS。Python 安装需要 3.10+，无需 Rust 工具链或 Docker Daemon。运行容器需要虚拟化与镜像下载；离线 Host Session 演示使用本机 Shell，无需 VM 镜像或模型账号。
 
 Windows x86_64 可从源码构建实验性的 WHP 容器 CLI。固件与宿主机前置条件见 [Windows profile](../reference/platforms.md#windows-startup)。
 
@@ -36,14 +36,14 @@ python -m pip install pvisor-sandbox
 
 ## 2. 准备平台环境 {#prepare-environment}
 
-按所选模式准备环境。Docker style 使用 VM，不需要安装 Host 暂存所用的 FUSE。
+按所选示例准备环境。容器使用 VM，不需要安装 Host 暂存所用的 FUSE。
 
 | 路径 | 需要准备 |
 | --- | --- |
-| Docker style sandbox | [VM 支持](#docker-prerequisites)，以及镜像仓库访问与缓存空间。 |
-| Agent style stagebox 离线演示 | [Host 文件暂存](#local-prerequisites)，以及本机 Shell。 |
+| 容器命令 | [VM 支持](#docker-prerequisites)，以及镜像仓库访问与缓存空间。 |
+| Agent 任务离线演示 | [Host 文件暂存](#local-prerequisites)，以及本机 Shell。 |
 
-### Docker style sandbox：VM 支持 {#docker-prerequisites}
+### 容器命令：VM 支持 {#docker-prerequisites}
 
 Linux x86_64 上检查架构与当前账号的 KVM 权限：
 
@@ -66,7 +66,7 @@ pvisor vm-check --json
 
 首次运行需要访问 Docker Hub，并留出镜像缓存空间。按[Docker 教程](first-run.md#docker-style)启动 VM，确认配置可以正常工作。
 
-### Agent style stagebox：Host 文件暂存 {#local-prerequisites}
+### Agent 任务：Host 文件暂存 {#local-prerequisites}
 
 `--safe` 需要能挂载暂存文件视图。请只完成与你的平台对应的一组步骤。
 
@@ -148,10 +148,10 @@ pvisor spawn --help
 
 ## 4. 完成首次任务 {#next-steps}
 
-- 已准备 VM：[Docker style sandbox](first-run.md#docker-style)，从镜像到运行、exec、停止与删除。
-- 已准备 Host 暂存：[Agent style stagebox](first-run.md#agent-style)，从离线命令到审查、接收和清理。
+- 已准备 VM：[容器命令](first-run.md#docker-style)，从镜像到运行、exec、停止与删除。
+- 已准备 Host 暂存：[Agent 任务](first-run.md#agent-style)，从离线命令到审查、接收和清理。
 
-完成 stagebox 演示后，用 [Claude Code 修复任务](../guides/agents/claude-code.md#repair-task)体验真实 Agent 的成果交接。需要从 Python 调用方收集 VM 工具反馈时，再使用[执行基础设施示例](infrastructure.md)。
+完成暂存演示后，用 [Claude Code 修复任务](../guides/agents/claude-code.md#repair-task)体验真实 Agent 的成果交接。需要从 Python 调用方收集 VM 工具反馈时，再使用[执行基础设施示例](infrastructure.md)。
 
 <a id="other-installation-methods"></a>
 

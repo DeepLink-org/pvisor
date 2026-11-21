@@ -1,6 +1,6 @@
 # Commands and scenarios
 
-When integrating a task into a script, handle launch arguments, execution results, and file acceptance separately. Ordinary host execution writes directly to the workspace; use `--safe` or an explicit `--stage` to review files before accepting them.
+Use `spawn` to start a native task, `status` to read the outcome, and `apply` if you want to keep its files. An ordinary Host task writes straight to the workspace. To review edits before they reach it, start the task with `--safe` or an explicit `--stage`.
 
 ## From try to file acceptance
 
@@ -11,7 +11,7 @@ pvisor inspect ../stage-reference-001 -- /bin/cat report.txt
 pvisor apply ../stage-reference-001 --path report.txt
 ```
 
-After execution, `report.txt` stays in staging; `inspect` reads the proposal and `apply` accepts the selected file. Use `drop` to discard remaining staged changes you do not accept. Check execution and apply exit codes separately; workload exit 0 does not authorize automatic file acceptance. See [Exit codes and errors](exit-codes.md) for conflicts and failures. The [CLI reference](cli.md) defines argument syntax and storage defaults.
+When `spawn` exits, `report.txt` exists only in staging. `inspect` reads that copy; the file reaches the original project when `apply` succeeds. Use `drop` for remaining edits you do not want. Check the task and `apply` exit codes separately: a successful task can produce an unwanted file, and a writeback can encounter a conflict. See [Exit codes and errors](exit-codes.md) and the [CLI arguments and storage defaults](cli.md).
 
 ## Read records and use protocols
 

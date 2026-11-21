@@ -1,7 +1,7 @@
 # Native Zensical configuration; no generated configuration or HTML post-processing.
 [project]
 site_name = "PolicyVisor"
-site_description = "Run a coding agent in a staged workspace, review its file changes, and apply only the paths you keep. Apache-2.0; runs locally on Linux x86_64 and Apple Silicon macOS."
+site_description = "A container runtime for agents with a Linux kernel per container, optional memory sharing across VMs, and lazy images that let tools start before a full download."
 site_url = "https://deeplink-org.github.io/pvisor/"
 docs_dir = "src/en"
 watch = ["src/en/benchmarks"]
@@ -17,7 +17,7 @@ nav = [
   { "Home" = "index.md" },
   { "Quick start" = [
     { "Installation" = "start/installation.md" },
-    { "Try either mode" = "start/first-run.md" },
+    { "Run and review" = "start/first-run.md" },
     { "Run tools in a VM" = "start/infrastructure.md" },
   ] },
   { "User guide" = [
