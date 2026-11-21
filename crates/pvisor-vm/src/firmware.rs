@@ -148,7 +148,24 @@ mod built_in {
     include!(concat!(env!("OUT_DIR"), "/embedded_kernel.rs"));
 }
 
+#[cfg(pvisor_embedded_native_kernel)]
+mod native_built_in {
+    include!(concat!(env!("OUT_DIR"), "/embedded_native_kernel.rs"));
+}
+
 pub(crate) fn embedded_kernel() -> Option<crate::api::KernelImage> {
+    if crate::experimental_kernel::selection().ok()?
+        == crate::experimental_kernel::Selection::RustNative
+    {
+        #[cfg(pvisor_embedded_native_kernel)]
+        return Some(crate::api::KernelImage {
+            bytes: native_built_in::KERNEL.clone(),
+            guest_address: native_built_in::GUEST_ADDR,
+            entry_address: native_built_in::ENTRY_ADDR,
+        });
+        #[cfg(not(pvisor_embedded_native_kernel))]
+        return None;
+    }
     #[cfg(pvisor_embedded_kernel)]
     {
         let mut span = crate::startup_profile::Span::new("embedded_kernel_init", "runtime");

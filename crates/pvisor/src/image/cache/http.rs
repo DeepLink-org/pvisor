@@ -160,7 +160,7 @@ impl Http {
         );
         ensure!(
             self.active
-                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| (n < 32)
+                .try_update(Ordering::AcqRel, Ordering::Acquire, |n| (n < 32)
                     .then_some(n + 1))
                 .is_ok(),
             "HTTP image read queue saturated"

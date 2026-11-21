@@ -1,0 +1,87 @@
+// SPDX-License-Identifier: MPL-2.0
+
+#![short_vis_path::add(procfs)]
+
+use crate::{
+    fs::{
+        file::{InodeType, mkmod},
+        procfs::{
+            ProcDir, StaticEntry,
+            sys::kernel::{
+                cap_last_cap::CapLastCapFileOps,
+                pid_max::PidMaxFileOps,
+                tainted::TaintedFileOps,
+                uts::{DomainnameFileOps, HostnameFileOps, OsReleaseFileOps, VersionFileOps},
+                yama::YamaDirOps,
+            },
+            template::{
+                ListedEntry, ProcDirOps, ReaddirEntry, listed_entries_from_table,
+                lookup_child_from_table, visit_listed_entries,
+            },
+        },
+        vfs::inode::Inode,
+    },
+    prelude::*,
+    security::lsm::is_yama_enabled,
+};
+
+mod cap_last_cap;
+mod pid_max;
+mod tainted;
+mod uts;
+mod yama;
+
+/// Represents the inode at `/proc/sys/kernel`.
+pub(in procfs) struct KernelDirOps;
+
+impl KernelDirOps {
+    pub(in procfs) fn new_inode(parent: Weak<dyn Inode>) -> Arc<dyn Inode> {
+        // Reference:
+        // <https://elixir.bootlin.com/linux/v6.16.5/source/kernel/sysctl.c#L1765>
+        // <https://elixir.bootlin.com/linux/v6.16.5/source/fs/proc/proc_sysctl.c#L978>
+        ProcDir::new(Self, parent, mkmod!(a+rx))
+    }
+
+    const STATIC_ENTRIES: &'static [StaticEntry] = &[
+        (
+            "cap_last_cap",
+            InodeType::File,
+            CapLastCapFileOps::new_inode,
+        ),
+        ("domainname", InodeType::File, DomainnameFileOps::new_inode),
+        ("hostname", InodeType::File, HostnameFileOps::new_inode),
+        ("osrelease", InodeType::File, OsReleaseFileOps::new_inode),
+        ("pid_max", InodeType::File, PidMaxFileOps::new_inode),
+        ("tainted", InodeType::File, TaintedFileOps::new_inode),
+        ("version", InodeType::File, VersionFileOps::new_inode),
+    ];
+}
+
+impl ProcDirOps for KernelDirOps {
+    fn lookup_child(&self, this_dir: &ProcDir<Self>, name: &str) -> Result<Arc<dyn Inode>> {
+        if let Some(child) = lookup_child_from_table(name, Self::STATIC_ENTRIES, |f| {
+            (f)(this_dir.this_weak().clone())
+        }) {
+            return Ok(child);
+        }
+
+        if name == "yama" && is_yama_enabled() {
+            return Ok(YamaDirOps::new_inode(this_dir.this_weak().clone()));
+        }
+
+        return_errno_with_message!(Errno::ENOENT, "the file does not exist");
+    }
+
+    fn visit_entries_from_offset<'a, F>(&'a self, offset: usize, visit_fn: F) -> Result<()>
+    where
+        F: FnMut(ReaddirEntry<'a>) -> Result<()>,
+    {
+        let yama_entry = is_yama_enabled().then(|| ListedEntry::new("yama", InodeType::Dir));
+
+        visit_listed_entries(
+            offset,
+            listed_entries_from_table(Self::STATIC_ENTRIES).chain(yama_entry),
+            visit_fn,
+        )
+    }
+}

@@ -1,0 +1,15 @@
+{
+  "source": {
+    "repository": "https://github.com/asterinas/asterinas",
+    "revision": "c4b7ed575b7b32773475b194d2ad41fb6d03765b",
+    "version": "0.19.0",
+    "url": "https://codeload.github.com/asterinas/asterinas/tar.gz/c4b7ed575b7b32773475b194d2ad41fb6d03765b",
+    "sha256": "f504169a9726d81f0450db9c99d21843b1dc6abe2b3c4a16b53dbb931dfc9e95"
+  },
+  "vdso": {
+    "revision": "8af571775a3d3a1df3e84fc9709b9d6b160c771a",
+    "url": "https://codeload.github.com/asterinas/linux_vdso/tar.gz/8af571775a3d3a1df3e84fc9709b9d6b160c771a",
+    "sha256": "ce018ab2f2ea84859e6a1e1f099abf093cb46e4250a4806b85aeaa8949017fcf"
+  },
+  "toolchain": "nightly-2026-07-21"
+}

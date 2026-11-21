@@ -1,0 +1,31 @@
+// SPDX-License-Identifier: MPL-2.0
+
+use alloc::format;
+
+use crate::{
+    fs::{
+        file::mkmod,
+        procfs::template::{ProcSym, ProcSymOps},
+        vfs::inode::{Inode, SymbolicLink},
+    },
+    prelude::*,
+    process::posix_thread::AsPosixThread,
+};
+
+/// Represents the inode at `/proc/self-thread`.
+pub(super) struct ThreadSelfSymOps;
+
+impl ThreadSelfSymOps {
+    pub(super) fn new_inode(parent: Weak<dyn Inode>) -> Arc<dyn Inode> {
+        // Reference: <https://elixir.bootlin.com/linux/v6.16.5/source/fs/proc/thread_self.c#L50>
+        ProcSym::new(Self, parent, mkmod!(a+rwx))
+    }
+}
+
+impl ProcSymOps for ThreadSelfSymOps {
+    fn read_link(&self) -> Result<SymbolicLink> {
+        let pid = current!().pid();
+        let tid = current_thread!().as_posix_thread().unwrap().tid();
+        Ok(SymbolicLink::Plain(format!("{}/task/{}", pid, tid)))
+    }
+}

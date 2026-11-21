@@ -47,6 +47,14 @@ pub(crate) struct Builder<B: Backend = NativeBackend> {
 impl<B: Backend> Builder<B> {
     pub fn new(cpus: u8, memory_mib: u32) -> io::Result<Self> {
         let mut resources = VmResources::default();
+        resources.rust_native_kernel = crate::experimental_kernel::selection()?
+            == crate::experimental_kernel::Selection::RustNative;
+        if resources.rust_native_kernel && (cpus != 1 || memory_mib < 256) {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "experimental Rust native kernel requires one vCPU and at least 256 MiB RAM",
+            ));
+        }
         resources
             .set_vm_config(&VmConfig {
                 vcpu_count: Some(cpus),
@@ -76,6 +84,12 @@ impl<B: Backend> Builder<B> {
         disable_proactive_compaction: bool,
         offload_minimum: std::time::Duration,
     ) -> io::Result<()> {
+        if self.resources.rust_native_kernel {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "Rust native kernel does not implement Linux idle handoff",
+            ));
+        }
         if offload_minimum <= std::time::Duration::from_millis(2)
             || offload_minimum > std::time::Duration::from_secs(86400)
         {
@@ -85,11 +99,7 @@ impl<B: Backend> Builder<B> {
             ));
         }
         if !cfg!(all(target_os = "linux", target_arch = "x86_64"))
-            || cfg!(any(
-                feature = "tee",
-                feature = "efi",
-                feature = "aws-nitro"
-            ))
+            || cfg!(any(feature = "tee", feature = "efi", feature = "aws-nitro"))
             || !(1..=2).contains(&self.resources.vcpu_config().vcpu_count)
             || self.resources.snapshot_profile
             || !self.vsock_ports.is_empty()
@@ -105,6 +115,12 @@ impl<B: Backend> Builder<B> {
         Ok(())
     }
     pub fn set_firmware_path(&mut self, path: PathBuf) -> io::Result<()> {
+        if self.resources.rust_native_kernel {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "Rust native kernel uses the embedded payload, not an external firmware path",
+            ));
+        }
         if !path.is_absolute() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -119,6 +135,35 @@ impl<B: Backend> Builder<B> {
         &mut self,
         embedded: Option<crate::api::KernelImage>,
     ) -> io::Result<()> {
+        if self.resources.rust_native_kernel {
+            let image = embedded.ok_or_else(|| {
+                io::Error::new(
+                io::ErrorKind::Unsupported,
+                "this executable has no embedded Rust native kernel; rebuild with mise run build",
+            )
+            })?;
+            let memory = self.resources.vm_config().mem_size_mib.unwrap() as u64 * 1024 * 1024;
+            #[cfg(target_arch = "aarch64")]
+            let (ram_start, reserved) = (
+                crate::arch::aarch64::layout::DRAM_MEM_START_KERNEL,
+                crate::arch::aarch64::layout::FDT_MAX_SIZE as u64,
+            );
+            #[cfg(not(target_arch = "aarch64"))]
+            let (ram_start, reserved) = (0, 0);
+            if !crate::experimental_kernel::fits_memory(
+                image.guest_address,
+                image.bytes.len() as u64,
+                ram_start,
+                memory,
+                reserved,
+            ) {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "Rust native kernel does not fit the requested guest RAM",
+                ));
+            }
+            return self.embedded_kernel(&image.bytes, image.guest_address, image.entry_address);
+        }
         if let Some(image) = embedded {
             return self.embedded_kernel(&image.bytes, image.guest_address, image.entry_address);
         }
@@ -143,11 +188,7 @@ impl<B: Backend> Builder<B> {
     }
     pub(crate) fn shared_kernel_base(&mut self, directory: PathBuf) -> io::Result<()> {
         if !cfg!(all(target_os = "macos", target_arch = "aarch64"))
-            || cfg!(any(
-                feature = "tee",
-                feature = "aws-nitro",
-                feature = "efi"
-            ))
+            || cfg!(any(feature = "tee", feature = "aws-nitro", feature = "efi"))
             || self.resources.snapshot_profile
         {
             return Err(io::Error::new(
@@ -203,6 +244,12 @@ impl<B: Backend> Builder<B> {
     /// contract; this replaces the implicit console configuration.
     pub fn task_stdio(&mut self, stdin: i32, stdout: i32, stderr: i32) -> io::Result<()> {
         use std::os::fd::RawFd;
+        if self.resources.rust_native_kernel {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "Rust native kernel currently supports only the primary VM console",
+            ));
+        }
         if self.resources.virtio_consoles.iter().any(|console| {
             matches!(
                 console,
@@ -307,6 +354,17 @@ impl<B: Backend> Builder<B> {
             all(target_os = "linux", target_arch = "x86_64")
         )))]
         let snapshot_kernel = false;
+        if self.resources.rust_native_kernel
+            && (snapshot_kernel
+                || self.resources.kernel_bundle.is_some()
+                || self.resources.external_kernel.is_some()
+                || self.resources.firmware_config.is_some())
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Rust native kernel selection conflicts with an explicitly configured kernel or restore",
+            ));
+        }
         if !snapshot_kernel
             && self.resources.kernel_bundle.is_none()
             && self.resources.external_kernel.is_none()
@@ -323,6 +381,12 @@ impl<B: Backend> Builder<B> {
                 krun_env: Some("     ".into()),
                 epilog: Some(" -- ".into()),
             });
+        if self.resources.rust_native_kernel {
+            command
+                .prolog
+                .get_or_insert_with(String::new)
+                .push_str(" root=/dev/root earlycon");
+        }
         if self.guest_idle {
             command
                 .prolog
@@ -636,6 +700,7 @@ impl<B: Backend> Builder<B> {
                 "managed share requires an absolute owned nonsymlink directory",
             ));
         }
+        #[cfg(target_arch = "x86_64")]
         if self.resources.snapshot_profile || self.resources.machine_restore.is_some() {
             return Err(io::Error::new(
                 io::ErrorKind::Unsupported,
@@ -797,6 +862,12 @@ impl<B: Backend> Builder<B> {
 ))]
 impl<B: crate::backend::SnapshotBackend> Builder<B> {
     pub fn snapshot_profile(&mut self) -> io::Result<()> {
+        if self.resources.rust_native_kernel {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "experimental Rust native kernel does not support snapshot/restore",
+            ));
+        }
         #[cfg(not(any(feature = "tee", feature = "aws-nitro")))]
         if self.resources.fs.iter().any(|fs| fs.managed) {
             return Err(io::Error::new(

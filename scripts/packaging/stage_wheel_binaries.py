@@ -35,6 +35,7 @@ BUILD_COMPONENTS = {
 }
 SUPPORTED_TARGETS = {
     "x86_64-unknown-linux-musl",
+    "aarch64-unknown-linux-musl",
     "aarch64-apple-darwin",
 }
 MACOS_ENTITLEMENTS = ROOT / "crates" / "pvisor" / "macos-hypervisor.entitlements"
@@ -95,6 +96,8 @@ def _normalize_target(target: str | None) -> str | None:
         machine = platform.machine().lower()
         if sys.platform == "linux" and machine in {"x86_64", "amd64"}:
             return "x86_64-unknown-linux-musl"
+        if sys.platform == "linux" and machine in {"arm64", "aarch64"}:
+            return "aarch64-unknown-linux-musl"
         if sys.platform == "darwin" and machine in {"arm64", "aarch64"}:
             return None
         raise RuntimeError(
@@ -106,7 +109,9 @@ def _normalize_target(target: str | None) -> str | None:
         "aarch64": "aarch64-apple-darwin"
         if sys.platform == "darwin"
         else "aarch64-unknown-linux-musl",
-        "arm64": "aarch64-apple-darwin",
+        "arm64": "aarch64-apple-darwin"
+        if sys.platform == "darwin"
+        else "aarch64-unknown-linux-musl",
     }
     normalized = aliases.get(target, target)
     if normalized not in SUPPORTED_TARGETS:
@@ -232,6 +237,7 @@ def _build_component(
         "PVISOR_LIBKRUNFW_PATH",
         "PVISOR_KRUNFW_PATH",
         "PVISOR_KRUNFW_KERNEL_BUNDLE",
+        "PVISOR_BUILD_NATIVE_KERNEL_BUNDLE",
     ):
         build_env.pop(selector, None)
     if firmware is not None:
@@ -284,7 +290,8 @@ def _build_all(options: BuildOptions) -> dict[str, Path]:
     firmware = _resolve_firmware(options)
     artifacts = _build(options, firmware=firmware)
     if not _is_macos(options):
-        artifacts.update(_build_component(options, component="shim-vm", firmware=firmware))
+        if _normalize_target(options.target) == "x86_64-unknown-linux-musl":
+            artifacts.update(_build_component(options, component="shim-vm", firmware=firmware))
         artifacts.update(_build_component(options, component="guest"))
     return artifacts
 
@@ -304,11 +311,25 @@ def _resolve_firmware(options: BuildOptions) -> firmware_build.ResolvedFirmware:
         else firmware_build.host_target()
     )
     assert target is not None
-    return firmware_build.resolve_firmware(
+    resolved = firmware_build.resolve_firmware(
         target,
         target_dir=options.target_dir,
         jobs=options.jobs,
         offline=options.offline or options.frozen,
+    )
+    native = firmware_build.prepare_native_kernel(
+        target,
+        target_dir=options.target_dir,
+        jobs=options.jobs,
+        offline=options.offline or options.frozen,
+    )
+    if native is None:
+        return resolved
+    record = json.loads(resolved.source_record)
+    record["rust_native_kernel"] = firmware_build.native_source_record(native)
+    return resolved._replace(
+        native_bundle=native,
+        source_record=json.dumps(record, indent=2, sort_keys=True) + "\n",
     )
 
 

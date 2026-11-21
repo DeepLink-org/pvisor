@@ -227,8 +227,7 @@ fn make_non_blocking(as_rw_fd: &impl AsRawFd) -> Result<(), nix::Error> {
     Ok(())
 }
 
-// Utility to relay log from the VM (the kernel boot log and messages from init)
-// to the rust log
+// Guest diagnostics are debug logs, separate from workload stdout/stderr.
 #[derive(Default)]
 pub struct PortOutputLog {
     buf: Vec<u8>,
@@ -243,7 +242,7 @@ impl PortOutputLog {
     }
 
     fn force_flush(&mut self) {
-        log::log!(target: PortOutputLog::LOG_TARGET, Level::Error, "[missing newline]{}", String::from_utf8_lossy(&self.buf));
+        log::log!(target: PortOutputLog::LOG_TARGET, Level::Debug, "[missing newline]{}", String::from_utf8_lossy(&self.buf));
         self.buf.clear();
     }
 }
@@ -270,7 +269,7 @@ impl PortOutput for PortOutputLog {
         let mut start = 0;
         for (i, ch) in self.buf.iter().cloned().enumerate() {
             if ch == b'\n' {
-                log::log!(target: PortOutputLog::LOG_TARGET, Level::Error, "{}", String::from_utf8_lossy(&self.buf[start..i]));
+                log::log!(target: PortOutputLog::LOG_TARGET, Level::Debug, "{}", String::from_utf8_lossy(&self.buf[start..i]));
                 start = i + 1;
             }
         }
@@ -435,3 +434,71 @@ struct WS {
     ypixel: u16,
 }
 ioctl_read_bad!(tiocgwinsz, TIOCGWINSZ, WS);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::{cell::RefCell, sync::Once};
+
+    thread_local! {
+        static RECORDS: RefCell<Vec<(Level, String)>> = const { RefCell::new(Vec::new()) };
+    }
+
+    struct Capture;
+
+    impl log::Log for Capture {
+        fn enabled(&self, _: &log::Metadata<'_>) -> bool {
+            true
+        }
+
+        fn log(&self, record: &log::Record<'_>) {
+            if record.target() == PortOutputLog::LOG_TARGET {
+                RECORDS.with_borrow_mut(|records| {
+                    records.push((record.level(), record.args().to_string()));
+                });
+            }
+        }
+
+        fn flush(&self) {}
+    }
+
+    #[rstest::rstest]
+    #[case::boot_line(b"RDSEED32 is broken.\n".to_vec(), "RDSEED32 is broken.".into())]
+    #[case::fragment(vec![b'x'; 513], format!("[missing newline]{}", "x".repeat(513)))]
+    fn guest_diagnostics_are_opt_in(#[case] mut bytes: Vec<u8>, #[case] expected: String) {
+        static INIT: Once = Once::new();
+        INIT.call_once(|| {
+            log::set_logger(&Capture).unwrap();
+            log::set_max_level(log::LevelFilter::Trace);
+        });
+        RECORDS.with_borrow_mut(Vec::clear);
+        let mut output = PortOutputLog::new();
+        // SAFETY: bytes owns the writable memory and outlives this slice.
+        let slice = unsafe { VolatileSlice::new(bytes.as_mut_ptr(), bytes.len()) };
+        assert_eq!(
+            output.write_volatile(&slice).unwrap(),
+            bytes.len()
+        );
+        assert!(output.buf.is_empty());
+        RECORDS.with_borrow(|records| {
+            assert_eq!(records.as_slice(), &[(Level::Debug, expected)]);
+        });
+        let default = env_logger::Builder::new()
+            .filter_level(log::LevelFilter::Error)
+            .build();
+        let metadata = log::Metadata::builder()
+            .target(PortOutputLog::LOG_TARGET)
+            .level(Level::Debug)
+            .build();
+        assert!(!log::Log::enabled(&default, &metadata));
+        let host_error = log::Metadata::builder()
+            .target("pvisor_vm::vmm")
+            .level(Level::Error)
+            .build();
+        assert!(log::Log::enabled(&default, &host_error));
+        let diagnostic = env_logger::Builder::new()
+            .filter_module(PortOutputLog::LOG_TARGET, log::LevelFilter::Debug)
+            .build();
+        assert!(log::Log::enabled(&diagnostic, &metadata));
+    }
+}

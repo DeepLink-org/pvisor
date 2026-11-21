@@ -168,7 +168,6 @@ impl CacheHandle {
     }
 
     // Keep the atomic update spelling supported by Rust versions before 1.99.
-    #[allow(deprecated)]
     pub(crate) fn begin(&self) -> bool {
         if self.stopped() {
             return false;
@@ -176,7 +175,7 @@ impl CacheHandle {
         if self
             .state
             .pending
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |pending| {
+            .try_update(Ordering::SeqCst, Ordering::SeqCst, |pending| {
                 (pending < PENDING_LIMIT).then_some(pending + 1)
             })
             .is_err()

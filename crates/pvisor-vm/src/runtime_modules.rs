@@ -50,6 +50,7 @@ mod vmm;
 #[path = "api.rs"]
 pub mod api;
 mod env;
+mod experimental_kernel;
 #[cfg(unix)]
 #[path = "backend.rs"]
 mod backend;
@@ -85,6 +86,8 @@ mod vcpu_observation;
 #[cfg(test)]
 #[path = "kernel_bundle.rs"]
 mod kernel_bundle;
+#[cfg(test)]
+mod native_kernel_bundle;
 
 #[path = "firmware_store.rs"]
 mod firmware_store;

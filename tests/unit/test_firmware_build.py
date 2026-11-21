@@ -66,6 +66,7 @@ def _make_firmware(tmp_path: Path, resources):
     for selector in ("PVISOR_LIBKRUNFW_PATH", "PVISOR_KRUNFW_PATH", "PVISOR_KRUNFW_KERNEL_BUNDLE"):
         resources.enter_context(mock.patch.dict(os.environ))
         os.environ.pop(selector, None)
+    os.environ.pop("PVISOR_NATIVE_KERNEL_BUNDLE", None)
 
     real_tools = module.build_tools
     tools = Mock(side_effect=lambda target: (["make", "SEV=0", "TDX=0"], {"cc": "fake cc 1"}, {}))
@@ -117,6 +118,116 @@ def _make_firmware(tmp_path: Path, resources):
 
 
 class FirmwareBuildTests(unittest.TestCase):
+    def test_linux_arm_prepares_both_kernels_for_the_same_native_architecture(self):
+        with workspace() as (tmp_path, resources):
+            firmware = _make_firmware(tmp_path, resources)
+            resources.enter_context(mock.patch.object(platform, "machine", return_value="aarch64"))
+            self.assertEqual(firmware.module.host_target(), "aarch64-unknown-linux-musl")
+            probe = firmware.module.subprocess.check_output
+            probe.side_effect = None
+            probe.return_value = "fixture tool version\n"
+            command, _, _ = firmware.real_tools("aarch64-unknown-linux-musl")
+            self.assertIn("ARCH=arm64", command)
+            self.assertIn("OS=Linux", command)
+            self.assertNotIn("ARCH=x86_64", command)
+            output = firmware.module.build_firmware(
+                "aarch64-unknown-linux-musl", target_dir=str(firmware.target_dir), jobs="2"
+            )
+            self.assertTrue(output.is_file())
+            firmware.tools.assert_called_once_with("aarch64-unknown-linux-musl")
+
+    def test_native_payload_always_comes_from_the_builder_not_an_environment_override(self):
+        with workspace() as (tmp_path, resources):
+            firmware = _make_firmware(tmp_path, resources)
+            bundle = tmp_path / "native"
+            bundle.mkdir()
+            (bundle / "kernel.bin").write_bytes(b"native payload")
+            (bundle / "kernel.json").write_text("{}")
+            artifacts = {
+                name: firmware.module.sha256(bundle / name)
+                for name in ("kernel.bin", "kernel.json")
+            }
+            (bundle / "pvisor-kernel.SOURCE").write_text(
+                json.dumps(
+                    {
+                        "origin": "local-native-build",
+                        "artifacts": artifacts,
+                    }
+                )
+            )
+            resources.enter_context(
+                mock.patch.dict(
+                    os.environ,
+                    {
+                        "PVISOR_NATIVE_KERNEL_BUNDLE": str(tmp_path / "ignored-override"),
+                    },
+                )
+            )
+            tool = firmware.module.subprocess.check_output
+            tool.side_effect = None
+            tool.return_value = str(bundle) + "\n"
+            self.assertEqual(firmware.module.prepare_native_kernel(TARGET), bundle)
+            tool.assert_called_once()
+            record = firmware.module.native_source_record(bundle)
+            self.assertEqual(record["origin"], "local-native-build")
+            self.assertEqual(
+                record["artifacts"]["kernel.bin"], firmware.module.sha256(bundle / "kernel.bin")
+            )
+            tool.reset_mock()
+            self.assertIsNone(firmware.module.prepare_native_kernel("riscv64gc-unknown-linux-gnu"))
+            tool.assert_not_called()
+
+    def test_product_native_preparation_uses_local_builder_and_offline_policy(self):
+        for target in (
+            TARGET,
+            "aarch64-unknown-linux-musl",
+            "aarch64-unknown-linux-gnu",
+            "aarch64-apple-darwin",
+        ):
+            for offline in [False, True]:
+                with (
+                    self.subTest(target=target, offline=offline),
+                    workspace() as (tmp_path, resources),
+                ):
+                    firmware = _make_firmware(tmp_path, resources)
+                    bundle = tmp_path / "native"
+                    bundle.mkdir()
+                    for name in ("kernel.bin", "kernel.json", "pvisor-kernel.SOURCE"):
+                        (bundle / name).write_bytes(b"build fixture")
+                    tool = firmware.module.subprocess.check_output
+                    tool.side_effect = None
+                    tool.return_value = str(bundle) + "\n"
+                    self.assertEqual(
+                        firmware.module.prepare_native_kernel(
+                            target, target_dir=str(firmware.target_dir), jobs="3", offline=offline
+                        ),
+                        bundle,
+                    )
+                    command = tool.call_args.args[0]
+                    self.assertIn(str(tmp_path / "pvisor-kernel/build.py"), command)
+                    self.assertEqual(
+                        command[command.index("--architecture") + 1], target.split("-")[0]
+                    )
+                    self.assertIn("--offline" if offline else "--prepare-toolchain", command)
+                    self.assertNotIn("--prepare-toolchain" if offline else "--offline", command)
+                    self.assertEqual(command[command.index("--jobs") + 1], "3")
+
+    def test_native_receipt_rejects_changed_artifacts(self):
+        with workspace() as (tmp_path, resources):
+            firmware = _make_firmware(tmp_path, resources)
+            for name in ("kernel.bin", "kernel.json"):
+                (tmp_path / name).write_bytes(b"original")
+            artifacts = {
+                name: firmware.module.sha256(tmp_path / name)
+                for name in ("kernel.bin", "kernel.json")
+            }
+            expected = {"origin": "local-native-build", "artifacts": artifacts}
+            (tmp_path / "pvisor-kernel.SOURCE").write_text(json.dumps(expected))
+            self.assertEqual(firmware.module.native_source_record(tmp_path), expected)
+            (tmp_path / "kernel.bin").write_bytes(b"changed")
+            with self.assertRaisesRegex(RuntimeError, "receipt does not match"):
+                firmware.module.native_source_record(tmp_path)
+
     def test_macos_case_insensitive_build_keeps_artifacts_and_sources_after_unmount(self):
         with workspace() as (tmp_path, resources):
             firmware = _make_firmware(tmp_path, resources)

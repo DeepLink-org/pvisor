@@ -10,6 +10,11 @@ This directory is the maintained source of pVisor's customized guest firmware,
 not a nested Git repository or a Python package. See [IMPORT.md](IMPORT.md) for
 its source revision and the local changes included in the import.
 
+Linux remains the default guest kernel. The optional Rust native kernel source/build
+integration lives alongside this directory in
+[`pvisor-kernel/`](../pvisor-kernel/README.md) and requires explicit experimental
+runtime selection. It does not change this directory's build or licensing.
+
 From the pVisor repository root:
 
 ```sh
@@ -19,10 +24,18 @@ mise run fw -- test
 
 CLI, daemon and single-wheel builds use firmware compiled from this directory
 by default; no prebuilt upstream firmware is downloaded by the build pipeline.
-Linux x86-64 and macOS ARM64 product builds both embed the compressed kernel in
+Linux x86-64/ARM64 and macOS ARM64 product builds embed the compressed kernel in
 the executables. The firmware library is consumed only during compilation and
 is not shipped beside the executables. Installing a published wheel does not
 require a kernel compiler.
+
+These product builds also compile and embed the experimental Rust native
+kernel from `pvisor-kernel/`, using the same compressed storage. Linux remains
+the default; `PVISOR_NATIVE_KERNEL=rust` selects the second embedded payload at
+runtime without an external bundle or any build-time kernel choice.
+The product `libkrunfw.SOURCE` receipt includes its
+source and artifact identities under `rust_native_kernel`.
+The standalone `fw build` command still builds Linux firmware only.
 
 `fw build` uses the native host's default firmware target and supplies
 `pyelftools`; the platform kernel toolchain must be installed separately.

@@ -876,8 +876,7 @@ fn make_non_blocking(as_rw_fd: &impl AsRawFd) -> Result<(), nix::Error> {
     Ok(())
 }
 
-// Utility to relay log from the VM (the kernel boot log and messages from init)
-// to the rust log.
+// Guest diagnostics are debug logs, separate from workload stdout/stderr.
 #[derive(Default)]
 pub struct PortOutputLog {
     buf: Vec<u8>,
@@ -892,7 +891,7 @@ impl PortOutputLog {
     }
 
     fn force_flush(&mut self) {
-        log::log!(target: PortOutputLog::LOG_TARGET, Level::Error, "[missing newline]{}", String::from_utf8_lossy(&self.buf));
+        log::log!(target: PortOutputLog::LOG_TARGET, Level::Debug, "[missing newline]{}", String::from_utf8_lossy(&self.buf));
         self.buf.clear();
     }
 }
@@ -904,7 +903,7 @@ impl PortOutput for PortOutputLog {
         let mut start = 0;
         for (i, ch) in self.buf.iter().cloned().enumerate() {
             if ch == b'\n' {
-                log::log!(target: PortOutputLog::LOG_TARGET, Level::Error, "{}", String::from_utf8_lossy(&self.buf[start..i]));
+                log::log!(target: PortOutputLog::LOG_TARGET, Level::Debug, "{}", String::from_utf8_lossy(&self.buf[start..i]));
                 start = i + 1;
             }
         }

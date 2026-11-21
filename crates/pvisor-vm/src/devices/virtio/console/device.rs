@@ -1,5 +1,5 @@
 use std::iter::zip;
-use std::mem::{size_of, size_of_val};
+use std::mem::size_of;
 use std::os::unix::io::{AsRawFd, RawFd};
 use std::sync::Arc;
 
@@ -215,7 +215,7 @@ impl Console {
             };
             if let Err(e) = control_tx
                 .queue
-                .add_used(mem, head.index, size_of_val(&cmd) as u32)
+                .add_used(mem, head.index, 0)
             {
                 error!("failed to add used elements to the queue: {e:?}");
             }

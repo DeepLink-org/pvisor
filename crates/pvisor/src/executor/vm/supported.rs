@@ -1687,7 +1687,7 @@ impl RunExecutor for VmExecutor {
             None
         };
         let idle_source_fd = idle_pair.as_ref().map(|(_, fd)| fd.as_raw_fd());
-        #[cfg(target_os = "linux")]
+        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
         let raw_ready_pair = self
             .restore
             .as_ref()
@@ -1708,7 +1708,7 @@ impl RunExecutor for VmExecutor {
                     }
                 }
             });
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
         let raw_ready_pair: Option<(tokio::net::UnixStream, OwnedFd)> = None;
         let raw_ready_source_fd = raw_ready_pair.as_ref().map(|(_, fd)| fd.as_raw_fd());
 
@@ -1833,7 +1833,7 @@ impl RunExecutor for VmExecutor {
         drop(control_runner);
         drop(ram_runner);
         drop(network_runner);
-        #[cfg(target_os = "linux")]
+        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
         if let Some((mut host, runner_fd)) = raw_ready_pair {
             drop(runner_fd);
             let owner = std::sync::Arc::downgrade(&self.restore.as_ref().unwrap()._ram_owner);
@@ -2242,10 +2242,6 @@ fn apply_restore(
     Ok(())
 }
 
-#[cfg(any(
-    all(target_os = "linux", target_arch = "x86_64"),
-    all(target_os = "macos", target_arch = "aarch64")
-))]
 fn write_control_reply(
     control: &mut std::os::unix::net::UnixStream,
     reply: &super::control::ControlReply,

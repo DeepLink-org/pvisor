@@ -4,6 +4,8 @@ use std::path::PathBuf;
 
 #[path = "src/kernel_bundle.rs"]
 mod kernel_bundle;
+#[path = "src/native_kernel_bundle.rs"]
+mod native_kernel_bundle;
 
 pub fn embed_kernel() {
     println!("cargo:rerun-if-env-changed=PVISOR_KRUNFW_PATH");
@@ -11,7 +13,11 @@ pub fn embed_kernel() {
 
     println!("cargo:rustc-check-cfg=cfg(pvisor_embedded_kernel)");
     let target = env::var("TARGET").expect("Cargo did not set TARGET");
-    let static_linux = target == "x86_64-unknown-linux-musl";
+    embed_native_kernel(&target);
+    let static_linux = matches!(
+        target.as_str(),
+        "x86_64-unknown-linux-musl" | "aarch64-unknown-linux-musl"
+    );
     let macos = target == "aarch64-apple-darwin";
     if !static_linux && !macos {
         return;
@@ -66,21 +72,64 @@ pub fn embed_kernel() {
         extract_kernel_bundle(&PathBuf::from(path))
     };
 
-    assert!(!kernel.is_empty(), "libkrun kernel bundle is empty");
-    let kernel_path = out_dir.join("embedded-libkrun-kernel.bin");
-    fs::write(&kernel_path, &kernel).unwrap_or_else(|error| {
+    write_embedded(&out_dir, "libkrun", &kernel, guest_addr, entry_addr);
+}
+
+fn embed_native_kernel(target: &str) {
+    println!("cargo:rerun-if-env-changed=PVISOR_BUILD_NATIVE_KERNEL_BUNDLE");
+    println!("cargo:rustc-check-cfg=cfg(pvisor_embedded_native_kernel)");
+    let Some(directory) = env::var_os("PVISOR_BUILD_NATIVE_KERNEL_BUNDLE") else {
+        return;
+    };
+    assert!(
+        matches!(
+            target,
+            "x86_64-unknown-linux-gnu"
+                | "x86_64-unknown-linux-musl"
+                | "aarch64-unknown-linux-gnu"
+                | "aarch64-unknown-linux-musl"
+                | "aarch64-apple-darwin"
+        ),
+        "the embedded Rust native kernel requires a supported Linux or macOS target"
+    );
+    let directory = PathBuf::from(directory);
+    for name in ["kernel.bin", "kernel.json"] {
+        println!("cargo:rerun-if-changed={}", directory.join(name).display());
+    }
+    let architecture = target.split('-').next().unwrap();
+    let (kernel, guest_addr, entry_addr) = native_kernel_bundle::load(&directory, architecture)
+        .unwrap_or_else(|error| panic!("invalid embedded Rust native kernel bundle: {error}"));
+    let out_dir = PathBuf::from(env::var_os("OUT_DIR").expect("Cargo did not set OUT_DIR"));
+    write_embedded(&out_dir, "native", &kernel, guest_addr, entry_addr);
+    println!("cargo:rustc-cfg=pvisor_embedded_native_kernel");
+}
+
+fn write_embedded(
+    out_dir: &std::path::Path,
+    name: &str,
+    kernel: &[u8],
+    guest_addr: u64,
+    entry_addr: u64,
+) {
+    assert!(!kernel.is_empty(), "embedded kernel bundle is empty");
+    let kernel_path = out_dir.join(format!("embedded-{name}-kernel.bin"));
+    fs::write(&kernel_path, kernel).unwrap_or_else(|error| {
         panic!(
-            "write embedded libkrun kernel {}: {error}",
+            "write embedded {name} kernel {}: {error}",
             kernel_path.display()
         )
     });
-    let packed_path = out_dir.join("embedded-libkrun-kernel.packed");
-    fs::write(&packed_path, kernel_bundle::pack(&kernel))
+    let packed_path = out_dir.join(format!("embedded-{name}-kernel.packed"));
+    fs::write(&packed_path, kernel_bundle::pack(kernel))
         .unwrap_or_else(|error| panic!("write packed kernel bundle: {error}"));
     let decoder_path = out_dir.join("kernel_bundle_decoder.rs");
     fs::write(&decoder_path, include_str!("src/kernel_bundle.rs"))
         .unwrap_or_else(|error| panic!("write shared kernel decoder: {error}"));
-    let generated = out_dir.join("embedded_kernel.rs");
+    let generated = out_dir.join(if name == "libkrun" {
+        "embedded_kernel.rs"
+    } else {
+        "embedded_native_kernel.rs"
+    });
     let kernel_literal = format!("{:?}", packed_path.to_string_lossy());
     let decoder_literal = format!("{:?}", decoder_path.to_string_lossy());
     let source = format!(
@@ -156,6 +205,15 @@ mod tests {
         bundle: Option<&std::path::Path>,
         output: &std::path::Path,
     ) -> std::process::Output {
+        generate_with_native(target, bundle, None, output)
+    }
+
+    fn generate_with_native(
+        target: &str,
+        bundle: Option<&std::path::Path>,
+        native: Option<&std::path::Path>,
+        output: &std::path::Path,
+    ) -> std::process::Output {
         let mut command = std::process::Command::new(std::env::current_exe().unwrap());
         command
             .args([
@@ -167,9 +225,13 @@ mod tests {
             .env("TARGET", target)
             .env("OUT_DIR", output)
             .env_remove("PVISOR_KRUNFW_PATH")
-            .env_remove("PVISOR_KRUNFW_KERNEL_BUNDLE");
+            .env_remove("PVISOR_KRUNFW_KERNEL_BUNDLE")
+            .env_remove("PVISOR_BUILD_NATIVE_KERNEL_BUNDLE");
         if let Some(bundle) = bundle {
             command.env("PVISOR_KRUNFW_KERNEL_BUNDLE", bundle);
+        }
+        if let Some(native) = native {
+            command.env("PVISOR_BUILD_NATIVE_KERNEL_BUNDLE", native);
         }
         command.output().unwrap()
     }
@@ -214,5 +276,144 @@ mod tests {
         assert!(
             String::from_utf8_lossy(&result.stderr).contains("read embedded libkrun kernel bundle")
         );
+    }
+
+    fn native_bundle(directory: &std::path::Path) -> Vec<u8> {
+        use sha2::{Digest, Sha256};
+        std::fs::create_dir(directory).unwrap();
+        let bytes = vec![0xcd; 8192];
+        let digest: String = Sha256::digest(&bytes)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        std::fs::write(directory.join("kernel.bin"), &bytes).unwrap();
+        std::fs::write(
+            directory.join("kernel.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "format": 1, "kernel": "rust-native", "architecture": "x86_64",
+                "boot_protocol": "linux64", "guest_addr": 0x08000000u64,
+                "entry_addr": 0x08001200u64, "size": bytes.len(), "sha256": digest,
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        bytes
+    }
+
+    #[test]
+    fn product_embeds_both_payloads_without_changing_linux() {
+        let root = tempfile::tempdir().unwrap();
+        let native = root.path().join("native");
+        let expected_native = native_bundle(&native);
+        let linux = root.path().join("linux");
+        std::fs::create_dir(&linux).unwrap();
+        let expected_linux = vec![0xab; 16384];
+        std::fs::write(linux.join("kernel.bin"), &expected_linux).unwrap();
+        std::fs::write(
+            linux.join("kernel.json"),
+            r#"{"guest_addr": 1048576, "entry_addr": 1052672}"#,
+        )
+        .unwrap();
+        let output = root.path().join("out");
+        std::fs::create_dir(&output).unwrap();
+        let result = generate_with_native(
+            "x86_64-unknown-linux-musl",
+            Some(&linux),
+            Some(&native),
+            &output,
+        );
+        assert!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        for (name, bytes) in [("libkrun", expected_linux), ("native", expected_native)] {
+            let packed =
+                std::fs::read(output.join(format!("embedded-{name}-kernel.packed"))).unwrap();
+            assert_eq!(&*super::kernel_bundle::unpack(&packed).unwrap(), bytes);
+        }
+        let generated = std::fs::read_to_string(output.join("embedded_native_kernel.rs")).unwrap();
+        assert!(generated.contains("GUEST_ADDR: u64 = 134217728"));
+        assert!(generated.contains("ENTRY_ADDR: u64 = 134222336"));
+        assert!(output.join("embedded_kernel.rs").is_file());
+    }
+
+    #[test]
+    fn embedded_native_bytes_survive_removal_of_all_build_inputs() {
+        let root = tempfile::tempdir().unwrap();
+        let native = root.path().join("native");
+        native_bundle(&native);
+        let output = root.path().join("out");
+        std::fs::create_dir(&output).unwrap();
+        let result = generate_with_native("x86_64-unknown-linux-gnu", None, Some(&native), &output);
+        assert!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        assert!(!output.join("embedded_kernel.rs").exists());
+        let source = root.path().join("probe.rs");
+        std::fs::write(
+            &source,
+            format!(
+                r#"
+mod startup_profile {{
+    pub struct Span;
+    impl Span {{
+        pub fn new(_: &str, _: &str) -> Self {{ Self }}
+        pub fn complete(&mut self, _: Option<usize>) {{}}
+    }}
+}}
+mod image {{ include!({:?}); }}
+fn main() {{
+    assert_eq!(&**image::KERNEL, vec![0xcd; 8192]);
+    assert_eq!(image::GUEST_ADDR, 0x08000000);
+    assert_eq!(image::ENTRY_ADDR, 0x08001200);
+}}
+"#,
+                output.join("embedded_native_kernel.rs"),
+            ),
+        )
+        .unwrap();
+        let executable = root
+            .path()
+            .join(format!("probe{}", std::env::consts::EXE_SUFFIX));
+        let result = std::process::Command::new("rustc")
+            .args(["--edition=2021", "-o"])
+            .arg(&executable)
+            .arg(&source)
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        std::fs::remove_dir_all(native).unwrap();
+        std::fs::remove_dir_all(output).unwrap();
+        std::fs::remove_file(source).unwrap();
+        assert!(std::process::Command::new(executable)
+            .status()
+            .unwrap()
+            .success());
+    }
+
+    #[rstest::rstest]
+    #[case::corrupt("x86_64-unknown-linux-gnu", true)]
+    #[case::unsupported("aarch64-apple-darwin", false)]
+    fn rejected_native_input_never_emits_a_kernel_module(
+        #[case] target: &str,
+        #[case] corrupt: bool,
+    ) {
+        let root = tempfile::tempdir().unwrap();
+        let native = root.path().join("native");
+        native_bundle(&native);
+        if corrupt {
+            std::fs::write(native.join("kernel.bin"), b"corrupted").unwrap();
+        }
+        let result = generate_with_native(target, None, Some(&native), root.path());
+        assert!(!result.status.success());
+        assert!(!root.path().join("embedded_native_kernel.rs").exists());
+        assert!(!root.path().join("embedded_kernel.rs").exists());
     }
 }

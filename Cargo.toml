@@ -23,7 +23,7 @@ members = [
     "crates/pvisor-overlay-core",
     "crates/pvisor-overlaynet",
 ]
-exclude = ["vendor/fuser", "vendor/hyper"]
+exclude = ["vendor/fuser", "vendor/hyper", "pvisor-kernel"]
 
 default-members = [
     "crates/pvisor-cli",

@@ -6,12 +6,37 @@ the guest supervisor.
 
 pVisor 的 Rust VM 运行时。VMM、设备、架构支持和虚拟化后端在同一个 crate 中编译，对外使用统一的 Rust API。
 
+## 实验性 Rust native kernel
+
+Linux 固件保持默认。`PVISOR_NATIVE_KERNEL=rust` 显式选择
+根目录 [`pvisor-kernel`](../../pvisor-kernel/README.md) 的内置裁剪源码构建。
+Linux x86_64/aarch64 和 macOS aarch64 的产品构建同时内嵌 Linux 与 Rust native 两个压缩内核，
+运行时只需设置该选择变量，不读取外置 bundle，也不查找可执行文件旁的内核。
+`mise run build` 自动准备并同时嵌入两个载荷，没有用户侧 bundle 路径配置，
+也不在构建时选择内核。独立 Cargo 构建若未嵌入该载荷，选择实验内核会明确报错，
+不下载、不编译、不回退到 Linux。实验内核不接受 `set_firmware_path`。
+
+实验 profile 限于全新单 vCPU、至少 256 MiB 的 Linux x86_64/aarch64 KVM 或 macOS aarch64 HVF VM，
+不支持 EFI、TEE、快照/恢复和 Linux idle handoff。继续使用同一
+virtio-MMIO、virtio-fs `/dev/root` 和 guest supervisor；启动时仅补充
+实验 x86 内核需要的 ACPI CPU/IRQ/reset 描述。原有 Linux 启动路径不写入这些表。
+aarch64 沿用既有 FDT、GICv3、timer 和 PSCI；镜像从 `0x80200000`
+的 ARM64 Image 头启动，FDT 仍通过 `x0` 传入，并避免内核覆盖 RAM 尾部的 FDT。
+ARM KVM 不为实验内核回退到 GICv2。ARM64 内核已交叉编译，真实 KVM/HVF 启动尚未验收。
+bundle 元数据、物理地址、长度和 SHA-256 在编译嵌入前验证；摘要检测损坏，
+不证明来源可信，构建者仍须信任本地构建输入。内核在进程内按需解包并共享。
+
 ## 设备支持范围
 
 产品构建选择默认 `init-blob` 和可选 `net`，使用 KVM/HVF/WHP、
 virtio-fs/console/vsock、网络和 RAM/快照能力；具体限制见各平台说明。
 不提供 `gpu`、`snd`、`input` 或 `virgl_resource_map2` feature；
 不支持的公开操作返回 `Unsupported`。
+
+Guest kernel/init 诊断通过 `init_or_kernel` debug 日志转发，不作为宿主错误写入
+容器命令的 stderr。需要排查启动时显式设置
+`PVISOR_KRUN_LOG=1 RUST_LOG=init_or_kernel=debug`；
+工作负载的 stdout/stderr 和真正的 VMM 错误不受影响。
 
 `blk` 用于 Windows 原生容器的独占 ext4 磁盘。
 `tee`、`amd-sev`、`tdx`、`aws-nitro`、`efi` 是内部可选实现，
@@ -91,8 +116,9 @@ Windows 文件模式与 uid/gid 为合成的 Linux 元数据；宿主 ACL 仍生
 chmod/chown 不提供完整语义。共享树由调用方管理，不要允许其他不可信宿主进程
 并发改写它的目录结构。此支持范围是 `pvisor-vm`，不表示 executor、Gateway、
 Core、OverlayFS 或完整 pVisor CLI 已能在 Windows 上构建和运行。
-限定的跨平台 CLI 入口是 `pvisor vm-run`，仅使用此处支持的普通 rootfs/只读共享
-与 supervisor 配置；见 [CLI README](../pvisor-cli/README.md#direct-vm-execution-on-linux-macos-and-windows)。
+产品 CLI 通过 Docker 兼容命令及支持平台上的 Agent Session 选择 VM 后端，
+不单独提供直接 VMM 执行命令。普通 rootfs/只读共享与 supervisor 的底层诊断
+使用测试 example `vm_api_case`，不作为产品命令安装。
 
 退出认证仅在协商了 FUSE `ALLOW_IDMAP` 时接受内核省略的 UID，规则与 Unix
 后端一致；内核 PID 必须仍为 1，其他显式 UID、伪造 token 和重复报告均拒绝。
@@ -129,8 +155,8 @@ Windows 原生检查失败会使主 CI 门禁失败，不再依赖单独 workflo
 不需要仓库变量或自托管 runner。
 
 Linux 托管 runner 每次构建本仓库固件 DLL、静态 Linux probe 和 ext4 模板，
-Windows 原生构建上传 `whp_smoke.exe` 与 `pvisor.exe`。三个独立的临时
-`windows-2025` runner 并行执行 smoke、共同 CLI VM 负载及两轮容器验收；
+Windows 原生构建上传 `whp_smoke.exe`、`vm_api_case.exe` 与 `pvisor.exe`。三个独立的临时
+`windows-2025` runner 并行执行 smoke、共同 VM API 负载及两轮产品容器验收；
 任一组失败不取消其他组。容器组涵盖默认网络、peer TCP、管道 stdin、
 ConPTY、Ctrl+C、退出与控制台恢复。
 测试记录镜像版本、hypervisor 状态和 HypervisorPlatform 功能状态，必要时
@@ -139,7 +165,7 @@ ConPTY、Ctrl+C、退出与控制台恢复。
 被当作通过或静默跳过。即使原生契约测试失败，也继续尝试已有制品的 WHP 验收。
 固件构建失败时下游作业跳过，但 Windows workflow 和主 CI 仍失败。
 证据写入未缓存的 `RUNNER_TEMP`，记录运行镜像与输入哈希，上传为
-`windows-vm-whp-smoke`、`windows-vm-whp-vm-cli` 和
+`windows-vm-whp-smoke`、`windows-vm-whp-vm-api` 和
 `windows-vm-whp-containers`。容器失败只复制每个诊断文件最后最多 1 MiB，
 标明原始大小与偏移，不上传 4 GiB root disk 或镜像 blobs。
 收尾记录 hypervisor 事件及残留进程；只终止该 job 的制品目录下的进程，
@@ -2052,7 +2078,7 @@ node-owned views, compressed snapshots and other platforms retain their previous
 path. This optimization does not enable offload on restored COW memory and does
 not promise a measured total-memory saving before workload validation.
 
-## Shared CLI VM contracts and Windows directory rename
+## Shared VM API contracts and Windows directory rename
 
 Windows directory rename updates cached paths for the directory and all
 known descendants, retaining inode IDs and lookup counts. A native
@@ -2060,9 +2086,10 @@ regression checks nested inodes and a no-op rename; the shared guest workload
 checks the directory move. Full POSIX rename/open-unlinked semantics on Windows
 remain unverified.
 
-`tests/vm_cli_contract.py` drives `pvisor vm-run` with the same static Linux
-workload on KVM, HVF and WHP. Windows CI builds the CLI and retains the existing
-WHP API smoke. See the [platform matrix](../../docs/src/en/reference/platforms.md)
+`tests/vm_api_contract.py` drives the test-only `vm_api_case` example through
+the public API with the same static Linux workload on KVM, HVF and WHP.
+Product CLI coverage remains in the container and Session suites. Windows CI
+retains the existing WHP API smoke. See the [platform matrix](../../docs/src/en/reference/platforms.md)
 for supported features, inputs and results.
 
 ## Snapshot allocation regression measurements

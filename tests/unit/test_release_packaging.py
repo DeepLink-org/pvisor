@@ -27,6 +27,13 @@ from tests.packaging_fixtures import (
 
 
 class ReleasePackagingTests(unittest.TestCase):
+    def setUp(self):
+        patcher = mock.patch.object(
+            wheel_stage.firmware_build, "prepare_native_kernel", return_value=None
+        )
+        self.native_kernel = patcher.start()
+        self.addCleanup(patcher.stop)
+
     def test_install_receipt_is_published_only_after_success_and_never_claims_vm(self):
         with workspace() as (root, resources):
             wheel = root / "pvisor_sandbox-1.2.3-py3-none-macosx_11_0_arm64.whl"
@@ -329,6 +336,23 @@ class ReleasePackagingTests(unittest.TestCase):
                         bundle.mkdir()
                         (bundle / "kernel.bin").write_bytes(b"selected kernel")
                         (bundle / "kernel.json").write_text("{}")
+                        native = tmp_path / "native"
+                        native.mkdir()
+                        (native / "kernel.bin").write_bytes(b"native kernel input")
+                        (native / "kernel.json").write_text('{"kernel":"rust-native"}')
+                        (native / "pvisor-kernel.SOURCE").write_text(
+                            json.dumps(
+                                {
+                                    "origin": "local-native-build",
+                                    "artifacts": {
+                                        name: wheel_stage.firmware_build.sha256(native / name)
+                                        for name in ("kernel.bin", "kernel.json")
+                                    },
+                                }
+                            )
+                        )
+                        self.native_kernel.reset_mock()
+                        self.native_kernel.return_value = native
                         if selector:
                             resources.enter_context(
                                 mock.patch.dict(
@@ -389,7 +413,12 @@ class ReleasePackagingTests(unittest.TestCase):
                             resources.enter_context(
                                 mock.patch.dict(
                                     os.environ,
-                                    {"PVISOR_LIBKRUNFW_PATH": str(str(tmp_path / "wrong-input"))},
+                                    {
+                                        "PVISOR_LIBKRUNFW_PATH": str(tmp_path / "wrong-input"),
+                                        "PVISOR_BUILD_NATIVE_KERNEL_BUNDLE": str(
+                                            tmp_path / "wrong-native"
+                                        ),
+                                    },
                                 )
                             )
                             return SimpleNamespace(stdout=messages, wait=lambda: 0)
@@ -402,6 +431,12 @@ class ReleasePackagingTests(unittest.TestCase):
                         )
                         staged = wheel_stage.stage_wheel_binaries(options)
                         resolver.assert_called_once()
+                        self.native_kernel.assert_called_once_with(
+                            options.target,
+                            target_dir=options.target_dir,
+                            jobs=options.jobs,
+                            offline=options.offline or options.frozen,
+                        )
                         assert build_firmware.call_count == (0 if selector else 1)
                         assert len(environments) == 2
                         cargo_variable = (
@@ -412,11 +447,15 @@ class ReleasePackagingTests(unittest.TestCase):
                         selected = bundle if cargo_variable.endswith("BUNDLE") else source
                         for env in environments:
                             assert env[cargo_variable] == str(selected)
+                            assert env["PVISOR_BUILD_NATIVE_KERNEL_BUNDLE"] == str(native)
                             assert "PVISOR_LIBKRUNFW_PATH" not in env
                             assert ("PVISOR_KRUNFW_PATH" in env) != (
                                 "PVISOR_KRUNFW_KERNEL_BUNDLE" in env
                             )
                         record = json.loads((staged / "libkrunfw.SOURCE").read_text())
+                        assert record["rust_native_kernel"]["artifacts"]["kernel.bin"] == (
+                            wheel_stage.firmware_build.sha256(native / "kernel.bin")
+                        )
                         assert record["path"] == str(selected)
                         if cargo_variable.endswith("BUNDLE"):
                             assert record["files"][
@@ -428,9 +467,73 @@ class ReleasePackagingTests(unittest.TestCase):
                             )
                         assert not (staged / source.name).exists()
                         assert not (binaries / source.name).exists()
+                        assert not (staged / "kernel.bin").exists()
+                        assert not (staged / "kernel.json").exists()
                         assert (binaries / "libkrunfw.SOURCE").read_bytes() == (
                             staged / "libkrunfw.SOURCE"
                         ).read_bytes()
+
+    def test_native_build_failure_prevents_product_compilation_and_staging(self):
+        with workspace() as (tmp_path, resources):
+            resources.enter_context(
+                mock.patch.object(
+                    wheel_stage.firmware_build,
+                    "resolve_firmware",
+                    return_value=_resolved_fixture(tmp_path),
+                )
+            )
+            self.native_kernel.side_effect = RuntimeError("native kernel build failed")
+            cargo = resources.enter_context(mock.patch.object(wheel_stage.subprocess, "Popen"))
+            with self.assertRaisesRegex(RuntimeError, "native kernel build failed"):
+                wheel_stage.stage_wheel_binaries(
+                    wheel_stage.BuildOptions(
+                        target="x86_64-unknown-linux-musl",
+                    )
+                )
+            cargo.assert_not_called()
+
+    def test_runtime_kernel_selection_never_changes_the_two_build_payloads(self):
+        with workspace() as (tmp_path, resources):
+            linux = _resolved_fixture(tmp_path)
+            resources.enter_context(
+                mock.patch.object(
+                    wheel_stage.firmware_build,
+                    "resolve_firmware",
+                    return_value=linux,
+                )
+            )
+            native = tmp_path / "native"
+            native.mkdir()
+            for name in ("kernel.bin", "kernel.json"):
+                (native / name).write_bytes(b"fixed native build input")
+            (native / "pvisor-kernel.SOURCE").write_text(
+                json.dumps(
+                    {
+                        "artifacts": {
+                            name: wheel_stage.firmware_build.sha256(native / name)
+                            for name in ("kernel.bin", "kernel.json")
+                        },
+                    }
+                )
+            )
+            self.native_kernel.return_value = native
+            options = wheel_stage.BuildOptions(target="x86_64-unknown-linux-musl")
+            for selector in (None, "linux", "rust", "invalid"):
+                with self.subTest(selector=selector), mock.patch.dict(os.environ):
+                    os.environ.pop("PVISOR_NATIVE_KERNEL", None)
+                    if selector is not None:
+                        os.environ["PVISOR_NATIVE_KERNEL"] = selector
+                    resolved = wheel_stage._resolve_firmware(options)
+                    self.assertEqual(resolved.path, linux.path)
+                    self.assertEqual(resolved.native_bundle, native)
+                    self.assertEqual(
+                        resolved.cargo_env,
+                        {
+                            "PVISOR_KRUNFW_PATH": str(linux.path),
+                            "PVISOR_BUILD_NATIVE_KERNEL_BUNDLE": str(native),
+                        },
+                    )
+            self.assertEqual(self.native_kernel.call_count, 4)
 
     def test_build_backend_options_accept_explicit_cargo_settings(self):
         options = wheel_stage.options_from_build_backend(
@@ -714,7 +817,11 @@ class ReleasePackagingTests(unittest.TestCase):
         assert command[command.index("--features") + 1] == "vm"
 
     def test_all_build_selects_platform_binaries_and_reuses_firmware(self):
-        for target, linux in (("x86_64-unknown-linux-musl", True), ("aarch64-apple-darwin", False)):
+        for target, components in (
+            ("x86_64-unknown-linux-musl", ["cli", "daemon", "shim-vm", "guest"]),
+            ("aarch64-unknown-linux-musl", ["cli", "daemon", "guest"]),
+            ("aarch64-apple-darwin", ["cli", "daemon"]),
+        ):
             with self.subTest(target=target), workspace() as (root, resources):
                 firmware = _resolved_fixture(root)
                 resolve = resources.enter_context(
@@ -738,13 +845,13 @@ class ReleasePackagingTests(unittest.TestCase):
                 options = wheel_stage.BuildOptions(target=target)
                 artifacts = wheel_stage._build_all(options)
                 expected = set(wheel_stage.EXPECTED_BINARIES)
-                if linux:
+                if "shim-vm" in components:
                     expected.update(("pvisor-daemon", "containerd-shim-pvisor-v2", "pvisor-guest"))
+                elif "guest" in components:
+                    expected.add("pvisor-guest")
                 assert set(artifacts) == expected
                 resolve.assert_called_once_with(options)
-                assert [component for component, _ in calls] == (
-                    ["cli", "daemon", "shim-vm", "guest"] if linux else ["cli", "daemon"]
-                )
+                assert [component for component, _ in calls] == components
                 for component, resolved in calls:
                     assert resolved is (None if component == "guest" else firmware)
 

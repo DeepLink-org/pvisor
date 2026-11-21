@@ -1,0 +1,67 @@
+// SPDX-License-Identifier: MPL-2.0
+
+//! The architecture support of context switch.
+
+use crate::task::TaskContextApi;
+
+core::arch::global_asm!(include_str!("switch.S"));
+
+#[repr(C)]
+#[derive(Clone, Debug)]
+pub(crate) struct TaskContext {
+    regs: CalleeRegs,
+    rip: usize,
+}
+
+impl TaskContext {
+    pub(crate) const fn new() -> Self {
+        Self {
+            regs: CalleeRegs::new(),
+            rip: 0,
+        }
+    }
+}
+
+/// Callee-saved registers.
+#[repr(C)]
+#[derive(Clone, Debug)]
+struct CalleeRegs {
+    rsp: u64,
+    rbx: u64,
+    rbp: u64,
+    r12: u64,
+    r13: u64,
+    r14: u64,
+    r15: u64,
+}
+
+impl CalleeRegs {
+    /// Creates new `CalleeRegs`
+    pub(self) const fn new() -> Self {
+        CalleeRegs {
+            rsp: 0,
+            rbx: 0,
+            rbp: 0,
+            r12: 0,
+            r13: 0,
+            r14: 0,
+            r15: 0,
+        }
+    }
+}
+
+impl TaskContextApi for TaskContext {
+    fn set_instruction_pointer(&mut self, ip: usize) {
+        self.rip = ip;
+    }
+
+    fn set_stack_pointer(&mut self, sp: usize) {
+        self.regs.rsp = sp as u64;
+    }
+}
+
+unsafe extern "C" {
+    pub(crate) unsafe fn context_switch(nxt: *const TaskContext, cur: *mut TaskContext);
+    pub(crate) unsafe fn first_context_switch(nxt: *const TaskContext);
+    pub(crate) unsafe fn kernel_task_entry_wrapper();
+}

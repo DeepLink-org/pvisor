@@ -1,0 +1,8 @@
+[boot]
+method = "vmm-direct"
+
+[grub]
+boot_protocol = "multiboot2"
+
+[qemu]
+args = "-machine microvm -nographic"

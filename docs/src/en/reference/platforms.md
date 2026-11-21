@@ -1,12 +1,13 @@
 # Platforms and executor support
 
 Linux x86_64 and Apple Silicon macOS have full CLI installations. Windows x86_64
-supports source-built `pvisor vm-run` and an experimental native WHP container
+supports an experimental source-built native WHP container
 profile; Sessions, replay and the local
 Daemon are not ported.
 
-One `pvisor.exe` covers this VM entry point, with `libkrunfw.dll`, a Linux rootfs
-and its workload still required. CI runs the shared VM workload on Linux/KVM
+The public execution paths are Docker-compatible container commands and, on
+supported platforms, Agent Session commands. There is no separate direct-VMM
+execution command. CI runs a test-only VM API probe on Linux/KVM
 and Windows/WHP. Hosted macOS CI retains builds and conventional tests without
 running real HVF cases; the same workload remains available manually on an
 Apple Silicon Mac with working HVF.
@@ -19,7 +20,7 @@ resident Daemon. Other components are invoked by the features that use them.
 
 | Program and owner | Used for | Windows status |
 | --- | --- | --- |
-| `pvisor` / `pvisor-cli` | Command entry; self-launches ordinary Session owners; `vm-run` executes a VM in the current process | `pvisor.exe`: `vm-run` and native container command subset; no Sessions |
+| `pvisor` / `pvisor-cli` | Docker-compatible and Agent commands; self-launches ordinary Session owners | `pvisor.exe`: native container command subset; no Sessions |
 | `pvisor-replay` / `pvisor-cli` | `pvisor replay`; managed replay calls adjacent `pvisor` using Session/trajectory contracts | Not ported |
 | `pvisor-daemon` / separate crate | `pvisor daemon`, cache/sandbox services; `--vm-memory-pool auto` discovers or starts the shared pool through it | Not ported |
 
@@ -30,7 +31,8 @@ and macOS arm64. See [installation](../start/installation.md).
 
 `pvisor-guest` is the Linux PID 1 supervisor embedded in `pvisor-vm`. Cross-compiling it on
 Windows still produces a Linux payload; no host `pvisor-guest.exe` is needed.
-`whp_smoke.exe` is a CI probe. `containerd-shim-pvisor-v2` is delivered separately
+`whp_smoke.exe` and `vm_api_case` are CI probes, not installed product commands.
+`containerd-shim-pvisor-v2` is delivered separately
 for Linux containerd integration. Guest workloads must be Linux programs.
 
 The [binary inventory and build targets](https://github.com/DeepLink-org/pvisor/blob/main/scripts/packaging/stage_wheel_binaries.py)
@@ -42,7 +44,7 @@ pool calls live in [automatic pool discovery](https://github.com/DeepLink-org/pv
 
 | Feature | Linux x86_64 | Apple Silicon macOS | Windows x86_64 |
 | --- | --- | --- | --- |
-| `vm-run` | KVM, readable/writable `/dev/kvm`; Linux x86_64 guest | HVF, Hypervisor signing; Linux aarch64 guest, no macFUSE needed | WHP enabled followed by reboot; nested hosts must expose virtualization; Linux x86_64 guest |
+| VM-backed execution | KVM, readable/writable `/dev/kvm`; Linux x86_64 guest | HVF, Hypervisor signing; Linux aarch64 guest | WHP enabled followed by reboot; nested hosts must expose virtualization; Linux x86_64 guest |
 | Host Sessions (`spawn`), OverlayFS, review/apply/drop | FUSE for staging; user namespaces and Landlock for sandbox | macFUSE 5.4.0+ FSKit for staging; Seatbelt for file/network controls | Not ported |
 | Native OCI Sessions (`container` / `--executor container`) | `crun`/`runc` and a matching static Linux injected binary | Unsupported | Unsupported |
 | Docker-style VM containers and network policy | Implementation and separate contracts | Implementation; each capability needs HVF validation | Experimental WHP profile: image/lifecycle, bridge/none and stdin/PTY |
@@ -57,10 +59,10 @@ use one Linux VM per container. They are separate from native OCI Sessions and d
 not implement the Docker Engine API. Linux arm64 has source paths requiring
 host-specific build/KVM evidence and a matching rootfs; OCI also needs a
 `linux/arm64` injected binary. The x86_64 wheel does not cover arm64. Intel macOS
-has no current release support promise and is outside `vm-run`.
+has no current release support promise.
 
 After installation, run `pvisor --version`. Inspect effective Session controls in
-the Run Bundle; check `vm-run` results through exit status and host files.
+the Run Bundle; inspect container results through the container command contracts.
 
 Windows containers require matching `libkrunfw.dll` and `pvisor-rootfs.bin.gz`
 beside the executable. Default `bridge` uses OverlayNet's IPv4 TCP/DNS egress
@@ -104,14 +106,14 @@ host with the required hardware capabilities. An enabled WHP feature and
 
 ## Platform implementations {#implementation-parity}
 
-All three platforms share `vm-run` arguments, GuestConfig and authenticated exit
-handling. The execution chain is
-`pvisor vm-run → pvisor_vm::api::VmBuilder → platform VMM →
+VM-backed workflows share GuestConfig and authenticated exit handling.
+The execution chain is
+`Docker-compatible / Agent command → lifecycle owner → pvisor_vm::api::VmBuilder → platform VMM →
 virtio-fs → Rust PID 1 supervisor → Linux workload → token-authenticated exit`.
 
 | Layer | Linux | macOS | Windows |
 | --- | --- | --- | --- |
-| CLI/processes | Full command tree, Session owners, signals and descendant cleanup | Same Session/companion structure, with macOS terminal/resource limits | `vm-run` plus container owners, generation-bound named pipes and runner Jobs; no Session state |
+| CLI/processes | Full command tree, Session owners, signals and descendant cleanup | Same Session/companion structure, with macOS terminal/resource limits | Container owners, generation-bound named pipes and runner Jobs; no Session state |
 | Companions | Adjacent discovery, Unix uid/mode checks, `exec` dispatch | Same checks; resolves Homebrew entry to its real installation | No dispatch; a full port needs `.exe` lookup, ACL trust and process startup/exit propagation |
 | Terminal | PTY, foreground ownership and signals | PTY and terminal restoration | Container stdin/guest PTY, console mode restoration and cancellable input; native ConPTY tests |
 | Shared services | Unix sockets, same-user authentication, locks and readiness; sandbox also needs cgroup/KVM | Unix IPC; cache/pool supported, sandbox API unsupported | IPC, endpoint ACLs, locks, cancellation and service cleanup are not ported; reaching a remote Linux API does not supply a local service |
@@ -131,7 +133,7 @@ validate those calls.
 
 ## Feature sets and critical paths across three platforms
 
-`vm-run` writes directly to caller-owned rootfs. It creates no Session, Bundle, stage
+The test-only `vm_api_case` example writes directly to caller-owned rootfs. It creates no Session, Bundle, stage
 or container instance and provides no network/vsock, interactive stdin, separate
 task stdio, container lifecycle, snapshots or Session policies.
 Output uses the VM console and may include kernel logs. Workload exit codes
@@ -139,11 +141,13 @@ propagate; argument errors return 2, preparation/runtime errors 1, and exit
 authentication failure or abnormal VM termination 125. The external caller owns
 deadlines and process termination.
 
-| Input/variable | Effect and requirements |
+The following inputs belong to the API probe, not the product CLI.
+
+| Probe input/variable | Effect and requirements |
 | --- | --- |
 | `--cpus`, `--memory` | vCPU startup, interrupts and memory pressure; allowed ranges 1 to 64 vCPU and 1 to 65536 MiB, further constrained by firmware/host; this suite covers only 1/2 CPUs and 256 MiB |
 | `--firmware` | Trusted host `.so`/`.dylib`/`.dll` matching guest architecture; omission requires an embedded kernel. Musl releases embed the kernel; Windows currently needs an explicit DLL |
-| `PVISOR_KRUNFW_PATH` / `PVISOR_KRUNFW_KERNEL_BUNDLE` | Firmware/kernel inputs selected by product builds, distinct from runtime `--firmware` |
+| `PVISOR_KRUNFW_PATH` / `PVISOR_KRUNFW_KERNEL_BUNDLE` | Firmware/kernel inputs selected by product builds, distinct from the probe's runtime `--firmware` |
 | `--rootfs`, `--readonly` | Non-overlapping directories and absolute UTF-8 host paths; the read-only share mounts at `/readonly`, and the guest executable needs an absolute Linux path |
 | Host/guest page sizes, filesystem, case handling, path length, ACLs | Affect mmap, rename, cached inodes and errno; these cases do not cover all POSIX differences |
 | `--seed`, `--rounds`, `--timeout` (test driver) | Control data sequence, repeated lifecycles and per-command deadline; scheduling and elapsed time vary |
@@ -156,8 +160,8 @@ CI artifacts record results for each revision and runner. The configured coverag
 
 | Platform | Conventional checks | Shared VM workload |
 | --- | --- | --- |
-| Windows | Native MSVC builds and contracts | WHP smoke and CLI drivers |
-| Linux | Builds and native tests | KVM CLI driver |
+| Windows | Native MSVC builds and contracts | WHP smoke and API driver; separate product container driver |
+| Linux | Builds and native tests | KVM API driver; separate product container/Session suites |
 | macOS | Builds and conventional tests | Manual HVF execution on a capable host |
 
 See the [test architecture](https://github.com/DeepLink-org/pvisor/blob/main/tests/README.md#capability-gates-and-coverage)
@@ -165,9 +169,11 @@ for capability gates and coverage boundaries.
 
 ### Workload and result checks
 
-The [CLI driver](https://github.com/DeepLink-org/pvisor/blob/main/tests/vm_cli_contract.py)
+The [API driver](https://github.com/DeepLink-org/pvisor/blob/main/tests/vm_api_contract.py)
 executes the same [guest workload](https://github.com/DeepLink-org/pvisor/blob/main/tests/vm_guest.rs)
-through the actual `pvisor` program. Three default rounds each check
+through the test-only `vm_api_case` example and the public VM API.
+This does not substitute for product container or Session acceptance.
+Three default rounds each check
 `(1 CPU, exit 0)`, `(2, 0)`, `(2, 7)`, `(1, 255)`: 12 boots. Each boot runs
 8 threads, each doing 32 iterations of 4 to 8 KiB writes, fsync, rename, read
 and unlink, and touches 16 MiB of memory in total. It also checks online CPUs,
@@ -189,9 +195,9 @@ continue; their results do not establish real HVF acceptance.
 
 | CI path | Preparation and execution | Artifact |
 | --- | --- | --- |
-| `ci.yml` / Rust Test / Linux / pvisor | Build product and x86_64 musl guest, check `/dev/kvm`, execute shared driver | `vm-cli-Linux` |
+| `ci.yml` / Rust Test / Linux / pvisor | Build product, API probe and x86_64 musl guest, check `/dev/kvm`, execute shared API driver | `vm-api-Linux` |
 | `ci.yml` / Rust Test / macOS / pvisor | Build/sign product and run conventional tests; no real HVF workload | No VM execution artifact |
-| `windows-vm.yml` / native + firmware + whp | Independent native checks; source-built DLL/guest/ext4 template; parallel WHP smoke, shared VM workload and two container campaigns | `windows-native-contracts`, `windows-vm-whp-smoke`, `windows-vm-whp-vm-cli`, `windows-vm-whp-containers` |
+| `windows-vm.yml` / native + firmware + whp | Independent native checks; source-built DLL/guest/ext4 template; parallel WHP smoke, shared VM API workload and two product container campaigns | `windows-native-contracts`, `windows-vm-whp-smoke`, `windows-vm-whp-vm-api`, `windows-vm-whp-containers` |
 
 Existing Windows `whp_smoke` still checks pause/resume, rejected-ready-callback
 cleanup and legacy exit ioctl rejection. Windows CLI builds use
@@ -205,13 +211,15 @@ runner versions and input hashes. Container diagnostics retain at most the last
 1 MiB per file and exclude raw disks/blobs. Cleanup errors or leftover runners
 fail acceptance; cleanup only targets this job's downloaded executables.
 
-Manual execution needs an executable `pvisor`, matching static guest and
+Manual diagnostics need the test-only `vm_api_case`, a matching static guest and
 firmware; macOS also requires signing.
 
 ```bash
 # Linux: x86_64-unknown-linux-musl; Apple Silicon: aarch64-unknown-linux-musl.
 mise exec -- rustc --edition=2021 --target aarch64-unknown-linux-musl -C linker=rust-lld tests/vm_guest.rs -o /tmp/vm-guest
-python3 tests/vm_cli_contract.py --binary target/debug/pvisor --guest /tmp/vm-guest --output target/vm-cli-evidence
+mise exec -- cargo build --locked -p pvisor-vm --example vm_api_case
+# macOS: sign target/debug/examples/vm_api_case with crates/pvisor/macos-hypervisor.entitlements.
+python3 tests/vm_api_contract.py --binary target/debug/examples/vm_api_case --guest /tmp/vm-guest --firmware /absolute/path/to/libkrunfw.dylib --output target/vm-api-evidence
 # Windows uses the same driver with --firmware C:/firmware/libkrunfw.dll.
 # --output must be new; --rounds 30 expands coverage to 120 actual boots.
 ```
@@ -229,4 +237,4 @@ The same executable's cache and memory-pool components support Linux and Apple S
 - Container cannot satisfy `--safe` controls and rejects `--safe`. All current executors reject `--strict` due to the subprocess gap.
 - Inspect `resources.effective` and `limitations`. macOS does not enforce RLIMIT_AS; ordinary host rlimits are not total process-tree budgets.
 
-Evidence entry points: `.github/workflows/ci.yml`, `docs/src/zh/cases/06-stage-apply.md`, `crates/pvisor/tests/`, and `tests/vm_cli_contract.py`. Untested cells receive no maturity claim. See [boundaries](../security/executor-boundaries.md).
+Evidence entry points: `.github/workflows/ci.yml`, `docs/src/zh/cases/06-stage-apply.md`, `crates/pvisor/tests/`, and `tests/vm_api_contract.py`. Untested cells receive no maturity claim. See [boundaries](../security/executor-boundaries.md).

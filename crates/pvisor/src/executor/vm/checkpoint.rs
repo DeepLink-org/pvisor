@@ -506,7 +506,6 @@ pub(super) fn publish(
             )
             .map(|id| crate::environment_snapshot::NativePublication {
                 id,
-                lower_mutability: Vec::new(),
                 lowers: vec![],
                 private_files: None,
                 #[cfg(target_os = "linux")]

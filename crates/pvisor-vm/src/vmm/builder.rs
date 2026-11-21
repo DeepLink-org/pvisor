@@ -773,6 +773,13 @@ pub fn build_microvm_for_arch<A: crate::backend::Architecture>(
     {
         serial_devices.push(setup_serial_device(event_manager, None, None)?);
     };
+    if vm_resources.rust_native_kernel {
+        serial_devices.push(setup_serial_device(
+            event_manager,
+            None,
+            Some(Box::new(std::io::stderr())),
+        )?);
+    }
 
     // Raw terminal mode is installed after Vmm construction.
     let mut serial_ttys = Vec::new();
@@ -904,6 +911,9 @@ pub fn build_microvm_for_arch<A: crate::backend::Architecture>(
             let vcpu_count = vm_resources.vm_config().vcpu_count.unwrap() as u64;
             let gic = match KvmGicV3::new(vm.fd(), vcpu_count) {
                 Ok(gicv3) => IrqChipDevice::new(Box::new(gicv3)),
+                Err(error) if vm_resources.rust_native_kernel => {
+                    return Err(StartMicrovmError::CreateKvmIrqChip(error));
+                }
                 Err(_) => {
                     warn!("KVM GICv3 creation failed, falling back to KVM GICv2");
                     IrqChipDevice::new(Box::new(KvmGicV2::new(vm.fd(), vcpu_count)))
@@ -992,9 +1002,18 @@ pub fn build_microvm_for_arch<A: crate::backend::Architecture>(
     let exit_code = Arc::new(AtomicI32::new(i32::MAX));
 
     let device_memory_gate = crate::devices::virtio::memory_gate::register(&guest_memory);
-    #[cfg(any(all(target_os = "macos", target_arch = "aarch64"), all(target_os = "linux", target_arch = "x86_64")))]
-    let compact_restore_ram = vm_resources.machine_restore.as_ref().is_some_and(|restore| !restore.ram_extents.is_empty());
-    #[cfg(not(any(all(target_os = "macos", target_arch = "aarch64"), all(target_os = "linux", target_arch = "x86_64"))))]
+    #[cfg(any(
+        all(target_os = "macos", target_arch = "aarch64"),
+        all(target_os = "linux", target_arch = "x86_64")
+    ))]
+    let compact_restore_ram = vm_resources
+        .machine_restore
+        .as_ref()
+        .is_some_and(|restore| !restore.ram_extents.is_empty());
+    #[cfg(not(any(
+        all(target_os = "macos", target_arch = "aarch64"),
+        all(target_os = "linux", target_arch = "x86_64")
+    )))]
     let compact_restore_ram = false;
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     let branch_ram = vm_resources
@@ -1121,6 +1140,10 @@ pub fn build_microvm_for_arch<A: crate::backend::Architecture>(
     attach_fs_devices(
         &mut vmm,
         &vm_resources.fs,
+        #[cfg(any(
+            all(target_os = "macos", target_arch = "aarch64"),
+            all(target_os = "linux", target_arch = "x86_64")
+        ))]
         vm_resources
             .machine_restore
             .as_ref()
@@ -1174,6 +1197,11 @@ pub fn build_microvm_for_arch<A: crate::backend::Architecture>(
             &vm_resources.smbios_oem_strings,
         )
         .map_err(StartMicrovmError::Internal)?;
+        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+        if vm_resources.rust_native_kernel {
+            crate::arch::x86_64::acpi::install(&vmm.guest_memory)
+                .map_err(|error| StartMicrovmError::GuestMemoryMmap(error.to_string()))?;
+        }
     }
 
     #[cfg(any(
@@ -2182,6 +2210,10 @@ fn attach_mmio_device(
 fn attach_fs_devices(
     vmm: &mut Vmm,
     fs_devs: &[FsDeviceConfig],
+    #[cfg(any(
+        all(target_os = "macos", target_arch = "aarch64"),
+        all(target_os = "linux", target_arch = "x86_64")
+    ))]
     restored_devices: Option<&[crate::devices::snapshot::BusMappingSnapshot]>,
     shm_manager: &mut ShmManager,
     #[cfg(not(feature = "tee"))] export_table: Option<ExportTable>,
@@ -2209,6 +2241,10 @@ fn attach_fs_devices(
         ));
 
         fs.lock().unwrap().set_managed(config.managed);
+        #[cfg(any(
+            all(target_os = "macos", target_arch = "aarch64"),
+            all(target_os = "linux", target_arch = "x86_64")
+        ))]
         if let Some(devices) = restored_devices {
             let mut saved_count = None;
             for mapping in devices {
@@ -2284,6 +2320,16 @@ fn autoconfigure_console_ports(
 ) -> std::result::Result<Vec<PortDescription>, StartMicrovmError> {
     use self::StartMicrovmError::*;
 
+    if vm_resources.rust_native_kernel {
+        return Ok(vec![PortDescription::console(
+            Some(port_io::input_empty().map_err(|error| OpenConsoleFile(error.into()))?),
+            Some(
+                port_io::output_to_raw_fd_dup(STDOUT_FILENO)
+                    .map_err(|error| OpenConsoleFile(error.into()))?,
+            ),
+            port_io::term_fixed_size(0, 0),
+        )]);
+    }
     let mut console_output_path: Option<PathBuf> = None;
     if let Some(path) = vm_resources.console_output.clone() {
         if !vm_resources.disable_implicit_console && creating_implicit_console {
