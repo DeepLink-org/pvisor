@@ -1,0 +1,19 @@
+[package]
+name = "aster-logger"
+version = "0.1.0"
+edition.workspace = true
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+aster-console.workspace = true
+component.workspace = true
+ostd.workspace = true
+owo-colors = { workspace = true, optional = true }
+
+[features]
+default = ["log_color"]
+log_color = ["dep:owo-colors"]
+
+[lints]
+workspace = true

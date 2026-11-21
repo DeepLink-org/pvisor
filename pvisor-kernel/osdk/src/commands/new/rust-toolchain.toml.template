@@ -1,0 +1,5 @@
+# One should also update pvisor_kernel/rust-toolchain.toml when updating this.
+# The first two lines will be deleted when generating the user's toolchain file.
+[toolchain]
+channel = "nightly-2026-07-21"
+components = ["rust-src", "rustc-dev", "llvm-tools-preview"]

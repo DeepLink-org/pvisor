@@ -1,0 +1,22 @@
+[package]
+name = "linux-bzimage-builder"
+description = "Linux boot compatibility for modern OSes"
+version.workspace = true
+repository.workspace = true
+license.workspace = true
+edition.workspace = true
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+align_ext.workspace = true
+bitflags.workspace = true
+crc32fast.workspace = true
+miniz_oxide.workspace = true
+ostd-pod.workspace = true
+serde.workspace = true
+xmas-elf.workspace = true
+zerocopy.workspace = true
+
+[lints]
+workspace = true

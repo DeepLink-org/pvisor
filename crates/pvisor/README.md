@@ -16,6 +16,12 @@ Guest launch/control/exit contracts come from `pvisor_guest::api`. Host code
 uses `GuestValidation` for admission; executable command construction stays in
 the guest supervisor.
 
+Linux aarch64 builds retain common filesystem-snapshot records and VM control
+framing. Native VM checkpoint/restore and its raw-RAM readiness channel remain
+limited to their existing backend profiles; compiling these common records
+does not enable ARM KVM capture/restore. Rust native kernel selection and
+workload limitations are documented in `../../pvisor-kernel/README.md`.
+
 Network data-plane callers use `pvisor_overlaynet::api` and its declared traits;
 policy records remain owned by `pvisor_core::network`.
 

@@ -1,0 +1,11 @@
+// SPDX-License-Identifier: MPL-2.0
+
+//! This module contains the demos in OSDK section in the Rust native kernel Book.
+
+mod create_os_projects;
+mod test_and_run_projects;
+mod work_in_workspace;
+#[cfg(target_arch = "x86_64")]
+mod write_a_hypervisor_in_100_lines;
+#[cfg(target_arch = "x86_64")]
+mod write_a_kernel_in_100_lines;

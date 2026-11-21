@@ -1,0 +1,107 @@
+ENTRY(_start)
+OUTPUT_ARCH(riscv)
+
+KERNEL_LMA = 0x80200000;
+KERNEL_VMA = 0xffffffff80200000;
+KERNEL_VMA_OFFSET = KERNEL_VMA - KERNEL_LMA;
+
+SECTIONS
+{
+    # First, we use physical addresses for the boot sections.
+    . = KERNEL_LMA;
+
+    __kernel_start = . + KERNEL_VMA_OFFSET;
+
+    PROVIDE(__executable_start = __kernel_start);
+
+    .boot                   : AT(ADDR(.boot)) {
+        KEEP(*(.boot))
+        # FIXME: We want to create a separate .boot.stack section so that the
+        # executable doesn't contain the boot stack (which is just hundreds of
+        # kilobytes of zeros). But it is currently in the .boot section because
+        # the linker will otherwise complain unexpected relocation failures.
+        KEEP(*(.boot.stack))
+        . = ALIGN(4096);
+    }
+
+    .ap_boot                : AT(LOADADDR(.boot) + SIZEOF(.boot)) {
+        KEEP(*(.ap_boot))
+        . = ALIGN(4096);
+    }
+
+    # Then, we switch to virtual addresses for all the other sections.
+    . += KERNEL_VMA_OFFSET;
+
+    .text                   : AT(ADDR(.text) - KERNEL_VMA_OFFSET) {
+        *(.text .text.*)
+        PROVIDE(__etext = .);
+    }
+
+    # The section to store exception table (ExTable).
+    # This table is used for recovering from specific exception handling faults
+    # occurring at known points in the code.
+    # Ref: /ostd/src/ex_table.rs
+    .ex_table               : AT(ADDR(.ex_table) - KERNEL_VMA_OFFSET) {
+        __ex_table = .;
+        KEEP(*(SORT(.ex_table)))
+        __ex_table_end = .;
+    }
+
+    .rodata                 : AT(ADDR(.rodata) - KERNEL_VMA_OFFSET) {
+        *(.rodata .rodata.*)
+    }
+
+    # Rust's "riscv64imac-unknown-none-elf" target doesn't enable generation of
+    # the .eh_frame_hdr section so we don't declare that in the linker script.
+    #
+    # See https://github.com/rust-lang/rust/blob/43a216604a7fc98deb0744513341fc0d09e461d4/compiler/rustc_target/src/spec/targets/riscv64imac_unknown_none_elf.rs#L30
+
+    . = ALIGN(8);
+    .eh_frame               : AT(ADDR(.eh_frame) - KERNEL_VMA_OFFSET) {
+        PROVIDE(__eh_frame = .);
+        KEEP(*(.eh_frame .eh_frame.*))
+    }
+
+    # The list of unit test function symbols that should be executed while
+    # doing `cargo osdk test`.
+    .ktest_array            : AT(ADDR(.ktest_array) - KERNEL_VMA_OFFSET) {
+        __ktest_array = .;
+        KEEP(*(SORT(.ktest_array)))
+        __ktest_array_end = .;
+    }
+
+    .init_array             : AT(ADDR(.init_array) - KERNEL_VMA_OFFSET) {
+        __sinit_array = .;
+        KEEP(*(SORT(.init_array .init_array.*)))
+        __einit_array = .;
+    }
+
+    # A list of the sensitive IoPort ranges in OSTD which will be used during
+    # the initialization of IoPortAllocator.
+    .sensitive_io_ports     : AT(ADDR(.sensitive_io_ports) - KERNEL_VMA_OFFSET) {
+        __sensitive_io_ports_start = .;
+        KEEP(*(.sensitive_io_ports))
+        __sensitive_io_ports_end = .;
+    }
+
+    .data                   : AT(ADDR(.data) - KERNEL_VMA_OFFSET) {
+        *(.data .data.*)
+    }
+
+    # The CPU local data storage. It is readable and writable for the bootstrap
+    # processor, while it would be copied to other dynamically allocated memory
+    # areas for the application processors.
+    .cpu_local              : AT(ADDR(.cpu_local) - KERNEL_VMA_OFFSET) {
+        __cpu_local_start = .;
+        KEEP(*(SORT(.cpu_local)))
+        __cpu_local_end = .;
+    }
+
+    .bss                    : AT(ADDR(.bss) - KERNEL_VMA_OFFSET) {
+        __bss = .;
+        *(.bss .bss.*)
+        __bss_end = .;
+    }
+
+    __kernel_end = .;
+}

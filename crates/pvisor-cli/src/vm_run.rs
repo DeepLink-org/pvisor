@@ -8,7 +8,7 @@ pub(crate) struct Args {
     /// Caller-owned writable Linux rootfs. All guest writes persist here.
     #[arg(long)]
     rootfs: PathBuf,
-    /// Explicit host-loadable firmware library; otherwise use the embedded kernel.
+    /// Explicit trusted firmware file; otherwise use the selected embedded or local kernel.
     #[arg(long)]
     firmware: Option<PathBuf>,
     /// Virtual CPU count (1–64; online CPUs also depend on firmware).
@@ -40,11 +40,8 @@ pub(crate) fn run(args: Args) -> anyhow::Result<()> {
     let mut vm = VmBuilder::new(args.cpus, args.memory)?;
     if let Some(firmware) = args.firmware {
         vm.set_firmware_path(firmware.canonicalize()?)?;
-    } else {
-        anyhow::ensure!(
-            pvisor_vm::api::VmPlatform::embedded_kernel().is_some(),
-            "no embedded kernel; supply --firmware with a host-loadable library"
-        );
+    } else if pvisor_vm::api::VmPlatform::embedded_kernel().is_none() {
+        vm.set_firmware_path(pvisor_vm::api::VmPlatform::resolve_firmware_path(None)?)?;
     }
     vm.filesystem("/dev/root", &root, 0)?;
     let mut config = pvisor_guest::api::GuestConfig {

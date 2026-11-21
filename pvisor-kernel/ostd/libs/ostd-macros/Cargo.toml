@@ -1,0 +1,21 @@
+[package]
+name = "ostd-macros"
+description = "OSTD's proc macros"
+version.workspace = true
+repository.workspace = true
+license.workspace = true
+edition.workspace = true
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[lib]
+proc-macro = true
+
+[dependencies]
+proc-macro2.workspace = true
+quote.workspace = true
+rand = { workspace = true, features = ["thread_rng"] }
+syn.workspace = true
+
+[lints]
+workspace = true

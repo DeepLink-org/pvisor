@@ -76,6 +76,11 @@ pub trait RuntimeSupport {
     fn init_logging(filter: &str);
     /// Build-embedded kernel, if present. This does not load host firmware.
     /// The shared bytes are immutable; addresses describe the guest boot layout.
+    /// Selects Linux by default, or the embedded Rust native payload when
+    /// `PVISOR_NATIVE_KERNEL=rust`. Returns `None` when that payload
+    /// was not embedded, or selection is invalid/unsupported; never returns Linux
+    /// for an experimental selection. Native bytes are unpacked once in memory,
+    /// without opening firmware files or reading a runtime bundle path.
     fn embedded_kernel() -> Option<KernelImage>;
     /// Process-local outstanding cold-RAM work; zero when no pager is active.
     /// These counters are diagnostic bounds, not physical memory attribution.
@@ -90,6 +95,9 @@ pub trait RuntimeSupport {
     /// cache or loader environment search occurs. An explicit directory never
     /// falls back to packaged discovery. The caller must trust the file and keep
     /// it available until boot; resolution does not load or pin its contents.
+    /// Rust native selection returns `Unsupported`: it uses only its embedded
+    /// payload and has no filesystem fallback. Invalid selector values return
+    /// `InvalidInput`.
     fn resolve_firmware_path(directory: Option<&Path>) -> io::Result<PathBuf>;
 }
 
@@ -142,6 +150,27 @@ pub struct NetworkStream {
 /// configuration usable; init selection precedes root filesystem attachment.
 pub trait VmConfiguration: Sized {
     /// Construct a configuration; equivalent to `from_config` with explicit sizing.
+    /// Captures `PVISOR_NATIVE_KERNEL`; unset or `linux` retains Linux.
+    /// `rust` requires plain Linux x86_64/aarch64 KVM or macOS aarch64 HVF,
+    /// one vCPU and at least 256 MiB; ARM requires GICv3. Workload compatibility
+    /// remains experimental, not established by successful construction.
+    /// Invalid selectors return `InvalidInput`; unsupported profiles return
+    /// `Unsupported` before VM creation. Set selection before constructing builders
+    /// and do not mutate process environment concurrently with discovery/creation.
+    ///
+    /// Construction and validation do not require opening a hypervisor:
+    ///
+    /// ```
+    /// use pvisor_vm::api::{VmBuilder, VmConfiguration};
+    /// use std::{io, path::PathBuf};
+    ///
+    /// let mut vm = VmBuilder::new(1, 256)?;
+    /// assert_eq!(
+    ///     vm.set_firmware_path(PathBuf::from("relative-kernel")).unwrap_err().kind(),
+    ///     io::ErrorKind::InvalidInput,
+    /// );
+    /// # Ok::<(), io::Error>(())
+    /// ```
     fn new(cpus: u8, memory_mib: u32) -> io::Result<Self>;
     /// Validate sizing and construct an unbooted configuration; failure creates no VM.
     fn from_config(config: VmConfig) -> io::Result<Self>;
@@ -154,6 +183,9 @@ pub trait VmConfiguration: Sized {
     /// boot prefers the build-embedded kernel, then this file, then executable-
     /// adjacent firmware. Keep the file available until boot. Never searches
     /// LD_LIBRARY_PATH/DYLD_LIBRARY_PATH or downloads missing firmware.
+    /// Rust native kernel selection returns `Unsupported` without changing the
+    /// configuration: its bytes are embedded at build time, never loaded from
+    /// this file or a runtime environment path. It never falls back to Linux.
     fn set_firmware_path(&mut self, path: PathBuf) -> io::Result<()>;
     /// Transfer an empty regular file as writable RAM backing. The runtime owns it
     /// and may resize/map it at boot; nonempty/nonregular inputs leave configuration unchanged.
@@ -349,6 +381,8 @@ pub trait VmConfiguration: Sized {
     /// This separates workload stdio from process diagnostics: stderr
     /// logging (`init_logging`) can target the process's own stderr while
     /// guest output still reaches the caller's descriptors.
+    /// The experimental Rust native kernel has only its primary console and
+    /// returns `Unsupported` without changing attachments.
     fn task_stdio(&mut self, stdin: i32, stdout: i32, stderr: i32) -> io::Result<()>;
     /// Transfer the framed Ethernet stream and explicit guest-init options.
     /// Has network() ownership/nonblocking requirements; unavailable networking

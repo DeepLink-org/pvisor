@@ -9,7 +9,7 @@ mod cli;
 #[cfg(windows)]
 #[path = "windows_cli.rs"]
 mod cli;
-#[cfg(any(target_os = "macos", all(target_os = "linux", target_arch = "x86_64")))]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 mod companions;
 mod container_args;
 #[cfg(unix)]

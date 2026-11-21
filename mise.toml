@@ -486,6 +486,24 @@ case "$action" in
 esac
 '''
 
+[tasks.kernel]
+description = "实验性 Rust native kernel；action: build / test"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ $# -lt 1 ]]; then echo "usage: mise run kernel build|test args" >&2; exit 2; fi
+action="$1"
+shift
+case "$action" in
+  build)
+    for arg in "$@"; do if [[ "$arg" == "--offline" ]]; then export UV_OFFLINE=1; fi; done
+    uv run --locked --only-group dev python pvisor-kernel/build.py --build-dir "$CARGO_TARGET_DIR/pvisor-kernel" "$@"
+    ;;
+  test) uv run --locked --only-group dev python -m unittest discover -s pvisor-kernel/tests -v "$@" ;;
+  *) echo "expected build or test, got: $action" >&2; exit 2 ;;
+esac
+'''
+
 [tasks.install-cli]
 description = "install-cli"
 hide = true

@@ -63,6 +63,21 @@ Firmware binary distributions must include the corresponding source and
 license materials. These components are not covered by the repository's
 first-party Apache-2.0 license.
 
+Rust native guest kernel
+-----------------------
+
+Linux x86-64/ARM64 and macOS ARM64 product executables also embed the experimental Rust native
+kernel built from `pvisor-kernel/`. Its imported source is primarily MPL-2.0,
+with per-file exceptions; see `pvisor-kernel/LICENSE-MPL`,
+`pvisor-kernel/.licenserc.yaml` and `pvisor-kernel/IMPORT.md` for attribution,
+the pinned upstream revision and local modifications. These sources are
+not covered by pVisor's first-party Apache-2.0 license.
+
+The kernel also contains separately pinned Linux 6.2.10 x86-64 and Linux 6.8.0 ARM64 vDSOs
+described in `pvisor-kernel/provenance.json`. Redistribution requires its
+matching source and applicable notices as well as the modified native kernel
+sources. The product firmware receipt records both embedded payloads.
+
 agentgateway test fixtures
 --------------------------
 

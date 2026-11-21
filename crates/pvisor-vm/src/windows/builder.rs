@@ -33,6 +33,7 @@ fn unsupported(message: &str) -> io::Error {
 }
 impl Builder {
     pub(crate) fn new(cpus: u8, memory_mib: u32) -> io::Result<Self> {
+        crate::experimental_kernel::selection()?;
         if cfg!(any(
             feature = "tee",
             feature = "aws-nitro",

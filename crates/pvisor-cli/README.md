@@ -1599,9 +1599,14 @@ or snapshots.
 Use an absolute guest executable. A static Linux program can run in an otherwise
 empty rootfs; dynamic programs need their guest loader and libraries. The caller
 prepares the rootfs, keeps exclusive ownership and enforces command deadlines.
-The command does not extract OCI images. `--firmware LIBRARY` selects trusted
-host-loadable firmware; omission requires an embedded kernel. Windows needs the
-explicit DLL. The optional read-only share mounts at `/readonly` and must not
+The command does not extract OCI images. `--firmware FILE` selects trusted
+local firmware; omission uses the build-embedded kernel, then local firmware
+discovery. Linux x86_64/aarch64 and macOS aarch64 product builds embed both kernels; the experimental
+`PVISOR_NATIVE_KERNEL=rust` selector uses the second embedded
+payload without an external bundle; see [`pvisor-kernel`](../../pvisor-kernel/README.md).
+An executable built without that payload fails explicitly for this selector.
+Windows needs the explicit DLL or a packaged adjacent DLL.
+The optional read-only share mounts at `/readonly` and must not
 overlap rootfs.
 
 Output uses the VM console. Workload exit codes propagate; setup/runtime errors

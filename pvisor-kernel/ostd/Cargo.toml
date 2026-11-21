@@ -1,0 +1,81 @@
+[package]
+name = "ostd"
+description = "Rust OS framework that facilitates the development of and innovation in OS kernels"
+documentation = "https://asterinas.github.io/api-docs"
+readme = "README.md"
+version.workspace = true
+repository.workspace = true
+license.workspace = true
+edition.workspace = true
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+# Settings for publishing docs in docs.rs
+[package.metadata.docs.rs]
+default-target = "x86_64-unknown-none"
+targets = ["x86_64-unknown-none"]
+
+[dependencies]
+align_ext.workspace = true
+bitflags.workspace = true
+bitvec.workspace = true
+gimli.workspace = true
+id-alloc.workspace = true
+inherit-methods-macro.workspace = true
+log.workspace = true
+minicov = { workspace = true, optional = true }
+num-traits.workspace = true
+ostd-macros.workspace = true
+ostd-pod.workspace = true
+ostd-test.workspace = true
+smallvec.workspace = true
+spin.workspace = true
+zerocopy.workspace = true
+
+# The targets are chosen to prevent the generated machine code from using any
+# vector or floating-point registers.
+#
+# - `x86_64-unknown-none` satisfies this property, as explained by [the
+#   official documentation](https://doc.rust-lang.org/rustc/platform-support/x86_64-unknown-none.html).
+# - `riscv64imac-unknown-none-elf` denotes a RISC-V ISA with only basic
+#   extensions (`imac`) and no floating-point-related extensions.
+# - `loongarch64-unknown-none-softfloat` is rather self-explaining.
+
+[target.x86_64-unknown-none.dependencies]
+acpi.workspace = true
+bit_field.workspace = true
+int-to-c-enum.workspace = true
+linux-boot-params.workspace = true
+multiboot2.workspace = true
+tdx-guest = { workspace = true, optional = true }
+unwinding = { workspace = true, features = ["fde-gnu-eh-frame-hdr"] }
+volatile.workspace = true
+x86.workspace = true
+x86_64.workspace = true
+
+[target.riscv64imac-unknown-none-elf.dependencies]
+bit_field.workspace = true
+fdt.workspace = true
+riscv.workspace = true
+sbi-rt.workspace = true
+unwinding = { workspace = true, features = ["fde-static"] }
+
+[target.loongarch64-unknown-none-softfloat.dependencies]
+fdt.workspace = true
+loongArch64.workspace = true
+unwinding = { workspace = true, features = ["fde-gnu-eh-frame-hdr"] }
+
+[target.aarch64-unknown-none-softfloat.dependencies]
+fdt.workspace = true
+unwinding = { workspace = true, features = ["fde-static"] }
+
+[features]
+default = []
+# The guest OS support for Confidential VMs (CVMs), e.g., Intel TDX
+cvm_guest = ["dep:tdx-guest"]
+coverage = ["minicov"]
+pvh_boot = []
+riscv_sv39_mode = []
+
+[lints]
+workspace = true

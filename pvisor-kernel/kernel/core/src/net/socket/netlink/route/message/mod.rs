@@ -1,0 +1,26 @@
+// SPDX-License-Identifier: MPL-2.0
+
+//! Netlink message types for the netlink route protocol.
+//!
+//! This module defines how to interpret messages sent from user space and how to write
+//! kernel messages back to user space.
+
+#![short_vis_path::add(netlink)]
+
+mod attr;
+mod segment;
+
+pub(super) use attr::{
+    addr::{AddrAttr, AddrProtocol},
+    link::LinkAttr,
+};
+pub(super) use segment::{
+    RtnlSegment,
+    addr::{AddrMessageFlags, AddrSegment, AddrSegmentBody, RtScope},
+    link::{LinkSegment, LinkSegmentBody},
+};
+
+use crate::net::socket::netlink::message::Message;
+
+/// A netlink route message.
+pub(in netlink) type RtnlMessage = Message<RtnlSegment>;

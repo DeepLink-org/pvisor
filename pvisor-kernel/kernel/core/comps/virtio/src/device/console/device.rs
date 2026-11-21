@@ -1,0 +1,187 @@
+// SPDX-License-Identifier: MPL-2.0
+
+use alloc::{boxed::Box, fmt::Debug, string::ToString, sync::Arc, vec::Vec};
+use core::hint::spin_loop;
+
+use aster_console::{AnyConsoleDevice, ConsoleCallback};
+use aster_util::mem_obj_slice::Slice;
+use ostd::{
+    arch::trap::TrapFrame,
+    debug,
+    mm::{VmReader, dma::DmaStream, io::util::HasVmReaderWriter},
+    sync::{Rcu, SpinLock},
+};
+
+use super::{DEVICE_NAME, config::VirtioConsoleConfig};
+use crate::{
+    device::{VirtioDeviceError, console::config::ConsoleFeatures},
+    queue::VirtQueue,
+    transport::{ConfigManager, DeviceTransport},
+};
+
+pub struct ConsoleDevice {
+    config_manager: ConfigManager<VirtioConsoleConfig>,
+    transport: SpinLock<DeviceTransport>,
+    receive_queue: SpinLock<VirtQueue>,
+    transmit_queue: SpinLock<VirtQueue>,
+    send_buffer: DmaStream,
+    receive_buffer: DmaStream,
+    #[expect(clippy::box_collection)]
+    callbacks: Rcu<Box<Vec<&'static ConsoleCallback>>>,
+}
+
+impl AnyConsoleDevice for ConsoleDevice {
+    fn send(&self, value: &[u8]) {
+        let mut transmit_queue = self.transmit_queue.disable_irq().lock();
+        let mut reader = VmReader::from(value);
+
+        while reader.remain() > 0 {
+            let mut writer = self.send_buffer.writer().unwrap();
+            let len = writer.write(&mut reader);
+            self.send_buffer.sync_to_device(0..len).unwrap();
+
+            let slice = Slice::new(&self.send_buffer, 0..len);
+            transmit_queue.add_input_bufs(&[&slice]).unwrap();
+
+            if transmit_queue.should_notify() {
+                transmit_queue.notify();
+            }
+            while transmit_queue.pop_used().is_err() {
+                spin_loop();
+            }
+        }
+    }
+
+    fn register_callback(&self, callback: &'static ConsoleCallback) {
+        loop {
+            let callbacks = self.callbacks.read();
+            let mut callbacks_cloned = callbacks.get().clone();
+            callbacks_cloned.push(callback);
+            if callbacks.compare_exchange(callbacks_cloned).is_ok() {
+                break;
+            }
+            // Contention on pushing, retry.
+            spin_loop();
+        }
+    }
+}
+
+impl Debug for ConsoleDevice {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("ConsoleDevice")
+            .field("config", &self.config_manager.read_config())
+            .field("transport", &self.transport)
+            .field("receive_queue", &self.receive_queue)
+            .field("transmit_queue", &self.transmit_queue)
+            .finish()
+    }
+}
+
+impl ConsoleDevice {
+    pub(crate) fn negotiate_features(features: u64) -> u64 {
+        ConsoleFeatures::from_bits_truncate(features).bits()
+    }
+
+    pub(crate) fn init(mut device_transport: DeviceTransport) -> Result<(), VirtioDeviceError> {
+        let control = super::control::ConsoleControl::new(device_transport.as_mut())?;
+        let config_manager = VirtioConsoleConfig::new_manager(device_transport.as_ref());
+        debug!("virtio_console_config = {:?}", config_manager.read_config());
+
+        const RECV0_QUEUE_INDEX: u16 = 0;
+        const TRANSMIT0_QUEUE_INDEX: u16 = 1;
+        let receive_queue = SpinLock::new(VirtQueue::new(
+            RECV0_QUEUE_INDEX,
+            2,
+            device_transport.as_mut(),
+        )?);
+        let transmit_queue = SpinLock::new(VirtQueue::new(
+            TRANSMIT0_QUEUE_INDEX,
+            2,
+            device_transport.as_mut(),
+        )?);
+
+        let send_buffer = DmaStream::alloc(1, false).map_err(VirtioDeviceError::ResourceAlloc)?;
+        let receive_buffer =
+            DmaStream::alloc(1, false).map_err(VirtioDeviceError::ResourceAlloc)?;
+
+        let device = Arc::new(Self {
+            config_manager,
+            transport: SpinLock::new(device_transport),
+            receive_queue,
+            transmit_queue,
+            send_buffer,
+            receive_buffer,
+            callbacks: Rcu::new(Box::new(Vec::new())),
+        });
+
+        device.activate_receive_buffer(&mut device.receive_queue.disable_irq().lock());
+
+        // Register IRQ callbacks.
+        let mut transport = device.transport.lock();
+        let handle_console_input = {
+            // FIXME: This callback captures a strong `Arc`, creating a reference cycle.
+            let device = device.clone();
+            move |_: &TrapFrame| device.handle_recv_irq()
+        };
+        transport.register_queue_callback(
+            RECV0_QUEUE_INDEX,
+            Box::new(handle_console_input),
+            false,
+        )?;
+        transport.register_cfg_callback(Box::new(config_space_change))?;
+        transport.finish_init();
+        drop(transport);
+
+        Self::notify_receive_queue(&mut device.receive_queue.disable_irq().lock());
+
+        control.start()?;
+        aster_console::register_device(DEVICE_NAME.to_string(), device);
+
+        Ok(())
+    }
+
+    fn handle_recv_irq(&self) {
+        let mut receive_queue = self.receive_queue.disable_irq().lock();
+
+        let Ok((_, len)) = receive_queue.pop_used() else {
+            return;
+        };
+        self.receive_buffer
+            .sync_from_device(0..len as usize)
+            .unwrap();
+
+        let callbacks = self.callbacks.read();
+        for callback in callbacks.get().iter() {
+            let mut reader = self.receive_buffer.reader().unwrap();
+            reader.limit(len as usize);
+            callback(reader);
+        }
+        drop(callbacks);
+
+        self.activate_receive_buffer(&mut receive_queue);
+        Self::notify_receive_queue(&mut receive_queue);
+    }
+
+    fn activate_receive_buffer(&self, receive_queue: &mut VirtQueue) {
+        receive_queue
+            // We limit the buffer length to one to work around a QEMU bug that causes incorrect
+            // results when pasting more than 32 bytes into the virtio console. This has no
+            // performance penalty, since QEMU always gets one byte at a time, regardless of
+            // whether we have this limit or not.
+            //
+            // For the QEMU bug, see details at
+            // <https://lore.kernel.org/qemu-devel/20240707111940.232549-3-lrh2000@pku.edu.cn/T/#u>.
+            .add_output_bufs(&[&Slice::new(&self.receive_buffer, 0..1)])
+            .unwrap();
+    }
+
+    fn notify_receive_queue(receive_queue: &mut VirtQueue) {
+        if receive_queue.should_notify() {
+            receive_queue.notify();
+        }
+    }
+}
+
+fn config_space_change(_: &TrapFrame) {
+    debug!("console device configuration space change");
+}

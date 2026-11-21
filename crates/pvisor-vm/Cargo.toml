@@ -67,11 +67,16 @@ zstd = { version = "0.13" }
 [dev-dependencies]
 toml.workspace = true
 syn = { version = "2", features = ["full", "visit"] }
+rstest.workspace = true
+proptest.workspace = true
 
 
 [build-dependencies]
 cc = "1"
 libloading.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+sha2.workspace = true
 
 [[example]]
 name = "hvf_cold_restore_case"

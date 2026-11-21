@@ -1,0 +1,13 @@
+[package]
+name = "cpio-decoder"
+version = "0.1.0"
+edition.workspace = true
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+int-to-c-enum.workspace = true
+lending-iterator.workspace = true
+
+[lints]
+workspace = true

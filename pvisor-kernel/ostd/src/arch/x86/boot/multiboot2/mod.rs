@@ -1,0 +1,173 @@
+// SPDX-License-Identifier: MPL-2.0
+
+use core::arch::global_asm;
+
+use multiboot2::{BootInformation, BootInformationHeader, MemoryAreaType};
+
+use super::ToEarlyBootInfo;
+use crate::{
+    boot::{
+        BootloaderAcpiArg, BootloaderFramebufferArg,
+        memory_region::{MemoryRegion, MemoryRegionArray, MemoryRegionType},
+    },
+    mm::{Paddr, kspace::paddr_to_vaddr},
+};
+
+global_asm!(include_str!("header.S"));
+
+unsafe fn make_str_vaddr_static(str: &str) -> &'static str {
+    let vaddr = paddr_to_vaddr(str.as_ptr() as Paddr);
+
+    // SAFETY: The safety is upheld by the caller.
+    let bytes = unsafe { core::slice::from_raw_parts(vaddr as *const u8, str.len()) };
+
+    core::str::from_utf8(bytes).unwrap()
+}
+
+fn is_efi_boot(mb2_info: &BootInformation) -> bool {
+    mb2_info.efi_sdt32_tag().is_some()
+        || mb2_info.efi_sdt64_tag().is_some()
+        || mb2_info.efi_memory_map_tag().is_some()
+        || mb2_info.efi_bs_not_exited_tag().is_some()
+        || mb2_info.efi_ih32_tag().is_some()
+        || mb2_info.efi_ih64_tag().is_some()
+}
+
+impl From<MemoryAreaType> for MemoryRegionType {
+    fn from(value: MemoryAreaType) -> Self {
+        match value {
+            MemoryAreaType::Available => Self::Usable,
+            MemoryAreaType::Reserved => Self::Reserved,
+            MemoryAreaType::AcpiAvailable => Self::Reclaimable,
+            MemoryAreaType::ReservedHibernate => Self::NonVolatileSleep,
+            MemoryAreaType::Defective => Self::BadMemory,
+            MemoryAreaType::Custom(_) => Self::Reserved,
+        }
+    }
+}
+
+impl ToEarlyBootInfo for BootInformation<'_> {
+    fn bootloader_name(&self) -> &'static str {
+        let Some(name) = self.boot_loader_name_tag().and_then(|tag| tag.name().ok()) else {
+            return "Unknown Multiboot2 Loader";
+        };
+
+        // SAFETY:
+        // 1. The bootloader name is safe to read because of the contract with the loader.
+        // 2. We reserve the bootloader-name region in `memory_regions`, so it will live as an
+        //    immutable reference for `'static`.
+        unsafe { make_str_vaddr_static(name) }
+    }
+
+    fn kernel_commandline(&self) -> Option<&'static str> {
+        let cmdline = self.command_line_tag()?.cmdline().ok()?;
+
+        // SAFETY:
+        // 1. The command line is safe to read because of the contract with the loader.
+        // 2. We reserve the command-line region in `finish_memory_regions`, so it will live as an
+        //    immutable reference for `'static`.
+        Some(unsafe { make_str_vaddr_static(cmdline) })
+    }
+
+    fn initramfs(&self) -> Option<&'static [u8]> {
+        let module_tag = self.module_tags().next()?;
+
+        let initramfs_ptr = paddr_to_vaddr(module_tag.start_address() as usize);
+        let initramfs_len = module_tag.module_size() as usize;
+        // SAFETY:
+        // 1. The initramfs is safe to read because of the contract with the loader.
+        // 2. We reserve the initramfs region in `memory_regions`, so it will live as an immutable
+        //    reference for `'static`.
+        let initramfs =
+            unsafe { core::slice::from_raw_parts(initramfs_ptr as *const u8, initramfs_len) };
+
+        Some(initramfs)
+    }
+
+    fn acpi_arg(&self) -> BootloaderAcpiArg {
+        if let Some(v2_tag) = self.rsdp_v2_tag() {
+            // Check for RSDP v2
+            BootloaderAcpiArg::Xsdt(v2_tag.xsdt_address())
+        } else if let Some(v1_tag) = self.rsdp_v1_tag() {
+            // Fall back to RSDP v1
+            BootloaderAcpiArg::Rsdt(v1_tag.rsdt_address())
+        } else if is_efi_boot(self) {
+            BootloaderAcpiArg::NotProvided
+        } else {
+            BootloaderAcpiArg::ScanBios
+        }
+    }
+
+    fn framebuffer_arg(&self) -> Option<BootloaderFramebufferArg> {
+        let fb_tag = self.framebuffer_tag()?.ok()?;
+
+        Some(BootloaderFramebufferArg {
+            address: fb_tag.address() as usize,
+            width: fb_tag.width() as usize,
+            height: fb_tag.height() as usize,
+            bpp: fb_tag.bpp() as usize,
+        })
+    }
+
+    fn memory_regions(
+        &self,
+        initramfs: Option<&'static [u8]>,
+        kernel_cmdline: Option<&'static str>,
+        framebuffer_arg: Option<BootloaderFramebufferArg>,
+    ) -> MemoryRegionArray {
+        let mut regions = MemoryRegionArray::new();
+
+        // Add the regions returned by Grub.
+        let memory_regions_tag = self
+            .memory_map_tag()
+            .expect("No memory regions are found in the Multiboot2 header!");
+        for region in memory_regions_tag.memory_areas() {
+            let start = region.start_address();
+            let end = region.end_address();
+            let area_typ: MemoryRegionType = MemoryAreaType::from(region.typ()).into();
+            regions
+                .push(MemoryRegion::new(
+                    start.try_into().unwrap(),
+                    (end - start).try_into().unwrap(),
+                    area_typ,
+                ))
+                .unwrap();
+        }
+
+        // Add the boot loader name region since Grub does not specify it.
+        if let Some(name) = self.boot_loader_name_tag().and_then(|tag| tag.name().ok()) {
+            regions
+                .push(MemoryRegion::new(
+                    name.as_ptr() as usize,
+                    name.len(),
+                    MemoryRegionType::Reclaimable,
+                ))
+                .unwrap();
+        }
+
+        super::finish_memory_regions(regions, framebuffer_arg, initramfs, kernel_cmdline)
+    }
+}
+
+/// The entry point of the Rust code portion of Rust native kernel (with multiboot2 parameters).
+///
+/// # Safety
+///
+/// - This function must be called only once at a proper timing in the BSP's boot assembly code.
+/// - The caller must follow C calling conventions and put the right arguments in registers.
+/// - If this function is called, entry points of other boot protocols must never be called.
+// SAFETY: The name does not collide with other symbols.
+#[unsafe(no_mangle)]
+unsafe extern "sysv64" fn __multiboot2_entry(boot_magic: u32, boot_params: u64) -> ! {
+    assert_eq!(boot_magic, multiboot2::MAGIC);
+    let mb2_info =
+        unsafe { BootInformation::load(boot_params as *const BootInformationHeader).unwrap() };
+
+    use crate::boot::{EARLY_INFO, start_kernel};
+
+    EARLY_INFO.call_once(|| mb2_info.to_early_boot_info());
+
+    // SAFETY: The safety is guaranteed by the safety preconditions and the fact that we call it
+    // once after setting up necessary resources.
+    unsafe { start_kernel() };
+}

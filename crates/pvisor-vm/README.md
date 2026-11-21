@@ -6,6 +6,26 @@ the guest supervisor.
 
 pVisor 的 Rust VM 运行时。VMM、设备、架构支持和虚拟化后端在同一个 crate 中编译，对外使用统一的 Rust API。
 
+## 实验性 Rust native kernel
+
+Linux 固件保持默认。`PVISOR_NATIVE_KERNEL=rust` 显式选择
+根目录 [`pvisor-kernel`](../../pvisor-kernel/README.md) 的内置裁剪源码构建。
+Linux x86_64/aarch64 和 macOS aarch64 的产品构建同时内嵌 Linux 与 Rust native 两个压缩内核，
+运行时只需设置该选择变量，不读取外置 bundle，也不查找可执行文件旁的内核。
+`mise run build` 自动准备并同时嵌入两个载荷，没有用户侧 bundle 路径配置，
+也不在构建时选择内核。独立 Cargo 构建若未嵌入该载荷，选择实验内核会明确报错，
+不下载、不编译、不回退到 Linux。实验内核不接受 `set_firmware_path`。
+
+实验 profile 限于全新单 vCPU、至少 256 MiB 的 Linux x86_64/aarch64 KVM 或 macOS aarch64 HVF VM，
+不支持 EFI、TEE、快照/恢复和 Linux idle handoff。继续使用同一
+virtio-MMIO、virtio-fs `/dev/root` 和 guest supervisor；启动时仅补充
+实验 x86 内核需要的 ACPI CPU/IRQ/reset 描述。原有 Linux 启动路径不写入这些表。
+aarch64 沿用既有 FDT、GICv3、timer 和 PSCI；镜像从 `0x80200000`
+的 ARM64 Image 头启动，FDT 仍通过 `x0` 传入，并避免内核覆盖 RAM 尾部的 FDT。
+ARM KVM 不为实验内核回退到 GICv2。ARM64 内核已交叉编译，真实 KVM/HVF 启动尚未验收。
+bundle 元数据、物理地址、长度和 SHA-256 在编译嵌入前验证；摘要检测损坏，
+不证明来源可信，构建者仍须信任本地构建输入。内核在进程内按需解包并共享。
+
 ## 设备支持范围
 
 产品构建选择默认 `init-blob` 和可选 `net`，使用 KVM/HVF/WHP、

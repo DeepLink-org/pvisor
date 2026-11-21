@@ -10,8 +10,10 @@ recursive-include fw/initrd *
 recursive-include fw/qboot *
 recursive-include fw/tests *.py
 recursive-include fw/utils *
+recursive-include pvisor-kernel *
 global-exclude *.pyc *.pyo
 prune target
+prune pvisor-kernel/target
 prune vendor/*/target
 exclude vendor/hyper/Cargo.lock
 prune fw/linux-*

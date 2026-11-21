@@ -124,6 +124,7 @@ pub enum VsockConfig {
 /// held in the Vmm.
 #[derive(Default)]
 pub struct VmResources {
+    pub(crate) rust_native_kernel: bool,
     #[cfg(any(
         all(target_os = "macos", target_arch = "aarch64"),
         all(target_os = "linux", target_arch = "x86_64")
@@ -172,10 +173,6 @@ pub struct VmResources {
     /// Whether to enable nested virtualization.
     pub nested_enabled: bool,
     /// Opt in before boot: restricted CPU extensions and serializable software GIC.
-    #[cfg(any(
-        all(target_os = "macos", target_arch = "aarch64"),
-        all(target_os = "linux", target_arch = "x86_64")
-    ))]
     pub snapshot_profile: bool,
     /// Whether to enable split irqchip
     pub split_irqchip: bool,
@@ -378,7 +375,7 @@ mod tests {
     use crate::vmm::resources::VmResources;
     use crate::vmm::vmm_config::kernel_cmdline::KernelCmdlineConfig;
     use crate::vmm::vmm_config::machine_config::{CpuFeaturesTemplate, VmConfig, VmConfigError};
-    use crate::vmm::vmm_config::vsock::tests::{TempSockFile, default_config};
+    use crate::vmm::vmm_config::vsock::tests::{default_config, TempSockFile};
     use crate::vmm::vstate::VcpuConfig;
 
     fn default_kernel_cmdline() -> KernelCmdlineConfig {
@@ -391,6 +388,7 @@ mod tests {
 
     fn default_vm_resources() -> VmResources {
         VmResources {
+            rust_native_kernel: false,
             shared_kernel_base: None,
             ram_backing: None,
             #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
@@ -409,10 +407,6 @@ mod tests {
             console_output: None,
             smbios_oem_strings: None,
             nested_enabled: false,
-            #[cfg(any(
-                all(target_os = "macos", target_arch = "aarch64"),
-                all(target_os = "linux", target_arch = "x86_64")
-            ))]
             snapshot_profile: false,
             #[cfg(any(
                 all(target_os = "macos", target_arch = "aarch64"),

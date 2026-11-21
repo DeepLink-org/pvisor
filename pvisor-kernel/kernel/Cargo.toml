@@ -1,0 +1,24 @@
+[package]
+name = "pvisor-kernel"
+version = "0.1.0"
+edition.workspace = true
+
+[dependencies]
+aster-core.workspace = true
+ostd.workspace = true
+
+# High-level component crates.
+#
+# Keep this list in sync with the `extern crate` declarations in `src/lib.rs`.
+aster-uart.workspace = true
+
+
+[features]
+default = ["cvm_guest"]
+coverage = ["aster-core/coverage"]
+cvm_guest = ["aster-core/cvm_guest"]
+pvh_boot = ["aster-core/pvh_boot"]
+riscv_sv39_mode = ["aster-core/riscv_sv39_mode"]
+
+[lints]
+workspace = true

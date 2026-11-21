@@ -6,7 +6,7 @@
 
 #![cfg_attr(all(target_os = "macos", target_arch = "x86_64"), allow(dead_code))]
 
-#[cfg(any(target_os = "macos", all(target_os = "linux", target_arch = "x86_64")))]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 #[doc(hidden)]
 pub mod environment_snapshot;
 mod runtime;

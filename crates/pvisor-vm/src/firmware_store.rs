@@ -21,6 +21,11 @@ pub(super) fn firmware_name() -> &'static str {
 
 pub(super) fn bundled_directory() -> Option<PathBuf> {
     let directory = std::env::current_exe().ok()?.parent()?.to_path_buf();
+    if crate::experimental_kernel::selection().ok()?
+        == crate::experimental_kernel::Selection::RustNative
+    {
+        return None;
+    }
     directory
         .join(firmware_name())
         .is_file()
@@ -28,6 +33,13 @@ pub(super) fn bundled_directory() -> Option<PathBuf> {
 }
 
 pub(super) fn resolve(directory: Option<&Path>) -> io::Result<PathBuf> {
+    if crate::experimental_kernel::selection()? == crate::experimental_kernel::Selection::RustNative
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "Rust native kernel must be embedded at build time; rebuild with mise run build",
+        ));
+    }
     let executable;
     let directory = match directory {
         Some(directory) => directory,

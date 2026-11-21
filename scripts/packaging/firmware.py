@@ -31,10 +31,61 @@ class ResolvedFirmware(NamedTuple):
     library_name: str | None
     cargo_variable: str
     source_record: str
+    native_bundle: Path | None = None
 
     @property
     def cargo_env(self) -> dict[str, str]:
-        return {self.cargo_variable: str(self.path)}
+        result = {self.cargo_variable: str(self.path)}
+        if self.native_bundle is not None:
+            result["PVISOR_BUILD_NATIVE_KERNEL_BUNDLE"] = str(self.native_bundle)
+        return result
+
+
+def prepare_native_kernel(
+    target: str, *, target_dir: str | None = None, jobs: str | None = None, offline: bool = False
+) -> Path | None:
+    """Prepare the second embedded payload for the product's target architecture."""
+    if target not in {
+        "x86_64-unknown-linux-musl",
+        "x86_64-unknown-linux-gnu",
+        "aarch64-unknown-linux-musl",
+        "aarch64-unknown-linux-gnu",
+        "aarch64-apple-darwin",
+    }:
+        return None
+    command = [sys.executable]
+    if importlib.util.find_spec("elftools") is None:
+        command = ["uv", "run", "--locked", "--only-group", "dev", "python"]
+        if offline:
+            command.insert(2, "--offline")
+    command.extend(
+        [
+            str(ROOT / "pvisor-kernel/build.py"),
+            "--architecture",
+            target.split("-")[0],
+            "--build-dir",
+            str(Path(target_dir or ROOT / "target") / "pvisor-kernel"),
+        ]
+    )
+    if jobs is not None:
+        command.extend(["--jobs", jobs])
+    command.append("--offline" if offline else "--prepare-toolchain")
+    directory = Path(subprocess.check_output(command, cwd=ROOT, text=True).strip())
+    if not directory.is_absolute():
+        raise RuntimeError("Native kernel builder did not return an absolute bundle directory")
+    for name in ("kernel.bin", "kernel.json", "pvisor-kernel.SOURCE"):
+        if not (directory / name).is_file():
+            raise RuntimeError(f"Native kernel build input does not exist: {directory / name}")
+    return directory
+
+
+def native_source_record(directory: Path) -> dict:
+    artifacts = {name: sha256(directory / name) for name in ("kernel.bin", "kernel.json")}
+    receipt = directory / "pvisor-kernel.SOURCE"
+    record = json.loads(receipt.read_text())
+    if record.get("artifacts") != artifacts:
+        raise RuntimeError(f"Native kernel receipt does not match build input: {directory}")
+    return record
 
 
 def host_target() -> str:
@@ -43,6 +94,8 @@ def host_target() -> str:
         return "aarch64-apple-darwin"
     if sys.platform == "linux" and machine in {"x86_64", "amd64"}:
         return "x86_64-unknown-linux-musl"
+    if sys.platform == "linux" and machine in {"arm64", "aarch64"}:
+        return "aarch64-unknown-linux-musl"
     raise RuntimeError(
         f"automatic libkrunfw preparation is unsupported on {sys.platform}/{machine}"
     )
@@ -176,7 +229,7 @@ def build_tools(target: str) -> tuple[list[str], dict[str, str], dict[str, str]]
         "TDX=0",
         "CROSS_COMPILE=",
         "OS=Darwin" if macos else "OS=Linux",
-        "ARCH=arm64" if macos else "ARCH=x86_64",
+        "ARCH=arm64" if target.startswith("aarch64-") else "ARCH=x86_64",
         f"CC={compiler}",
     ]
     tools = {"make": command[0], "cc": compiler}
@@ -314,6 +367,7 @@ def build_firmware(
     host = (sys.platform, machine().lower())
     expected = {
         "x86_64-unknown-linux-musl": ("linux", {"x86_64", "amd64"}),
+        "aarch64-unknown-linux-musl": ("linux", {"arm64", "aarch64"}),
         "aarch64-apple-darwin": ("darwin", {"arm64", "aarch64"}),
     }
     if (
