@@ -741,6 +741,9 @@ existing-directory/project-root metadata publication. Selecting an ordinary chil
 does not implicitly select existing-parent metadata. Dependencies must stay
 strictly below the prefix: hardlinks crossing scope are rejected, never expanded
 outside the project. Selection exclusions and overlay policy still take priority.
+Children inside opaque directories cannot be accepted separately in rootfs or
+project-scoped mode. Retain those directories staged or discard the remaining
+changes; selecting their parent directory does not enable publication.
 Scoped apply, like preview, refuses pending work; explicit global recovery must
 complete it before preparing a new batch.
 

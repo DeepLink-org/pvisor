@@ -85,7 +85,12 @@ impl Completion {
         receipt.validate(record)?;
         let bundle: super::bundle::RunBundle = serde_json::from_slice(&bundle_bytes)?;
         receipt.validate_bundle(&bundle)?;
-        crate::util::write_private_json(&stage.join(FILENAME), &receipt)
+        crate::util::write_run_json(
+            &stage.join(FILENAME),
+            &receipt,
+            &record.run_id,
+            "completion_receipt",
+        )
     }
 
     pub(crate) fn load(record: &RunRecord) -> anyhow::Result<Option<Self>> {
@@ -238,6 +243,112 @@ pub(crate) fn reconcile_session(
 mod tests {
     use super::*;
     use crate::RunBundle;
+    use rstest::rstest;
+
+    #[test]
+    #[ignore = "subprocess probe for completion_persistence_logging_is_opt_in"]
+    fn completion_persistence_diagnostic_child() {
+        let root = tempfile::tempdir().unwrap();
+        let (record, result) = fixture(root.path());
+        Completion::commit(&record, &result).unwrap();
+        assert_eq!(
+            Completion::load(&record).unwrap().unwrap().result.exit_code,
+            Some(0)
+        );
+    }
+
+    #[rstest]
+    #[case::default(None)]
+    #[case::disabled(Some("0"))]
+    #[case::enabled(Some("1"))]
+    fn completion_persistence_logging_is_opt_in(#[case] setting: Option<&str>) {
+        use std::process::{Command, Stdio};
+        use std::time::{Duration, Instant};
+        let root = tempfile::tempdir().unwrap();
+        let stderr_path = root.path().join("stderr");
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command
+            .args([
+                "--exact",
+                "runtime::completion::tests::completion_persistence_diagnostic_child",
+                "--ignored",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env_clear()
+            .env("PATH", "/usr/bin:/bin")
+            .env("HOME", root.path())
+            .env("TMPDIR", root.path())
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(std::fs::File::create(&stderr_path).unwrap());
+        if let Some(value) = std::env::var_os("LD_LIBRARY_PATH") {
+            command.env("LD_LIBRARY_PATH", value);
+        }
+        if let Some(value) = setting {
+            command.env("PVISOR_STARTUP_TIMING", value);
+        }
+        let mut child = command.spawn().unwrap();
+        let pid = child.id();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let status = loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                break status;
+            }
+            if Instant::now() >= deadline {
+                child.kill().unwrap();
+                child.wait().unwrap();
+                panic!("completion diagnostic child timed out");
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        assert!(std::fs::metadata(&stderr_path).unwrap().len() < 32 * 1024);
+        let stderr = std::fs::read_to_string(&stderr_path).unwrap();
+        assert!(status.success(), "{stderr}");
+        if setting != Some("1") {
+            assert!(stderr.is_empty(), "{stderr}");
+            return;
+        }
+        let records: Vec<_> = stderr
+            .lines()
+            .filter(|line| line.contains("object=completion_receipt "))
+            .collect();
+        let phases: Vec<_> = records
+            .iter()
+            .map(|line| {
+                assert!(line.starts_with("pvisor-persistence "));
+                assert!(line.contains(&format!("pid={pid} ")));
+                assert!(line.contains("run_id=\"run-completion\" "));
+                assert!(line.contains("outcome=ok"));
+                let tid = line
+                    .split_whitespace()
+                    .find_map(|field| field.strip_prefix("tid="))
+                    .unwrap()
+                    .parse::<u64>()
+                    .unwrap();
+                #[cfg(any(target_os = "linux", target_os = "macos"))]
+                assert_ne!(tid, 0);
+                #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+                assert_eq!(tid, 0);
+                assert!(!line.contains(root.path().to_str().unwrap()));
+                line.split_whitespace()
+                    .find_map(|field| field.strip_prefix("phase="))
+                    .unwrap()
+            })
+            .collect();
+        assert_eq!(
+            phases,
+            [
+                "serialize",
+                "directory_prepare",
+                "directory_prepare_sync",
+                "file_write",
+                "file_sync",
+                "rename",
+                "directory_sync",
+            ]
+        );
+    }
 
     #[test]
     fn bounded_reader_preserves_bytes_and_rejects_oversized_or_nonregular_files() {

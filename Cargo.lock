@@ -2743,6 +2743,7 @@ dependencies = [
  "pvisor-overlaynet",
  "pvisor-vm",
  "reqwest",
+ "rstest",
  "serde",
  "serde_json",
  "serde_yaml",

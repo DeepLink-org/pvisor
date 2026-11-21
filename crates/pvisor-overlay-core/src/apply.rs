@@ -790,8 +790,17 @@ fn plan_overlay_apply_in_scope(
                 .iter()
                 .any(|path| path != opaque && at_or_below(path, opaque));
             if has_selected_child && !selected_paths.contains(opaque) {
+                let guidance = match (target_kind, prefix) {
+                    (ApplyTargetKind::Directory, _) => "select the directory as one atomic unit",
+                    (ApplyTargetKind::FilesystemRoot, Some(_)) => {
+                        "project-scoped apply does not support opaque directory replacement; leave this directory staged or drop the remaining changes"
+                    }
+                    (ApplyTargetKind::FilesystemRoot, None) => {
+                        "rootfs apply does not support opaque directory replacement; leave this directory staged or drop the remaining changes"
+                    }
+                };
                 return Err(OverlayError::Apply(format!(
-                    "{} is inside opaque directory {}; select the directory as one atomic unit",
+                    "{} is inside opaque directory {}; {guidance}",
                     selected_paths
                         .iter()
                         .find(|path| *path != opaque && at_or_below(path, opaque))
@@ -5809,6 +5818,69 @@ mod tests {
             assert_eq!(fs::read(record.target.join("deleted")).unwrap(), b"old");
             assert!(!record.stage_dir.join("apply-ledger.json").exists());
         }
+    }
+
+    #[rstest::rstest]
+    #[case::directory(
+        ApplyTargetKind::Directory,
+        None,
+        "select the directory as one atomic unit"
+    )]
+    #[case::filesystem_root(ApplyTargetKind::FilesystemRoot, None, "rootfs apply does not support")]
+    #[case::project_scope(
+        ApplyTargetKind::FilesystemRoot,
+        Some("project"),
+        "project-scoped apply does not support"
+    )]
+    fn opaque_child_refusal_only_recommends_supported_selection(
+        #[case] target_kind: ApplyTargetKind,
+        #[case] prefix: Option<&str>,
+        #[case] expected: &str,
+    ) {
+        let tmp = tempdir().unwrap();
+        let target = tmp.path().join("target");
+        let upper = tmp.path().join("upper");
+        let directory = Path::new(prefix.unwrap_or("")).join("replaced");
+        fs::create_dir_all(target.join(&directory)).unwrap();
+        fs::create_dir_all(upper.join(&directory)).unwrap();
+        fs::write(target.join(&directory).join("old"), b"host").unwrap();
+        fs::write(upper.join(&directory).join(OPAQUE_WHITEOUT), b"").unwrap();
+        fs::write(upper.join(&directory).join("new"), b"staged").unwrap();
+        let record = late_conflict_record(&target, &upper);
+        let error = plan_overlay_apply_in_scope(
+            &record,
+            std::slice::from_ref(&target),
+            &ApplySelection {
+                paths: vec![directory.join("new")],
+                ..ApplySelection::default()
+            },
+            target_kind,
+            prefix.map(Path::new),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains(expected), "{error}");
+        if target_kind == ApplyTargetKind::FilesystemRoot {
+            assert!(
+                !error.contains("select the directory as one atomic unit"),
+                "{error}"
+            );
+            assert!(
+                error.contains("leave this directory staged or drop"),
+                "{error}"
+            );
+        }
+        assert_eq!(
+            fs::read(target.join(&directory).join("old")).unwrap(),
+            b"host"
+        );
+        assert!(!target.join(&directory).join("new").exists());
+        assert_eq!(
+            fs::read(upper.join(&directory).join("new")).unwrap(),
+            b"staged"
+        );
+        assert!(upper.join(&directory).join(OPAQUE_WHITEOUT).exists());
+        assert!(!record.stage_dir.join("apply-ledger.json").exists());
     }
 
     #[test]
