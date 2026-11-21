@@ -4,13 +4,14 @@
 //! entry worker may wait on kernel namespace locks; it must never be responsible
 //! for sending the replies that release those locks. See libfuse's lowlevel
 //! notify_inval_entry/notify_inval_inode deadlock contracts.
+
 #[cfg(target_os = "linux")]
 use fuser::Notifier;
 use std::collections::BTreeSet;
 use std::ffi::OsString;
 use std::io;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Condvar, Mutex, mpsc};
+use std::sync::{Arc, Condvar, Mutex, PoisonError, mpsc};
 use std::thread::JoinHandle;
 
 #[cfg(any(target_os = "linux", test))]
@@ -18,6 +19,37 @@ const QUEUE_LIMIT: usize = 256;
 const PENDING_LIMIT: usize = 512;
 pub(crate) const EFFECT_LIMIT: usize = 4096;
 const TERMINATION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+#[derive(Default)]
+struct Completion {
+    done: Mutex<bool>,
+    changed: Condvar,
+}
+
+impl Completion {
+    fn complete(&self) {
+        *self.done.lock().unwrap_or_else(PoisonError::into_inner) = true;
+        self.changed.notify_all();
+    }
+
+    fn wait(&self, timeout: std::time::Duration) -> bool {
+        let deadline = std::time::Instant::now() + timeout;
+        // The flag only moves to complete; no callback runs under this lock.
+        let mut done = self.done.lock().unwrap_or_else(PoisonError::into_inner);
+        while !*done {
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            if remaining.is_zero() {
+                return false;
+            }
+            done = self
+                .changed
+                .wait_timeout(done, remaining)
+                .unwrap_or_else(PoisonError::into_inner)
+                .0;
+        }
+        true
+    }
+}
 
 #[derive(Default, Debug)]
 pub(crate) struct Effects {
@@ -48,7 +80,7 @@ struct State {
     stopping: AtomicBool,
     shutdown: AtomicBool,
     error: Mutex<Option<String>>,
-    terminated: Arc<(Mutex<bool>, Condvar)>,
+    terminated: Arc<Completion>,
     abort: Box<dyn Fn() -> io::Result<()> + Send + Sync>,
 }
 
@@ -62,17 +94,8 @@ impl State {
     }
 
     fn await_termination(&self) {
-        if !self.failed.load(Ordering::SeqCst) {
-            return;
-        }
-        let mut done = self.terminated.0.lock().unwrap();
-        let deadline = std::time::Instant::now() + TERMINATION_TIMEOUT;
-        while !*done {
-            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
-            if remaining.is_zero() {
-                std::process::abort();
-            }
-            done = self.terminated.1.wait_timeout(done, remaining).unwrap().0;
+        if self.failed.load(Ordering::SeqCst) && !self.terminated.wait(TERMINATION_TIMEOUT) {
+            std::process::abort();
         }
     }
 
@@ -83,17 +106,12 @@ impl State {
             return;
         }
         let message = format!("kernel cache invalidation failed: {error}");
-        *self.error.lock().unwrap() = Some(message.clone());
+        *self.error.lock().unwrap_or_else(PoisonError::into_inner) = Some(message.clone());
         let completion = self.terminated.clone();
         let deadline = std::thread::Builder::new()
             .name("overlay-cache-deadline".into())
             .spawn(move || {
-                let done = completion.0.lock().unwrap();
-                let (done, _) = completion
-                    .1
-                    .wait_timeout_while(done, TERMINATION_TIMEOUT, |done| !*done)
-                    .unwrap();
-                if !*done {
+                if !completion.wait(TERMINATION_TIMEOUT) {
                     std::process::abort();
                 }
             })
@@ -109,8 +127,7 @@ impl State {
             );
             std::process::abort();
         }
-        *self.terminated.0.lock().unwrap() = true;
-        self.terminated.1.notify_all();
+        self.terminated.complete();
         let _ = deadline.join();
         // An application logger must not be able to prevent failure detachment.
         log::error!("{message}; FUSE mount detached and connection aborted");
@@ -247,7 +264,7 @@ impl CacheWorkers {
             stopping: AtomicBool::new(false),
             shutdown: AtomicBool::new(false),
             error: Mutex::new(None),
-            terminated: Arc::new((Mutex::new(false), Condvar::new())),
+            terminated: Arc::new(Completion::default()),
             abort,
         });
         let (reply_tx, reply_rx) = mpsc::sync_channel::<Task>(QUEUE_LIMIT);
@@ -381,7 +398,15 @@ impl CacheWorkers {
         let _ = self.replies.join();
         let _ = self.entries.join();
         let _ = self.failures.join();
-        let error = self.state.error.lock().unwrap().clone();
+        if self.state.error.is_poisoned() {
+            self.state.fail("cache error state lock poisoned");
+        }
+        let error = self
+            .state
+            .error
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
         match error {
             Some(error) => Err(io::Error::other(error)),
             None => Ok(()),
@@ -479,20 +504,15 @@ fn verify_detached(mountpoint: &std::path::Path) -> io::Result<()> {
 // Bounds opaque fuser mount/unmount calls too; no user callback is run here.
 // Process termination is a containment signal, not revocation of external FDs.
 pub(crate) struct LifecycleDeadline {
-    done: Arc<(Mutex<bool>, Condvar)>,
+    done: Arc<Completion>,
     worker: Option<JoinHandle<()>>,
 }
 impl LifecycleDeadline {
     pub(crate) fn start(timeout: std::time::Duration) -> Self {
-        let done = Arc::new((Mutex::new(false), Condvar::new()));
+        let done = Arc::new(Completion::default());
         let wait = done.clone();
         let worker = std::thread::spawn(move || {
-            let guard = wait.0.lock().unwrap();
-            let (guard, _) = wait
-                .1
-                .wait_timeout_while(guard, timeout, |done| !*done)
-                .unwrap();
-            if !*guard {
+            if !wait.wait(timeout) {
                 std::process::abort();
             }
         });
@@ -504,9 +524,10 @@ impl LifecycleDeadline {
 }
 impl Drop for LifecycleDeadline {
     fn drop(&mut self) {
-        *self.done.0.lock().unwrap() = true;
-        self.done.1.notify_all();
-        let _ = self.worker.take().unwrap().join();
+        self.done.complete();
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
     }
 }
 
@@ -595,6 +616,198 @@ mod tests {
             gate: (Mutex::new(false), Condvar::new()),
         })
     }
+
+    fn poison<T>(lock: &Mutex<T>) {
+        assert!(
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let _guard = lock.lock().unwrap();
+                panic!("poison cache bookkeeping");
+            }))
+            .is_err()
+        );
+        assert!(lock.is_poisoned());
+    }
+
+    #[rstest::rstest]
+    #[case::pending(false)]
+    #[case::complete(true)]
+    fn poisoned_completion_retains_its_state(#[case] complete: bool) {
+        let completion = Completion::default();
+        if complete {
+            completion.complete();
+        }
+        poison(&completion.done);
+        assert_eq!(completion.wait(Duration::ZERO), complete);
+        completion.complete();
+        assert!(completion.wait(Duration::ZERO));
+    }
+
+    #[rstest::rstest]
+    fn poisoned_completion_still_times_out_and_wakes_all_waiters() {
+        let completion = Arc::new(Completion::default());
+        poison(&completion.done);
+        assert!(!completion.wait(Duration::from_millis(10)));
+        let (done, ready) = mpsc::channel();
+        let waiters: Vec<_> = (0..3)
+            .map(|_| {
+                let completion = completion.clone();
+                let done = done.clone();
+                std::thread::spawn(move || {
+                    done.send(completion.wait(Duration::from_secs(2))).unwrap();
+                })
+            })
+            .collect();
+        completion.complete();
+        for _ in 0..3 {
+            assert!(ready.recv_timeout(Duration::from_secs(2)).unwrap());
+        }
+        for waiter in waiters {
+            waiter.join().unwrap();
+        }
+    }
+
+    #[rstest::rstest]
+    #[case::diagnostic(true, false)]
+    #[case::completion(false, true)]
+    #[case::both(true, true)]
+    fn poisoned_bookkeeping_preserves_termination_reply_fence_and_first_error(
+        #[case] diagnostic: bool,
+        #[case] completion: bool,
+    ) {
+        let aborted = Arc::new(AtomicUsize::new(0));
+        let count = aborted.clone();
+        let (terminating, started) = mpsc::channel();
+        let (release, proceed) = mpsc::channel();
+        let proceed = Mutex::new(proceed);
+        let (handle, workers) = CacheWorkers::start_backend(
+            backend(true),
+            Box::new(move || {
+                terminating.send(()).map_err(io::Error::other)?;
+                proceed
+                    .lock()
+                    .unwrap()
+                    .recv_timeout(Duration::from_secs(2))
+                    .map_err(io::Error::other)?;
+                count.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            }),
+        )
+        .unwrap();
+        if diagnostic {
+            poison(&workers.state.error);
+        }
+        if completion {
+            poison(&workers.state.terminated.done);
+        }
+        assert!(handle.begin());
+        let mut effects = Effects::default();
+        effects.inodes.insert(2);
+        let (done, ready) = mpsc::channel();
+        let count = aborted.clone();
+        handle.submit(effects, move |valid| {
+            done.send((valid, count.load(Ordering::SeqCst))).unwrap();
+        });
+        started.recv_timeout(Duration::from_secs(2)).unwrap();
+        let premature = ready.try_recv();
+        release.send(()).unwrap();
+        assert_eq!(premature, Err(mpsc::TryRecvError::Empty));
+        assert_eq!(
+            ready.recv_timeout(Duration::from_secs(2)).unwrap(),
+            (false, 1)
+        );
+        assert!(handle.pending());
+        assert!(!handle.begin());
+        workers.state.fail("later failure");
+        assert_eq!(aborted.load(Ordering::SeqCst), 1);
+        drop(handle);
+        assert_eq!(
+            workers.join().unwrap_err().to_string(),
+            format!(
+                "kernel cache invalidation failed: {}",
+                io::Error::from_raw_os_error(libc::EIO)
+            )
+        );
+        assert_eq!(aborted.load(Ordering::SeqCst), 1);
+    }
+
+    #[rstest::rstest]
+    fn join_reports_a_poisoned_diagnostic_even_without_a_previous_failure() {
+        let aborted = Arc::new(AtomicUsize::new(0));
+        let count = aborted.clone();
+        let (handle, workers) = CacheWorkers::start_backend(
+            backend(false),
+            Box::new(move || {
+                count.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            }),
+        )
+        .unwrap();
+        poison(&workers.state.error);
+        drop(handle);
+        assert_eq!(
+            workers.join().unwrap_err().to_string(),
+            "kernel cache invalidation failed: cache error state lock poisoned"
+        );
+        assert_eq!(aborted.load(Ordering::SeqCst), 1);
+    }
+
+    #[rstest::rstest]
+    fn lifecycle_deadline_drop_completes_a_poisoned_flag_and_joins_its_worker() {
+        let mut deadline = LifecycleDeadline::start(Duration::from_secs(2));
+        let completion = deadline.done.clone();
+        poison(&completion.done);
+        let worker = deadline.worker.take().unwrap();
+        drop(deadline);
+        assert!(completion.wait(Duration::ZERO));
+        worker.join().unwrap();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[rstest::rstest]
+    fn poisoned_lifecycle_watchdog_still_aborts_at_its_deadline() {
+        use std::os::unix::process::ExitStatusExt;
+        const CHILD: &str = "PVISOR_OVERLAYFS_POISONED_DEADLINE_CHILD";
+        if let Some(marker) = std::env::var_os(CHILD) {
+            let limit = libc::rlimit {
+                rlim_cur: 0,
+                rlim_max: 0,
+            };
+            assert_eq!(unsafe { libc::setrlimit(libc::RLIMIT_CORE, &limit) }, 0);
+            let deadline = LifecycleDeadline::start(Duration::from_secs(1));
+            poison(&deadline.done.done);
+            std::fs::write(marker, b"poisoned").unwrap();
+            std::thread::sleep(Duration::from_secs(3));
+            panic!("poisoned watchdog failed to terminate process");
+        }
+        let root = tempfile::tempdir().unwrap();
+        let marker = root.path().join("poisoned");
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "cache::tests::poisoned_lifecycle_watchdog_still_aborts_at_its_deadline",
+                "--nocapture",
+            ])
+            .env(CHILD, &marker)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let limit = std::time::Instant::now() + Duration::from_secs(6);
+        let status = loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                break status;
+            }
+            if std::time::Instant::now() >= limit {
+                child.kill().unwrap();
+                child.wait().unwrap();
+                panic!("watchdog subprocess exceeded test deadline");
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        assert_eq!(std::fs::read(marker).unwrap(), b"poisoned");
+        assert_eq!(status.signal(), Some(libc::SIGABRT));
+    }
+
     #[test]
     fn pending_reservations_are_globally_bounded_and_stop_admission() {
         let (handle, workers) =

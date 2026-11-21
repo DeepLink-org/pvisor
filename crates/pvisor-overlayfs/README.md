@@ -93,6 +93,11 @@ thread-safe sink; snapshots do not freeze the filesystem, retain at most 8192
 paths, and do not represent all host filesystem activity. See `src/api.rs` for
 field-level security, platform and ownership contracts.
 
+Adapter access-policy configuration requires sole strong ownership of its
+filesystem service. Sharing that service before configuration returns an error
+instead of panicking; retained service owners keep their existing policy.
+Mount preparation propagates the error before dispatch starts.
+
 `api.rs` doctests cover configuration/defaults, side-effect-free cache validation,
 rejection before mounting, and owned metric snapshots. Session consumption has a
 compile-fail example; the mount/unmount workflow is `no_run` because it requires
@@ -190,6 +195,16 @@ shutdown/worker failure replies EIO. Accepted requests pin only their referenced
 inodes, so FORGET can reclaim unrelated nodes while a copy runs. Unmount/drop
 stop admission and drain both workers before shutting down cache notifications.
 This drain does not cancel backing I/O and has no copy deadline.
+
+Poisoned I/O activity bookkeeping rejects new I/O and namespace permits with EIO.
+Existing permits recover only their reservation counters/flag during release;
+the poisoned lock is never cleared. A namespace waiter owns its claim while
+draining I/O, so failed acquisition also releases that claim. Inline and queued
+failures release admission counts, byte reservations and inode pins. Workers
+reject known gate poisoning before starting new copy preparation. Copies
+prepared before a gate failure are discarded before the existing cache reply
+fence completes. Private tests cover poisoning during permit unwinding and copy
+preparation, plus exact EIO replies through socket-backed READ/WRITE/FSYNC dispatch.
 
 This removes the state lock from regular-file copy preparation, not all filesystem
 I/O: publication of large trees, normal reads/writes and opens, directory snapshot creation,
@@ -422,6 +437,14 @@ for recovery. Successful detach also cannot revoke already-held descriptors.
 have occurred and are not rolled back. Shutdown still aborts/detaches on transport
 failure, but does not misreport normal post-detachment ENODEV as a new fault.
 
+Completion waits share one monotonic flag implementation and retain their original
+deadline through wakeups and mutex poisoning. Only diagnostic text and completion
+flags recover poisoned guards; no user callback runs under those locks. Failure
+termination must still complete before failed replies, and timeouts still abort
+the process. A poisoned diagnostic lock cannot turn shutdown into success.
+Private regressions cover poisoned bookkeeping, reply fencing, error retention
+and a self-executed watchdog's SIGABRT deadline without requiring FUSE.
+
 `StableView` is **not** first-content-observation equivalence, review/journal
 compatibility, a snapshot or an audit of each read. Journals/custom policies/
 exclusions/metrics remain explicitly rejected; no read logging is silently skipped.
@@ -548,6 +571,9 @@ Linux: FUSE3 development packages, for example `libfuse3-dev`.
 
 ### Build and test
 
+The crate denies Clippy's `unwrap_used` and `expect_used` lints in non-test code.
+Tests retain assertion-style unwraps; explicit non-panicking fallbacks remain allowed.
+
 ```bash
 mise run build -- release
 mise run test -- pvisor-overlayfs
@@ -586,6 +612,18 @@ Closing a directory deduplicates candidate inodes, scans remaining handle pins
 once and removes paths through each retired node's own aliases. Object mappings
 are scanned once per batch. Unknown inode zero and already-retired nodes require
 no handle/map scans; pending requests, lookups and live handles still pin nodes.
+
+Directory attribute materialization validates handles and snapshot indexes before
+looking up backing metadata: missing handles return EBADF and invalid internal
+indexes return EINVAL. READDIRPLUS at or beyond the snapshot end still succeeds
+with no entries. Repeated reclamation of retired inode IDs cannot remove a later
+inode assigned to the same path.
+
+COPY_FILE_RANGE retains the existing shared file owners and captures the output
+path/inode from one validated handle entry. It does not duplicate descriptors
+or re-fetch an unchecked output handle. Socket-backed protocol regressions check
+exact EBADF replies without target writes, successful retry, positional bytes,
+unchanged file offsets and release of the request's file owners.
 
 Copy-up and apply contracts are documented in
 [`pvisor-overlay-core`](../pvisor-overlay-core/README.md).

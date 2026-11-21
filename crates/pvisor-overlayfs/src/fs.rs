@@ -462,15 +462,14 @@ impl OverlayFs {
     pub(crate) fn with_access_policy(
         mut self,
         policy: &pvisor_overlay_core::FileAccessPolicy,
-    ) -> Self {
+    ) -> anyhow::Result<Self> {
         self.core = Arc::new(
             Arc::try_unwrap(self.core)
-                .ok()
-                .expect("configuration precedes dispatch")
+                .map_err(|_| anyhow::anyhow!("access policy configuration requires exclusive filesystem service ownership"))?
                 .with_access_policy(policy),
         );
         self.access_policy = policy.clone();
-        self
+        Ok(self)
     }
 
     pub(crate) fn with_private_root(mut self, private_root: bool) -> Self {
@@ -827,12 +826,13 @@ impl OverlayFs {
             return;
         }
         for ino in &retired {
-            let node = self.nodes.remove(ino).unwrap();
-            self.profile
-                .add("reclaim_paths_scanned", node.paths.len() as u64);
-            for path in node.paths {
-                if self.by_path.get(&path) == Some(ino) {
-                    self.by_path.remove(&path);
+            if let Some(node) = self.nodes.remove(ino) {
+                self.profile
+                    .add("reclaim_paths_scanned", node.paths.len() as u64);
+                for path in node.paths {
+                    if self.by_path.get(&path) == Some(ino) {
+                        self.by_path.remove(&path);
+                    }
                 }
             }
         }
@@ -1180,14 +1180,23 @@ impl OverlayFs {
     }
 
     fn directory_entry_attr(&mut self, fh: u64, index: usize) -> io::Result<FileAttr> {
-        let entry = &self.open_directories[&fh][index];
+        let entries = self
+            .open_directories
+            .get(&fh)
+            .ok_or_else(|| io::Error::from_raw_os_error(libc::EBADF))?;
+        let owner = entries
+            .first()
+            .ok_or_else(|| io::Error::from_raw_os_error(libc::EINVAL))?
+            .ino;
+        let entry = entries
+            .get(index)
+            .ok_or_else(|| io::Error::from_raw_os_error(libc::EINVAL))?;
 
         let previous_ino = entry.ino;
         let name = entry.name.clone();
         // The first snapshot entry pins the handle-owning directory inode.
         // Follow its current path after rename/exchange, never an old pathname
         // that could now identify an unrelated replacement directory.
-        let owner = self.open_directories[&fh][0].ino;
         let directory = self.node_path(owner)?;
         let path = match index {
             0 => directory,
@@ -1203,7 +1212,11 @@ impl OverlayFs {
             self.inode_for_path_with_metadata(path)?
         };
         let attr = self.attr_from_metadata(ino, &metadata);
-        let entry = &mut self.open_directories.get_mut(&fh).unwrap()[index];
+        let entry = self
+            .open_directories
+            .get_mut(&fh)
+            .and_then(|entries| entries.get_mut(index))
+            .ok_or_else(|| io::Error::from_raw_os_error(libc::EIO))?;
         entry.ino = ino;
         entry.kind = attr.kind;
         // Retain the last materialization for diagnostics, never reuse it as a
@@ -2221,26 +2234,20 @@ impl OverlayFs {
             reply.error(libc::EINVAL);
             return;
         }
-        let Some(input) = self
-            .open_files
-            .get(&fh_in)
-            .and_then(|file| file.try_clone().ok())
-        else {
+        let Some(input) = self.open_files.get(&fh_in) else {
             reply.error(libc::EBADF);
             return;
         };
-        let Some(output) = self
-            .open_files
-            .get(&fh_out)
-            .and_then(|file| file.try_clone().ok())
-        else {
+        let input = input.file.clone();
+        let Some(output) = self.open_files.get(&fh_out) else {
             reply.error(libc::EBADF);
             return;
         };
-        let output_path = self.open_files.get(&fh_out).map(|file| file.path.clone());
-        let output_ino = self.open_files.get(&fh_out).map(|file| file.ino).unwrap();
+        let output_path = output.path.clone();
+        let output_ino = output.ino;
+        let output = output.file.clone();
         let mutation = mutation_or_reply!(
-            self.begin_mutation(&[output_path.as_deref()], &[output_ino], false),
+            self.begin_mutation(&[Some(output_path.as_path())], &[output_ino], false),
             reply
         );
         // The FUSE reply count is u32. Never modify bytes outside the range
@@ -2311,6 +2318,289 @@ impl OverlayFs {
 
 #[cfg(test)]
 mod tests {
+    #[rstest::rstest]
+    #[case::exclusive(false, false)]
+    #[case::shared(true, false)]
+    #[case::weak_reference(false, true)]
+    fn policy_configuration_requires_exclusive_strong_ownership(
+        #[case] shared: bool,
+        #[case] weak: bool,
+    ) {
+        let root = tempfile::tempdir().unwrap();
+        let lower = root.path().join("lower");
+        fs::create_dir(&lower).unwrap();
+        fs::write(lower.join("private"), b"secret").unwrap();
+        fs::write(lower.join("allowed"), b"public").unwrap();
+        let policy = FileAccessPolicy::new(vec!["private".into()], vec![]).unwrap();
+        let overlay = OverlayFs::new(vec![lower.clone()], root.path().join("upper"), None)
+            .unwrap()
+            .with_access_policy(&policy)
+            .unwrap();
+        let shared = shared.then(|| overlay.core.clone());
+        let weak = weak.then(|| Arc::downgrade(&overlay.core));
+        let configured = overlay.with_access_policy(&FileAccessPolicy::default());
+        if let Some(shared) = shared {
+            assert_eq!(
+                configured.err().unwrap().to_string(),
+                "access policy configuration requires exclusive filesystem service ownership"
+            );
+            assert_eq!(
+                shared
+                    .metadata(Path::new("private"))
+                    .unwrap_err()
+                    .raw_os_error(),
+                Some(libc::EACCES)
+            );
+            assert_eq!(shared.metadata(Path::new("allowed")).unwrap().len(), 6);
+        } else {
+            let overlay = configured.unwrap();
+            assert_eq!(
+                overlay.core.metadata(Path::new("private")).unwrap().len(),
+                6
+            );
+            assert_eq!(
+                overlay.core.metadata(Path::new("allowed")).unwrap().len(),
+                6
+            );
+            if let Some(weak) = weak {
+                assert!(weak.upgrade().is_none());
+            }
+        }
+        assert_eq!(fs::read(lower.join("private")).unwrap(), b"secret");
+    }
+
+    #[rstest::rstest]
+    fn repeated_reclamation_cannot_remove_a_replacement_inode() {
+        let root = tempfile::tempdir().unwrap();
+        let lower = root.path().join("lower");
+        fs::create_dir(&lower).unwrap();
+        fs::write(lower.join("file"), b"original").unwrap();
+        let mut overlay = OverlayFs::new(vec![lower], root.path().join("upper"), None).unwrap();
+        let old = overlay
+            .inode_for_path_with_metadata("file".into())
+            .unwrap()
+            .0;
+        overlay.reclaim_inodes([old, old, 0, FUSE_ROOT_ID, u64::MAX]);
+        assert_eq!(overlay.nodes.len(), 1);
+        assert_eq!(overlay.by_path.len(), 1);
+        assert!(overlay.by_object.is_empty());
+        let replacement = overlay
+            .inode_for_path_with_metadata("file".into())
+            .unwrap()
+            .0;
+        assert_ne!(replacement, old);
+        overlay.reclaim_inodes([old, old, 0, FUSE_ROOT_ID, u64::MAX]);
+        assert_eq!(overlay.node_path(replacement).unwrap(), Path::new("file"));
+        assert_eq!(overlay.by_path[Path::new("file")], replacement);
+        assert_eq!(overlay.nodes.len(), 2);
+        assert_eq!(overlay.by_object.len(), 1);
+    }
+
+    #[rstest::rstest]
+    #[case::missing_handle(None, 0, libc::EBADF)]
+    #[case::empty_snapshot(Some(0), 0, libc::EINVAL)]
+    #[case::past_end(Some(2), 2, libc::EINVAL)]
+    #[case::maximum_index(Some(2), usize::MAX, libc::EINVAL)]
+    fn invalid_directory_entry_requests_do_not_change_inode_or_handle_state(
+        #[case] entries: Option<usize>,
+        #[case] index: usize,
+        #[case] error: i32,
+    ) {
+        let root = tempfile::tempdir().unwrap();
+        let lower = root.path().join("lower");
+        fs::create_dir(&lower).unwrap();
+        let mut overlay = OverlayFs::new(vec![lower], root.path().join("upper"), None).unwrap();
+        if let Some(count) = entries {
+            let mut snapshot = overlay.directory_snapshot(FUSE_ROOT_ID).unwrap();
+            snapshot.truncate(count);
+            overlay.open_directories.insert(7, snapshot);
+        }
+        let paths = overlay.by_path.clone();
+        let objects = overlay.by_object.clone();
+        assert_eq!(
+            overlay
+                .directory_entry_attr(7, index)
+                .unwrap_err()
+                .raw_os_error(),
+            Some(error)
+        );
+        assert_eq!(overlay.nodes.len(), 1);
+        assert_eq!(overlay.by_path, paths);
+        assert_eq!(overlay.by_object, objects);
+        assert_eq!(overlay.open_directories.get(&7).map(Vec::len), entries);
+        assert!(
+            overlay
+                .open_directories
+                .values()
+                .flatten()
+                .all(|entry| entry.attr.is_none())
+        );
+    }
+
+    #[rstest::rstest]
+    #[case::at_end(2)]
+    #[case::beyond_end(i64::MAX)]
+    fn readdirplus_past_the_snapshot_end_remains_successful(#[case] offset: i64) {
+        let root = tempfile::tempdir().unwrap();
+        let lower = root.path().join("lower");
+        fs::create_dir(&lower).unwrap();
+        let mut overlay = OverlayFs::new(vec![lower], root.path().join("upper"), None).unwrap();
+        let fh = snapshot_handle(&mut overlay, FUSE_ROOT_ID);
+        overlay
+            .buffer_readdirplus(fh, offset, |_, _, _| panic!("entry beyond snapshot"))
+            .unwrap();
+        assert_eq!(overlay.nodes.len(), 1);
+        assert_eq!(overlay.open_directories[&fh].len(), 2);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[rstest::rstest]
+    #[case::valid(11, 12, 0)]
+    #[case::missing_input(0, 12, libc::EBADF)]
+    #[case::missing_output(11, 0, libc::EBADF)]
+    #[case::both_missing(0, 0, libc::EBADF)]
+    fn copy_handles_validate_before_writing_and_allow_retry_through_fuse(
+        #[case] fh_in: u64,
+        #[case] fh_out: u64,
+        #[case] error: i32,
+    ) {
+        use std::io::{Read, Write};
+        use std::os::unix::net::UnixStream;
+
+        fn request(socket: &mut UnixStream, opcode: u32, unique: u64, body: &[u8]) -> Vec<u8> {
+            let mut bytes = Vec::new();
+            for word in [40 + body.len() as u32, opcode] {
+                bytes.extend(word.to_ne_bytes());
+            }
+            bytes.extend(unique.to_ne_bytes());
+            bytes.extend(FUSE_ROOT_ID.to_ne_bytes());
+            for word in [
+                unsafe { libc::geteuid() },
+                unsafe { libc::getegid() },
+                std::process::id(),
+                0,
+            ] {
+                bytes.extend(word.to_ne_bytes());
+            }
+            bytes.extend(body);
+            socket.write_all(&bytes).unwrap();
+            let mut header = [0; 16];
+            socket.read_exact(&mut header).unwrap();
+            let length = u32::from_ne_bytes(header[..4].try_into().unwrap()) as usize;
+            assert!((16..65_536).contains(&length));
+            let mut response = vec![0; length];
+            response[..16].copy_from_slice(&header);
+            socket.read_exact(&mut response[16..]).unwrap();
+            response
+        }
+
+        let root = tempfile::tempdir().unwrap();
+        let lower = root.path().join("lower");
+        let upper = root.path().join("upper");
+        fs::create_dir(&lower).unwrap();
+        fs::write(lower.join("input"), b"abcdefgh").unwrap();
+        let mut overlay = OverlayFs::new(vec![lower.clone()], upper.clone(), None).unwrap();
+        fs::write(upper.join("output"), b"01234567").unwrap();
+        let input = Arc::new(File::open(lower.join("input")).unwrap());
+        let output = Arc::new(
+            OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(upper.join("output"))
+                .unwrap(),
+        );
+        let output_ino = overlay
+            .inode_for_path_with_metadata("output".into())
+            .unwrap()
+            .0;
+        for (handle, name, file, flags, backing) in [
+            (
+                11,
+                "input",
+                input.clone(),
+                libc::O_RDONLY,
+                lower.join("input"),
+            ),
+            (
+                12,
+                "output",
+                output.clone(),
+                libc::O_RDWR,
+                upper.join("output"),
+            ),
+        ] {
+            let ino = overlay.inode_for_path_with_metadata(name.into()).unwrap().0;
+            overlay.open_files.insert(
+                handle,
+                OpenFile {
+                    file,
+                    ino,
+                    path: name.into(),
+                    flags,
+                    backing,
+                },
+            );
+        }
+        let dispatcher = crate::dispatch::DispatchFs::new(overlay).unwrap();
+        let (mut socket, server) = UnixStream::pair().unwrap();
+        socket
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        socket
+            .set_write_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let (done, joined) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let result =
+                fuser::Session::from_fd(dispatcher, server.into(), fuser::SessionACL::Owner).run();
+            done.send(result).unwrap();
+        });
+        let init: Vec<_> = [7u32, 31, 0, 0]
+            .into_iter()
+            .flat_map(u32::to_ne_bytes)
+            .collect();
+        let initialized = request(&mut socket, 26, 1, &init);
+        assert_eq!(&initialized[4..8], &0i32.to_ne_bytes());
+        for (unique, source, destination, expected_error) in
+            [(2, fh_in, fh_out, error), (3, 11, 12, 0)]
+        {
+            let body: Vec<_> = [source, 1, output_ino, destination, 2, 4, 0]
+                .into_iter()
+                .flat_map(u64::to_ne_bytes)
+                .collect();
+            let response = request(&mut socket, 47, unique, &body);
+            let mut expected = (if expected_error == 0 { 24u32 } else { 16u32 })
+                .to_ne_bytes()
+                .to_vec();
+            expected.extend((-expected_error).to_ne_bytes());
+            expected.extend(unique.to_ne_bytes());
+            if expected_error == 0 {
+                expected.extend(4u32.to_ne_bytes());
+                expected.extend(0u32.to_ne_bytes());
+            }
+            assert_eq!(response, expected);
+            assert_eq!(
+                fs::read(upper.join("output")).unwrap(),
+                if expected_error == 0 {
+                    b"01bcde67"
+                } else {
+                    b"01234567"
+                }
+            );
+            assert_eq!(fs::read(lower.join("input")).unwrap(), b"abcdefgh");
+        }
+        drop(socket);
+        joined
+            .recv_timeout(Duration::from_secs(2))
+            .unwrap()
+            .unwrap();
+        worker.join().unwrap();
+        assert_eq!(sys::seek(&input, 0, libc::SEEK_CUR).unwrap(), 0);
+        assert_eq!(sys::seek(&output, 0, libc::SEEK_CUR).unwrap(), 0);
+        assert_eq!(Arc::strong_count(&input), 1);
+        assert_eq!(Arc::strong_count(&output), 1);
+    }
+
     #[test]
     fn unrecorded_ephemeral_explicit_sync_reaches_file_and_propagates_errors() {
         use pvisor_overlay_core::{
@@ -3144,9 +3434,13 @@ mod tests {
             Some(stage.join("preimages")),
         )
         .unwrap();
-        let mut overlay = OverlayFs::from_core(core).unwrap().with_access_policy(
-            &pvisor_overlay_core::FileAccessPolicy::new(vec!["private".into()], vec![]).unwrap(),
-        );
+        let mut overlay = OverlayFs::from_core(core)
+            .unwrap()
+            .with_access_policy(
+                &pvisor_overlay_core::FileAccessPolicy::new(vec!["private".into()], vec![])
+                    .unwrap(),
+            )
+            .unwrap();
         let path = PathBuf::from("allowed");
         let ino = overlay.allocate_inode(path.clone(), &overlay.core.metadata(&path).unwrap());
         fs::remove_file(target.join("allowed")).unwrap();
@@ -3373,8 +3667,9 @@ mod tests {
         fs::write(lower.join("b"), b"later denied").unwrap();
         let mut overlay = OverlayFs::new(vec![lower], temp.path().join("upper"), None).unwrap();
         let fh = snapshot_handle(&mut overlay, FUSE_ROOT_ID);
-        overlay =
-            overlay.with_access_policy(&FileAccessPolicy::new(vec!["b".into()], vec![]).unwrap());
+        overlay = overlay
+            .with_access_policy(&FileAccessPolicy::new(vec!["b".into()], vec![]).unwrap())
+            .unwrap();
         let mut buffered = Vec::new();
         let error = overlay
             .buffer_readdirplus(fh, 2, |entry, cookie, attr| {
@@ -3697,7 +3992,8 @@ mod tests {
                     vec!["**/.env".into()],
                 )
                 .unwrap(),
-            );
+            )
+            .unwrap();
         assert!(
             overlay
                 .open_path(Path::new(".ssh/id_rsa"), libc::O_RDONLY)
