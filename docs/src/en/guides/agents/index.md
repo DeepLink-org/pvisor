@@ -20,7 +20,7 @@ To start independent staged tasks from an existing conversation, install the [Pi
 
     Expect an executable path. Host execution needs the command installed locally. VM or OCI execution needs it installed in the image; the host installation does not automatically carry over.
 
-    Choose model authentication with the [Claude Code](claude-code.md) or [Codex CLI](codex.md) guide. For API keys, set the variable in the current terminal using your existing credential manager and pass it explicitly. Keep real keys out of project files and example commands. HOME isolation may hide host login state; check that the agent can authenticate inside stagebox mode.
+    Choose model authentication with the [Claude Code](claude-code.md) or [Codex CLI](codex.md) guide. For API keys, set the variable in the current terminal using your existing credential manager and pass it explicitly. Keep real keys out of project files and example commands. HOME isolation may hide host login state; check that the agent can authenticate in the Session.
 
 1. ### Launch from the project directory {#launch-agent}
 
@@ -39,7 +39,7 @@ To start independent staged tasks from an existing conversation, install the [Pi
     pvisor review last --diff
     ```
 
-    Inspect task status, candidate files, and test output before accepting actual paths. Run key tests again in the original project. See [Agent style stagebox handoff](../index.md#handoff) for commands and remaining-change cleanup. Failed or cancelled tasks may still have candidate files; inspect status before deciding rather than deleting the stage directly.
+    Inspect task status, candidate files, and test output before accepting actual paths. Run key tests again in the original project. See [staged task handoff](../index.md#handoff) for commands and remaining-change cleanup. Failed or cancelled tasks may still have candidate files; inspect status before deciding rather than deleting the stage directly.
 
 </div>
 

@@ -82,7 +82,7 @@ fn export_help_is_grouped_and_inert_and_stage_explains_both_network_choices() {
     assert!(direct.contains("-o,"));
     let stage = help(root.path(), &["stage", "--help"]);
     for text in [
-        "coding agent stagebox",
+        "staged agent task",
         "Networked Agent:",
         "Offline script:",
         "--network bridge",

@@ -4,7 +4,7 @@
 
 # PolicyVisor
 
-**An agent-native sandbox framework**
+**A container runtime optimized for agent workloads**
 
 [English](README.md) · [简体中文](README.zh-CN.md)
 
@@ -16,26 +16,13 @@
 
 </div>
 
-pVisor is a sandbox framework with two modes. Docker style sandbox runs each
-container in its own VM. Agent style stagebox is pVisor's original mode for coding
-agents: with staging enabled, file changes stay staged until you review them
-and choose what to keep.
+pVisor supports a subset of Docker CLI commands and adds commands to review and accept an agent's changes.
 
-## Two modes
+- **Stronger isolation**: Each container has [its own Linux kernel](docs/src/en/security/executor-boundaries.md), keeping the agent's tools separate from host processes and other containers.
+- **Lower memory use**: With [page sharing](docs/src/en/benchmarks/vm-memory/index.md) enabled, agents using the same tools and libraries can share one copy of identical pages across VMs.
+- **Faster tool startup**: [Lazy images](docs/src/en/benchmarks/lazy-image-startup.md) load content on demand, so an agent can start a tool before the whole image downloads.
 
-| Mode | Workflow | Boundary and results |
-| --- | --- | --- |
-| Docker style sandbox | Use familiar image, run, exec, stop, and remove commands | One Linux VM per container; container lifecycle and file operations |
-| Agent style stagebox | Let an agent experiment, review staged changes, and choose what to keep | Native Sessions with explicit staging and review/apply/drop; isolation depends on the selected executor |
-
-### Hands-off vibe coding.
-
-*Coding without sandbox approvals.*
-
-In Agent style stagebox mode, let the agent try changes in a staged workspace,
-then review the files and accept what you need. Approval-free operation still
-requires validation for each agent and configuration; the setup guide states the
-current evidence and limits.
+On Linux, mount a project with `:stage` to keep file changes out of your working tree. After the container exits, use `review` to see the diff, `apply` to keep selected paths, and `drop` to discard the rest.
 
 ## Getting started
 
@@ -51,11 +38,11 @@ pvisor --version
 ```
 
 [Installation](https://deeplink-org.github.io/pvisor/start/installation/) covers
-Homebrew, native packages, and the platform checks for each mode.
+Homebrew, native packages, and the platform checks for each example.
 
-### 2. Choose a mode
+### 2. Try the CLI
 
-#### Docker style sandbox
+#### Run a container
 
 Prepare KVM on Linux x86_64 or
 Hypervisor.framework on Apple Silicon macOS, then run:
@@ -80,9 +67,9 @@ or `pvisor [SESSION_OPTIONS] -- COMMAND`; options-only `--config` / `--spec`
 invocations remain supported. `inspect --files` selects a task filesystem view.
 A shell alias does not redirect SDK Docker sockets or subprocess executable lookup.
 
-#### Agent style stagebox
+#### Review an agent task with native commands
 
-For the Host stagebox example, prepare FUSE and user
+If your tools are already installed locally, `pvisor spawn --safe` starts a Host Session with staged writes and no VM. Prepare FUSE and user
 namespaces on Linux x86_64, or macFUSE 5.4.0+ with FSKit on Apple Silicon macOS.
 Run these commands in a new demo directory:
 
@@ -101,7 +88,7 @@ cat hello.txt
 
 Expect `Hello from pVisor`. The greeting is now in your project; the notes were discarded.
 `last` selects the latest Session in this workspace. The
-[stagebox walkthrough](https://deeplink-org.github.io/pvisor/start/first-run/#agent-style)
+[staged task walkthrough](https://deeplink-org.github.io/pvisor/start/first-run/#agent-style)
 checks the original directory, staged view, and final file state at each step.
 No model account or VM image is needed for this Host example.
 
@@ -112,7 +99,7 @@ walks through fixing failing tests in a small Python project. It includes the
 task prompt and credential setup, then shows how to check staged files, accept
 them, and retest in your project. You need Python, Claude Code, and model access.
 
-> Developer preview: approval-free stagebox operation still needs validation
+> Developer preview: approval-free agent operation still needs validation
 > for cloud models and approval behavior. The agent guide lists the recorded
 > controlled-client tests. pVisor does not automatically disable agent or IDE approvals.
 
@@ -183,7 +170,7 @@ for a caller-script example, or consult the
 
 - [pVisor 0.4.0 release notes](docs/src/en/community/changelog.md#v040)
 - [Installation](https://deeplink-org.github.io/pvisor/start/installation/): prepare and verify your environment
-- [First run](https://deeplink-org.github.io/pvisor/start/first-run/): try either mode from launch to cleanup
+- [First run](https://deeplink-org.github.io/pvisor/start/first-run/): run a container or review a staged task from launch to cleanup
 - [Agent guides](https://deeplink-org.github.io/pvisor/guides/agents/): command setup, credentials, and network access
 - [CLI reference](https://deeplink-org.github.io/pvisor/reference/cli/): commands and configuration
 - [Benchmarks](https://deeplink-org.github.io/pvisor/benchmarks/): measured workloads and conditions

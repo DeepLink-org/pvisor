@@ -1,27 +1,27 @@
 ---
-description: pVisor 沙箱框架的两种模式、隔离机制与成果接收边界。
+description: 容器命令、Agent 任务命令及各自的隔离与写回边界。
 ---
 
 # 简介 {#overview}
 
 <span id="policyvisor"></span>
 
-PolicyVisor（pVisor）是一个 sandbox（沙箱）框架，有两种模式。Docker style sandbox 在独立 VM 中运行熟悉的容器命令。Agent style stagebox 是 pVisor 独创的 Agent 模式，文件改动先暂存，由你审查后选择接收。
+PolicyVisor（pVisor）在独立的 Linux VM 中运行每个容器。Agent 的工具使用客体内核；能访问哪些宿主目录和网络服务，则取决于挂载和网络配置。
 
-## 两种模式 {#modes}
+当多个 Agent 加载相同的库时，[内存页共享](../benchmarks/vm-memory/index.md)让不同 VM 读取同一份物理页，写入时仍各自保留修改。冷启动时，[惰性镜像](../benchmarks/lazy-image-startup.md)优先取回工具实际读取的内容，未用到的文件无需下载。如果工具遍历整个镜像，仍需承担相应的读取开销。
 
-| 模式 | 操作入口 | 隔离与结果管理 |
+## 容器命令与 Agent 命令 {#modes}
+
+在 Linux 上，用 `:stage` 挂载项目即可在容器退出后审查改动，再按路径写回。
+
+| 工作流 | 操作入口 | 隔离与结果管理 |
 | --- | --- | --- |
-| Docker style sandbox | `pvisor run`、`exec`、`stop`、`rm` 等容器命令 | 每个容器对应独立 Linux VM；管理容器生命周期；Linux 暂存挂载另有 review/apply/drop 契约。 |
-| Agent style stagebox（沙盘模式） | `pvisor spawn --safe` 启动原生 Session，再 review、apply/drop | 先保存候选文件，再选择性接收；隔离强度取决于 Host、OCI 或 VM 执行器及实际控制。 |
+| 容器命令 | `pvisor run`、`exec`、`stop`、`rm` 等容器命令 | 每个容器对应独立 Linux VM；管理容器生命周期；Linux 暂存挂载另有 review/apply/drop 契约。 |
+| Agent 任务 | `pvisor spawn --safe` 启动原生 Session，再 review、apply/drop | 先保存候选文件，再选择性接收；隔离强度取决于 Host、OCI 或 VM 执行器及实际控制。 |
 
-Sandbox 是框架与执行隔离的总称；stagebox 专指 Agent style 模式；stage（暂存区）是保存未接收文件变化的存储。Stagebox 不对应一种新的 VM 或隔离级别，也不自动关闭 Agent 的审批。
+CLI 提供 [Docker 风格命令](../reference/cli.md#container-commands)和实验性的 [Compose 项目](../reference/cli.md#compose)。Docker Engine API 客户端需要单独的 Engine。原生任务命令从[离线首跑](../start/first-run.md)开始，之后按 [Agent 指南](../guides/agents/index.md)配置认证和网络。普通 Host Session 默认直写，需要显式启用暂存才能进行文件审查与接收。
 
-Docker style sandbox 提供 [Docker 风格命令](../reference/cli.md#container-commands)和实验性的 [Compose 项目](../reference/cli.md#compose)。Docker Engine API 客户端需要单独的 Engine。Agent style stagebox 从[离线首跑](../start/first-run.md)开始，之后按 [Agent 指南](../guides/agents/index.md)配置认证和网络。普通 Host Session 默认直写，需要显式启用暂存才能进行文件审查与接收。
-
-“沉浸式氛围编程，无需反复权限确认”描述沙箱框架中 Agent style stagebox 的一项特性。免审批体验的 Agent 版本与配置验证矩阵尚未发布；初次认证、外部写入控制和最终成果检查仍需明确安排。
-
-框架还管理 VM 生命周期、镜像和内存资源，可接入推理、评测与 RL 后训练流程。具体能力取决于接口、执行器和平台；容量收益以对应工作负载的测量为准。
+运行时还管理 VM 生命周期、镜像和内存资源，可接入推理、评测与 RL 后训练流程。具体能力取决于接口、执行器和平台；容量收益以对应工作负载的测量为准。
 
 <span id="_3"></span>
 

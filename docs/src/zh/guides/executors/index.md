@@ -1,6 +1,6 @@
 # 选择执行环境
 
-两个快速开始示例分别使用 Host 和 VM。需要更换执行方式时，可按命令所需的内核和用户空间选择。
+`pvisor run` 从镜像启动容器，每个容器有独立的 Linux VM。`pvisor spawn` 启动原生 Session，默认在 Host 上运行。为 Session 选择执行器时，先确定工具装在哪里，再决定是否需要独立内核。这里的 `--executor container` 使用宿主 Linux 内核，与 `pvisor run` 的 VM 容器不同。
 
 | Executor | 执行环境 | 前提 | 指南 |
 | --- | --- | --- | --- |

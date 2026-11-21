@@ -1,14 +1,14 @@
 # Agent execution infrastructure
 
-pVisor can serve as the execution layer for agent inference, evaluation, and RL post-training: receive tool or task requests, execute in the selected environment, and return results and state to the caller. Validate one complete task on one machine before choosing concurrency, state reuse, and resource management for your workload.
+pVisor runs tools on an execution node and returns exit status, files, and execution records to an inference service, evaluator, or trainer. Start with one sample on one machine. Check that the caller can retrieve a successful result and distinguish an environment that failed to start from a task that produced a wrong answer. Then use the same workload to evaluate concurrency and state reuse.
 
 Use the [execution infrastructure quick start](../../start/infrastructure.md) to run a SWE tool-call excerpt and learn how to submit tasks and collect feedback through a CLI adapter.
 
-## What an agent-native sandbox addresses {#agent-native}
+## What needs to survive between tool calls? {#agent-native}
 
-An agent task typically alternates between model requests and tool execution. Tools modify a workspace, later calls depend on earlier file or process state, and the environment may retain memory while waiting for the model. Evaluation and training also need to distinguish infrastructure failure from task scores and associate results with individual samples.
+An agent edits a source file, waits for the next model response, then runs a test. The test needs the edited file. If it also relies on a running service, saving files alone is not enough. A VM can retain its memory throughout the wait even when its CPU is idle. Choose whether to keep the environment running, save the workspace, or offload the VM on a supported configuration based on what the next call needs.
 
-An agent-native sandbox organizes environments, state, and evidence around these execution stages. pVisor exposes different capabilities through different interfaces. Use the [integration matrix](integration.md) to choose the CLI, embedded Runtime, daemon API, or containerd shim before designing the surrounding service.
+Before choosing the CLI, embedded Runtime, daemon API, or containerd shim, check the [integration matrix](integration.md) for the state that interface can preserve and the results it can return.
 
 ## Responsibilities across a task {#lifecycle}
 

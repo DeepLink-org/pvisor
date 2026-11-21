@@ -12,14 +12,14 @@ description: Run an offline command, inspect staged files, selectively apply cha
 <a id="6-use-your-own-command"></a>
 <a id="7-after-switching-to-a-real-task"></a>
 
-# Get started with either mode {#local-workflow}
+# Run a container and review an agent task {#local-workflow}
 
-Complete [installation](installation.md), then choose a path. Prepare only the prerequisites for your selected mode.
+After [installation](installation.md), choose what to verify first: that a container can start, or when an agent's files reach your project. The examples are independent and neither needs a model account.
 
-- [Docker style sandbox](#docker-style): pull an image, start a separate VM, execute commands, then stop and remove the container.
-- [Agent style stagebox](#agent-style): create two files with an offline command, review and accept one, then discard the remaining change.
+- [Container commands](#docker-style): pull an image, start a separate VM, execute commands, then stop and remove the container.
+- [Agent tasks](#agent-style): create two files with an offline command, review and accept one, then discard the remaining change.
 
-## Docker style sandbox {#docker-style}
+## Container commands {#docker-style}
 
 Use your local terminal. Linux x86_64 needs read/write access to `/dev/kvm`; Apple Silicon macOS needs a release package with the Hypervisor entitlement. Complete [VM platform setup](installation.md#docker-prerequisites). No Docker Daemon or model account is needed, and this example mounts no host directory.
 
@@ -69,11 +69,11 @@ The final list should no longer contain `pvisor-demo`. If ten minutes have elaps
 | Name already exists | Inspect `pvisor ps -a` and choose another name; remove only containers you know belong to this demo. |
 | `exec` cannot find a running instance | Check status and name with `pvisor ps -a`, including whether the sleep deadline elapsed. |
 
-This mode manages VMs through container commands. See the [container reference](../reference/cli.md#container-commands) for flags and volume persistence. This demo configures no volumes and needs no Session review/apply/drop.
+These commands manage a VM-backed container. See the [container reference](../reference/cli.md#container-commands) for flags and volume persistence. This demo configures no volumes and needs no Session review/apply/drop.
 
 To run several services together, try [experimental Compose](../reference/cli.md#compose).
 
-## Agent style stagebox {#agent-style}
+## Agent tasks {#agent-style}
 
 Use your local shell to create two candidate files and hand only the greeting back to the original directory. No model account, VM image, or running Daemon is needed. Run the steps in order in the same terminal and directory.
 
@@ -104,7 +104,7 @@ pwd
 
 Run the remaining commands here. If the directory exists, choose a new name so files from an earlier run do not affect the result. You do not need to clone pVisor or initialize Git.
 
-### 2. Create files in stagebox mode {#run-and-stage}
+### 2. Create files in a staged workspace {#run-and-stage}
 
 Run this command:
 

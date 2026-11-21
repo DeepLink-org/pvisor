@@ -4,7 +4,7 @@ description: "Run Claude Code under pVisor: what --safe allows on the network, h
 
 # Claude Code
 
-Use Claude Code to fix a Python function that mishandles whitespace. After testing the fix, accept the source and tests and discard the experiment notes. You will use Host stagebox, Python's standard library, and your own model account.
+Use Claude Code to fix a Python function that mishandles whitespace. After testing the fix, accept the source and tests and discard the experiment notes. You will use Host file staging, Python's standard library, and your own model account.
 
 ## Complete task: repair failing tests {#repair-task}
 

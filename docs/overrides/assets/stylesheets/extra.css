@@ -80,37 +80,33 @@
 
 .pc-home-eyebrow > span { opacity: .45; }
 
-.pc-home-copy .pc-home-promise {
+.pc-home-intro p {
   max-width: 34rem;
   font-size: 17px;
 }
 
-.pc-home-mode-summary {
+.pc-home-intro ul {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 16px;
-  margin-top: 24px;
+  margin: 24px 0 0;
+  padding: 0;
+  list-style: none;
 }
 
-.pc-home-mode-summary a {
-  display: flex;
-  flex-direction: column;
-  gap: 5px;
+.pc-home-intro ul li {
+  margin: 0;
   padding-left: 12px;
   border-left: 2px solid rgba(168, 206, 250, .4);
-  color: #e9eef8;
+  color: #c1cfe2;
   font-size: 13px;
   line-height: 1.5;
-  text-decoration: none;
 }
 
-.pc-home-mode-summary a:last-child { border-color: #a8cefa; }
-.pc-home-mode-summary a:hover strong { color: #a8cefa; }
-.pc-home-mode-summary a:focus-visible { outline: 2px solid #a8cefa; outline-offset: 4px; }
-.pc-home-mode-summary a span { color: #c1cfe2; font-size: 12px; }
+.pc-home-intro li a { color: #a8cefa; font-weight: 600; }
+.pc-home-intro li a:focus-visible { outline: 2px solid #a8cefa; outline-offset: 4px; }
 
-.pc-home-copy .pc-home-tagline {
-  margin-bottom: 24px;
+.pc-home-intro h2 {
+  margin: 0 0 24px;
   color: #fff;
   font-size: clamp(24px, 2.2vw, 30px);
   font-weight: 500;
@@ -638,13 +634,13 @@
   .pc-home-hero, .pc-home-value, .pc-home-split, .pc-home-modes, .pc-home-stats, .pc-home-footer { max-width: 780px; }
   .pc-home-hero-grid { gap: 32px; }
   .pc-home-hero-grid > .pc-home-examples { margin-top: 0; }
-  .pc-home-copy .pc-home-tagline { text-wrap: initial; }
+  .pc-home-intro h2 { text-wrap: initial; }
 }
 
 @media (max-width: 600px) {
   .pc-home-hero { padding-top: 28px; padding-bottom: 24px; }
   .pc-home-hero-grid { padding: 0; gap: 28px; }
-  .pc-home-mode-summary { grid-template-columns: minmax(0, 1fr); gap: 12px; margin-top: 20px; }
+  .pc-home-intro ul { gap: 12px; margin-top: 20px; }
   .pc-home-copy .pc-home-eyebrow { font-size: 12px; margin-bottom: 16px; }
   .pc-home-terminal-wrap.pc-home-examples { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
   .pc-home-example-label { width: 100%; padding: 10px 8px; font-size: 12px; line-height: 1.4; text-align: center; }
@@ -652,7 +648,7 @@
   .pc-home-copy h1 { font-size: clamp(42px, 11vw, 64px); }
 
   .pc-home-copy p { font-size: 16px; }
-  .pc-home-copy .pc-home-tagline { font-size: 27px; margin-bottom: 18px; }
+  .pc-home-intro h2 { font-size: 27px; margin-bottom: 18px; }
   .pc-home-actions { margin-top: 22px; gap: 10px; }
   .pc-home-preview { margin-top: 24px; }
   .pc-home-terminal-body { padding: 22px 18px; font-size: 13px; }

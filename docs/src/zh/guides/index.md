@@ -1,6 +1,6 @@
-# Agent style stagebox：从实验到成果接收
+# Agent 任务：从实验到成果接收
 
-先通过[离线首跑](../start/first-run.md#agent-style)熟悉暂存。用于已有项目时，给 Agent 一个可以检查的任务，并在目标环境验证接收的文件。
+让 Agent 修复一个失败的测试时，可以先把源码、测试和实验笔记都留在暂存区。任务退出后，再决定哪些文件写回项目，并在原项目里重跑测试。
 
 <div class="pv-guide-steps" markdown="1">
 
@@ -8,11 +8,7 @@
 
     先完成[安装与平台准备](../start/installation.md)，再用[第一次运行](../start/first-run.md)中的离线任务验证暂存和审查。演示不需要模型账号，可以直接比较宿主工作区与 Session 中的候选文件。
 
-    接入真实 Agent 时，按[Agent 接入指南](agents/index.md)确认程序安装位置、凭据和所需网络目标。准备好这些条件后，再把离线命令换成 Agent 或自己的脚本。
-
-    给任务明确的目标和接受条件，例如“修复这个测试，允许修改源码和测试，保留其他文件”。记录开始时的仓库状态，后续审查才有可比较的基线。
-
-    原生 Session 使用 `pvisor spawn` 启动；`pvisor run` 用于独立容器命令，不沿用原生 Session 的暂存与审查入口。具体用法见[CLI 参考](../reference/cli.md)。
+    以下步骤用 `pvisor spawn` 启动原生 Session。如果工具已经装在容器镜像里，在 Linux 上也可以用 `pvisor run` [暂存项目挂载](../reference/cli.md#container-staged-binds)。容器退出后按挂载来源接收文件，不会把整个容器写回宿主。
 
 1. ### 选择执行边界 {#boundaries}
 
@@ -30,7 +26,7 @@
     git status --short
     ```
 
-    保留这些改动作为基线。按 [Agent 接入](agents/index.md)完成认证和网络配置后，启动 Agent，例如：
+    审查时要区分这些已有改动和 Agent 新写的文件。按 [Agent 接入](agents/index.md)确认工具安装位置、凭据和网络配置，再启动 Agent：
 
     ```bash title="Shell"
     pvisor spawn --safe --pass-env ANTHROPIC_API_KEY -- claude

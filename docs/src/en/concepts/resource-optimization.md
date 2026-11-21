@@ -1,6 +1,6 @@
 # Image and memory optimization
 
-Agent executions and concurrent tasks often use similar tools, dependencies and initial state, while accessing only part of that content. pVisor uses demand loading, sharing and compression to reduce repeated preparation and resource residency across these environments.
+A lazy image only needs to supply the content a tool reads to start. A tool that scans the whole image still has to perform those reads. Once tools are running, memory becomes a separate question: VMs that load the same library can share identical pages when page sharing is enabled. Distinct data that goes unused for long periods may be a better candidate for cold compression.
 
 ## The Host manages content; the guest executes tasks {#resource-layers}
 
@@ -18,7 +18,7 @@ The three mechanisms address untouched content, repeated content and cold conten
 | **Sharing and deduplication** | Reuses immutable image content or shares identical pages on supported RAM paths, preserving private modifications on writes | Tasks and executions can reuse similar environments and starting points with fewer duplicate copies |
 | **Compression** | Stores compressible cold content in fewer bytes and decodes it when needed | Temporarily inactive state that must be retained may occupy less space even when it cannot be shared |
 
-Image-content sharing and guest RAM sharing operate at different layers: using the same image does not establish shared RAM. Demand loading shifts some cost to first access, while compression requires CPU and recovery buffers. See [Shared image cache](../reference/shared-image-cache.md) for image loading and [Memory architecture and mechanisms](../design/memory-optimization/index.md) for supported memory paths.
+When two VMs hit the same [image cache](../reference/shared-image-cache.md), the host can reuse image content. That cache hit says nothing about whether their RAM is shared. With [page sharing](../design/memory-optimization/index.md) enabled, both VMs can read the same physical page while keeping writes private. A compressed block must instead be decoded and restored on access, which costs CPU time and needs a recovery buffer.
 
 ## Coordination with lifecycle management {#lifecycle-and-cost}
 

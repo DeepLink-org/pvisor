@@ -12,14 +12,14 @@ description: 逐步运行离线命令、检查暂存文件、选择性合入并�
 <a id="6"></a>
 <a id="7"></a>
 
-# 两种模式快速上手 {#local-workflow}
+# 运行容器与审查 Agent 任务 {#local-workflow}
 
-完成[安装](installation.md)后选择一条路径。首次体验只需完成所选模式的前置条件。
+完成[安装](installation.md)后，可以先验证容器能否启动，也可以先验证 Agent 的文件何时写回项目。两个示例彼此独立，都不需要模型账号。
 
-- [Docker style sandbox](#docker-style)：拉取镜像、启动独立 VM、执行命令，再停止并删除容器。
-- [Agent style stagebox](#agent-style)：用离线命令创建两个文件，审查并只接收一个，再清理剩余改动。
+- [容器命令](#docker-style)：拉取镜像、启动独立 VM、执行命令，再停止并删除容器。
+- [Agent 任务](#agent-style)：用离线命令创建两个文件，审查并只接收一个，再清理剩余改动。
 
-## Docker style sandbox {#docker-style}
+## 容器命令 {#docker-style}
 
 使用本机终端。Linux x86_64 需要可读写的 `/dev/kvm`；Apple Silicon macOS 需要具备 Hypervisor entitlement 的发布包。按[VM 平台准备](installation.md#docker-prerequisites)完成检查，无需 Docker Daemon 或模型账号。这里不挂载宿主目录。
 
@@ -69,11 +69,11 @@ pvisor ps -a
 | 名称已存在 | 用 `pvisor ps -a` 检查，选新名称；只清理确认属于本次演示的容器。 |
 | `exec` 找不到运行实例 | 用 `pvisor ps -a` 核对状态和名称，确认没有超过 `sleep` 时限。 |
 
-该模式使用容器命令管理 VM；参数与卷的持久化规则见[容器参考](../reference/cli.md#container-commands)。未配置卷的演示不需要 Session 的 review/apply/drop。
+这些命令管理由 VM 隔离的容器；参数与卷的持久化规则见[容器参考](../reference/cli.md#container-commands)。未配置卷的演示不需要 Session 的 review/apply/drop。
 
 需要一起运行多个服务时，可使用[实验性 Compose](../reference/cli.md#compose)。
 
-## Agent style stagebox {#agent-style}
+## Agent 任务 {#agent-style}
 
 用本机 Shell 创建两个候选文件，只把问候文件交回原目录。不需要模型账号、VM 镜像或运行中的 Daemon。以下步骤在同一个终端、同一个目录依次执行。
 
@@ -104,7 +104,7 @@ pwd
 
 后续命令都在这个目录运行。若目录已存在，换个新名称，避免上次留下的文件影响结果。无需克隆 pVisor 仓库或初始化 Git。
 
-### 2. 在 stagebox 模式中创建文件 {#run-and-stage}
+### 2. 在暂存工作区中创建文件 {#run-and-stage}
 
 运行下面的命令：
 

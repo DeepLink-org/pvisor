@@ -4,7 +4,7 @@
 
 # PolicyVisor
 
-**Agent 原生沙箱框架**
+**面向 Agent 工作负载优化的容器运行时**
 
 [English](README.md) · [简体中文](README.zh-CN.md)
 
@@ -16,23 +16,13 @@
 
 </div>
 
-pVisor 是一个沙箱框架，有两种模式。Docker style sandbox 为每个容器提供独立 VM。
-Agent style stagebox 是 pVisor 最初的 Agent 模式：显式启用暂存后，文件改动先暂存，
-由你审查后选择接收。
+pVisor 兼容一组常用 Docker CLI 命令，并提供审查和接收 Agent 改动的命令。
 
-## 两种模式
+- **更好的隔离性**：每个容器使用[独立的 Linux 内核](docs/src/zh/security/executor-boundaries.md)，减少 Agent 运行工具时对宿主和其他任务的影响。
+- **更节约资源**：启用[内存页共享](docs/src/zh/benchmarks/vm-memory/index.md)后，多个 Agent 使用相同的工具和库时，宿主只需为共享页保留一份副本。
+- **提速智能体应用**：[惰性镜像](docs/src/zh/benchmarks/lazy-image-startup.md)按需加载内容，Agent 不必等整个镜像下载完就能开始运行工具。
 
-| 模式 | 使用方式 | 隔离与结果管理 |
-| --- | --- | --- |
-| Docker style sandbox | 使用熟悉的镜像、run、exec、stop 和删除命令 | 每个容器对应独立 Linux VM；管理容器生命周期和文件操作 |
-| Agent style stagebox | 让 Agent 尝试方案，审查暂存改动，再选择接收 | 原生 Session 显式启用暂存，通过 review/apply/drop 处理改动；隔离取决于所选执行器 |
-
-### 沉浸式氛围编程
-
-*无需反复权限确认。*
-
-在 Agent style stagebox 模式中，让 Agent 在暂存工作区里尝试修改，完成后审查文件，
-只接收需要的成果。免审批运行仍需按 Agent 和配置逐一验证，接入指南列有现有证据与限制。
+在 Linux 上，用 `:stage` 挂载项目，Agent 的文件改动就不会直接写回工作区。容器退出后，用 `review` 查看差异、`apply` 接收选中的路径、`drop` 丢弃其余改动。
 
 ## 快速开始
 
@@ -48,11 +38,11 @@ pvisor --version
 ```
 
 [安装指南](https://deeplink-org.github.io/pvisor/zh/start/installation/)还包含 Homebrew、
-原生安装包，以及两种模式各自的平台检查步骤。
+原生安装包，以及运行各示例所需的平台检查步骤。
 
-### 2. 选择模式
+### 2. 试用 CLI
 
-#### Docker style sandbox
+#### 运行容器
 
 Linux x86_64 上准备 KVM，Apple Silicon macOS 上准备 Hypervisor.framework，然后运行：
 
@@ -74,9 +64,9 @@ rootfs tar。未知命令直接报错，不会作为主机任务执行。原生�
 文件执行入口；`inspect --files` 选择任务的文件系统视图。
 Shell alias 不会重定向 Docker SDK 的 socket，也不会替换子进程查找的可执行文件。
 
-#### Agent style stagebox
+#### 用 Agent 命令审查任务改动
 
-下面的例子使用 Host 执行器。Linux x86_64 需要 FUSE 和 user namespace；
+如果工具已安装在本机，`pvisor spawn --safe` 可以直接启动暂存写入的 Host Session，不经过 VM。Linux x86_64 需要 FUSE 和 user namespace；
 Apple Silicon macOS 需要启用 FSKit 的 macFUSE 5.4.0 或更新版本。在新建的演示目录中运行：
 
 ```bash
@@ -94,7 +84,7 @@ cat hello.txt
 
 预期输出 `Hello from pVisor`。问候文件已进入项目，临时笔记已丢弃。
 `last` 选择当前工作区最近一次登记的 Session。
-[Stagebox 上手教程](https://deeplink-org.github.io/pvisor/zh/start/first-run/#agent-style)
+[文件暂存教程](https://deeplink-org.github.io/pvisor/zh/start/first-run/#agent-style)
 会逐步检查原目录、暂存视图和最终文件状态。这个 Host 示例不需要模型账号或 VM 镜像。
 
 ### 3. 用 Agent 完成一个任务
@@ -103,7 +93,7 @@ cat hello.txt
 从一个测试失败的小型 Python 项目开始，给出任务提示和凭据配置，再带你检查暂存文件、
 接收修改并在原项目复测。需要 Python、Claude Code 和模型访问权限。
 
-> 开发者预览：stagebox 的免审批运行仍需验证云模型和审批行为，
+> 开发者预览：Agent 免审批运行仍需验证云模型和审批行为，
 > 已有的受控客户端测试见 Agent 指南。pVisor 不会自动关闭 Agent 或 IDE 的审批。
 
 `--safe` 无法落实所需控制时会拒绝启动。普通 Host Session 默认直接写入工作区。
@@ -164,7 +154,7 @@ pVisor 也为 Agent 推理、评测和 RL 后训练提供执行环境。资源�
 
 - [pVisor 0.4.0 发布说明](docs/src/zh/community/changelog.md#v040)
 - [安装指南](https://deeplink-org.github.io/pvisor/zh/start/installation/)：准备并检查环境
-- [首次运行](https://deeplink-org.github.io/pvisor/zh/start/first-run/)：完成所选模式的启动与清理
+- [首次运行](https://deeplink-org.github.io/pvisor/zh/start/first-run/)：运行容器或审查暂存任务，并清理环境
 - [Agent 接入](https://deeplink-org.github.io/pvisor/zh/guides/agents/)：配置命令、凭据和网络访问
 - [CLI 参考](https://deeplink-org.github.io/pvisor/zh/reference/cli/)：命令与配置
 - [基准测试](https://deeplink-org.github.io/pvisor/zh/benchmarks/)：测量结果与实验条件

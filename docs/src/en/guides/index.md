@@ -1,6 +1,6 @@
-# Agent style stagebox: from experiment to accepted results
+# Agent tasks: from experiment to accepted results
 
-Use the [offline first run](../start/first-run.md#agent-style) to learn staging. For an existing project, give the agent a task you can check and verify the accepted files in the target environment.
+When an agent fixes a failing test, its source edits, tests, and scratch notes can all stay in staging. After the task exits, choose which files to bring back and rerun the test in the original project.
 
 <div class="pv-guide-steps" markdown="1">
 
@@ -8,11 +8,7 @@ Use the [offline first run](../start/first-run.md#agent-style) to learn staging.
 
     Complete [installation and platform setup](../start/installation.md), then validate staging and review with the offline task in [your first run](../start/first-run.md). The demonstration needs no model account and lets you compare the host workspace with candidate files in the Session.
 
-    For a real agent, use the [agent integration guides](agents/index.md) to check its installation location, credentials, and required network destinations. Once these are ready, replace the offline command with the agent or your script.
-
-    Give the task an explicit goal and acceptance criteria, such as “fix this test; allow source and test changes; preserve other files.” Record the starting repository state so review has a baseline to compare against.
-
-    Start native Sessions with `pvisor spawn`. The `pvisor run` command starts standalone containers and is separate from the native Session staging and review entry point. See the [CLI reference](../reference/cli.md) for usage.
+    The steps below use `pvisor spawn` to start a native Session. If your tools are in a container image, Linux also supports [staged project mounts](../reference/cli.md#container-staged-binds) with `pvisor run`. After exit, apply writes selected files back to the mount source, not the whole container to the host.
 
 1. ### Choose execution boundaries {#boundaries}
 
@@ -30,7 +26,7 @@ Use the [offline first run](../start/first-run.md#agent-style) to learn staging.
     git status --short
     ```
 
-    Keep those edits as your baseline. Complete authentication and network setup in [agent integration](agents/index.md), then launch an agent, for example:
+    Keep that list so you can distinguish existing edits from the agent's work. Check the tool location, credentials, and network settings in the [agent setup guide](agents/index.md), then launch the agent:
 
     ```bash title="Shell"
     pvisor spawn --safe --pass-env ANTHROPIC_API_KEY -- claude

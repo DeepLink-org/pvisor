@@ -4,7 +4,7 @@ description: "Run Codex CLI under pVisor: the --safe network allowlist, separate
 
 # Codex CLI
 
-Run Codex in your project, inspect its staged changes, and accept selected files after it exits. This path uses a locally installed Codex CLI, an API key, and Host stagebox for project writes.
+Run Codex in your project, inspect its staged changes, and accept selected files after it exits. This path uses a locally installed Codex CLI, an API key, and Host file staging for project writes.
 
 !!! note "Before you start"
     Complete [installation and Host staging setup](../../start/installation.md#local-prerequisites) and install Codex CLI. Choose a small task you can test and prepare model access. Retain Codex's own approval settings.

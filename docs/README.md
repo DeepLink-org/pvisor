@@ -2,32 +2,19 @@
 
 Use **PolicyVisor** for the product name, **pVisor** for its short name, and
 `pvisor` for the CLI. Lead the homepage and README with **PolicyVisor** and
-**An agent-native sandbox framework** (Chinese: **Agent 原生沙箱框架**).
-The homepage title, metadata and hero describe the whole framework.
-**Hands-off vibe coding. / Coding without sandbox approvals.** and
-**沉浸式氛围编程 / 无需反复权限确认** describe a feature of Agent style stagebox;
-keep that message with the stagebox feature, alongside its verification scope.
-Follow it with the product hierarchy: **pVisor is a sandbox framework** with
-**Docker style sandbox** and **Agent style stagebox** modes. Introduce them in
-that order. Docker style sandbox uses familiar container commands with one VM
-per container. Agent style stagebox is pVisor's original mode for autonomous
-experimentation within configured boundaries, staged file review and selective
-result acceptance. Describe originality as the project's mode and product design;
-do not turn it into an unsupported claim that no other project has related features.
-
-Use 沙箱 / sandbox for the framework and execution isolation. Use 沙盘模式 /
-stagebox mode only for Agent style stagebox, not as a synonym for the whole
-product or every sandbox. Use 暂存区 / stage for stored candidate file changes.
-Stagebox names a workflow, not an executor or a stronger isolation guarantee:
-its native Sessions can select Host, OCI or VM execution. Container staged binds have a separate review/apply/drop contract, including
+**A container runtime optimized for agent workloads** (Chinese: **面向 Agent 工作负载优化的容器运行时**).
+Lead with three short points, each pairing a mechanism with its benefit: a guest kernel per container for isolation, shared pages to avoid duplicate RAM across VMs, and lazy images so tools can start before a full download. Use CLI examples for container management and agent file review.
+Compatibility is at the command line, not the Docker Engine API or full Compose specification.
+Use sandbox / 沙箱 for execution isolation and stage / 暂存区 for candidate file changes.
+A container has its own VM; native Sessions can select Host, OCI or VM execution.
+Container staged binds have a separate review/apply/drop contract, including
 mount selection; daemon identities do not inherit Session apply semantics. Keep package and CLI names.
 
-Within the Agent style stagebox tutorial, present a complete local experiment
+In the agent task tutorial, present a complete local experiment
 and selective result handoff. Move
-inference, evaluation, RL post-training and resource optimization to supporting
+inference, evaluation, RL post-training and detailed performance comparisons to supporting
 sections. Describe interface-specific controls and lifecycle contracts separately.
-The stagebox feature message describes the intended experience; approval-free
-operation requires evidence for each agent and configuration. Publish verified agent versions, launch settings, remaining prompts
+Approval-free operation requires evidence for each agent and configuration. Publish verified agent versions, launch settings, remaining prompts
 and unsupported cases before claiming approval-free operation for a configuration.
 Never invent a bypass flag, agent certification, benchmark, or release capability.
 Current Linux preview interfaces include `pvisor stage` and container `:stage`
@@ -203,14 +190,17 @@ Local asset links must stay within the published output. Put diagrams shared by
 both languages in `overrides/assets/diagrams/`, and link to their locale's
 `assets/diagrams/` copy instead of reaching into the other source tree.
 
-`docs/overrides/home.html` overrides the native content block for the full-width
-homepage. The header, mobile drawer, sidebars and table of contents remain
+The paired `src/en/index.md` and `src/zh/index.md` own the homepage introduction,
+including the three benefits and their article links. Edit these as ordinary
+Markdown so the rendered page, search index and translation check use the same text.
+`docs/overrides/home.html` places that content beside the command examples.
+The header, mobile drawer, sidebars and table of contents remain
 Zensical components. `docs/overrides/assets/stylesheets/extra.css` supplies the shared blue
 gradient, grid, brand contrast and homepage layout. Use native Markdown fences,
 `!!! note` / `!!! tip` callouts, and relative image paths.
 
 The homepage includes `home-mechanisms.html` for six illustrated mechanisms and
-four supporting capabilities, and `home-demo.html` for the stagebox walkthrough.
+four supporting capabilities, and `home-demo.html` for the staged task walkthrough.
 Both templates carry paired locale text. `home-showcase.css` and `home-demo.js`
 load only on the homepage. Lead the mechanism cards with environment reuse,
 staging, and conflict checks; state reuse and resource management follow.
@@ -252,7 +242,7 @@ and user-facing protocol pages belong in the site's `reference/` tree, not at th
 Keep exactly seven top-level tabs in this order: Home → Quick start → User guide
 → Basic concepts → Benchmarks → System design → Contributing
 (首页 → 快速开始 → 用户指南 → 基本概念 → 基准测试 → 系统设计 → 参与开发).
-Quick start owns shared CLI installation, complete Docker style sandbox and Agent style stagebox walkthroughs in `start/first-run.md`, and the infrastructure tool-execution example. User guide owns
+Quick start owns CLI installation, container and agent task walkthroughs in `start/first-run.md`, and the infrastructure tool-execution example. User guide owns
 local workflows, Agent integration, executors, policies, task operations, platform
 integration, daemon setup, trajectories and command/configuration reference.
 Basic concepts owns the product overview, core concepts, the four core capabilities,

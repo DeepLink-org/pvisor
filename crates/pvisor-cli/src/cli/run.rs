@@ -913,7 +913,7 @@ pub(super) async fn run(args: RunArgs) -> anyhow::Result<i32> {
             ..Default::default()
         });
         run_log!(
-            "pVisor stagebox — {run_id}: file changes stay staged; choose project results after review."
+            "pVisor staged task — {run_id}: file changes stay staged; choose project results after review."
         );
         run_log!(
             "Read boundary: the live host-root view uses your host permissions and path exclusions; readable files may include HOME, credentials and project .env files. It is not a frozen system snapshot."

@@ -50,7 +50,7 @@
 
 {% set ideas = [
   ('transparent', '用现有环境开始', 'Start where you work', '工具和项目已经在机器上，交给 Agent 就能接着用。', 'Your tools and project are already on the machine. Let the agent use them.', 'Linux 透明 VM 经 virtio-fs 读取宿主环境，保留独立 Guest 内核；需要固定环境时也能选镜像。', 'On Linux, a transparent VM reads the host environment through virtio-fs and keeps its own kernel. Images provide a fixed base when needed.', 'design/vm-runtime/'),
-  ('stage', '改动先留在沙盘', 'Keep edits in a stage', '改代码、跑测试、再修改，Agent 能连续得到真实反馈。', 'Edit, run tests, and adjust. The agent gets real feedback throughout.', '启用暂存后，文件写入私有 upper，后续程序立刻可见；原项目等你审查后再接收。', 'With staging enabled, programs immediately see edits in the private upper layer. You review them before applying them to the project.', 'guides/review-apply/'),
+  ('stage', '改动先留在暂存区', 'Keep edits in a stage', '改代码、跑测试、再修改，Agent 能连续得到真实反馈。', 'Edit, run tests, and adjust. The agent gets real feedback throughout.', '启用暂存后，文件写入私有 upper，后续程序立刻可见；原项目等你审查后再接收。', 'With staging enabled, programs immediately see edits in the private upper layer. You review them before applying them to the project.', 'guides/review-apply/'),
   ('conflict', '接收前检查冲突', 'Check before applying', '你也在改项目，Agent 的旧方案就不能直接盖回来。', 'When you edit the project too, an older proposal must not overwrite your work.', '保留首次内容观察时的原像，apply 前比较目标；有冲突就停下，选中的文件接收后再复测。', 'Record a baseline when content is first observed and check the target before apply. Stop on conflict, then retest the files you accept.', 'design/overlayfs/#preimages'),
   ('checkpoint', '留住一次尝试', 'Keep an execution', '方案还没确定，可以保留当前文件，再分叉出另一种做法。', 'Keep the current file proposal while trying another approach.', 'Host 工作区分叉从已停止的 Session 启动新命令。需要恢复进程时，使用支持相应状态的 VM 执行快照。', 'Host workspace forks start a new command from a stopped Session. Resuming execution uses a VM checkpoint with the required state support.', 'guides/fork-checkpoint/'),
   ('memory', '各自启动，也能共享', 'Share beyond templates', '独立启动的 VM，也可能读到同一份 Python 和系统库。', 'Independently started VMs may load the same Python runtime and libraries.', '共同快照复用已有内存；显式页池查找运行中相同的驻留页，复核后共享，写入时分离。', 'Shared snapshots reuse an existing baseline. An opt-in page pool finds and verifies equal resident pages at runtime; writes separate through COW.', 'design/memory-optimization/deduplication/'),
@@ -59,11 +59,11 @@
 <section class="pv-mechanisms" id="mechanisms" aria-labelledby="mechanisms-title">
   <header class="pv-section-heading">
     <div><p class="pv-kicker">WHY PVISOR</p><h2 id="mechanisms-title">{% if zh %}先看具体改动，再决定接收。{% else %}Review the changes before you accept them.{% endif %}</h2></div>
-    <div class="pv-mechanism-actions"><button class="pv-motion-toggle" type="button" data-motion-toggle hidden>{% if zh %}暂停动画{% else %}Pause motion{% endif %}</button><a class="pv-section-meta" href="why/">{% if zh %}理解沙盘模式{% else %}Understand stagebox{% endif %} ↗</a></div>
+    <div class="pv-mechanism-actions"><button class="pv-motion-toggle" type="button" data-motion-toggle hidden>{% if zh %}暂停动画{% else %}Pause motion{% endif %}</button><a class="pv-section-meta" href="why/">{% if zh %}了解文件暂存{% else %}Understand file staging{% endif %} ↗</a></div>
   </header>
   <div class="pv-mechanisms-intro">
     <p>{% if zh %}让 Agent 修复一个测试，目标通常说得清，要改哪些文件却得跑过才知道。每次权限确认，都要你停下手里的工作，重新理解它正在做什么。{% else %}You can describe a failing test before you know which files need changing. Every permission prompt asks you to stop your own work and reconstruct what the agent is doing.{% endif %}</p>
-    <p>{% if zh %}Stagebox 把文件修改先留下来：访问边界提前设定，Agent 在里面改代码、跑测试；任务停下后，你看具体差异，再把需要的文件接回项目。{% else %}Stagebox retains file changes for review. Set access boundaries up front, let the agent edit and test within them, then inspect the diff and bring selected files back into your project.{% endif %}</p>
+    <p>{% if zh %}启用暂存后，文件修改不会直接写回项目：访问边界提前设定，Agent 在里面改代码、跑测试；任务停下后，你看具体差异，再把需要的文件接回项目。{% else %}Staging retains file changes for review. Set access boundaries up front, let the agent edit and test within them, then inspect the diff and bring selected files back into your project.{% endif %}</p>
   </div>
   <div class="pv-ideas-layout">
     <div class="pv-ideas-main">

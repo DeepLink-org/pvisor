@@ -184,7 +184,7 @@ empty stream or successful transport as task success.
 Portable contracts and real Linux CLI cases cover staging, output, Rust offline
 builds, fanout, selective apply, conflict refusal and drop. Loader/compiler tests
 cover Pi and DSH. The compact card still needs verification in the actual DSH UI.
-No Pulsing-wide build, macOS Rust profile or Windows Host stagebox acceptance
+No Pulsing-wide build, macOS Rust profile or Windows Host file staging acceptance
 is claimed.
 
 ## 0.1.1
