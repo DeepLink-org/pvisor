@@ -190,10 +190,13 @@ next miss. Existing demanded dentries count immediately; other inodes count
 their first later hit. This avoids reopening a wide host directory per tiny page.
 An inode flag counts its first metadata hit even during RCU pathname walks;
 only inode state is touched, so no cache-image lifetime is extended.
-A miss outside the fetched window disables speculative lookup prefetch until
+A miss outside the fetched window disables distinct-name lookup prefetch until
 inode eviction; explicit readdir can still complete the image. Repeated access
-to one name does not advance the admission hint. The triggering lookup owns its
-imported reference, while concurrent lookups retain the host fallback. Guest
+to one name does not advance the distinct-name hint. Patch 0057 separately
+counts host LOOKUP replies returning ENOENT. After four misses for the same
+name hash, its next lookup can request one additional four-page window per
+directory lifetime. A partial image still falls back for unknown names.
+The triggering lookup owns its imported reference, while concurrent lookups retain the host fallback. Guest
 namespace changes invalidate partial images and fall back to the host, because
 they change the offsets and cookies of the unfinished directory snapshot.
 The triggering lookup validates inode IDs and attributes before consuming its
