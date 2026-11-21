@@ -16,6 +16,9 @@
 | [`ag_fixture_tests.rs`](ag_fixture_tests.rs) | 基于 AG 数据的 conversion + capture 回归 |
 | [`llm_fixtures.rs`](llm_fixtures.rs) | 基础 smoke 测试 |
 | [`semantic_conversion.rs`](semantic_conversion.rs) | 生产 understanding / bridge 入口的 Codex、工具历史和并行结果顺序回归 |
+| [`semantic_rendering_contracts.rs`](semantic_rendering_contracts.rs) | Gemini cached content、消息合并边界、usage 字段存在性及 SSE usage 的固定与生成回归 |
+| [`stream_usage_contracts.rs`](stream_usage_contracts.rs) | Messages usage 分片累积、零值覆盖、实例隔离、精确透传及 chunk/终止边界回归 |
+| [`usage_contracts.rs`](usage_contracts.rs) | Usage 溢出错误、合并及 session 更新原子性、供应商转换、透传字节与宽整数参考模型回归 |
 | [`model_api_forwarding.rs`](model_api_forwarding.rs) | Chat Completions、Responses、Messages 的文本与 tool call 非流式/SSE 同协议转发测试 |
 | [`capture/apps/claude/`](capture/apps/claude/) | Claude 专有轨迹 fixture（与 AG 无关） |
 

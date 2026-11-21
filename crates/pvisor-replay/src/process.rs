@@ -5,7 +5,7 @@ use std::os::fd::AsRawFd;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -254,36 +254,12 @@ pub(crate) fn run_process(mut spec: ProcessSpec) -> Result<ProcessOutput, Replay
     }
 
     stop_readers.store(true, std::sync::atomic::Ordering::Release);
-    let stdout = match stdout_reader {
-        Some(reader) => reader
-            .join()
-            .map_err(|_| ReplayError::new(ReplayErrorKind::Internal, "stdout reader panicked"))?
-            .replay_context(ReplayErrorKind::Executor, "drain supervised stdout")?,
-        None => {
-            let mut file = File::open(stdout_redirect.as_ref().expect("redirect path"))
-                .replay_context(ReplayErrorKind::Executor, "open redirected stdout tail")?;
-            let total = file
-                .metadata()
-                .replay_context(ReplayErrorKind::Executor, "stat stdout tail")?
-                .len();
-            let tail_len = total.min(spec.retained_bytes as u64);
-            file.seek(SeekFrom::Start(total - tail_len))
-                .replay_context(ReplayErrorKind::Executor, "seek stdout tail")?;
-            let mut tail = Vec::new();
-            file.take(tail_len)
-                .read_to_end(&mut tail)
-                .replay_context(ReplayErrorKind::Executor, "read stdout tail")?;
-            StreamCapture {
-                tail,
-                total,
-                log_error: None,
-            }
-        }
-    };
-    let stderr = stderr_reader
-        .join()
-        .map_err(|_| ReplayError::new(ReplayErrorKind::Internal, "stderr reader panicked"))?
-        .replay_context(ReplayErrorKind::Executor, "drain supervised stderr")?;
+    let (stdout, stderr) = finish_captures(
+        stdout_reader,
+        stderr_reader,
+        stdout_redirect.as_deref(),
+        spec.retained_bytes,
+    )?;
     if let Some(error) = stdout.log_error.or(stderr.log_error) {
         return Err(ReplayError::new(
             ReplayErrorKind::Executor,
@@ -305,6 +281,59 @@ pub(crate) fn run_process(mut spec: ProcessSpec) -> Result<ProcessOutput, Replay
         step_limited,
         background_cleanup,
     })
+}
+
+fn redirected_stdout_tail(
+    path: &Path,
+    retained_bytes: usize,
+) -> Result<StreamCapture, ReplayError> {
+    let mut file = File::open(path)
+        .replay_context(ReplayErrorKind::Executor, "open redirected stdout tail")?;
+    let total = file
+        .metadata()
+        .replay_context(ReplayErrorKind::Executor, "stat stdout tail")?
+        .len();
+    let tail_len = total.min(retained_bytes as u64);
+    file.seek(SeekFrom::Start(total - tail_len))
+        .replay_context(ReplayErrorKind::Executor, "seek stdout tail")?;
+    let mut tail = Vec::new();
+    file.take(tail_len)
+        .read_to_end(&mut tail)
+        .replay_context(ReplayErrorKind::Executor, "read stdout tail")?;
+    Ok(StreamCapture {
+        tail,
+        total,
+        log_error: None,
+    })
+}
+
+/// Join both readers before propagating a capture error.
+fn finish_captures(
+    stdout_reader: Option<thread::JoinHandle<io::Result<StreamCapture>>>,
+    stderr_reader: thread::JoinHandle<io::Result<StreamCapture>>,
+    stdout_redirect: Option<&Path>,
+    retained_bytes: usize,
+) -> Result<(StreamCapture, StreamCapture), ReplayError> {
+    let stdout = match (stdout_reader, stdout_redirect) {
+        (Some(reader), _) => reader
+            .join()
+            .map_err(|_| ReplayError::new(ReplayErrorKind::Internal, "stdout reader panicked"))
+            .and_then(|result| {
+                result.replay_context(ReplayErrorKind::Executor, "drain supervised stdout")
+            }),
+        (None, Some(path)) => redirected_stdout_tail(path, retained_bytes),
+        (None, None) => Err(ReplayError::new(
+            ReplayErrorKind::Internal,
+            "stdout capture has neither a reader nor a redirect path",
+        )),
+    };
+    let stderr = stderr_reader
+        .join()
+        .map_err(|_| ReplayError::new(ReplayErrorKind::Internal, "stderr reader panicked"))
+        .and_then(|result| {
+            result.replay_context(ReplayErrorKind::Executor, "drain supervised stderr")
+        });
+    Ok((stdout?, stderr?))
 }
 
 /// Make at most one nonblocking write per supervision tick. Closing the pipe
@@ -611,6 +640,7 @@ mod generated_tests;
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
     use std::path::Path;
     use std::process::Command;
     use std::time::{Duration, Instant};
@@ -630,6 +660,240 @@ mod tests {
             retained_bytes: 64 * 1024,
             log_path: log_path.to_path_buf(),
             log_bytes_limit: None,
+        }
+    }
+
+    fn capture(bytes: &[u8]) -> StreamCapture {
+        StreamCapture {
+            tail: bytes.to_vec(),
+            total: bytes.len() as u64,
+            log_error: None,
+        }
+    }
+
+    fn capture_reader(mode: &str) -> thread::JoinHandle<io::Result<StreamCapture>> {
+        let mode = mode.to_owned();
+        thread::spawn(move || match mode.as_str() {
+            "ok" => Ok(capture(b"captured")),
+            "error" => Err(io::Error::other("injected read error")),
+            "panic" => panic!("injected reader panic"),
+            _ => unreachable!(),
+        })
+    }
+
+    #[rstest::rstest]
+    #[case::stdout_io(
+        "error",
+        "error",
+        false,
+        ReplayErrorKind::Executor,
+        "drain supervised stdout"
+    )]
+    #[case::stdout_panic(
+        "panic",
+        "error",
+        false,
+        ReplayErrorKind::Internal,
+        "stdout reader panicked"
+    )]
+    #[case::redirect_missing(
+        "none",
+        "ok",
+        true,
+        ReplayErrorKind::Executor,
+        "open redirected stdout tail"
+    )]
+    #[case::capture_missing(
+        "none",
+        "ok",
+        false,
+        ReplayErrorKind::Internal,
+        "neither a reader nor a redirect"
+    )]
+    #[case::stderr_io(
+        "ok",
+        "error",
+        false,
+        ReplayErrorKind::Executor,
+        "drain supervised stderr"
+    )]
+    #[case::stderr_panic(
+        "ok",
+        "panic",
+        false,
+        ReplayErrorKind::Internal,
+        "stderr reader panicked"
+    )]
+    fn finalization_preserves_error_kind_and_precedence(
+        #[case] stdout: &str,
+        #[case] stderr: &str,
+        #[case] redirect: bool,
+        #[case] kind: ReplayErrorKind,
+        #[case] message: &str,
+    ) {
+        let root = tempfile::tempdir().unwrap();
+        let missing = root.path().join("missing");
+        let stdout = (stdout != "none").then(|| capture_reader(stdout));
+        let error = finish_captures(
+            stdout,
+            capture_reader(stderr),
+            redirect.then_some(missing.as_path()),
+            8,
+        )
+        .err()
+        .unwrap();
+        assert_eq!(error.kind, kind);
+        assert!(error.message.contains(message), "{}", error.message);
+    }
+
+    #[rstest::rstest]
+    fn stdout_error_waits_for_stderr_reader_completion() {
+        use std::sync::mpsc;
+
+        #[derive(Debug)]
+        struct ReportedError(mpsc::Sender<()>);
+        impl std::fmt::Display for ReportedError {
+            fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                let _ = self.0.send(());
+                formatter.write_str("injected stdout read failure")
+            }
+        }
+        impl std::error::Error for ReportedError {}
+
+        let (reported, observed) = mpsc::channel();
+        let stdout = thread::spawn(move || Err(io::Error::other(ReportedError(reported))));
+        let (release, proceed) = mpsc::channel();
+        let finished = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let completed = Arc::clone(&finished);
+        let stderr = thread::spawn(move || {
+            proceed.recv_timeout(Duration::from_secs(5)).unwrap();
+            completed.store(true, std::sync::atomic::Ordering::Release);
+            Ok(capture(b"stderr"))
+        });
+        let (returned, result) = mpsc::channel();
+        let owner = thread::spawn(move || {
+            returned
+                .send(finish_captures(Some(stdout), stderr, None, 8).map(|_| ()))
+                .unwrap();
+        });
+        observed.recv_timeout(Duration::from_secs(5)).unwrap();
+        let early = result.recv_timeout(Duration::from_millis(100));
+        let returned_early = early.is_ok();
+        release.send(()).unwrap();
+        let outcome = match early {
+            Ok(outcome) => outcome,
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                result.recv_timeout(Duration::from_secs(5)).unwrap()
+            }
+            Err(error) => panic!("capture owner disconnected: {error}"),
+        };
+        owner.join().unwrap();
+        assert!(
+            !returned_early,
+            "stdout error escaped before stderr was released"
+        );
+        assert!(finished.load(std::sync::atomic::Ordering::Acquire));
+        assert_eq!(outcome.err().unwrap().kind, ReplayErrorKind::Executor);
+    }
+
+    #[rstest::rstest]
+    #[case::empty(b"", 8, b"")]
+    #[case::zero_retention(b"abcdef", 0, b"")]
+    #[case::one_byte(b"abcdef", 1, b"f")]
+    #[case::suffix(b"abcdef", 3, b"def")]
+    #[case::exact(b"abcdef", 6, b"abcdef")]
+    #[case::above_length(b"abcdef", 7, b"abcdef")]
+    #[case::maximum(b"abcdef", usize::MAX, b"abcdef")]
+    fn redirected_tail_retains_exact_bytes(
+        #[case] bytes: &[u8],
+        #[case] retained: usize,
+        #[case] expected: &[u8],
+    ) {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("stdout");
+        std::fs::write(&path, bytes).unwrap();
+        let result = redirected_stdout_tail(&path, retained).unwrap();
+        assert_eq!(result.tail, expected);
+        assert_eq!(result.total, bytes.len() as u64);
+        assert!(result.log_error.is_none());
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+    }
+
+    proptest! {
+        #[test]
+        fn generated_redirected_tails_preserve_binary_suffixes(
+            bytes in prop::collection::vec(any::<u8>(), 0..4097),
+            retained in 0usize..8193,
+        ) {
+            let root = tempfile::tempdir().unwrap();
+            let path = root.path().join("stdout");
+            std::fs::write(&path, &bytes).unwrap();
+            let result = redirected_stdout_tail(&path, retained).unwrap();
+            prop_assert_eq!(&result.tail, &bytes[bytes.len().saturating_sub(retained)..]);
+            prop_assert_eq!(result.total, bytes.len() as u64);
+            prop_assert_eq!(std::fs::read(&path).unwrap(), bytes);
+        }
+    }
+
+    #[test]
+    fn redirect_tail_failure_reaps_child_and_allows_a_healthy_successor() {
+        const CHILD: &str = "PVISOR_REPLAY_REDIRECT_TAIL_CHILD";
+        const NAME: &str =
+            "process::tests::redirect_tail_failure_reaps_child_and_allows_a_healthy_successor";
+        if let Some(mode) = std::env::var_os(CHILD) {
+            unsafe { libc::alarm(5) };
+            let directory =
+                PathBuf::from(std::env::var_os("PVISOR_REPLAY_REDIRECT_TAIL_DIR").unwrap());
+            std::fs::write(directory.join("pid"), std::process::id().to_string()).unwrap();
+            io::stdout().write_all(b"healthy stdout").unwrap();
+            io::stdout().flush().unwrap();
+            io::stderr().write_all(b"complete stderr").unwrap();
+            io::stderr().flush().unwrap();
+            if mode == "remove" {
+                std::fs::remove_file(directory.join("events")).unwrap();
+            }
+            unsafe { libc::_exit(0) };
+        }
+        let root = tempfile::tempdir().unwrap();
+        for mode in ["remove", "healthy"] {
+            let mut spec = shell_spec("", &root.path().join(format!("{mode}.log")));
+            spec.command = Command::new(std::env::current_exe().unwrap());
+            spec.command
+                .args(["--exact", NAME, "--nocapture"])
+                .env("PATH", "")
+                .env(CHILD, mode)
+                .env("PVISOR_REPLAY_REDIRECT_TAIL_DIR", root.path());
+            spec.stdout_redirect = Some(root.path().join("events"));
+            let result = run_process(spec);
+            let pid: i32 = std::fs::read_to_string(root.path().join("pid"))
+                .unwrap()
+                .parse()
+                .unwrap();
+            assert_eq!(
+                unsafe { libc::waitpid(pid, std::ptr::null_mut(), libc::WNOHANG) },
+                -1
+            );
+            assert_eq!(
+                io::Error::last_os_error().raw_os_error(),
+                Some(libc::ECHILD)
+            );
+            assert!(!process_group_exists(pid).unwrap());
+            assert_eq!(
+                std::fs::read(root.path().join(format!("{mode}.log"))).unwrap(),
+                b"complete stderr"
+            );
+            if mode == "remove" {
+                let error = result.err().unwrap();
+                assert_eq!(error.kind, ReplayErrorKind::Executor);
+                assert!(error.message.contains("open redirected stdout tail"));
+            } else {
+                let output = result.unwrap();
+                assert!(output.status.success());
+                assert!(output.stdout_tail.ends_with(b"healthy stdout"));
+                assert_eq!(output.stderr_tail, b"complete stderr");
+                assert!(!output.stdout_truncated);
+                assert!(!output.stderr_truncated);
+            }
         }
     }
 

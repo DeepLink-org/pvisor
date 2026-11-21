@@ -20,17 +20,44 @@ pub(crate) fn run_enrich(
     assistant_text: Option<&str>,
 ) -> Result<Vec<SpawnLinkBackfill>> {
     run.lock()
-        .unwrap()
+        .map_err(|_| anyhow::anyhow!("capture run registry mutex poisoned"))?
         .enrich(rec, ctx, body_json, assistant_text)
 }
 
-pub(crate) fn run_main_route(run: &Mutex<RunActor>, route: &CaptureRoute) -> CaptureRoute {
-    run.lock().unwrap().main_route(route)
+pub(crate) fn run_main_route(run: &Mutex<RunActor>, route: &CaptureRoute) -> Result<CaptureRoute> {
+    Ok(run
+        .lock()
+        .map_err(|_| anyhow::anyhow!("capture run registry mutex poisoned"))?
+        .main_route(route))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[rstest::rstest]
+    fn poisoned_run_registry_cannot_supply_a_route() {
+        let run = Mutex::new(RunActor::new());
+        assert!(
+            std::panic::catch_unwind(|| {
+                let _guard = run.lock().unwrap();
+                panic!("injected run registry failure");
+            })
+            .is_err()
+        );
+        let route = CaptureRoute {
+            root_session: Some("run".into()),
+            session_id: "s".into(),
+            storage_session_id: "s".into(),
+            subagent_id: Some("child".into()),
+        };
+        assert!(
+            run_main_route(&run, &route)
+                .unwrap_err()
+                .to_string()
+                .contains("mutex poisoned")
+        );
+    }
 
     #[test]
     fn typed_main_route_resolves_unregistered_subagent_to_root() {
@@ -41,7 +68,7 @@ mod tests {
             subagent_id: Some("child".into()),
         };
         let run = Mutex::new(RunActor::new());
-        let main = run_main_route(&run, &route);
+        let main = run_main_route(&run, &route).unwrap();
         assert_eq!(main.root_session, route.root_session);
         assert_eq!(main.session_id, route.session_id);
         assert_eq!(main.storage_session_id, "run");

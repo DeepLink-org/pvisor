@@ -78,11 +78,7 @@ pub(crate) async fn handle_connect_authorized(
             _ = async { let _ = tokio::try_join!(upload, download); } => {}
         }
     });
-    Ok(Response::builder()
-        .status(StatusCode::OK)
-        .body(Body::empty())
-        .expect("CONNECT response")
-        .into_response())
+    Ok(StatusCode::OK.into_response())
 }
 
 pub(crate) fn parse_connect_target(authority: &str) -> anyhow::Result<ConnectTarget> {
@@ -101,8 +97,9 @@ pub(crate) fn parse_connect_target(authority: &str) -> anyhow::Result<ConnectTar
         anyhow::bail!("CONNECT authority must include a host");
     }
     let explicit_port = if authority.starts_with('[') {
-        let end = authority.find(']').expect("Authority validates brackets");
-        let suffix = &authority[end + 1..];
+        let (_, suffix) = authority.split_once(']').ok_or_else(|| {
+            anyhow::anyhow!("CONNECT bracketed host must include a closing bracket")
+        })?;
         if suffix.is_empty() {
             None
         } else {
@@ -297,6 +294,9 @@ mod tests {
     #[case::ipv6_default("[::1]", "::1", 443, "[::1]:443")]
     #[case::dns_explicit("example.com:8443", "example.com", 8443, "example.com:8443")]
     #[case::ipv6_explicit("[::1]:8443", "::1", 8443, "[::1]:8443")]
+    #[case::minimum_port("[::1]:1", "::1", 1, "[::1]:1")]
+    #[case::maximum_port("[::1]:65535", "::1", 65535, "[::1]:65535")]
+    #[case::leading_zeroes("[::1]:00443", "::1", 443, "[::1]:443")]
     fn connect_target_defaults_to_https_port(
         #[case] input: &str,
         #[case] host: &str,
@@ -351,6 +351,12 @@ mod tests {
     #[case::credentials("user@example.com:443")]
     #[case::path("example.com/path")]
     #[case::unclosed_ipv6("[::1")]
+    #[case::unclosed_ipv6_with_port("[::1:443")]
+    #[case::ipv6_empty_port("[::1]:")]
+    #[case::ipv6_zero_port("[::1]:0")]
+    #[case::ipv6_overflowing_port("[::1]:65536")]
+    #[case::ipv6_suffix("[::1]suffix:443")]
+    #[case::ipv6_missing_colon("[::1]443")]
     #[case::unbracketed_ipv6("::1:443")]
     #[case::trailing_text("example.com:443 extra")]
     fn rejects_malformed_connect_authorities(#[case] authority: &str) {

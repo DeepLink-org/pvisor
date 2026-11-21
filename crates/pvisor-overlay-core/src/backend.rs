@@ -3,6 +3,7 @@
 //! Attachments are private metadata projections, never mounts. Native backing
 //! descriptors remain owned by the adapters; remote bytes are read through the
 //! backend and materialized only for copy-up or an owned snapshot export.
+
 use std::{
     fs, io,
     path::{Path, PathBuf},
@@ -281,14 +282,17 @@ fn find(path: &Path) -> io::Result<Option<(Arc<Attachment>, PathBuf)>> {
     let selected = entries
         .iter()
         .filter_map(Weak::upgrade)
-        .filter(|entry| path.starts_with(&entry.root))
-        .max_by_key(|entry| entry.root.components().count());
+        .filter_map(|entry| {
+            path.strip_prefix(&entry.root)
+                .ok()
+                .map(|relative| (entry, relative))
+        })
+        .max_by_key(|(entry, _)| entry.root.components().count());
     drop(entries);
     selected
-        .map(|entry| {
-            let relative = path.strip_prefix(&entry.root).unwrap().to_path_buf();
-            crate::OverlayCore::validate_rel(&relative)?;
-            Ok((entry, relative))
+        .map(|(entry, relative)| {
+            crate::OverlayCore::validate_rel(relative)?;
+            Ok((entry, relative.to_path_buf()))
         })
         .transpose()
 }

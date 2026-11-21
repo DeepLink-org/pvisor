@@ -36,6 +36,9 @@ pub struct CaptureRuntime {
 }
 
 impl CaptureRuntime {
+    /// Start capture using the sink's Journal, or open one in storage.
+    /// Writer startup failure returns an error before rebuilding projections.
+    /// Initialization failure can leave newly created Journal storage on disk.
     pub async fn new(
         sink: Arc<dyn CaptureEventObserver>,
         index: SessionIndexHandle,
@@ -53,7 +56,7 @@ impl CaptureRuntime {
             shutdown: tokio::sync::Mutex::new(()),
             story_deps: StoryActorDeps::new(sink, storage, journal, index),
         });
-        let apply_dispatcher = ApplyDispatcher::new(Arc::clone(&inner));
+        let apply_dispatcher = ApplyDispatcher::new(Arc::clone(&inner))?;
         let runtime = Self {
             inner,
             apply_dispatcher,
@@ -189,7 +192,7 @@ impl CaptureRuntimeInner {
 
         let mut backfill_error = None;
         if !prepared.backfills.is_empty() {
-            let main = run_main_route(&self.run, prepared.ctx.route());
+            let main = run_main_route(&self.run, prepared.ctx.route())?;
             let scope = StoryScope {
                 context: StoryContext::from_route(main, ctx.agent_id()),
             };

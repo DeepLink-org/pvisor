@@ -552,7 +552,7 @@ fn prepare(mut config: OverlayMountConfig) -> Result<(OverlayFs, PathBuf, Vec<Mo
     )?)?
     .with_private_root(fskit && !config.allow_other)
     .with_read_only(config.read_only)
-    .with_access_policy(&config.access_policy)
+    .with_access_policy(&config.access_policy)?
     .with_observation(config.observation.clone())
     .with_kernel_cache(config.kernel_cache, cache_locks);
     // noatime excludes access-time changes and prevents macFUSE read-induced copy-up.

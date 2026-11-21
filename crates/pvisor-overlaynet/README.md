@@ -18,6 +18,10 @@ authorization or upstream dispatch, rather than discarded into a default-port
 target. Authorization and the connector use the same unbracketed host and
 effective port.
 
+CONNECT parsing returns errors for malformed authorities; its empty success
+response uses infallible construction. Parser boundary tests
+and public-router rejection tests cover bracket suffixes and port limits.
+
 Absolute-URI requests must also parse with the forwarding client's URL grammar
 before authorization or sink selection. Invalid URLs, including overflowing
 ports and garbage after a bracketed host, return 400 instead of being authorized
@@ -73,6 +77,13 @@ queued events from a reclaimed tuple cannot affect its replacement, and dropped
 data events release their buffer credits. An upstream I/O error cancels the
 companion copy and aborts the guest flow promptly. Normal EOF remains a half-close
 and allows the opposite direction to drain.
+
+Stack address, route and UDP binding failures return errors before startup acknowledges readiness.
+Generation allocation never wraps: exhaustion rejects new flows before allocating
+socket buffers or table entries, without disturbing existing flows. Private tests
+use independent counters at the exhaustion boundary and cover UDP port validation,
+partial frame prefixes and minimum/maximum frame lengths.
+
 Synthetic DNS answers `localhost` from the guest's loopback address instead
 of allocating a synthetic egress address.
 DNS question names enforce the 63-octet label and 255-octet wire-name limits,
@@ -103,6 +114,13 @@ and other reserved destinations fail closed. Linux-host netns and seccomp
 drivers are not implemented.
 
 ## Develop
+
+The crate denies Clippy's `unwrap_used` and `expect_used` lints in non-test builds.
+Tests retain assertion-style unwraps; non-panicking `unwrap_or` fallbacks remain allowed.
+Poisoned egress policy locks return `Denied(NoNetwork)` before controller callbacks,
+resolution or bandwidth admission. All clones remain fail-closed, including peer
+admission; policy replacement does not recover a poisoned owner. Private tests
+poison fresh locks and verify rejection across clones and replacement modes.
 
 The workspace release profile optimizes `pvisor-overlaynet` and `smoltcp` for
 execution speed (`opt-level = 3`), while other crates retain their existing
@@ -290,6 +308,12 @@ continue and may drop packets. Peer packet sent/received/dropped counts are
 reported separately from proxy TCP flows and host-egress byte counters.
 `InterceptionProfile.peer_ipv4` reports runtime-installed peer coverage; `udp`
 still describes general host egress, which remains unsupported.
+
+Batch sends obtain their descriptor from a present outgoing link; missing links
+and stale generations drop only their own packets. Private regressions check
+interleaved destination ordering and exact counters through missing, stale and
+disconnected links, failed-connect cleanup/retry, inode-safe socket cleanup and
+lease release without deleting a replacement publication.
 
 Peer membership with `VmNetwork::start_with_io` requires `EgressRuntime::for_peer_network`, which constructs
 default-controller egress and rejects a restrictive policy or bandwidth budget.

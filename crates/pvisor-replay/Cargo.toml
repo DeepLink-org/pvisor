@@ -24,5 +24,7 @@ toml.workspace = true
 uuid = { workspace = true, features = ["v4"] }
 
 [dev-dependencies]
+proptest.workspace = true
+rstest.workspace = true
 syn = { version = "2", features = ["full", "visit"] }
 axum = { workspace = true, features = ["json"] }

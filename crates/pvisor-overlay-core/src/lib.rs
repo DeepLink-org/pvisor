@@ -1,5 +1,7 @@
 //! Portable overlay filesystem semantics shared by host FUSE and libkrun virtio-fs.
 
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
+
 pub mod apply;
 pub mod backend;
 mod content_index;

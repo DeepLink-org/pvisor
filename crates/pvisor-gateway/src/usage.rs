@@ -1,5 +1,6 @@
 //! Token usage extraction and rough USD cost estimation.
 
+use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -24,19 +25,59 @@ pub struct StreamMetrics {
 }
 
 impl TokenUsage {
-    pub fn merge(&mut self, other: &TokenUsage) {
-        self.input_tokens += other.input_tokens;
-        self.output_tokens += other.output_tokens;
-        self.total_tokens += other.total_tokens;
-        self.cache_read_tokens += other.cache_read_tokens;
-        self.cache_write_tokens += other.cache_write_tokens;
-        self.reasoning_tokens += other.reasoning_tokens;
+    /// Add every counter, leaving this value unchanged if any counter overflows.
+    ///
+    /// ```
+    /// use pvisor_gateway::usage::TokenUsage;
+    /// let mut usage = TokenUsage { output_tokens: u64::MAX, ..Default::default() };
+    /// let before = usage.clone();
+    /// let delta = TokenUsage { input_tokens: 1, output_tokens: 1, ..Default::default() };
+    /// assert!(usage.merge(&delta).is_err());
+    /// assert_eq!(usage, before);
+    /// usage.merge(&TokenUsage { input_tokens: 2, ..Default::default() })?;
+    /// assert_eq!(usage.input_tokens, 2);
+    /// # Ok::<(), anyhow::Error>(())
+    /// ```
+    pub fn merge(&mut self, other: &TokenUsage) -> Result<()> {
+        let merged = Self {
+            input_tokens: checked_token_add(self.input_tokens, other.input_tokens, "input_tokens")?,
+            output_tokens: checked_token_add(
+                self.output_tokens,
+                other.output_tokens,
+                "output_tokens",
+            )?,
+            total_tokens: checked_token_add(self.total_tokens, other.total_tokens, "total_tokens")?,
+            cache_read_tokens: checked_token_add(
+                self.cache_read_tokens,
+                other.cache_read_tokens,
+                "cache_read_tokens",
+            )?,
+            cache_write_tokens: checked_token_add(
+                self.cache_write_tokens,
+                other.cache_write_tokens,
+                "cache_write_tokens",
+            )?,
+            reasoning_tokens: checked_token_add(
+                self.reasoning_tokens,
+                other.reasoning_tokens,
+                "reasoning_tokens",
+            )?,
+        };
+        *self = merged;
+        Ok(())
     }
 }
 
-/// Extract usage from OpenAI-style `usage` or Anthropic `usage` blocks.
-/// Merge usage from SSE `data:` lines (OpenAI / Anthropic streaming).
-pub fn extract_usage_from_sse(raw: &str) -> TokenUsage {
+pub(crate) fn checked_token_add(left: u64, right: u64, field: &str) -> Result<u64> {
+    left.checked_add(right)
+        .with_context(|| format!("token usage overflow in {field}"))
+}
+
+/// Sum usage from SSE `data:` lines, including nested Messages usage.
+///
+/// Empty, terminal and malformed JSON lines are ignored. Returns an error if
+/// extracting any event or adding any counter overflows; no partial sum is returned.
+pub fn extract_usage_from_sse(raw: &str) -> Result<TokenUsage> {
     let mut merged = TokenUsage::default();
     for line in raw.lines() {
         let line = line.trim();
@@ -48,23 +89,40 @@ pub fn extract_usage_from_sse(raw: &str) -> TokenUsage {
             continue;
         }
         if let Ok(v) = serde_json::from_str::<Value>(json_str) {
-            merged.merge(&extract_usage_from_response(&v));
+            merged.merge(&extract_usage_from_response(&v)?)?;
             if let Some(msg) = v.get("message") {
-                merged.merge(&extract_usage_from_response(msg));
+                merged.merge(&extract_usage_from_response(msg)?)?;
             }
         }
     }
-    merged
+    Ok(merged)
 }
 
-pub fn extract_usage_from_response(body: &Value) -> TokenUsage {
+/// Extract provider counters, rejecting an unrepresentable inferred total.
+///
+/// Missing or non-u64 counters are zero. A missing or zero total is inferred
+/// from input plus output; an explicit nonzero total is preserved.
+///
+/// ```
+/// use pvisor_gateway::usage::extract_usage_from_response;
+/// use serde_json::json;
+/// let usage = extract_usage_from_response(&json!({
+///     "usage": {"input_tokens": 7, "output_tokens": 3}
+/// }))?;
+/// assert_eq!(usage.total_tokens, 10);
+/// assert!(extract_usage_from_response(&json!({
+///     "usage": {"input_tokens": u64::MAX, "output_tokens": 1}
+/// })).is_err());
+/// # Ok::<(), anyhow::Error>(())
+/// ```
+pub fn extract_usage_from_response(body: &Value) -> Result<TokenUsage> {
     let mut u = TokenUsage::default();
     let usage = body
         .get("usage")
         .or_else(|| body.get("Usage"))
         .or_else(|| body.get("usageMetadata"));
     let Some(usage) = usage else {
-        return u;
+        return Ok(u);
     };
     u.input_tokens = pick_u64(
         usage,
@@ -76,7 +134,7 @@ pub fn extract_usage_from_response(body: &Value) -> TokenUsage {
     );
     u.total_tokens = pick_u64(usage, &["total_tokens", "totalTokenCount"]);
     if u.total_tokens == 0 {
-        u.total_tokens = u.input_tokens + u.output_tokens;
+        u.total_tokens = checked_token_add(u.input_tokens, u.output_tokens, "total_tokens")?;
     }
     if let Some(details) = usage.get("prompt_tokens_details") {
         u.cache_read_tokens = pick_u64(details, &["cached_tokens"]);
@@ -97,7 +155,7 @@ pub fn extract_usage_from_response(body: &Value) -> TokenUsage {
     if usage.get("thoughtsTokenCount").is_some() {
         u.reasoning_tokens = pick_u64(usage, &["thoughtsTokenCount"]);
     }
-    u
+    Ok(u)
 }
 
 fn pick_u64(v: &Value, keys: &[&str]) -> u64 {
@@ -220,7 +278,7 @@ mod tests {
                 "total_tokens": 30
             }
         });
-        let u = extract_usage_from_response(&body);
+        let u = extract_usage_from_response(&body).unwrap();
         assert_eq!(u.input_tokens, 10);
         assert_eq!(u.output_tokens, 20);
     }
@@ -229,7 +287,7 @@ mod tests {
     fn anthropic_sse_usage() {
         let sse = "event: message_delta\n\
                    data: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":12}}\n\n";
-        let u = extract_usage_from_sse(sse);
+        let u = extract_usage_from_sse(sse).unwrap();
         assert_eq!(u.output_tokens, 12);
     }
 

@@ -160,7 +160,8 @@ pub(super) fn authorize_upstream_path(
             safe_model_segment(model),
             "invalid upstream model path segment"
         );
-        let (prefix, _, operation) = model_path_parts(path).expect("classified native model path");
+        let (prefix, _, operation) = model_path_parts(path)
+            .ok_or_else(|| anyhow::anyhow!("classified native model path has no model segment"))?;
         let trailing = if path.ends_with('/') { "/" } else { "" };
         Ok(format!("{prefix}{model}:{operation}{trailing}"))
     } else {

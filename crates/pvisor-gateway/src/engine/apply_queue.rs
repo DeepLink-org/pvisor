@@ -5,6 +5,8 @@ use std::sync::{Arc, Mutex, mpsc as std_mpsc};
 
 use std::collections::HashMap;
 
+use anyhow::Context;
+
 use super::actors::StoryActor;
 use super::story::{Story, StoryId};
 use super::wire::{LocalStoryCommand, StoryReply};
@@ -47,7 +49,10 @@ impl TaskBudget {
     // Never wait for global capacity: a worker may retain its permit while
     // awaiting a backfill. Waiting here could make admission a dependency cycle.
     fn admit(self: &Arc<Self>, bytes: usize) -> anyhow::Result<TaskPermit> {
-        let mut usage = self.usage.lock().unwrap();
+        let mut usage = self
+            .usage
+            .lock()
+            .map_err(|_| anyhow::anyhow!("capture task budget mutex poisoned"))?;
         if usage.tasks >= self.max_tasks || bytes > self.max_bytes.saturating_sub(usage.bytes) {
             anyhow::bail!("capture global task/byte budget exhausted");
         }
@@ -67,7 +72,10 @@ struct TaskPermit {
 
 impl Drop for TaskPermit {
     fn drop(&mut self) {
-        let mut usage = self.budget.usage.lock().unwrap();
+        let Ok(mut usage) = self.budget.usage.lock() else {
+            tracing::error!("capture task budget mutex poisoned during permit release");
+            return;
+        };
         usage.tasks -= 1;
         usage.bytes -= self.bytes;
     }
@@ -162,53 +170,62 @@ enum RejectedEventMessage {
 struct RejectedEventWriter {
     budget: Arc<TaskBudget>,
     tx: std_mpsc::SyncSender<RejectedEventMessage>,
-    worker: Mutex<Option<std::thread::JoinHandle<()>>>,
+    worker: Option<std::thread::JoinHandle<()>>,
 }
 
 impl RejectedEventWriter {
-    fn new(storage: Arc<PathBuf>) -> Self {
-        let (tx, rx) = std_mpsc::sync_channel(REJECTED_EVENT_QUEUE_CAPACITY);
-        let worker = std::thread::Builder::new()
-            .name("pvisor-dead-letter".to_string())
-            .spawn(move || {
-                let mut failure = None;
-                while let Ok(message) = rx.recv() {
-                    match message {
-                        RejectedEventMessage::Event {
-                            ctx,
-                            event,
-                            _permit,
-                        } => {
-                            if let Err(error) = dead_letter::append_dead_letter(
-                                storage.as_path(),
-                                &ctx,
-                                &event,
-                                "apply queue full or closed",
-                                None,
-                            ) {
-                                failure.get_or_insert_with(|| format!("{error:#}"));
-                                tracing::error!("dead letter write failed: {error:#}");
-                            }
-                        }
-                        RejectedEventMessage::Barrier { ack } => {
-                            let result = match &failure {
-                                Some(error) => {
-                                    Err(anyhow::anyhow!("dead letter write failed: {error}"))
+    fn new(storage: Arc<PathBuf>) -> anyhow::Result<Self> {
+        Self::start(move |rx| {
+            std::thread::Builder::new()
+                .name("pvisor-dead-letter".to_string())
+                .spawn(move || {
+                    let mut failure = None;
+                    while let Ok(message) = rx.recv() {
+                        match message {
+                            RejectedEventMessage::Event {
+                                ctx,
+                                event,
+                                _permit,
+                            } => {
+                                if let Err(error) = dead_letter::append_dead_letter(
+                                    storage.as_path(),
+                                    &ctx,
+                                    &event,
+                                    "apply queue full or closed",
+                                    None,
+                                ) {
+                                    failure.get_or_insert_with(|| format!("{error:#}"));
+                                    tracing::error!("dead letter write failed: {error:#}");
                                 }
-                                None => Ok(()),
-                            };
-                            let _ = ack.send(result);
+                            }
+                            RejectedEventMessage::Barrier { ack } => {
+                                let result = match &failure {
+                                    Some(error) => {
+                                        Err(anyhow::anyhow!("dead letter write failed: {error}"))
+                                    }
+                                    None => Ok(()),
+                                };
+                                let _ = ack.send(result);
+                            }
+                            RejectedEventMessage::Finish => break,
                         }
-                        RejectedEventMessage::Finish => break,
                     }
-                }
-            })
-            .expect("dead-letter writer thread must start with capture runtime");
-        Self {
+                })
+        })
+    }
+
+    fn start(
+        spawn: impl FnOnce(
+            std_mpsc::Receiver<RejectedEventMessage>,
+        ) -> std::io::Result<std::thread::JoinHandle<()>>,
+    ) -> anyhow::Result<Self> {
+        let (tx, rx) = std_mpsc::sync_channel(REJECTED_EVENT_QUEUE_CAPACITY);
+        let worker = spawn(rx).context("start dead-letter writer thread")?;
+        Ok(Self {
             budget: TaskBudget::new(REJECTED_EVENT_QUEUE_CAPACITY, MAX_DIAGNOSTIC_BYTES),
             tx,
-            worker: Mutex::new(Some(worker)),
-        }
+            worker: Some(worker),
+        })
     }
 
     /// Complete appends queued before the marker, reporting writer I/O errors.
@@ -223,11 +240,14 @@ impl RejectedEventWriter {
     }
 
     fn try_record(&self, ctx: Arc<CallContext>, event: Event) {
-        let Ok(permit) = self.budget.admit(capture_bytes(&ctx, &event)) else {
-            tracing::error!(
-                "dead-letter byte/task budget exhausted; rejected capture gap remains reported by flush/shutdown"
-            );
-            return;
+        let permit = match self.budget.admit(capture_bytes(&ctx, &event)) {
+            Ok(permit) => permit,
+            Err(error) => {
+                tracing::error!(
+                    "dead-letter admission failed: {error:#}; rejected capture gap remains reported by flush/shutdown"
+                );
+                return;
+            }
         };
         if let Err(error) = self.tx.try_send(RejectedEventMessage::Event {
             ctx,
@@ -245,7 +265,7 @@ impl RejectedEventWriter {
 impl Drop for RejectedEventWriter {
     fn drop(&mut self) {
         let _ = self.tx.send(RejectedEventMessage::Finish);
-        if let Some(worker) = self.worker.lock().expect("dead-letter worker mutex").take() {
+        if let Some(worker) = self.worker.take() {
             let _ = worker.join();
         }
     }
@@ -305,6 +325,17 @@ struct SchedulingOwner {
     rejected: RejectedEventWriter,
 }
 
+impl SchedulingOwner {
+    fn record_failure(&self, error: &anyhow::Error) {
+        match self.failure.lock() {
+            Ok(mut failure) => {
+                failure.get_or_insert_with(|| format!("{error:#}"));
+            }
+            Err(_) => tracing::error!("capture failure registry mutex poisoned: {error:#}"),
+        }
+    }
+}
+
 /// The only bounded FIFO and worker per story. The worker owns story state and
 /// performs preparation before applying each task; no second actor mailbox.
 #[derive(Clone)]
@@ -314,9 +345,9 @@ pub(crate) struct ApplyDispatcher {
 }
 
 impl ApplyDispatcher {
-    pub(crate) fn new(inner: Arc<CaptureRuntimeInner>) -> Self {
-        let rejected = RejectedEventWriter::new(Arc::clone(&inner.story_deps.storage));
-        Self {
+    pub(crate) fn new(inner: Arc<CaptureRuntimeInner>) -> anyhow::Result<Self> {
+        let rejected = RejectedEventWriter::new(Arc::clone(&inner.story_deps.storage))?;
+        Ok(Self {
             inner,
             owner: Arc::new(SchedulingOwner {
                 external: TaskBudget::new(MAX_EXTERNAL_TASKS, MAX_EXTERNAL_BYTES),
@@ -330,17 +361,24 @@ impl ApplyDispatcher {
                 failure: Mutex::new(None),
                 rejected,
             }),
-        }
+        })
     }
 
     pub(crate) fn enqueue(&self, ctx: Arc<CallContext>, event: Event) {
         let bytes = capture_bytes(&ctx, &event);
-        let mut state = self.owner.state.lock().unwrap();
         let task = ApplyTask::Capture {
             owner: Arc::clone(&self.owner),
             ctx: Arc::clone(&ctx),
             event,
             ack: None,
+        };
+        let mut state = match self.owner.state.lock() {
+            Ok(state) => state,
+            Err(poison) => {
+                drop(poison);
+                self.record_rejected_task(task);
+                return;
+            }
         };
         if !state.accepting {
             drop(state);
@@ -434,7 +472,11 @@ impl ApplyDispatcher {
                 .saturating_add(story_id.len().saturating_mul(16)),
         )?;
         let tx = {
-            let mut state = self.owner.state.lock().unwrap();
+            let mut state = self
+                .owner
+                .state
+                .lock()
+                .map_err(|_| anyhow::anyhow!("capture scheduler mutex poisoned"))?;
             if state.stopped || (!internal && !state.accepting) {
                 anyhow::bail!("capture scheduling owner is shutting down");
             }
@@ -446,7 +488,11 @@ impl ApplyDispatcher {
             .reserve_owned()
             .await
             .map_err(|_| anyhow::anyhow!("story queue closed"))?;
-        let state = self.owner.state.lock().unwrap();
+        let state = self
+            .owner
+            .state
+            .lock()
+            .map_err(|_| anyhow::anyhow!("capture scheduler mutex poisoned"))?;
         if state.stopped || (!internal && !state.accepting) {
             anyhow::bail!("capture scheduling owner is shutting down");
         }
@@ -460,16 +506,17 @@ impl ApplyDispatcher {
     /// Barrier each owner present at entry. Captures await their cross-story
     /// backfill receipts before passing a barrier, even for a newly made owner.
     pub(crate) async fn flush(&self) -> anyhow::Result<()> {
-        let queues: Vec<_> = self
-            .owner
-            .state
-            .lock()
-            .unwrap()
-            .queues
-            .values()
-            .cloned()
-            .collect();
         let mut error = None;
+        let queues: Vec<_> = {
+            let state = match self.owner.state.lock() {
+                Ok(state) => state,
+                Err(poison) => {
+                    error = Some(anyhow::anyhow!("capture scheduler mutex poisoned"));
+                    poison.into_inner()
+                }
+            };
+            state.queues.values().cloned().collect()
+        };
         for tx in queues {
             let (ack, done) = oneshot::channel();
             let result = async {
@@ -493,10 +540,19 @@ impl ApplyDispatcher {
                 error.get_or_insert(failure);
             }
         }
-        if let Some(failure) = self.owner.failure.lock().unwrap().as_ref() {
-            error.get_or_insert_with(|| {
-                anyhow::anyhow!("capture has uncommitted events: {failure}")
-            });
+        match self.owner.failure.lock() {
+            Ok(failure) => {
+                if let Some(failure) = failure.as_ref() {
+                    error.get_or_insert_with(|| {
+                        anyhow::anyhow!("capture has uncommitted events: {failure}")
+                    });
+                }
+            }
+            Err(_) => {
+                error.get_or_insert_with(|| {
+                    anyhow::anyhow!("capture failure registry mutex poisoned")
+                });
+            }
         }
         match error {
             Some(error) => Err(error),
@@ -507,10 +563,20 @@ impl ApplyDispatcher {
     /// Close external admission first, but leave internal backfill admission
     /// open until accepted captures finish. Stop replies contain final snapshots.
     pub(crate) async fn shutdown(&self) -> (anyhow::Result<()>, HashMap<String, Story>) {
-        self.owner.state.lock().unwrap().accepting = false;
+        // Recover ownership only for draining; poisoning continues to reject admission.
+        match self.owner.state.lock() {
+            Ok(mut state) => state.accepting = false,
+            Err(poison) => poison.into_inner().accepting = false,
+        }
         let mut result = self.flush().await;
         let (queues, workers) = {
-            let mut state = self.owner.state.lock().unwrap();
+            let mut state = match self.owner.state.lock() {
+                Ok(state) => state,
+                Err(poison) => {
+                    result = Err(anyhow::anyhow!("capture scheduler mutex poisoned"));
+                    poison.into_inner()
+                }
+            };
             state.stopped = true;
             (
                 std::mem::take(&mut state.queues),
@@ -615,11 +681,7 @@ impl ApplyDispatcher {
                     } => {
                         let result = story.handle(*command).await;
                         if let Err(error) = &result {
-                            owner
-                                .failure
-                                .lock()
-                                .unwrap()
-                                .get_or_insert_with(|| format!("{error:#}"));
+                            owner.record_failure(error);
                         }
                         let _ = ack.send(result);
                     }
@@ -636,20 +698,16 @@ impl ApplyDispatcher {
     }
 
     pub(crate) fn record_failure(&self, error: &anyhow::Error) {
-        self.owner
-            .failure
-            .lock()
-            .unwrap()
-            .get_or_insert_with(|| format!("{error:#}"));
+        self.owner.record_failure(error);
     }
 
     fn record_rejected_task(&self, task: ApplyTask) {
         let ApplyTask::Capture { ctx, event, .. } = task else {
             return;
         };
-        self.owner.failure.lock().unwrap().get_or_insert_with(|| {
-            "capture admission rejected task (queue, global budget or shutdown)".to_string()
-        });
+        self.record_failure(&anyhow::anyhow!(
+            "capture admission rejected task (queue, global budget or shutdown)"
+        ));
         self.owner.rejected.try_record(Arc::clone(&ctx), event);
         tracing::warn!(
             target: "pvisor_gateway",
@@ -661,6 +719,7 @@ impl ApplyDispatcher {
 
 #[cfg(test)]
 mod tests {
+    use proptest::prelude::*;
     use std::sync::{Arc, Mutex};
 
     use super::*;
@@ -749,6 +808,133 @@ mod tests {
         })
     }
 
+    fn poison_budget(budget: &TaskBudget, tasks: usize, bytes: usize) {
+        let result = std::panic::catch_unwind(|| {
+            let mut usage = budget.usage.lock().unwrap();
+            usage.tasks = tasks;
+            usage.bytes = bytes;
+            panic!("injected budget failure");
+        });
+        assert!(result.is_err());
+        assert!(budget.usage.is_poisoned());
+    }
+
+    #[rstest::rstest]
+    #[case::empty(0, 0)]
+    #[case::apparently_valid(1, 1)]
+    #[case::invalid_tasks(usize::MAX, 1)]
+    #[case::invalid_bytes(1, usize::MAX)]
+    fn poisoned_budget_never_reopens(#[case] tasks: usize, #[case] bytes: usize) {
+        let budget = TaskBudget::new(2, 100);
+        poison_budget(&budget, tasks, bytes);
+        for request in [0, 1, 100, usize::MAX] {
+            let error = budget.admit(request).err().unwrap();
+            assert!(error.to_string().contains("mutex poisoned"));
+        }
+        let retained = budget.usage.lock().err().unwrap().into_inner();
+        assert_eq!((retained.tasks, retained.bytes), (tasks, bytes));
+    }
+
+    #[rstest::rstest]
+    #[case::ordinary_drop(false)]
+    #[case::during_unwind(true)]
+    fn poisoned_permit_release_does_not_panic(#[case] unwind: bool) {
+        let budget = TaskBudget::new(2, 100);
+        let permit = budget.admit(60).unwrap();
+        poison_budget(&budget, 0, 0);
+        let result = std::panic::catch_unwind(|| {
+            let _permit = permit;
+            if unwind {
+                panic!("injected outer failure");
+            }
+        });
+        assert_eq!(result.is_err(), unwind);
+        assert_eq!(Arc::strong_count(&budget), 1);
+        assert!(budget.admit(0).is_err());
+        let retained = budget.usage.lock().err().unwrap().into_inner();
+        assert_eq!((retained.tasks, retained.bytes), (0, 0));
+    }
+
+    #[rstest::rstest]
+    fn healthy_permit_release_during_unwind_preserves_other_reservations() {
+        let budget = TaskBudget::new(2, 100);
+        let first = budget.admit(60).unwrap();
+        let result = std::panic::catch_unwind(|| {
+            let _second = budget.admit(40).unwrap();
+            panic!("injected task failure");
+        });
+        assert!(result.is_err());
+        assert!(!budget.usage.is_poisoned());
+        {
+            let usage = budget.usage.lock().unwrap();
+            assert_eq!((usage.tasks, usage.bytes), (1, 60));
+        }
+        let replacement = budget.admit(40).unwrap();
+        drop((first, replacement));
+        let usage = budget.usage.lock().unwrap();
+        assert_eq!((usage.tasks, usage.bytes), (0, 0));
+    }
+
+    #[rstest::rstest]
+    #[case::no_tasks(0, 100, 0, false)]
+    #[case::no_bytes(1, 0, 1, false)]
+    #[case::zero_byte_task(1, 0, 0, true)]
+    #[case::exact_limit(1, 100, 100, true)]
+    #[case::over_limit(1, 100, 101, false)]
+    #[case::maximum_bytes(1, usize::MAX, usize::MAX, true)]
+    #[case::maximum_tasks(usize::MAX, 0, 0, true)]
+    fn task_budget_boundaries(
+        #[case] max_tasks: usize,
+        #[case] max_bytes: usize,
+        #[case] bytes: usize,
+        #[case] accepted: bool,
+    ) {
+        let budget = TaskBudget::new(max_tasks, max_bytes);
+        let result = budget.admit(bytes);
+        assert_eq!(result.is_ok(), accepted);
+        {
+            let usage = budget.usage.lock().unwrap();
+            let expected = if accepted { (1, bytes) } else { (0, 0) };
+            assert_eq!((usage.tasks, usage.bytes), expected);
+        }
+        drop(result);
+        let usage = budget.usage.lock().unwrap();
+        assert_eq!((usage.tasks, usage.bytes), (0, 0));
+    }
+
+    proptest! {
+        #[test]
+        fn generated_task_budget_sequences_match_live_permits(
+            max_tasks in 0..8usize,
+            max_bytes in prop_oneof![0..1024usize, Just(usize::MAX)],
+            operations in prop::collection::vec((any::<bool>(), any::<usize>()), 0..64),
+        ) {
+            let budget = TaskBudget::new(max_tasks, max_bytes);
+            let mut active = Vec::new();
+            for (admit, bytes) in operations {
+                let total: u128 = active.iter().map(|(_, bytes)| *bytes as u128).sum();
+                if admit {
+                    let expected = active.len() < max_tasks
+                        && total + bytes as u128 <= max_bytes as u128;
+                    let result = budget.admit(bytes);
+                    prop_assert_eq!(result.is_ok(), expected);
+                    if let Ok(permit) = result {
+                        active.push((permit, bytes));
+                    }
+                } else if !active.is_empty() {
+                    drop(active.swap_remove(bytes % active.len()));
+                }
+                let total: u128 = active.iter().map(|(_, bytes)| *bytes as u128).sum();
+                let usage = budget.usage.lock().unwrap();
+                prop_assert_eq!(usage.tasks, active.len());
+                prop_assert_eq!(usage.bytes as u128, total);
+            }
+            drop(active);
+            let usage = budget.usage.lock().unwrap();
+            prop_assert_eq!((usage.tasks, usage.bytes), (0, 0));
+        }
+    }
+
     #[test]
     fn global_budget_counts_active_tasks_and_releases_on_drop() {
         let budget = TaskBudget::new(2, 100);
@@ -763,6 +949,189 @@ mod tests {
         assert_eq!((usage.tasks, usage.bytes), (0, 0));
         drop(usage);
         assert!(budget.admit(usize::MAX).is_err());
+    }
+
+    #[rstest::rstest]
+    #[case::scheduler(true, false)]
+    #[case::failure_registry(false, true)]
+    #[case::both(true, true)]
+    #[tokio::test]
+    async fn poisoned_scheduler_drains_accepted_work_before_reporting_failure(
+        #[case] scheduler: bool,
+        #[case] failures: bool,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let index = SessionIndexStore::open(dir.path()).unwrap().clone_handle();
+        let sink = OrderRecordingSink::new();
+        let engine = CaptureEngine::new(sink.clone(), index, Arc::new(dir.path().to_path_buf()))
+            .await
+            .unwrap();
+        let dispatcher = engine.dispatcher_for_test();
+        let owner = Arc::clone(&dispatcher.owner);
+        dispatcher.enqueue(Arc::new(sample_ctx("accepted")), cancelled());
+        if scheduler {
+            assert!(
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    let _guard = owner.state.lock().unwrap();
+                    panic!("injected scheduler failure");
+                }))
+                .is_err()
+            );
+        }
+        if failures {
+            assert!(
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    let _guard = owner.failure.lock().unwrap();
+                    panic!("injected failure registry fault");
+                }))
+                .is_err()
+            );
+            dispatcher.record_failure(&anyhow::anyhow!("additional failure"));
+        }
+        if scheduler {
+            let result = tokio::time::timeout(
+                std::time::Duration::from_secs(2),
+                dispatcher.apply(Arc::new(sample_ctx("direct-rejected")), cancelled()),
+            )
+            .await
+            .unwrap();
+            assert!(
+                result
+                    .unwrap_err()
+                    .to_string()
+                    .contains("scheduler mutex poisoned")
+            );
+            dispatcher.enqueue(Arc::new(sample_ctx("rejected")), cancelled());
+        }
+        let flushed = tokio::time::timeout(std::time::Duration::from_secs(2), engine.flush())
+            .await
+            .unwrap();
+        assert!(flushed.unwrap_err().to_string().contains("poisoned"));
+        let stopped = tokio::time::timeout(std::time::Duration::from_secs(2), engine.shutdown())
+            .await
+            .unwrap();
+        assert!(stopped.unwrap_err().to_string().contains("poisoned"));
+        assert_eq!(sink.drain_order(), ["llm.call.cancelled:accepted"]);
+        let state = owner
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert!(state.stopped);
+        assert!(state.queues.is_empty());
+        assert!(state.workers.is_empty());
+        drop(state);
+        assert_eq!(owner.external.usage.lock().unwrap().tasks, 0);
+        assert_eq!(
+            dead_letter::read_dead_letter_entries(dir.path())
+                .unwrap()
+                .len(),
+            usize::from(scheduler)
+        );
+    }
+
+    #[rstest::rstest]
+    #[case::external(false)]
+    #[case::internal(true)]
+    #[tokio::test]
+    async fn poisoned_task_budget_does_not_block_the_other_budget(#[case] internal: bool) {
+        let dir = tempfile::tempdir().unwrap();
+        let index = SessionIndexStore::open(dir.path()).unwrap().clone_handle();
+        let engine = CaptureEngine::new(
+            OrderRecordingSink::new(),
+            index,
+            Arc::new(dir.path().to_path_buf()),
+        )
+        .await
+        .unwrap();
+        let dispatcher = engine.dispatcher_for_test();
+        let budget = if internal {
+            &dispatcher.owner.internal
+        } else {
+            &dispatcher.owner.external
+        };
+        poison_budget(budget, 0, 0);
+        let rejected = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            dispatcher.command_with_admission("story", LocalStoryCommand::Flush, internal),
+        )
+        .await
+        .unwrap();
+        assert!(rejected.unwrap_err().to_string().contains("mutex poisoned"));
+        let reply = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            dispatcher.command_with_admission("story", LocalStoryCommand::Flush, !internal),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert!(matches!(reply, StoryReply::Ack));
+        assert!(!dispatcher.owner.state.is_poisoned());
+        tokio::time::timeout(std::time::Duration::from_secs(2), engine.shutdown())
+            .await
+            .unwrap()
+            .unwrap();
+    }
+
+    #[rstest::rstest]
+    #[case::healthy_diagnostics(false)]
+    #[case::poisoned_diagnostics(true)]
+    #[tokio::test]
+    async fn poisoned_enqueue_budget_reports_gap_through_shutdown(
+        #[case] diagnostics_poisoned: bool,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let index = SessionIndexStore::open(dir.path()).unwrap().clone_handle();
+        let sink = OrderRecordingSink::new();
+        let engine = CaptureEngine::new(sink.clone(), index, Arc::new(dir.path().to_path_buf()))
+            .await
+            .unwrap();
+        let dispatcher = engine.dispatcher_for_test();
+        poison_budget(&dispatcher.owner.external, 0, 0);
+        if diagnostics_poisoned {
+            poison_budget(&dispatcher.owner.rejected.budget, 0, 0);
+        }
+        dispatcher.enqueue(Arc::new(sample_ctx("poison-rejected")), cancelled());
+        assert!(dispatcher.owner.state.lock().unwrap().queues.is_empty());
+        let flushed = tokio::time::timeout(std::time::Duration::from_secs(2), engine.flush())
+            .await
+            .unwrap();
+        assert!(flushed.unwrap_err().to_string().contains("uncommitted"));
+        let stopped = tokio::time::timeout(std::time::Duration::from_secs(2), engine.shutdown())
+            .await
+            .unwrap();
+        assert!(stopped.unwrap_err().to_string().contains("uncommitted"));
+        assert!(sink.drain_order().is_empty());
+        let entries = dead_letter::read_dead_letter_entries(dir.path()).unwrap();
+        assert_eq!(entries.len(), usize::from(!diagnostics_poisoned));
+        if let Some(entry) = entries.first() {
+            assert_eq!(entry.context.call.call_id, "poison-rejected");
+        }
+    }
+
+    #[tokio::test]
+    async fn accepted_capture_finishes_after_budget_poison() {
+        let dir = tempfile::tempdir().unwrap();
+        let index = SessionIndexStore::open(dir.path()).unwrap().clone_handle();
+        let sink = OrderRecordingSink::new();
+        let engine = CaptureEngine::new(sink.clone(), index, Arc::new(dir.path().to_path_buf()))
+            .await
+            .unwrap();
+        let dispatcher = engine.dispatcher_for_test();
+        dispatcher.enqueue(Arc::new(sample_ctx("accepted")), cancelled());
+        let budget = Arc::clone(&dispatcher.owner.external);
+        assert_eq!(budget.usage.lock().unwrap().tasks, 1);
+        poison_budget(&budget, 0, 0);
+        tokio::time::timeout(std::time::Duration::from_secs(2), engine.shutdown())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(sink.drain_order(), ["llm.call.cancelled:accepted"]);
+        assert!(budget.admit(0).is_err());
+        assert!(
+            dead_letter::read_dead_letter_entries(dir.path())
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[tokio::test]
@@ -893,7 +1262,7 @@ mod tests {
     #[test]
     fn diagnostic_byte_budget_does_not_retain_oversized_events() {
         let dir = tempfile::tempdir().unwrap();
-        let writer = RejectedEventWriter::new(Arc::new(dir.path().to_path_buf()));
+        let writer = RejectedEventWriter::new(Arc::new(dir.path().to_path_buf())).unwrap();
         writer.try_record(
             Arc::new(sample_ctx("oversized")),
             Event::ResponseDraft(crate::engine::DraftEvent {
@@ -910,10 +1279,161 @@ mod tests {
         );
     }
 
+    #[rstest::rstest]
+    #[case::resource_limit(std::io::ErrorKind::WouldBlock)]
+    #[case::permission(std::io::ErrorKind::PermissionDenied)]
+    #[case::other(std::io::ErrorKind::Other)]
+    fn rejected_writer_startup_preserves_io_error(#[case] kind: std::io::ErrorKind) {
+        let resource = Arc::new(());
+        let weak = Arc::downgrade(&resource);
+        let mut called = false;
+        let result = RejectedEventWriter::start(|rx| {
+            called = true;
+            let _resource = resource;
+            assert!(matches!(rx.try_recv(), Err(std_mpsc::TryRecvError::Empty)));
+            Err(std::io::Error::new(kind, "injected spawn failure"))
+        });
+        let error = result.err().unwrap();
+        assert!(called);
+        assert!(format!("{error:#}").contains("start dead-letter writer thread"));
+        assert!(format!("{error:#}").contains("injected spawn failure"));
+        assert_eq!(error.downcast_ref::<std::io::Error>().unwrap().kind(), kind);
+        assert!(weak.upgrade().is_none());
+    }
+
+    #[rstest::rstest]
+    #[case::empty(0)]
+    #[case::single(1)]
+    #[case::batch(8)]
+    #[case::queue_capacity(REJECTED_EVENT_QUEUE_CAPACITY)]
+    fn rejected_writer_drop_drains_and_releases_permits(#[case] count: usize) {
+        let dir = tempfile::tempdir().unwrap();
+        let writer = RejectedEventWriter::new(Arc::new(dir.path().to_path_buf())).unwrap();
+        assert_eq!(
+            writer.worker.as_ref().unwrap().thread().name(),
+            Some("pvisor-dead-letter")
+        );
+        let budget = Arc::clone(&writer.budget);
+        for index in 0..count {
+            writer.try_record(Arc::new(sample_ctx(&format!("drop-{index}"))), cancelled());
+        }
+        drop(writer);
+        let entries = dead_letter::read_dead_letter_entries(dir.path()).unwrap();
+        assert_eq!(entries.len(), count);
+        for (index, entry) in entries.iter().enumerate() {
+            assert_eq!(entry.context.call.call_id, format!("drop-{index}"));
+        }
+        let usage = budget.usage.lock().unwrap();
+        assert_eq!((usage.tasks, usage.bytes), (0, 0));
+        assert_eq!(Arc::strong_count(&budget), 1);
+    }
+
+    #[rstest::rstest]
+    #[case::closed_before_barrier(false, "closed before drain")]
+    #[case::dropped_barrier_reply(true, "reply dropped")]
+    fn rejected_writer_panic_reports_drain_failure_without_drop_panic(
+        #[case] drop_reply: bool,
+        #[case] message: &str,
+    ) {
+        let (closed, ready) = std_mpsc::sync_channel(1);
+        let writer = RejectedEventWriter::start(move |rx| {
+            std::thread::Builder::new().spawn(move || {
+                if drop_reply {
+                    let message = rx.recv_timeout(std::time::Duration::from_secs(2)).unwrap();
+                    assert!(matches!(message, RejectedEventMessage::Barrier { .. }));
+                    drop(message);
+                }
+                drop(rx);
+                closed.send(()).unwrap();
+                panic!("injected writer failure");
+            })
+        })
+        .unwrap();
+        if !drop_reply {
+            ready
+                .recv_timeout(std::time::Duration::from_secs(2))
+                .unwrap();
+        }
+        let drained = writer.drain();
+        let dropped = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(writer)));
+        assert!(drained.unwrap_err().to_string().contains(message));
+        assert!(dropped.is_ok());
+    }
+
+    #[rstest::rstest]
+    #[case::ordinary_drop(false)]
+    #[case::during_unwind(true)]
+    fn rejected_writer_drop_waits_for_worker_exit(#[case] unwind: bool) {
+        let (finish, received) = std_mpsc::sync_channel(1);
+        let (release, exit) = std_mpsc::sync_channel(1);
+        let writer = RejectedEventWriter::start(move |rx| {
+            std::thread::Builder::new().spawn(move || {
+                let message = rx.recv_timeout(std::time::Duration::from_secs(2)).unwrap();
+                assert!(matches!(message, RejectedEventMessage::Finish));
+                finish.send(()).unwrap();
+                let _ = exit.recv_timeout(std::time::Duration::from_secs(2));
+            })
+        })
+        .unwrap();
+        let (done, completed) = std_mpsc::sync_channel(1);
+        let dropper = std::thread::spawn(move || {
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let _writer = writer;
+                if unwind {
+                    panic!("injected owner failure");
+                }
+            }));
+            done.send(result.is_err()).unwrap();
+        });
+        let saw_finish = received.recv_timeout(std::time::Duration::from_secs(2));
+        let premature = completed.recv_timeout(std::time::Duration::from_millis(20));
+        let returned_early = premature.is_ok();
+        let _ = release.send(());
+        let completed = match premature {
+            Ok(result) => Ok(result),
+            Err(_) => completed.recv_timeout(std::time::Duration::from_secs(2)),
+        };
+        dropper.join().unwrap();
+        assert!(saw_finish.is_ok());
+        assert!(!returned_early);
+        assert_eq!(completed.unwrap(), unwind);
+    }
+
+    proptest! {
+        #[test]
+        fn generated_rejected_writer_markers_preserve_fifo(
+            operations in prop::collection::vec(any::<bool>(), 0..16),
+        ) {
+            let dir = tempfile::tempdir().unwrap();
+            let writer = RejectedEventWriter::new(Arc::new(dir.path().to_path_buf())).unwrap();
+            let budget = Arc::clone(&writer.budget);
+            let mut expected = Vec::new();
+            for record in operations {
+                if record {
+                    let id = format!("generated-{}", expected.len());
+                    writer.try_record(Arc::new(sample_ctx(&id)), cancelled());
+                    expected.push(id);
+                } else {
+                    writer.drain().unwrap();
+                    let entries = dead_letter::read_dead_letter_entries(dir.path()).unwrap();
+                    let actual: Vec<_> = entries.iter().map(|entry| entry.context.call.call_id.clone()).collect();
+                    prop_assert_eq!(&actual, &expected);
+                    prop_assert!(writer.worker.is_some());
+                }
+            }
+            drop(writer);
+            let entries = dead_letter::read_dead_letter_entries(dir.path()).unwrap();
+            let actual: Vec<_> = entries.iter().map(|entry| entry.context.call.call_id.clone()).collect();
+            prop_assert_eq!(actual, expected);
+            let usage = budget.usage.lock().unwrap();
+            prop_assert_eq!((usage.tasks, usage.bytes), (0, 0));
+        }
+    }
+
     #[test]
     fn rejected_writer_marker_drains_queued_appends_without_drop() {
         let dir = tempfile::tempdir().unwrap();
-        let writer = RejectedEventWriter::new(Arc::new(dir.path().to_path_buf()));
+        let writer = RejectedEventWriter::new(Arc::new(dir.path().to_path_buf())).unwrap();
         for i in 0..8 {
             writer.try_record(
                 Arc::new(sample_ctx(&format!("rejected-{i}"))),
@@ -927,7 +1447,7 @@ mod tests {
         }
         writer.drain().unwrap();
         assert!(
-            writer.worker.lock().unwrap().is_some(),
+            writer.worker.is_some(),
             "drain must not rely on joining Drop"
         );
         let entries = dead_letter::read_dead_letter_entries(dir.path()).unwrap();
@@ -942,7 +1462,7 @@ mod tests {
     fn rejected_writer_marker_reports_append_failure() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join(".capture"), b"not a directory").unwrap();
-        let writer = RejectedEventWriter::new(Arc::new(dir.path().to_path_buf()));
+        let writer = RejectedEventWriter::new(Arc::new(dir.path().to_path_buf())).unwrap();
         writer.try_record(
             Arc::new(sample_ctx("rejected")),
             Event::Cancelled(crate::engine::CancelEvent {
@@ -959,7 +1479,7 @@ mod tests {
                 .to_string()
                 .contains("dead letter write failed")
         );
-        assert!(writer.worker.lock().unwrap().is_some());
+        assert!(writer.worker.is_some());
     }
 
     #[tokio::test]

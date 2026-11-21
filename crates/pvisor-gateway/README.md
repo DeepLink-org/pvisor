@@ -63,6 +63,46 @@ Conversion regressions and fuzz targets use the same production path:
 and `conversion::translate_response_for_bridge` for non-streaming replies.
 Gemini schema normalization and provider error envelopes are private helpers.
 
+Semantic renderers keep Gemini request and usage objects as typed JSON maps;
+content merging borrows the matching role/parts once. Cached content still
+suppresses only system/tool declarations, and optional zero-valued usage details
+retain their source-presence semantics. The crate root denies direct non-test
+`unwrap`/`expect` throughout Gateway. This restriction does not prove the absence
+of other panic sources; tests retain assertion-oriented unwrapping.
+
+`tests/semantic_rendering_contracts.rs` exercises the production understanding
+and translation entry points without HTTP services or model calls. It checks
+cached-content fields, merged message boundaries, ordered tool results, complete
+usage and the shared SSE usage encoding with fixed and generated inputs.
+
+Messages streaming usage is an instance-owned JSON map. Updates retain omitted
+fields, replace supplied fields (including zero), and replace nested objects
+without a recursive merge. Non-object usage payloads retain the existing ignore
+behavior; empty-usage event filtering is unchanged.
+`tests/stream_usage_contracts.rs` checks exact passthrough bytes, Unicode/chunk
+boundaries, usage isolation and rejection of incomplete/malformed terminal state.
+Its generated inputs have bounded counts and require no HTTP service or model.
+
+Usage extraction and `TokenUsage::merge` return `Result`; inferred totals and
+all six accumulated counters use checked addition. Merge overflow leaves every
+counter unchanged. Session accumulation checks usage before changing timestamps,
+activity, model, provider or cost; overflow returns an error without dirtying
+the index. No zero, wrapped or saturated count substitutes for an overflow.
+Legacy extraction still preserves explicit nonzero totals; semantic response
+understanding still floors totals at input plus output, but now rejects an
+unrepresentable floor rather than saturating it.
+
+An overflowing SSE usage update invalidates semantic completion, even if later
+frames contain valid counters or a terminal event. Transparent routes still
+forward the exact upstream bytes; translated routes return the decoding error.
+Capture preparation propagates usage errors. Redacted dead-letter writing also
+returns an error instead of retaining false zero usage or disallowed response
+text. These failures do not authorize another model invocation. Token overflow
+does not roll back already-committed Journal events; session index updates are
+post-commit and can report failure independently of the retained response.
+`tests/usage_contracts.rs` covers arithmetic boundaries, atomic merges and index
+updates, provider conversion, transparent streams and generated counter sequences.
+
 ## Host-observed inference waits
 
 An embedding runtime can install an Execution-bound
@@ -181,6 +221,57 @@ backpressured. `spawn_apply` remains nonblocking and reports a capture gap throu
 budget exhaustion is logged; it does not clear the capture gap. Story exhaustion
 also applies to replay into a runtime; opening more than 256 retained stories
 fails explicitly rather than partially succeeding unnoticed.
+
+Task-budget mutex poisoning permanently rejects new admissions for that budget;
+a new runtime is required to obtain a healthy budget. Permit destruction does not
+read or repair poisoned counters and cannot panic because of a poisoned lock,
+including during unwinding. Healthy permits retain exact task/byte accounting.
+Already accepted work still drains, and independent external/internal budgets
+remain usable. Nonblocking rejection still reports a capture gap even when the
+diagnostic budget also rejects its dead letter. Fault-injection and generated
+operation-sequence tests live in `engine::apply_queue::tests`.
+
+Scheduler poisoning closes both external and internal admission. Flush/shutdown
+recover queue and worker ownership only to drain and join accepted work; they
+still return the poison error and never clear it. A poisoned failure registry
+also makes barriers fail, even if no error string survived. Request-correlation
+and run-registry poisoning return capture errors rather than supplying partial
+identities or fallback routes.
+
+Diagnostic-thread creation errors propagate through the existing
+`CaptureRuntime::new` result before projection rebuild. Startup failure may leave
+newly created Journal storage on disk; it does not publish a runtime without a
+writer. The writer exclusively owns its join handle, without a separate mutex.
+Drain markers still report preceding append failures without stopping the writer;
+the final owner sends Finish and joins, including during unwinding. Worker panic
+causes a closed-writer or dropped-reply drain error; Drop joins without propagating
+the worker panic. No filesystem-I/O deadline or stronger durability guarantee is
+introduced. Tests inject spawn errors and worker exits, check drop-time joining,
+and generate event/marker sequences against the persisted FIFO.
+
+## Checked capture state
+
+`SessionIndexHandle::record_request`, `set_active` and `snapshot` return `Result`.
+Index reads, updates and persistence reject a poisoned lock; a clean dirty flag
+does not suppress that failure. Request-count overflow returns an error before
+changing session metadata. Admin endpoints return HTTP 500 for an unavailable
+index instead of publishing an empty or potentially inconsistent snapshot.
+Already-committed Journal events are not rolled back by projection errors.
+
+Subagent extraction, route registration and enrichment return `Result` for
+matcher initialization failure. Successful extraction retains its existing
+sorting, ID validation and malformed-tool-JSON handling. Enrichment completes
+fallible extraction before mutating records or the registry. Invalid model
+authorization transitions propagate through the transport's existing HTTP 502
+error path, without dispatching upstream or granting retry authority.
+
+Client-identification caches remain optional: poison disables lookup or discards
+the completed probe result instead of reusing suspect state. Reasoning scopes use
+a typed agent/story/provider/upstream key, retaining the prior escaped-JSON byte
+limit without fallible key serialization. Observation timestamps are obtained
+directly from initialization, and loopback addresses use typed constructors.
+These changes do not migrate Gateway's public API boundary or alter persisted
+record schemas.
 
 ## Develop
 

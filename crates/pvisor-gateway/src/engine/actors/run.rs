@@ -32,7 +32,7 @@ impl RunActor {
             body,
             assistant_text,
             &mut self.registry,
-        )
+        )?
         .spawn_link_backfills)
     }
 

@@ -69,7 +69,7 @@ impl StoryActor {
         &self,
         rec: &crate::record::CaptureRecord,
         story: &crate::engine::StoryContext,
-    ) {
+    ) -> Result<()> {
         if rec.kind == "llm.request"
             && let (Some(call), Some(id)) = (&rec.call_id, &rec.event_id)
         {
@@ -81,9 +81,10 @@ impl StoryActor {
             self.deps
                 .requests
                 .lock()
-                .unwrap()
+                .map_err(|_| anyhow::anyhow!("capture request registry mutex poisoned"))?
                 .insert((root.to_string(), call.clone()), id.clone());
         }
+        Ok(())
     }
 
     pub(crate) async fn handle(&mut self, cmd: LocalStoryCommand) -> Result<StoryReply> {
@@ -115,7 +116,7 @@ impl StoryActor {
             LocalStoryCommand::Restore {
                 record: mut rec, ..
             } => {
-                self.remember_request(&rec, &scope.context);
+                self.remember_request(&rec, &scope.context)?;
                 if self.seen.insert(
                     rec.event_id
                         .clone()
@@ -132,15 +133,15 @@ impl StoryActor {
                 } else {
                     rec.call_id.as_ref()
                 };
-                if let Some(call) = dependency
-                    && let Some(cause) = self
-                        .deps
-                        .requests
-                        .lock()
-                        .unwrap()
-                        .get(&(root, call.clone()))
-                {
-                    event.caused_by.push(cause.clone());
+                let cause = {
+                    let requests =
+                        self.deps.requests.lock().map_err(|_| {
+                            anyhow::anyhow!("capture request registry mutex poisoned")
+                        })?;
+                    dependency.and_then(|call| requests.get(&(root, call.clone())).cloned())
+                };
+                if let Some(cause) = cause {
+                    event.caused_by.push(cause);
                 }
                 let receipt = self
                     .deps
@@ -153,7 +154,7 @@ impl StoryActor {
                 }
                 let mut committed =
                     crate::record::CaptureRecord::from_event(&event, receipt.position.offset)?;
-                self.remember_request(&committed, &scope.context);
+                self.remember_request(&committed, &scope.context)?;
                 self.turns.observe_record(&mut committed);
                 self.deps.index.observe_event(&event)?;
                 let observer = Arc::clone(&self.deps.sink);
@@ -189,5 +190,68 @@ impl StoryActor {
             }
         }
         Ok(StoryReply::Ack)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[rstest::rstest]
+    #[case::root_request(None)]
+    #[case::child_request(Some("parent"))]
+    #[tokio::test]
+    async fn poisoned_request_registry_rejects_before_commit(#[case] parent: Option<&str>) {
+        let dir = tempfile::tempdir().unwrap();
+        let journal = Journal::open(&dir.path().join("events.trace.jsonl")).unwrap();
+        let index = crate::session::index::SessionIndexStore::open(dir.path()).unwrap();
+        let deps = StoryActorDeps::new(
+            Arc::new(crate::sink::NoopCaptureObserver::new()),
+            Arc::new(dir.path().to_path_buf()),
+            journal.clone(),
+            index.clone_handle(),
+        );
+        assert!(
+            std::panic::catch_unwind(|| {
+                let _guard = deps.requests.lock().unwrap();
+                panic!("injected request registry failure");
+            })
+            .is_err()
+        );
+        let context = crate::engine::StoryContext::from_route(
+            crate::session::storage::CaptureRoute {
+                root_session: Some("run".into()),
+                session_id: "s".into(),
+                storage_session_id: "run".into(),
+                subagent_id: None,
+            },
+            "a",
+        );
+        let mut actor = StoryActor::new(context.story_id.clone(), deps);
+        let record = serde_json::from_value(serde_json::json!({
+            "kind": "llm.request", "event_id": "fixed", "payload": {},
+            "call_id": "c", "parent_call_id": parent
+        }))
+        .unwrap();
+        let command = LocalStoryCommand::persist_record(
+            super::super::super::wire::StoryScope { context },
+            record,
+        );
+        for _ in 0..2 {
+            let result = tokio::time::timeout(
+                std::time::Duration::from_secs(2),
+                actor.handle(command.clone()),
+            )
+            .await
+            .unwrap();
+            assert!(
+                result
+                    .unwrap_err()
+                    .to_string()
+                    .contains("request registry mutex poisoned")
+            );
+        }
+        assert!(journal.records().unwrap().is_empty());
+        assert!(actor.seen.is_empty());
     }
 }

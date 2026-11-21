@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 
 use super::{RunContext, check_boundary, prepared_outcome, run_sdk_bridge};
 use crate::api::{AgentKind, PlaybackRequest, ReplayMode};
@@ -17,15 +17,15 @@ pub(super) fn execute(
     context: &RunContext<'_>,
     journal: &mut Journal,
 ) -> Result<ReplayOutcome, ReplayError> {
-    let boundary = plan.batches.last().unwrap().native["event_index"]
-        .as_u64()
-        .expect("validated Pi batch event index") as usize;
-    let events = plan
-        .native
-        .as_array()
-        .expect("Pi replay plan stores an event array");
+    let events = plan.native.as_array().ok_or_else(|| {
+        ReplayError::new(
+            ReplayErrorKind::Internal,
+            "Pi replay plan has no native event array",
+        )
+    })?;
+    let (prefix, _) = split_events_at_boundary(events, plan.batches.last())?;
     let path = context.output_dir.join("native/prepared-prefix.jsonl");
-    write_jsonl(&path, &events[..=boundary])?;
+    write_jsonl(&path, prefix)?;
     journal.append(
         "session_rebuilt",
         [(
@@ -37,6 +37,36 @@ pub(super) fn execute(
         return Ok(prepared_outcome(path, context.request));
     }
     run_sdk_bridge(plan, context, journal, AgentKind::PiAgent)
+}
+
+fn split_events_at_boundary<'a>(
+    events: &'a [Value],
+    selected: Option<&ToolBatch>,
+) -> Result<(&'a [Value], &'a [Value]), ReplayError> {
+    let selected = selected.ok_or_else(|| {
+        ReplayError::new(
+            ReplayErrorKind::Internal,
+            "Pi replay plan has no selected batch",
+        )
+    })?;
+    let end = selected
+        .native
+        .get("event_index")
+        .and_then(Value::as_u64)
+        .and_then(|index| usize::try_from(index).ok())
+        .and_then(|index| index.checked_add(1))
+        .ok_or_else(|| {
+            ReplayError::new(
+                ReplayErrorKind::Internal,
+                "Pi replay plan has an invalid boundary event index",
+            )
+        })?;
+    events.split_at_checked(end).ok_or_else(|| {
+        ReplayError::new(
+            ReplayErrorKind::Internal,
+            "Pi replay plan boundary exceeds its native events",
+        )
+    })
 }
 
 pub(super) fn build(request: &PlaybackRequest) -> Result<ReplayPlan, ReplayError> {
@@ -101,11 +131,8 @@ pub(super) fn build(request: &PlaybackRequest) -> Result<ReplayPlan, ReplayError
             }
         }
         let mut calls = Vec::with_capacity(native_calls.len());
-        for (ordinal, native) in native_calls.into_iter().enumerate() {
-            let call_id = native["id"]
-                .as_str()
-                .expect("validated Pi tool call id")
-                .to_owned();
+        for (ordinal, call) in native_calls.into_iter().enumerate() {
+            let call_id = call.id.to_owned();
             let result = results
                 .iter()
                 .find(|result| {
@@ -116,21 +143,21 @@ pub(super) fn build(request: &PlaybackRequest) -> Result<ReplayPlan, ReplayError
                         "Pi turn_end event[{event_index}] has no result for tool call {call_id:?}"
                     ))
                 })?;
-            if result.get("toolName").and_then(Value::as_str)
-                != native.get("name").and_then(Value::as_str)
-            {
+            if result.get("toolName").and_then(Value::as_str) != Some(call.name) {
                 return Err(ReplayError::trajectory(format!(
                     "Pi result for {call_id:?} does not match its tool name"
                 )));
             }
+            let native = json!({
+                "id": call.id,
+                "name": call.name,
+                "arguments": &call.arguments,
+            });
             calls.push(ToolCall {
                 ordinal: ordinal + 1,
                 call_id,
-                name: native["name"]
-                    .as_str()
-                    .expect("validated Pi tool name")
-                    .to_owned(),
-                arguments: native["arguments"].clone(),
+                name: call.name.to_owned(),
+                arguments: Value::Object(call.arguments),
                 original_observation: result.get("content").cloned().unwrap_or(Value::Null),
                 original_is_error: result
                     .get("isError")
@@ -148,14 +175,15 @@ pub(super) fn build(request: &PlaybackRequest) -> Result<ReplayPlan, ReplayError
         });
     }
     check_boundary(request.after_step, batches.len())?;
-    let boundary_event_index = batches[request.after_step - 1].native["event_index"]
-        .as_u64()
-        .expect("validated Pi batch event index") as usize;
-    let prefix_model_turns = events[..=boundary_event_index]
+    let selected = batches
+        .get(..request.after_step)
+        .and_then(|selected| selected.last());
+    let (prefix, suffix) = split_events_at_boundary(&events, selected)?;
+    let prefix_model_turns = prefix
         .iter()
         .filter(|event| event.get("type").and_then(Value::as_str) == Some("turn_end"))
         .count();
-    let original_next_action = events[boundary_event_index + 1..]
+    let original_next_action = suffix
         .iter()
         .find(|event| event.get("type").and_then(Value::as_str) == Some("turn_end"))
         .and_then(|event| event.get("message"))
@@ -217,7 +245,13 @@ fn parse_jsonl_events(raw: &[u8]) -> Result<Vec<Value>, ReplayError> {
     Ok(events)
 }
 
-fn pi_calls(message: &Value, event_index: usize) -> Result<Vec<Value>, ReplayError> {
+struct PiCall<'a> {
+    id: &'a str,
+    name: &'a str,
+    arguments: Map<String, Value>,
+}
+
+fn pi_calls(message: &Value, event_index: usize) -> Result<Vec<PiCall<'_>>, ReplayError> {
     let content = message
         .get("content")
         .and_then(Value::as_array)
@@ -253,13 +287,20 @@ fn pi_calls(message: &Value, event_index: usize) -> Result<Vec<Value>, ReplayErr
                 format!("Pi Replay profile does not support tool {name:?}"),
             ));
         }
-        let arguments = part.get("arguments").cloned().unwrap_or_else(|| json!({}));
-        if !arguments.is_object() {
-            return Err(ReplayError::trajectory(format!(
-                "Pi tool call {id:?} arguments must be an object"
-            )));
-        }
-        calls.push(json!({"id": id, "name": name, "arguments": arguments}));
+        let arguments = match part.get("arguments") {
+            None => Map::new(),
+            Some(Value::Object(arguments)) => arguments.clone(),
+            Some(_) => {
+                return Err(ReplayError::trajectory(format!(
+                    "Pi tool call {id:?} arguments must be an object"
+                )));
+            }
+        };
+        calls.push(PiCall {
+            id,
+            name,
+            arguments,
+        });
     }
     Ok(calls)
 }
@@ -317,8 +358,169 @@ fn write_jsonl(path: &std::path::Path, values: &[Value]) -> Result<(), ReplayErr
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_jsonl_events, pi_action_signature};
-    use serde_json::json;
+    use super::*;
+    use std::{fs, path::Path};
+
+    fn request(root: &Path) -> PlaybackRequest {
+        PlaybackRequest {
+            agent: AgentKind::PiAgent,
+            trajectory: root.join("events.jsonl"),
+            after_step: 1,
+            workspace: root.join("workspace"),
+            state_dir: root.join("state"),
+            output_dir: root.join("output"),
+            agent_entrypoint: None,
+            agent_runtime: None,
+            disallowed_tools: vec![],
+            trajectory_assets: None,
+            session_id: None,
+            max_steps: None,
+            mode: ReplayMode::ReplayOnly,
+            allow_stale_observations: false,
+            run_id: Some("pi-boundary".into()),
+            disable_thinking: false,
+            boundary_user_prompt: None,
+        }
+    }
+
+    fn events() -> Vec<Value> {
+        vec![
+            json!({"type": "message_end", "message": {"role": "user"}}),
+            json!({
+                "type": "turn_end",
+                "message": {"role": "assistant", "content": [
+                    {"type": "toolCall", "id": "c", "name": "read"}
+                ]},
+                "toolResults": [{"toolCallId": "c", "toolName": "read"}]
+            }),
+        ]
+    }
+
+    fn fixture_plan(request: &PlaybackRequest, events: &[Value]) -> ReplayPlan {
+        let raw = events
+            .iter()
+            .map(Value::to_string)
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n";
+        fs::write(&request.trajectory, raw).unwrap();
+        build(request).unwrap()
+    }
+
+    #[rstest::rstest]
+    #[case::no_batches(|plan: &mut ReplayPlan| plan.batches.clear())]
+    #[case::no_event_array(|plan: &mut ReplayPlan| plan.native = Value::Null)]
+    #[case::empty_events(|plan: &mut ReplayPlan| plan.native = json!([]))]
+    #[case::missing_index(|plan: &mut ReplayPlan| plan.batches[0].native = json!({}))]
+    #[case::negative_index(|plan: &mut ReplayPlan| plan.batches[0].native["event_index"] = json!(-1))]
+    #[case::fractional_index(|plan: &mut ReplayPlan| plan.batches[0].native["event_index"] = json!(1.5))]
+    #[case::string_index(|plan: &mut ReplayPlan| plan.batches[0].native["event_index"] = json!("1"))]
+    #[case::past_end(|plan: &mut ReplayPlan| plan.batches[0].native["event_index"] = json!(2))]
+    #[case::maximum_index(|plan: &mut ReplayPlan| plan.batches[0].native["event_index"] = json!(u64::MAX))]
+    fn invalid_internal_boundaries_fail_before_prefix_or_journal_publication(
+        #[case] corrupt: fn(&mut ReplayPlan),
+    ) {
+        let root = tempfile::tempdir().unwrap();
+        let request = request(root.path());
+        let mut plan = fixture_plan(&request, &events());
+        corrupt(&mut plan);
+        let mut journal = Journal::open(&request.state_dir).unwrap();
+        let before = fs::read(&journal.path).unwrap();
+        let context = RunContext {
+            request: &request,
+            state_dir: &request.state_dir,
+            output_dir: &request.output_dir,
+            launch: None,
+            session_id: "pi-boundary",
+            nonce: "fixture",
+        };
+        let error = execute(&plan, &context, &mut journal).unwrap_err();
+        assert_eq!(error.kind, ReplayErrorKind::Internal);
+        assert!(!request.output_dir.exists());
+        assert_eq!(fs::read(&journal.path).unwrap(), before);
+        journal.append("fixture_after_rejection", []).unwrap();
+    }
+
+    #[rstest::rstest]
+    #[case::first(0, 1)]
+    #[case::last(1, 2)]
+    fn checked_boundaries_partition_events_without_changing_them(
+        #[case] index: u64,
+        #[case] count: usize,
+    ) {
+        let root = tempfile::tempdir().unwrap();
+        let request = request(root.path());
+        let mut plan = fixture_plan(&request, &events());
+        plan.batches[0].native["event_index"] = json!(index);
+        let native = plan.native.as_array().unwrap();
+        let (prefix, suffix) = split_events_at_boundary(native, plan.batches.last()).unwrap();
+        assert_eq!(prefix.len(), count);
+        assert_eq!([prefix, suffix].concat(), *native);
+    }
+
+    #[rstest::rstest]
+    #[case::missing_id(json!({"type": "toolCall", "name": "read"}), ReplayErrorKind::Trajectory)]
+    #[case::invalid_id(json!({"type": "toolCall", "id": 1, "name": "read"}), ReplayErrorKind::Trajectory)]
+    #[case::missing_name(json!({"type": "toolCall", "id": "c"}), ReplayErrorKind::Trajectory)]
+    #[case::invalid_name(json!({"type": "toolCall", "id": "c", "name": false}), ReplayErrorKind::Trajectory)]
+    #[case::unsupported(json!({"type": "toolCall", "id": "c", "name": "python"}), ReplayErrorKind::UnsupportedVersion)]
+    #[case::null_arguments(json!({"type": "toolCall", "id": "c", "name": "read", "arguments": null}), ReplayErrorKind::Trajectory)]
+    #[case::array_arguments(json!({"type": "toolCall", "id": "c", "name": "read", "arguments": []}), ReplayErrorKind::Trajectory)]
+    #[case::string_arguments(json!({"type": "toolCall", "id": "c", "name": "read", "arguments": "{}"}), ReplayErrorKind::Trajectory)]
+    fn invalid_tool_fields_retain_their_error_categories(
+        #[case] call: Value,
+        #[case] kind: ReplayErrorKind,
+    ) {
+        let message = json!({"content": [call]});
+        assert_eq!(pi_calls(&message, 7).err().unwrap().kind, kind);
+    }
+
+    #[rstest::rstest]
+    #[case::read("read")]
+    #[case::bash("bash")]
+    #[case::edit("edit")]
+    #[case::write("write")]
+    fn supported_tools_keep_empty_ids_and_default_arguments(#[case] name: &str) {
+        let message = json!({"content": [{"type": "toolCall", "id": "", "name": name}]});
+        let calls = pi_calls(&message, 0).unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].id, "");
+        assert_eq!(calls[0].name, name);
+        assert!(calls[0].arguments.is_empty());
+    }
+
+    #[rstest::rstest]
+    fn normalized_calls_preserve_arguments_and_match_reordered_observations_by_id() {
+        let root = tempfile::tempdir().unwrap();
+        let request = request(root.path());
+        let mut events = events();
+        events[1] = json!({
+            "type": "turn_end",
+            "message": {"role": "assistant", "content": [
+                {"type": "toolCall", "id": "a", "name": "read"},
+                {"type": "toolCall", "id": "b", "name": "write", "arguments": {"nested": {"text": "内容\n"}}, "ignored": true}
+            ]},
+            "toolResults": [
+                {"toolCallId": "b", "toolName": "write", "content": "second", "isError": true},
+                {"toolCallId": "a", "toolName": "read", "content": "first", "isError": false}
+            ]
+        });
+        let plan = fixture_plan(&request, &events);
+        let calls = &plan.batches[0].tool_calls;
+        assert_eq!(
+            calls[0].native,
+            json!({"id": "a", "name": "read", "arguments": {}})
+        );
+        assert_eq!(calls[0].original_observation, json!("first"));
+        assert!(!calls[0].original_is_error);
+        assert_eq!(calls[1].arguments, json!({"nested": {"text": "内容\n"}}));
+        assert_eq!(
+            calls[1].native,
+            json!({"id": "b", "name": "write", "arguments": {"nested": {"text": "内容\n"}}})
+        );
+        assert_eq!(calls[1].original_observation, json!("second"));
+        assert!(calls[1].original_is_error);
+    }
 
     #[test]
     fn pi_signature_separates_text_reasoning_and_tools() {

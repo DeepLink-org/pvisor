@@ -13,7 +13,9 @@ exports and private temporary backing, without FUSE mounts or VMs.
 | Checked lookup and policy | `checked_backing_lookup.rs`, `protected_trees.rs`, `read_conflicts.rs` | Returned errors, unchanged backing and retained observations |
 | Copy-up ownership | `prepared_copy_up.rs`, `direct_copy.rs`, `copied_hard_link_metadata.rs` | Bytes, inode sharing, cancellation and source validation |
 | Backing and caching | `private_backing.rs`, `lower_immutability.rs`, `stable_namespace.rs` | Logical/native metadata, explicit leases and fresh observations |
+| Attachment routing | `backend_routing.rs` | Explicit root/relative-path bytes, generated paths, rejection without dispatch and bounded in-flight ownership handoff |
 | Stage completion | `seal_publication.rs`, `unrecorded_stage.rs`, `preimage_file_types.rs` | Lifecycle admission, publication failure and bounded process checks |
+| Recording admission | `recording_admission.rs` | Constructor/mode equivalence, exact policy bytes, first baselines and unchanged metadata on rejection |
 
 `namespace_recovery.rs` owns traces and generators; `namespace_recovery/model.rs`
 owns operations, native comparison and journal assertions. The `scenario` module
@@ -43,6 +45,8 @@ Public examples remain doctests on the existing exports.
 mise run test -- pvisor-overlay-core -- --test namespace_recovery
 mise run test -- pvisor-overlay-core -- --test selective_lifecycle
 mise run test -- pvisor-overlay-core -- --test content_receipts
+mise run test -- pvisor-overlay-core -- --test backend_routing
+mise run test -- pvisor-overlay-core -- --test recording_admission
 PROPTEST_CASES=1024 PROPTEST_RNG_SEED=42 mise run test -- pvisor-overlay-core -- \
   --test namespace_recovery --test selective_lifecycle --test content_receipts
 ```

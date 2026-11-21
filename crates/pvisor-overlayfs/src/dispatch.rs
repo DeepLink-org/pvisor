@@ -1,4 +1,5 @@
 //! Separate bounded read and mutation workers; preparation releases state.
+
 use crate::fs::{OverlayFs, setattr_requires_copy_up};
 #[cfg(test)]
 use fuser::FUSE_ROOT_ID;
@@ -30,25 +31,31 @@ struct IoActivity {
 }
 
 impl IoActivity {
-    fn enter(&self) -> IoPermit<'_> {
-        let mut state = self.state.lock().unwrap();
-        while state.1 {
-            state = self.ready.wait(state).unwrap();
-        }
-        state.0 += 1;
-        IoPermit(self)
+    fn poisoned(&self) -> i32 {
+        self.ready.notify_all();
+        libc::EIO
     }
 
-    fn namespace(&self) -> NamespacePermit<'_> {
-        let mut state = self.state.lock().unwrap();
+    fn enter(&self) -> Result<IoPermit<'_>, i32> {
+        let mut state = self.state.lock().map_err(|_| self.poisoned())?;
         while state.1 {
-            state = self.ready.wait(state).unwrap();
+            state = self.ready.wait(state).map_err(|_| self.poisoned())?;
+        }
+        state.0 += 1;
+        Ok(IoPermit(self))
+    }
+
+    fn namespace(&self) -> Result<NamespacePermit<'_>, i32> {
+        let mut state = self.state.lock().map_err(|_| self.poisoned())?;
+        while state.1 {
+            state = self.ready.wait(state).map_err(|_| self.poisoned())?;
         }
         state.1 = true;
+        let permit = NamespacePermit(self);
         while state.0 != 0 {
-            state = self.ready.wait(state).unwrap();
+            state = self.ready.wait(state).map_err(|_| self.poisoned())?;
         }
-        NamespacePermit(self)
+        Ok(permit)
     }
 }
 
@@ -56,7 +63,12 @@ struct IoPermit<'a>(&'a IoActivity);
 
 impl Drop for IoPermit<'_> {
     fn drop(&mut self) {
-        let mut state = self.0.state.lock().unwrap();
+        // Poison rejects new permits but must not strand existing reservations.
+        let mut state = self
+            .0
+            .state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         state.0 -= 1;
         if state.0 == 0 {
             self.0.ready.notify_all();
@@ -68,7 +80,11 @@ struct NamespacePermit<'a>(&'a IoActivity);
 
 impl Drop for NamespacePermit<'_> {
     fn drop(&mut self) {
-        self.0.state.lock().unwrap().1 = false;
+        self.0
+            .state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .1 = false;
         self.0.ready.notify_all();
     }
 }
@@ -150,7 +166,13 @@ impl IoRequest<'_> {
     fn run(self, state: &Mutex<OverlayFs>, activity: &IoActivity) {
         // This is an in-flight counter/fence, not a mutex held through I/O.
         // Namespace publication waits here before acquiring filesystem state.
-        let _permit = activity.enter();
+        let _permit = match activity.enter() {
+            Ok(permit) => permit,
+            Err(error) => {
+                self.fail(error);
+                return;
+            }
+        };
         match self {
             Self::Read {
                 ino,
@@ -447,6 +469,9 @@ impl DispatchFs {
                         }
                     };
                     let result = (|| {
+                        if mutation_activity.state.is_poisoned() {
+                            return Err(libc::EIO);
+                        }
                         let (core, plan, mutation) = {
                             let fs = worker_state.lock().map_err(|_| libc::EIO)?;
                             let (core, plan) = fs
@@ -463,14 +488,26 @@ impl DispatchFs {
                             .map_err(|error| error.raw_os_error().unwrap_or(libc::EIO));
                         Ok((core, copies, mutation))
                     })();
-                    let _namespace = mutation_activity.namespace();
+                    let namespace = mutation_activity.namespace();
                     match worker_state.lock() {
                         Ok(mut fs) => {
-                            match result {
-                                Ok((core, copies, mutation)) => {
-                                    complete_preparation(&mut fs, &core, copies, mutation, callback)
+                            match namespace.as_ref() {
+                                Ok(_) => match result {
+                                    Ok((core, copies, mutation)) => complete_preparation(
+                                        &mut fs, &core, copies, mutation, callback,
+                                    ),
+                                    Err(error) => callback(Err(error)),
+                                },
+                                Err(error) => {
+                                    let mutation = match result {
+                                        Ok((_, copies, mutation)) => {
+                                            drop(copies);
+                                            mutation
+                                        }
+                                        Err(_) => None,
+                                    };
+                                    failed_preparation(&mut fs, mutation, callback, *error);
                                 }
-                                Err(error) => callback(Err(error)),
                             }
                             fs.finish_request(task.bytes, &task.inodes);
                         }
@@ -487,13 +524,13 @@ impl DispatchFs {
                 while let Ok(task) = read_receiver.recv() {
                     match task.work {
                         Work::Io(request) => request.run(&read_state, &read_activity),
-                        Work::Callback(callback) => {
-                            let _permit = read_activity.enter();
-                            match read_state.lock() {
+                        Work::Callback(callback) => match read_activity.enter() {
+                            Ok(_permit) => match read_state.lock() {
                                 Ok(mut fs) => callback(Ok(&mut fs)),
                                 Err(_) => callback(Err(libc::EIO)),
-                            }
-                        }
+                            },
+                            Err(error) => callback(Err(error)),
+                        },
                     }
                     if let Ok(mut fs) = read_state.lock() {
                         fs.pending_read_requests -= 1;
@@ -714,10 +751,23 @@ impl DispatchFs {
         // Never overtake an accepted task in the same lane.
         if short && pending == 0 && (!reading || fs.pending_requests == 1) {
             drop(fs);
-            let (read_permit, namespace_permit) = if reading {
-                (Some(self.io_activity.enter()), None)
+            let permits = if reading {
+                self.io_activity.enter().map(|permit| (Some(permit), None))
             } else {
-                (None, Some(self.io_activity.namespace()))
+                self.io_activity
+                    .namespace()
+                    .map(|permit| (None, Some(permit)))
+            };
+            let (read_permit, namespace_permit) = match permits {
+                Ok(permits) => permits,
+                Err(error) => {
+                    if let Ok(mut fs) = self.state.lock() {
+                        fs.pending_read_requests -= usize::from(reading);
+                        fs.finish_request(bytes, &task.inodes);
+                    }
+                    task.work.fail(error);
+                    return;
+                }
             };
             let mut fs = match self.state.lock() {
                 Ok(fs) => fs,
@@ -1433,14 +1483,268 @@ mod tests {
     use std::sync::mpsc::{Receiver, SyncSender};
     use std::time::{Duration, UNIX_EPOCH};
 
+    fn poison_activity(activity: &IoActivity) {
+        assert!(
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let _guard = activity.state.lock().unwrap();
+                panic!("poison I/O activity");
+            }))
+            .is_err()
+        );
+        assert!(activity.state.is_poisoned());
+    }
+
+    #[rstest::rstest]
+    fn poisoned_activity_rejects_new_permits_without_changing_reservations() {
+        let activity = IoActivity::default();
+        poison_activity(&activity);
+        for _ in 0..3 {
+            assert_eq!(activity.enter().err(), Some(libc::EIO));
+            assert_eq!(activity.namespace().err(), Some(libc::EIO));
+        }
+        assert_eq!(*activity.state.lock().unwrap_err().into_inner(), (0, false));
+    }
+
+    #[rstest::rstest]
+    #[case::io(true)]
+    #[case::namespace(false)]
+    fn permit_drop_during_unwind_releases_poisoned_bookkeeping(#[case] reading: bool) {
+        let activity = IoActivity::default();
+        assert!(
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let (_io, _namespace) = if reading {
+                    (Some(activity.enter().unwrap()), None)
+                } else {
+                    (None, Some(activity.namespace().unwrap()))
+                };
+                let _state = activity.state.lock().unwrap();
+                panic!("unwind with an active permit");
+            }))
+            .is_err()
+        );
+        assert_eq!(*activity.state.lock().unwrap_err().into_inner(), (0, false));
+        assert_eq!(activity.enter().err(), Some(libc::EIO));
+        assert_eq!(activity.namespace().err(), Some(libc::EIO));
+    }
+
+    #[rstest::rstest]
+    fn poisoned_namespace_wait_releases_its_claim_before_io_finishes() {
+        let activity = Arc::new(IoActivity::default());
+        let io = activity.enter().unwrap();
+        let other = activity.clone();
+        let (done, ready) = mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            done.send(other.namespace().err()).unwrap();
+        });
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while !activity.state.lock().unwrap().1 {
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::yield_now();
+        }
+        poison_activity(&activity);
+        assert_eq!(activity.enter().err(), Some(libc::EIO));
+        assert_eq!(
+            ready.recv_timeout(Duration::from_secs(2)).unwrap(),
+            Some(libc::EIO)
+        );
+        worker.join().unwrap();
+        assert_eq!(*activity.state.lock().unwrap_err().into_inner(), (1, false));
+        drop(io);
+        assert_eq!(*activity.state.lock().unwrap_err().into_inner(), (0, false));
+    }
+
+    #[rstest::rstest]
+    #[case::inline_read(true, true)]
+    #[case::queued_read(true, false)]
+    #[case::inline_mutation(false, true)]
+    #[case::queued_mutation(false, false)]
+    fn poisoned_activity_replies_eio_and_releases_callback_admission(
+        #[case] reading: bool,
+        #[case] short: bool,
+    ) {
+        let f = fixture(false);
+        poison_activity(&f.dispatch.io_activity);
+        let (done, ready) = mpsc::channel();
+        f.dispatch.enqueue_on(
+            reading,
+            short,
+            CopyRequest::None,
+            7,
+            &[FUSE_ROOT_ID],
+            Box::new(move |result| done.send(result.err()).unwrap()),
+        );
+        assert_eq!(
+            ready.recv_timeout(Duration::from_secs(2)).unwrap(),
+            Some(libc::EIO)
+        );
+        f.dispatch.control.shutdown().unwrap();
+        let state = f.dispatch.state.lock().unwrap();
+        assert_eq!(state.pending_requests, 0);
+        assert_eq!(state.pending_read_requests, 0);
+        assert_eq!(state.pending_bytes, 0);
+        assert!(state.pending_inodes.is_empty());
+        assert_eq!(
+            fs::read_dir(f.root.path().join("upper")).unwrap().count(),
+            0
+        );
+    }
+
+    #[rstest::rstest]
+    fn poisoned_activity_does_not_begin_new_copy_preparation() {
+        let f = fixture(false);
+        poison_activity(&f.dispatch.io_activity);
+        let (done, ready) = mpsc::channel();
+        f.dispatch.enqueue(
+            CopyRequest::Paths(vec!["slow".into()]),
+            0,
+            &[FUSE_ROOT_ID],
+            Box::new(move |result| done.send(result.err()).unwrap()),
+        );
+        assert_eq!(
+            ready.recv_timeout(Duration::from_secs(2)).unwrap(),
+            Some(libc::EIO)
+        );
+        assert_eq!(f.entered.try_recv(), Err(mpsc::TryRecvError::Empty));
+        f.dispatch.control.shutdown().unwrap();
+        let state = f.dispatch.state.lock().unwrap();
+        assert_eq!(state.pending_requests, 0);
+        assert!(state.pending_inodes.is_empty());
+    }
+
+    #[rstest::rstest]
+    #[case::prepared_copies(false)]
+    #[case::preparation_error(true)]
+    fn poison_during_preparation_discards_copies_and_releases_admission(#[case] fail: bool) {
+        let f = fixture(fail);
+        let (done, ready) = mpsc::channel();
+        f.dispatch.enqueue(
+            CopyRequest::Paths(vec!["slow".into()]),
+            9,
+            &[FUSE_ROOT_ID],
+            Box::new(move |result| done.send(result.err()).unwrap()),
+        );
+        f.entered.recv_timeout(Duration::from_secs(2)).unwrap();
+        poison_activity(&f.dispatch.io_activity);
+        f.resume.send(()).unwrap();
+        assert_eq!(
+            ready.recv_timeout(Duration::from_secs(2)).unwrap(),
+            Some(libc::EIO)
+        );
+        f.dispatch.control.shutdown().unwrap();
+        let state = f.dispatch.state.lock().unwrap();
+        assert_eq!(state.pending_requests, 0);
+        assert_eq!(state.pending_read_requests, 0);
+        assert_eq!(state.pending_bytes, 0);
+        assert!(state.pending_inodes.is_empty());
+        assert_eq!(
+            fs::read_dir(f.root.path().join("upper")).unwrap().count(),
+            0
+        );
+        assert_eq!(
+            fs::read(f.root.path().join("lower/slow")).unwrap(),
+            b"original"
+        );
+    }
+
+    #[rstest::rstest]
+    #[case::inline_read(15, 8)]
+    #[case::queued_read(15, 65_536)]
+    #[case::write(16, 3)]
+    #[case::fsync(20, 0)]
+    fn poisoned_activity_returns_exact_eio_through_fuse_io_dispatch(
+        #[case] opcode: u32,
+        #[case] size: u32,
+    ) {
+        use std::io::{Read, Write};
+        use std::os::unix::net::UnixStream;
+
+        fn request(socket: &mut UnixStream, opcode: u32, unique: u64, body: &[u8]) -> Vec<u8> {
+            let mut bytes = Vec::new();
+            for word in [40 + body.len() as u32, opcode] {
+                bytes.extend(word.to_ne_bytes());
+            }
+            bytes.extend(unique.to_ne_bytes());
+            bytes.extend(FUSE_ROOT_ID.to_ne_bytes());
+            for word in [
+                unsafe { libc::geteuid() },
+                unsafe { libc::getegid() },
+                std::process::id(),
+                0,
+            ] {
+                bytes.extend(word.to_ne_bytes());
+            }
+            bytes.extend(body);
+            socket.write_all(&bytes).unwrap();
+            let mut header = [0; 16];
+            socket.read_exact(&mut header).unwrap();
+            let length = u32::from_ne_bytes(header[..4].try_into().unwrap()) as usize;
+            assert!((16..65_536).contains(&length));
+            let mut response = vec![0; length];
+            response[..16].copy_from_slice(&header);
+            socket.read_exact(&mut response[16..]).unwrap();
+            response
+        }
+
+        let root = tempfile::tempdir().unwrap();
+        let lower = root.path().join("lower");
+        fs::create_dir(&lower).unwrap();
+        let dispatcher =
+            DispatchFs::new(OverlayFs::new(vec![lower], root.path().join("upper"), None).unwrap())
+                .unwrap();
+        let state = dispatcher.state.clone();
+        poison_activity(&dispatcher.io_activity);
+        let (mut socket, server) = UnixStream::pair().unwrap();
+        socket
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        socket
+            .set_write_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let (done, joined) = mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let result =
+                fuser::Session::from_fd(dispatcher, server.into(), fuser::SessionACL::Owner).run();
+            done.send(result).unwrap();
+        });
+        let init: Vec<_> = [7u32, 19, 0, 0]
+            .into_iter()
+            .flat_map(u32::to_ne_bytes)
+            .collect();
+        let initialized = request(&mut socket, 26, 1, &init);
+        assert_eq!(&initialized[4..8], &0i32.to_ne_bytes());
+        let mut body = vec![0; if opcode == 20 { 16 } else { 40 }];
+        if opcode != 20 {
+            body[16..20].copy_from_slice(&size.to_ne_bytes());
+        }
+        if opcode == 16 {
+            body.extend(b"abc");
+        }
+        let response = request(&mut socket, opcode, 2, &body);
+        let mut expected = 16u32.to_ne_bytes().to_vec();
+        expected.extend((-libc::EIO).to_ne_bytes());
+        expected.extend(2u64.to_ne_bytes());
+        assert_eq!(response, expected);
+        drop(socket);
+        joined
+            .recv_timeout(Duration::from_secs(2))
+            .unwrap()
+            .unwrap();
+        worker.join().unwrap();
+        let state = state.lock().unwrap();
+        assert_eq!(state.pending_requests, 0);
+        assert_eq!(state.pending_read_requests, 0);
+        assert_eq!(state.pending_bytes, 0);
+        assert!(state.pending_inodes.is_empty());
+    }
+
     #[test]
     fn namespace_publication_waits_for_inflight_io_to_drain() {
         let activity = Arc::new(IoActivity::default());
-        let io = activity.enter();
+        let io = activity.enter().unwrap();
         let (sent, completed) = mpsc::channel();
         let other = activity.clone();
         let worker = std::thread::spawn(move || {
-            let _namespace = other.namespace();
+            let _namespace = other.namespace().unwrap();
             sent.send(()).unwrap();
         });
         let deadline = std::time::Instant::now() + Duration::from_secs(2);
@@ -1455,7 +1759,7 @@ mod tests {
         drop(io);
         completed.recv_timeout(Duration::from_secs(2)).unwrap();
         worker.join().unwrap();
-        let _next = activity.enter();
+        let _next = activity.enter().unwrap();
     }
 
     struct SlowLower {

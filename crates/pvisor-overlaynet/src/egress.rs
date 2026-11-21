@@ -76,18 +76,11 @@ impl EgressRuntime {
                 .is_ok_and(|policy| policy.allows_unrestricted_packets())
     }
 
-    fn current_policy(&self) -> NetworkPolicy {
+    fn current_policy(&self) -> Result<NetworkPolicy, EgressError> {
         self.policy
             .read()
             .map(|slot| slot.clone())
-            .unwrap_or_else(|_| {
-                // Lock poisoning must fail closed with an empty deny policy.
-                NetworkPolicy::compile(&pvisor_core::network::NetworkConfig {
-                    mode: pvisor_core::network::NetworkMode::NoNetwork,
-                    ..Default::default()
-                })
-                .expect("no-network policy compiles")
-            })
+            .map_err(|_| EgressError::Denied(DenyReason::NoNetwork))
     }
 
     pub(crate) async fn authorize_tcp(
@@ -96,7 +89,7 @@ impl EgressRuntime {
         host: &str,
         port: u16,
     ) -> Result<(Vec<SocketAddr>, BandwidthSession), EgressError> {
-        let policy = self.current_policy();
+        let policy = self.current_policy()?;
         let request = NetworkAccessRequest {
             run_id: context.run_id.clone().map(RunId),
             execution_id: context.execution_id.clone().map(ExecutionId),
@@ -289,7 +282,109 @@ impl EgressControl for EgressRuntime {
 
 #[cfg(test)]
 mod tests {
+    use super::{EgressContext, EgressError, EgressRuntime};
+    use crate::api::BandwidthRegistry;
     use crate::api::EgressControl;
+    use pvisor_core::network::{DenyReason, NetworkConfig, NetworkMode, NetworkPolicy};
+    use pvisor_core::{
+        ControlController, ControlRequest, ControlTransition, PolicyControlController,
+    };
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+
+    #[derive(Default)]
+    struct CountingController(AtomicUsize);
+
+    impl ControlController for CountingController {
+        fn authorize(&self, request: ControlRequest<'_>) -> ControlTransition {
+            self.0.fetch_add(1, Ordering::Relaxed);
+            PolicyControlController.authorize(request)
+        }
+    }
+
+    fn poison_policy(runtime: &EgressRuntime) {
+        let policy = runtime.policy.clone();
+        assert!(
+            std::panic::catch_unwind(move || {
+                let _guard = policy.write().unwrap();
+                panic!("poison egress policy");
+            })
+            .is_err()
+        );
+        assert!(runtime.policy.is_poisoned());
+    }
+
+    #[rstest::rstest]
+    #[case::public(NetworkMode::Public)]
+    #[case::no_network(NetworkMode::NoNetwork)]
+    #[case::allowlist(NetworkMode::Allowlist)]
+    #[tokio::test(start_paused = true)]
+    async fn poisoned_policy_rejects_all_clones_before_controller_or_resolution(
+        #[case] replacement: NetworkMode,
+    ) {
+        let controller = Arc::new(CountingController::default());
+        let runtime = EgressRuntime::with_bandwidth_registry(
+            NetworkPolicy::compile(&NetworkConfig::default()).unwrap(),
+            controller.clone(),
+            BandwidthRegistry::default(),
+        );
+        let clone = runtime.clone();
+        let context = EgressContext::default();
+        let (addresses, _) = runtime
+            .authorize_tcp(&context, "93.184.216.34", 443)
+            .await
+            .unwrap();
+        assert_eq!(addresses, ["93.184.216.34:443".parse().unwrap()]);
+        let calls = controller.0.load(Ordering::Relaxed);
+        assert!(calls > 0);
+        poison_policy(&runtime);
+        clone.replace_policy(
+            NetworkPolicy::compile(&NetworkConfig {
+                mode: replacement,
+                ..Default::default()
+            })
+            .unwrap(),
+        );
+        for owner in [&runtime, &clone] {
+            for host in ["93.184.216.34", "invalid host name"] {
+                let error = tokio::time::timeout(
+                    std::time::Duration::from_secs(1),
+                    owner.authorize_tcp(&context, host, 443),
+                )
+                .await
+                .unwrap()
+                .unwrap_err();
+                assert!(matches!(error, EgressError::Denied(DenyReason::NoNetwork)));
+            }
+            assert!(owner.policy.is_poisoned());
+            assert!(format!("{owner:?}").contains("<poisoned>"));
+        }
+        assert_eq!(controller.0.load(Ordering::Relaxed), calls);
+    }
+
+    #[rstest::rstest]
+    fn poisoned_policy_closes_peer_admission_and_cannot_be_replaced() {
+        let public = NetworkPolicy::compile(&NetworkConfig::default()).unwrap();
+        let runtime =
+            EgressRuntime::for_peer_network(public.clone(), BandwidthRegistry::default()).unwrap();
+        let clone = runtime.clone();
+        assert!(runtime.permits_peer_network());
+        assert!(clone.permits_peer_network());
+        poison_policy(&clone);
+        for _ in 0..3 {
+            runtime.replace_policy(public.clone());
+            for owner in [&runtime, &clone] {
+                assert!(!owner.permits_peer_network());
+                assert!(matches!(
+                    owner.current_policy(),
+                    Err(EgressError::Denied(DenyReason::NoNetwork))
+                ));
+                assert!(owner.policy.is_poisoned());
+            }
+        }
+    }
 
     #[rstest::rstest]
     #[tokio::test]

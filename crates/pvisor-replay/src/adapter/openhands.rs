@@ -4,7 +4,7 @@ use std::path::Path;
 use std::process::Command;
 use std::time::Duration;
 
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 
 use super::{
     LaunchSpec, MAX_TOOL_OUTPUT_BYTES, RunContext, agent_command, check_boundary, prepared_outcome,
@@ -17,6 +17,46 @@ use crate::io::{atomic_write_json, canonicalize, read_regular_file, sha256};
 use crate::journal::Journal;
 use crate::model::{FreshObservation, ReplayOutcome, ReplayPlan, ToolBatch, ToolCall};
 use crate::process::{ProcessSpec, run_process};
+
+const SUPPORTED_ACTIONS: &[&str] = &["run", "read", "edit", "run_ipython", "think"];
+
+fn replay_action(event: &Value) -> Result<Option<&str>, ReplayError> {
+    if event.get("source").and_then(Value::as_str) != Some("agent") {
+        return Ok(None);
+    }
+    let Some(action) = event.get("action").and_then(Value::as_str) else {
+        return Ok(None);
+    };
+    if matches!(action, "system" | "finish" | "message") {
+        return Ok(None);
+    }
+    if !SUPPORTED_ACTIONS.contains(&action) {
+        return Err(ReplayError::new(
+            ReplayErrorKind::UnsupportedVersion,
+            format!("unsupported OpenHands action {action:?}"),
+        ));
+    }
+    Ok(Some(action))
+}
+
+fn boundary_action_id(batches: &[ToolBatch]) -> Result<i64, ReplayError> {
+    let batch = batches.last().ok_or_else(|| {
+        ReplayError::new(
+            ReplayErrorKind::Internal,
+            "OpenHands replay plan has no selected batch",
+        )
+    })?;
+    let [call] = batch.tool_calls.as_slice() else {
+        return Err(ReplayError::new(
+            ReplayErrorKind::Internal,
+            "OpenHands replay boundary must contain exactly one action",
+        ));
+    };
+    call.call_id.parse().replay_context(
+        ReplayErrorKind::Internal,
+        "OpenHands replay boundary call ID is not an i64",
+    )
+}
 
 pub(super) fn execute(
     plan: &ReplayPlan,
@@ -59,22 +99,11 @@ pub(super) fn build(request: &PlaybackRequest) -> Result<ReplayPlan, ReplayError
                 .flatten()
         })
         .collect();
-    let supported = ["run", "read", "edit", "run_ipython", "think"];
     let mut batches = Vec::new();
     for action in &events {
-        let action_name = action.get("action").and_then(Value::as_str);
-        if action.get("source").and_then(Value::as_str) != Some("agent")
-            || matches!(action_name, None | Some("system" | "finish" | "message"))
-        {
+        let Some(action_name) = replay_action(action)? else {
             continue;
-        }
-        let action_name = action_name.unwrap();
-        if !supported.contains(&action_name) {
-            return Err(ReplayError::new(
-                ReplayErrorKind::UnsupportedVersion,
-                format!("unsupported OpenHands action {action_name:?}"),
-            ));
-        }
+        };
         let id = event_id(action)?;
         let Some(observation) = observations.get(&id) else {
             break;
@@ -107,10 +136,7 @@ pub(super) fn build(request: &PlaybackRequest) -> Result<ReplayPlan, ReplayError
     }
     check_boundary(request.after_step, batches.len())?;
     batches.truncate(request.after_step);
-    let boundary_id = batches.last().unwrap().tool_calls[0]
-        .call_id
-        .parse::<i64>()
-        .unwrap();
+    let boundary_id = boundary_action_id(&batches)?;
     let initial_user_event = events
         .iter()
         .find(|event| {
@@ -325,12 +351,43 @@ fn run_openhands(
     context: &RunContext<'_>,
     journal: &mut Journal,
 ) -> Result<ReplayOutcome, ReplayError> {
-    let events = plan.native["events"].as_array().unwrap();
-    let initial = plan.native["initial_user_event"].clone();
-    let boundary_id = plan.batches.last().unwrap().tool_calls[0]
-        .call_id
-        .parse::<i64>()
-        .unwrap();
+    let events = plan
+        .native
+        .get("events")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            ReplayError::new(
+                ReplayErrorKind::Internal,
+                "OpenHands replay plan has no native event array",
+            )
+        })?;
+    let initial = plan
+        .native
+        .get("initial_user_event")
+        .filter(|event| event.is_object())
+        .cloned()
+        .ok_or_else(|| {
+            ReplayError::new(
+                ReplayErrorKind::Internal,
+                "OpenHands replay plan has no initial user object",
+            )
+        })?;
+    let boundary_id = boundary_action_id(&plan.batches)?;
+    let boundary_event = events
+        .iter()
+        .find(|event| event.get("id").and_then(Value::as_i64) == Some(boundary_id))
+        .ok_or_else(|| {
+            ReplayError::new(
+                ReplayErrorKind::Internal,
+                "OpenHands boundary action is absent from native events",
+            )
+        })?;
+    if replay_action(boundary_event)?.is_none() {
+        return Err(ReplayError::new(
+            ReplayErrorKind::Internal,
+            "OpenHands boundary event is not a replayable agent action",
+        ));
+    }
     let mut prepared_events = vec![initial.clone()];
     for event in events {
         let id = event_id(event)?;
@@ -356,10 +413,10 @@ fn run_openhands(
         if event.get("action").is_some() && !event["action"].is_null() {
             let mut reconstructed = event.clone();
             if reconstructed.get("source").and_then(Value::as_str) == Some("agent")
-                && matches!(
-                    reconstructed.get("action").and_then(Value::as_str),
-                    Some("run" | "read" | "edit" | "run_ipython" | "think")
-                )
+                && reconstructed
+                    .get("action")
+                    .and_then(Value::as_str)
+                    .is_some_and(|action| SUPPORTED_ACTIONS.contains(&action))
                 && reconstructed
                     .get("tool_call_metadata")
                     .is_none_or(Value::is_null)
@@ -414,7 +471,12 @@ fn run_openhands(
         ReplayMode::ReplayAndContinue => {
             context.output_dir.join("native/continued-trajectory.json")
         }
-        ReplayMode::PrepareOnly => unreachable!("prepare-only returned before OpenHands launch"),
+        ReplayMode::PrepareOnly => {
+            return Err(ReplayError::new(
+                ReplayErrorKind::Internal,
+                "prepare-only reached OpenHands launch",
+            ));
+        }
     };
     let mut command = agent_command(&launch.entrypoint, context);
     command.args(["-m", "openhands.core.main"]);
@@ -452,8 +514,9 @@ fn run_openhands(
         command.env("MAX_ITERATIONS", max.to_string());
     }
     journal.append("continuation_started", std::iter::empty())?;
-    let log = context.output_dir.join("logs/openhands.log");
-    fs::create_dir_all(log.parent().expect("OpenHands log has a parent"))
+    let logs = context.output_dir.join("logs");
+    let log = logs.join("openhands.log");
+    fs::create_dir_all(&logs)
         .replay_context(ReplayErrorKind::Executor, "create OpenHands log directory")?;
     let output = run_process(ProcessSpec {
         command,
@@ -504,30 +567,12 @@ fn run_openhands(
             "parse replayed OpenHands trajectory",
         )?;
     let complete = openhands_complete_batches(&continued_events)?;
-    if complete.len() < plan.after_step {
-        return Err(ReplayError::trajectory(
-            "OpenHands output lost replayed action/observation batches",
-        ));
-    }
-    if context.request.mode == ReplayMode::ReplayOnly && complete.len() != plan.after_step {
-        return Err(ReplayError::continuation(format!(
-            "OpenHands replay-only crossed the selected boundary: expected {} actions, observed {}",
-            plan.after_step,
-            complete.len()
-        )));
-    }
-    if context
-        .request
-        .max_steps
-        .is_some_and(|max_steps| complete.len() > max_steps)
-    {
-        return Err(ReplayError::continuation(format!(
-            "OpenHands exceeded the total max_steps budget: allowed {}, observed {} actions",
-            context.request.max_steps.unwrap(),
-            complete.len()
-        )));
-    }
-    let replayed = &complete[..plan.after_step];
+    let replayed = checked_replay_prefix(
+        &complete,
+        plan.after_step,
+        context.request.mode,
+        context.request.max_steps,
+    )?;
     let observations = plan
         .calls()
         .zip(replayed.iter())
@@ -559,7 +604,7 @@ fn run_openhands(
         &context.output_dir.join("observation-comparison.json"),
         &comparisons,
     )?;
-    let continued_steps = complete.len() - plan.after_step;
+    let continued_steps = complete.len() - replayed.len();
     journal.append(
         "continuation_finished",
         [
@@ -587,7 +632,7 @@ fn run_openhands(
             .then_some(replayed_trajectory),
         observations,
         continued_steps,
-        metadata: with_boundary_user_prompt_metadata(json!({}), context.request, prompt_injected),
+        metadata: with_boundary_user_prompt_metadata(Map::new(), context.request, prompt_injected),
     })
 }
 
@@ -639,6 +684,34 @@ fn openhands_observation_content(observation: &Value) -> Value {
     })
 }
 
+fn checked_replay_prefix<T>(
+    complete: &[T],
+    after_step: usize,
+    mode: ReplayMode,
+    max_steps: Option<usize>,
+) -> Result<&[T], ReplayError> {
+    let prefix = complete.get(..after_step).ok_or_else(|| {
+        ReplayError::trajectory("OpenHands output lost replayed action/observation batches")
+    })?;
+    if mode == ReplayMode::ReplayOnly && complete.len() != after_step {
+        return Err(ReplayError::continuation(format!(
+            "OpenHands replay-only crossed the selected boundary: expected {} actions, observed {}",
+            after_step,
+            complete.len()
+        )));
+    }
+    if let Some(max_steps) = max_steps
+        && complete.len() > max_steps
+    {
+        return Err(ReplayError::continuation(format!(
+            "OpenHands exceeded the total max_steps budget: allowed {}, observed {} actions",
+            max_steps,
+            complete.len()
+        )));
+    }
+    Ok(prefix)
+}
+
 fn openhands_complete_batches(events: &[Value]) -> Result<Vec<(&Value, &Value)>, ReplayError> {
     let mut observations = BTreeMap::new();
     for event in events {
@@ -657,22 +730,11 @@ fn openhands_complete_batches(events: &[Value]) -> Result<Vec<(&Value, &Value)>,
         }
     }
 
-    let supported = ["run", "read", "edit", "run_ipython", "think"];
     let mut batches = Vec::new();
     for event in events {
-        let action = event.get("action").and_then(Value::as_str);
-        if event.get("source").and_then(Value::as_str) != Some("agent")
-            || matches!(action, None | Some("system" | "finish" | "message"))
-        {
+        let Some(_) = replay_action(event)? else {
             continue;
-        }
-        let action = action.unwrap();
-        if !supported.contains(&action) {
-            return Err(ReplayError::new(
-                ReplayErrorKind::UnsupportedVersion,
-                format!("unsupported OpenHands action {action:?}"),
-            ));
-        }
+        };
         let id = event_id(event)?;
         let Some(observation) = observations.get(&id) else {
             break;
@@ -718,12 +780,200 @@ mod tests {
 
     use serde_json::{Value, json};
 
-    use super::{
-        LaunchSpec, openhands_action_signature, openhands_boundary_user_prompt_event,
-        openhands_complete_batches, openhands_fatal_controller_marker,
-        openhands_observation_content, openhands_reconstructed_tool_metadata,
-        prepend_openhands_runtime_tools,
-    };
+    use super::*;
+    use crate::api::AgentKind;
+
+    fn request(root: &Path) -> PlaybackRequest {
+        PlaybackRequest {
+            agent: AgentKind::Openhands,
+            trajectory: root.join("events.json"),
+            after_step: 1,
+            workspace: root.join("workspace"),
+            state_dir: root.join("state"),
+            output_dir: root.join("output"),
+            agent_entrypoint: None,
+            agent_runtime: None,
+            disallowed_tools: vec![],
+            trajectory_assets: None,
+            session_id: None,
+            max_steps: None,
+            mode: ReplayMode::PrepareOnly,
+            allow_stale_observations: false,
+            run_id: Some("openhands-boundary".into()),
+            disable_thinking: false,
+            boundary_user_prompt: None,
+        }
+    }
+
+    fn fixture_plan(request: &PlaybackRequest) -> ReplayPlan {
+        fs::create_dir(&request.workspace).unwrap();
+        let events = json!([
+            {"id": 0, "source": "user", "action": "message", "args": {"content": "task"}},
+            {"id": 1, "source": "agent", "action": "run", "args": {"command": "true"}},
+            {"id": 2, "source": "environment", "observation": "run", "cause": 1, "message": "old"}
+        ]);
+        fs::write(&request.trajectory, serde_json::to_vec(&events).unwrap()).unwrap();
+        build(request).unwrap()
+    }
+
+    #[rstest::rstest]
+    #[case::no_batches(|plan: &mut ReplayPlan| plan.batches.clear())]
+    #[case::empty_batch(|plan: &mut ReplayPlan| plan.batches[0].tool_calls.clear())]
+    #[case::multiple_calls(|plan: &mut ReplayPlan| {
+        let call = plan.batches[0].tool_calls[0].clone();
+        plan.batches[0].tool_calls.push(call);
+    })]
+    #[case::invalid_id(|plan: &mut ReplayPlan| plan.batches[0].tool_calls[0].call_id = "invalid".into())]
+    #[case::overflow_id(|plan: &mut ReplayPlan| plan.batches[0].tool_calls[0].call_id = "9223372036854775808".into())]
+    #[case::underflow_id(|plan: &mut ReplayPlan| plan.batches[0].tool_calls[0].call_id = "-9223372036854775809".into())]
+    #[case::no_events(|plan: &mut ReplayPlan| plan.native["events"] = Value::Null)]
+    #[case::empty_events(|plan: &mut ReplayPlan| plan.native["events"] = json!([]))]
+    #[case::no_initial_user(|plan: &mut ReplayPlan| plan.native["initial_user_event"] = Value::Null)]
+    #[case::non_agent_boundary(|plan: &mut ReplayPlan| plan.native["events"][1]["source"] = json!("user"))]
+    fn invalid_internal_boundaries_do_not_publish_prepared_events_or_journal_facts(
+        #[case] corrupt: fn(&mut ReplayPlan),
+    ) {
+        let root = tempfile::tempdir().unwrap();
+        let request = request(root.path());
+        let mut plan = fixture_plan(&request);
+        corrupt(&mut plan);
+        let mut journal = Journal::open(&request.state_dir).unwrap();
+        let before = fs::read(&journal.path).unwrap();
+        let context = RunContext {
+            request: &request,
+            state_dir: &request.state_dir,
+            output_dir: &request.output_dir,
+            launch: None,
+            session_id: "fixture",
+            nonce: "fixture",
+        };
+        let error = execute(&plan, &context, &mut journal).unwrap_err();
+        assert_eq!(error.kind, ReplayErrorKind::Internal);
+        assert_eq!(fs::read(&journal.path).unwrap(), before);
+        assert!(!request.output_dir.exists());
+        journal.append("fixture_after_rejection", []).unwrap();
+    }
+
+    #[rstest::rstest]
+    #[case::minimum(i64::MIN)]
+    #[case::zero(0)]
+    #[case::maximum(i64::MAX)]
+    fn boundary_ids_retain_the_full_signed_integer_range(#[case] id: i64) {
+        let root = tempfile::tempdir().unwrap();
+        let request = request(root.path());
+        let mut plan = fixture_plan(&request);
+        plan.batches[0].tool_calls[0].call_id = id.to_string();
+        assert_eq!(boundary_action_id(&plan.batches).unwrap(), id);
+    }
+
+    #[rstest::rstest]
+    #[case::run(json!("agent"), json!("run"), Ok(Some("run")))]
+    #[case::read(json!("agent"), json!("read"), Ok(Some("read")))]
+    #[case::edit(json!("agent"), json!("edit"), Ok(Some("edit")))]
+    #[case::ipython(json!("agent"), json!("run_ipython"), Ok(Some("run_ipython")))]
+    #[case::think(json!("agent"), json!("think"), Ok(Some("think")))]
+    #[case::system(json!("agent"), json!("system"), Ok(None))]
+    #[case::finish(json!("agent"), json!("finish"), Ok(None))]
+    #[case::message(json!("agent"), json!("message"), Ok(None))]
+    #[case::null_action(json!("agent"), Value::Null, Ok(None))]
+    #[case::non_string_action(json!("agent"), json!(false), Ok(None))]
+    #[case::non_agent(json!("user"), json!("unknown"), Ok(None))]
+    #[case::unsupported(json!("agent"), json!("unknown"), Err(ReplayErrorKind::UnsupportedVersion))]
+    fn source_and_output_share_action_classification(
+        #[case] source: Value,
+        #[case] action: Value,
+        #[case] expected: Result<Option<&str>, ReplayErrorKind>,
+    ) {
+        let event = json!({"id": 1, "source": source, "action": action});
+        assert_eq!(replay_action(&event).map_err(|error| error.kind), expected);
+        let events = [
+            event,
+            json!({"id": 2, "source": "environment", "observation": "run", "cause": 1}),
+        ];
+        assert_eq!(
+            openhands_complete_batches(&events)
+                .map(|batches| batches.len())
+                .map_err(|error| error.kind),
+            expected.map(|action| usize::from(action.is_some()))
+        );
+    }
+
+    #[rstest::rstest]
+    #[case::missing(0, 1, ReplayMode::ReplayAndContinue, None, Err((ReplayErrorKind::Trajectory, "lost replayed")))]
+    #[case::exact_replay(1, 1, ReplayMode::ReplayOnly, None, Ok(1))]
+    #[case::replay_crosses_boundary(2, 1, ReplayMode::ReplayOnly, Some(1), Err((ReplayErrorKind::Continuation, "replay-only crossed")))]
+    #[case::unbounded(3, 1, ReplayMode::ReplayAndContinue, None, Ok(1))]
+    #[case::within_budget(2, 1, ReplayMode::ReplayAndContinue, Some(3), Ok(1))]
+    #[case::at_budget(2, 1, ReplayMode::ReplayAndContinue, Some(2), Ok(1))]
+    #[case::exceeds_budget(3, 1, ReplayMode::ReplayAndContinue, Some(2), Err((ReplayErrorKind::Continuation, "allowed 2, observed 3")))]
+    #[case::missing_precedes_budget(0, 1, ReplayMode::ReplayAndContinue, Some(0), Err((ReplayErrorKind::Trajectory, "lost replayed")))]
+    #[case::maximum_budget(2, 1, ReplayMode::ReplayAndContinue, Some(usize::MAX), Ok(1))]
+    #[case::invalid_boundary(1, usize::MAX, ReplayMode::ReplayAndContinue, None, Err((ReplayErrorKind::Trajectory, "lost replayed")))]
+    fn checked_output_prefix_preserves_budget_boundaries_and_error_precedence(
+        #[case] count: usize,
+        #[case] after_step: usize,
+        #[case] mode: ReplayMode,
+        #[case] max_steps: Option<usize>,
+        #[case] expected: Result<usize, (ReplayErrorKind, &str)>,
+    ) {
+        let complete = vec![(); count];
+        let result = checked_replay_prefix(&complete, after_step, mode, max_steps);
+        match expected {
+            Ok(length) => assert_eq!(result.unwrap().len(), length),
+            Err((kind, message)) => {
+                let error = result.unwrap_err();
+                assert_eq!(error.kind, kind);
+                assert!(error.message.contains(message), "{}", error.message);
+            }
+        }
+    }
+
+    #[rstest::rstest]
+    fn log_setup_failure_retains_the_existing_continuation_start_fence() {
+        let root = tempfile::tempdir().unwrap();
+        let mut request = request(root.path());
+        request.mode = ReplayMode::ReplayOnly;
+        let plan = fixture_plan(&request);
+        fs::create_dir(&request.output_dir).unwrap();
+        fs::write(request.output_dir.join("logs"), b"obstruction").unwrap();
+        let launch = LaunchSpec {
+            entrypoint: root.path().join("must-not-run"),
+            version: "0.53.0".into(),
+            source: "fixture".into(),
+            runtime_root: Some(root.path().join("runtime")),
+        };
+        let mut journal = Journal::open(&request.state_dir).unwrap();
+        let context = RunContext {
+            request: &request,
+            state_dir: &request.state_dir,
+            output_dir: &request.output_dir,
+            launch: Some(&launch),
+            session_id: "fixture",
+            nonce: "fixture",
+        };
+        let error = execute(&plan, &context, &mut journal).unwrap_err();
+        assert_eq!(error.kind, ReplayErrorKind::Executor);
+        let observations = crate::journal::read_observations(&journal.path).unwrap();
+        assert!(
+            observations
+                .iter()
+                .any(|event| event["event"] == "continuation_started")
+        );
+        assert!(
+            !observations
+                .iter()
+                .any(|event| event["event"] == "continuation_finished")
+        );
+        assert_eq!(
+            fs::read(request.output_dir.join("logs")).unwrap(),
+            b"obstruction"
+        );
+        drop(journal);
+        assert_eq!(
+            Journal::open(&request.state_dir).err().unwrap().kind,
+            ReplayErrorKind::AmbiguousExecution
+        );
+    }
 
     #[test]
     fn openhands_boundary_prompt_is_a_unique_native_user_message() {

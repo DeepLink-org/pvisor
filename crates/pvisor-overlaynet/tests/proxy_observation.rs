@@ -312,6 +312,10 @@ async fn sink_paths_preserve_callbacks_accounting_and_failure_cleanup(
 #[case::connect("CONNECT", "denied.invalid:443", StatusCode::FORBIDDEN, &["context"], &["denied:denied.invalid"])]
 #[case::invalid_port("GET", "http://127.0.0.1:65536/", StatusCode::BAD_REQUEST, &["context"], &[])]
 #[case::invalid_connect("CONNECT", "[::1]suffix:8443", StatusCode::BAD_REQUEST, &["context"], &[])]
+#[case::connect_empty_port("CONNECT", "[::1]:", StatusCode::BAD_REQUEST, &["context"], &[])]
+#[case::connect_zero_port("CONNECT", "[::1]:0", StatusCode::BAD_REQUEST, &["context"], &[])]
+#[case::connect_overflowing_port("CONNECT", "[::1]:65536", StatusCode::BAD_REQUEST, &["context"], &[])]
+#[case::connect_missing_colon("CONNECT", "[::1]443", StatusCode::BAD_REQUEST, &["context"], &[])]
 #[tokio::test]
 async fn classification_and_rejection_precede_sink_selection(
     #[with(Behavior::Respond, NetworkMode::NoNetwork)] sink: Sink,

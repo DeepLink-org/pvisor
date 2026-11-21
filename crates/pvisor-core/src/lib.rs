@@ -4,6 +4,8 @@
 //! recorded events share this dependency-light crate. Execution, transport
 //! servers, and persistence remain owned by the runtime drivers.
 
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
+
 #[cfg(unix)]
 pub mod audit;
 

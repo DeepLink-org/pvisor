@@ -146,7 +146,7 @@ impl CapturePreparer {
             event.stream_metrics.as_ref(),
             resp_text,
             &resp_json,
-        );
+        )?;
         let cost = estimate_cost_usd(&ctx.upstream_model, ctx.provider, &usage);
         if ctx.debug_on {
             debug::log_llm_response(
@@ -325,11 +325,12 @@ fn resolve_response_usage(
     stream_metrics: Option<&StreamMetrics>,
     resp_text: &str,
     resp_json: &Value,
-) -> TokenUsage {
+) -> Result<TokenUsage> {
     if streaming {
         stream_metrics
             .map(|m| m.usage.clone())
             .filter(|u| u.total_tokens > 0 || u.input_tokens > 0 || u.output_tokens > 0)
+            .map(Ok)
             .unwrap_or_else(|| extract_usage_from_sse(resp_text))
     } else {
         extract_usage_from_response(resp_json)
@@ -340,21 +341,53 @@ fn resolve_response_usage(
 mod retention_tests {
     use super::*;
 
+    #[rstest::rstest]
+    #[case::response(false)]
+    #[case::stream(true)]
+    fn response_usage_overflow_is_not_replaced_by_defaults(#[case] streaming: bool) {
+        let body = serde_json::json!({"usage": {"input_tokens": u64::MAX, "output_tokens": 1}});
+        let wire = format!("data: {body}\n\n");
+        assert!(
+            resolve_response_usage(streaming, None, &wire, &body)
+                .unwrap_err()
+                .to_string()
+                .contains("total_tokens")
+        );
+        if streaming {
+            let metrics = StreamMetrics {
+                usage: TokenUsage {
+                    input_tokens: 7,
+                    total_tokens: 7,
+                    ..Default::default()
+                },
+                ttft_ms: Some(1),
+            };
+            assert_eq!(
+                resolve_response_usage(true, Some(&metrics), &wire, &body).unwrap(),
+                metrics.usage
+            );
+        }
+    }
+
     #[test]
     fn response_usage_reuses_json_without_changing_stream_fallback() {
         let body = serde_json::json!({"usage": {"prompt_tokens": 7, "completion_tokens": 3, "total_tokens": 10}});
-        let usage = resolve_response_usage(false, None, "not reparsed", &body);
+        let usage = resolve_response_usage(false, None, "not reparsed", &body).unwrap();
         assert_eq!(usage.input_tokens, 7);
         assert_eq!(usage.output_tokens, 3);
         assert_eq!(usage.total_tokens, 10);
         let malformed = Value::String("not json".into());
         assert_eq!(
-            resolve_response_usage(false, None, "not json", &malformed).total_tokens,
+            resolve_response_usage(false, None, "not json", &malformed)
+                .unwrap()
+                .total_tokens,
             0
         );
         let wire = "data: {\"usage\":{\"prompt_tokens\":7,\"completion_tokens\":3,\"total_tokens\":10}}\n\n";
         assert_eq!(
-            resolve_response_usage(true, None, wire, &Value::Null).total_tokens,
+            resolve_response_usage(true, None, wire, &Value::Null)
+                .unwrap()
+                .total_tokens,
             10
         );
     }

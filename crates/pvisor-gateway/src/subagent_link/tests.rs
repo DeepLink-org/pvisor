@@ -29,14 +29,14 @@ fn ignores_cli_agent_id_flag_in_document_text() {
             }]
         }]
     });
-    assert!(extract_subagent_ids_from_request(&body).is_empty());
+    assert!(extract_subagent_ids_from_request(&body).unwrap().is_empty());
 }
 
 #[test]
 fn extracts_agent_id_from_task_notification() {
     let text = "<task-notification>\n<task-id>aeb40a1230926b4a8</task-id>\n</task-notification>";
     assert_eq!(
-        extract_subagent_ids_from_text(text),
+        extract_subagent_ids_from_text(text).unwrap(),
         vec!["aeb40a1230926b4a8".to_string()]
     );
     let body = json!({
@@ -46,7 +46,7 @@ fn extracts_agent_id_from_task_notification() {
         }]
     });
     assert_eq!(
-        extract_subagent_ids_from_request(&body),
+        extract_subagent_ids_from_request(&body).unwrap(),
         vec!["aeb40a1230926b4a8".to_string()]
     );
 }
@@ -55,7 +55,7 @@ fn extracts_agent_id_from_task_notification() {
 fn extracts_agent_id_from_tool_result_line() {
     let text = "Async agent launched.\nagentId: a483eb5f3a45995b0 done\n";
     assert_eq!(
-        extract_subagent_ids_from_text(text),
+        extract_subagent_ids_from_text(text).unwrap(),
         vec!["a483eb5f3a45995b0".to_string()]
     );
 }
@@ -73,7 +73,7 @@ fn extracts_agent_id_from_tool_result_json() {
         }]
     });
     assert_eq!(
-        extract_subagent_ids_from_request(&body),
+        extract_subagent_ids_from_request(&body).unwrap(),
         vec!["a5aa661".to_string()]
     );
 }
@@ -88,7 +88,7 @@ fn extracts_spawn_hints_from_agent_tool_block() {
   "prompt": "scan src/"
 }
 ```"#;
-    let hints = extract_spawn_hints_from_assistant(text);
+    let hints = extract_spawn_hints_from_assistant(text).unwrap();
     assert_eq!(hints.len(), 1);
     assert_eq!(hints[0].subagent_type, "Explore");
     assert_eq!(hints[0].prompt.as_deref(), Some("scan src/"));
@@ -111,7 +111,9 @@ fn match_spawns_by_doc_target_when_subagents_registered_first() {
         storage_session_id: "agent-a583b6c00c3d06436".into(),
         subagent_id: Some("a583b6c00c3d06436".into()),
     };
-    registry.register_route(run_key, &sub_route, "call-sub", Some(&sub_body));
+    registry
+        .register_route(run_key, &sub_route, "call-sub", Some(&sub_body))
+        .unwrap();
 
     let assistant = format!(
         r#"Launching review.
@@ -124,7 +126,7 @@ fn match_spawns_by_doc_target_when_subagents_registered_first() {
 }}
 ```"#
     );
-    let hints = extract_spawn_hints_from_assistant(&assistant);
+    let hints = extract_spawn_hints_from_assistant(&assistant).unwrap();
     assert_eq!(hints.len(), 1);
     assert_eq!(hints[0].doc_target.as_deref(), Some(doc));
 
@@ -163,7 +165,8 @@ fn match_spawns_by_doc_target_when_subagents_registered_first() {
         None,
         Some(&assistant),
         &mut registry,
-    );
+    )
+    .unwrap();
     assert!(outcome.spawn_link_backfills.is_empty());
     assert_eq!(
         rec.payload["spawn_links"][0]["subagent_id"],
@@ -221,7 +224,8 @@ fn backfill_spawn_link_when_subagent_registers_after_assistant() {
         None,
         Some(&assistant),
         &mut registry,
-    );
+    )
+    .unwrap();
     assert!(main_rec.payload.get("spawn_links").is_none());
 
     let sub_body = json!({"messages":[{"role":"user","content": format!("Review {doc}")}]});
@@ -255,7 +259,8 @@ fn backfill_spawn_link_when_subagent_registers_after_assistant() {
         Some(&sub_body),
         None,
         &mut registry,
-    );
+    )
+    .unwrap();
     assert_eq!(outcome.spawn_link_backfills.len(), 1);
     assert_eq!(outcome.spawn_link_backfills[0].parent_call_id, "call-main");
     assert_eq!(
@@ -274,7 +279,9 @@ fn enrich_links_main_request_to_subagent_trajectory() {
         storage_session_id: "agent-abc1234".into(),
         subagent_id: Some("abc1234".into()),
     };
-    registry.register_route(run_key, &sub_route, "call-sub", None);
+    registry
+        .register_route(run_key, &sub_route, "call-sub", None)
+        .unwrap();
 
     let body = json!({
         "messages": [{
@@ -315,7 +322,8 @@ fn enrich_links_main_request_to_subagent_trajectory() {
         Some(&body),
         None,
         &mut registry,
-    );
+    )
+    .unwrap();
     assert_eq!(rec.payload["refs_subagent_ids"], json!(["abc1234"]));
     assert_eq!(
         rec.payload["subagent_trajectories"],
@@ -356,7 +364,8 @@ fn enrich_subagent_record_has_self_trajectory() {
         None,
         None,
         &mut registry,
-    );
+    )
+    .unwrap();
     assert_eq!(rec.subagent_id.as_deref(), Some("xyz"));
     assert_eq!(rec.parent_agent_id.as_deref(), Some("main01"));
     assert_eq!(rec.payload["subagent_trajectory"], json!("agent-xyz.md"));

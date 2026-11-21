@@ -23,7 +23,7 @@ fn parses_agent_tool_blocks_into_spawn_hints() {
   "prompt": "Review docs/src/design/cli-pvisor.md"
 }
 ```"#;
-    let hints = extract_spawn_hints_from_assistant(text);
+    let hints = extract_spawn_hints_from_assistant(text).unwrap();
     assert_eq!(hints.len(), 1);
     assert_eq!(hints[0].subagent_type, "Explore");
     assert_eq!(
@@ -50,7 +50,9 @@ fn matches_spawn_hint_to_registered_subagent_by_doc_target() {
     };
     let body: serde_json::Value =
         serde_json::from_slice(&fixture_body("subagent_explore_flash.json")).unwrap();
-    registry.register_route(&run_key, &sub_route, "call-sub-first", Some(&body));
+    registry
+        .register_route(&run_key, &sub_route, "call-sub-first", Some(&body))
+        .unwrap();
     let assistant = r#"```tool:Agent
 {"description":"Review capture command design","subagent_type":"Explore","prompt":"Review docs/src/design/cli-pvisor.md"}
 ```"#;
@@ -78,7 +80,8 @@ fn matches_spawn_hint_to_registered_subagent_by_doc_target() {
         None,
         Some(assistant),
         &mut registry,
-    );
+    )
+    .unwrap();
     assert!(outcome.spawn_link_backfills.is_empty());
     let links = rec.payload["spawn_links"].as_array().expect("spawn_links");
     assert_eq!(links.len(), 1);
@@ -94,7 +97,7 @@ fn tool_result_agent_id_line_populates_refs() {
     let body: serde_json::Value =
         serde_json::from_slice(&fixture_body("agent_launch_tool_result.json")).unwrap();
     assert_eq!(
-        extract_subagent_ids_from_request(&body),
+        extract_subagent_ids_from_request(&body).unwrap(),
         vec!["a483eb5f3a45995b0".to_string()]
     );
 }
@@ -103,7 +106,7 @@ fn tool_result_agent_id_line_populates_refs() {
 fn task_notification_task_id_populates_refs() {
     let text = "<task-notification>\n<task-id>a206e346f287da063</task-id>\n</task-notification>";
     assert_eq!(
-        extract_subagent_ids_from_text(text),
+        extract_subagent_ids_from_text(text).unwrap(),
         vec!["a206e346f287da063".to_string()]
     );
 }
@@ -119,7 +122,7 @@ fn ignores_documentation_cli_agent_id_flag() {
             }]
         }]
     });
-    assert!(extract_subagent_ids_from_request(&body).is_empty());
+    assert!(extract_subagent_ids_from_request(&body).unwrap().is_empty());
 }
 
 #[test]

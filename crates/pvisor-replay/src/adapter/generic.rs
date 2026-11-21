@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 
 use super::{
     MAX_TOOL_OUTPUT_BYTES, RunContext, agent_command, check_boundary, prepared_outcome,
@@ -243,7 +243,7 @@ pub(super) fn execute(
             observations,
             continued_steps: 0,
             metadata: with_boundary_user_prompt_metadata(
-                json!({"native_cli": agent.label()}),
+                Map::from_iter([("native_cli".into(), json!(agent.label()))]),
                 context.request,
                 false,
             ),
@@ -265,12 +265,15 @@ pub(super) fn execute(
             agent.label()
         )));
     }
-    let mut metadata = json!({"native_cli": agent.label()});
+    let mut metadata = Map::from_iter([("native_cli".into(), json!(agent.label()))]);
     if matches!(agent, NativeJsonlAgent::Opencode) && step_limited {
-        metadata["opencode_step_budget"] = json!({
-            "enforced_by": "pvisor_event_watchdog",
-            "reason": "opencode ignores agent steps on resumed sessions",
-        });
+        metadata.insert(
+            "opencode_step_budget".into(),
+            json!({
+                "enforced_by": "pvisor_event_watchdog",
+                "reason": "opencode ignores agent steps on resumed sessions",
+            }),
+        );
     }
     if matches!(agent, NativeJsonlAgent::Codex) {
         let prompt_mode = if context.request.boundary_user_prompt().is_some() {
@@ -278,11 +281,14 @@ pub(super) fn execute(
         } else {
             PromptMode::TransportNonce
         };
-        metadata["codex_resume_transport"] = json!({
-            "prompt_mode": prompt_mode.as_str(),
-            "removed_before_model_request": prompt_mode == PromptMode::TransportNonce,
-            "removed_from_native_trajectory": prompt_mode == PromptMode::TransportNonce,
-        });
+        metadata.insert(
+            "codex_resume_transport".into(),
+            json!({
+                "prompt_mode": prompt_mode.as_str(),
+                "removed_before_model_request": prompt_mode == PromptMode::TransportNonce,
+                "removed_from_native_trajectory": prompt_mode == PromptMode::TransportNonce,
+            }),
+        );
     }
     Ok(ReplayOutcome {
         status: if step_limited {
@@ -1162,12 +1168,6 @@ fn continue_native_cli(
             )?;
             let codex_home = context.state_dir.join("codex-home");
             let session_path = codex_session_path(&codex_home, &session_id, &plan.native)?;
-            fs::create_dir_all(
-                session_path
-                    .parent()
-                    .expect("Codex session path has parent"),
-            )
-            .replay_context(ReplayErrorKind::Executor, "create Codex session directory")?;
             let staged = codex_staged_events(prefix, &session_id, &context.request.workspace);
             write_jsonl(&session_path, &staged)?;
             // The isolated provider routes through the bridge that strips the transport nonce.
@@ -2149,17 +2149,147 @@ fn count_codex_turns_after(events: &[Value], plan: &ReplayPlan) -> usize {
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
+    use proptest::prelude::*;
+    use std::{
+        fs,
+        path::{Path, PathBuf},
+    };
 
     use super::{
         CallRecord, NativeJsonlAgent, RunContext, TurnRecord, codex_native_session_id,
-        continuation_session_id, is_actionable_turn, opencode_event_is_nonce,
-        opencode_provider_config, parse_codex, parse_jsonl, parse_opencode,
-        redact_codex_transport_nonce, validate_codex_continuation,
+        codex_session_path, codex_staged_events, continuation_session_id, is_actionable_turn,
+        opencode_event_is_nonce, opencode_provider_config, parse_codex, parse_jsonl,
+        parse_opencode, redact_codex_transport_nonce, validate_codex_continuation, write_jsonl,
     };
-    use crate::api::{AgentKind, PlaybackRequest, ReplayMode};
+    use crate::api::{AgentKind, PlaybackRequest, ReplayErrorKind, ReplayMode};
     use crate::model::{ReplayPlan, ToolBatch, ToolCall};
     use serde_json::{Value, json};
+
+    #[rstest::rstest]
+    #[case::utc(json!({"events": [{"type": "session_meta", "payload": {
+        "timestamp": "2026-02-03T04:05:06Z"
+    }}]}), "2026/02/03/rollout-2026-02-03T04-05-06-session_1.jsonl")]
+    #[case::top_level(json!({"events": [{"type": "session_meta",
+        "timestamp": "2026-02-03T04:05:06Z"
+    }]}), "2026/02/03/rollout-2026-02-03T04-05-06-session_1.jsonl")]
+    #[case::local_offset(json!({"events": [{"type": "session_meta", "payload": {
+        "timestamp": "2026-01-01T00:30:45+05:30"
+    }}]}), "2026/01/01/rollout-2026-01-01T00-30-45-session_1.jsonl")]
+    #[case::fractional_leap_day(json!({"events": [{"type": "session_meta", "payload": {
+        "timestamp": "2024-02-29T23:59:59.987654321-03:30"
+    }}]}), "2024/02/29/rollout-2024-02-29T23-59-59-session_1.jsonl")]
+    #[case::missing(json!({}), "1970/01/01/rollout-1970-01-01T00-00-00-session_1.jsonl")]
+    #[case::invalid(json!({"events": [{"type": "session_meta", "payload": {
+        "timestamp": "not-a-date"
+    }}]}), "1970/01/01/rollout-1970-01-01T00-00-00-session_1.jsonl")]
+    #[case::invalid_leap_day(json!({"events": [{"type": "session_meta", "payload": {
+        "timestamp": "2025-02-29T00:00:00Z"
+    }}]}), "1970/01/01/rollout-1970-01-01T00-00-00-session_1.jsonl")]
+    #[case::payload_precedence(json!({"events": [{"type": "session_meta",
+        "timestamp": "2020-01-01T00:00:00Z",
+        "payload": {"timestamp": "2026-02-03T04:05:06Z"}
+    }]}), "2026/02/03/rollout-2026-02-03T04-05-06-session_1.jsonl")]
+    #[case::null_payload_does_not_fall_back_to_top_level(json!({"events": [{
+        "type": "session_meta", "timestamp": "2026-02-03T04:05:06Z",
+        "payload": {"timestamp": null}
+    }]}), "1970/01/01/rollout-1970-01-01T00-00-00-session_1.jsonl")]
+    #[case::first_metadata_wins(json!({"events": [
+        {"type": "session_meta", "payload": {"timestamp": "invalid"}},
+        {"type": "session_meta", "payload": {"timestamp": "2026-02-03T04:05:06Z"}}
+    ]}), "1970/01/01/rollout-1970-01-01T00-00-00-session_1.jsonl")]
+    fn codex_session_layout_retains_timestamp_policy(
+        #[case] native: Value,
+        #[case] relative: &str,
+        #[values("", "relative-home", ".")] home: &str,
+    ) {
+        let home = Path::new(home);
+        assert_eq!(
+            codex_session_path(home, "session_1", &native).unwrap(),
+            home.join("sessions").join(relative)
+        );
+    }
+
+    #[rstest::rstest]
+    #[case::empty("")]
+    #[case::traversal("../outside")]
+    #[case::absolute("/outside")]
+    #[case::slash("a/b")]
+    #[case::backslash("a\\b")]
+    #[case::dot("a.b")]
+    #[case::unicode("会话")]
+    #[case::nul("a\0b")]
+    #[case::newline("a\nb")]
+    fn invalid_codex_session_ids_create_no_directories(#[case] id: &str) {
+        let root = tempfile::tempdir().unwrap();
+        let home = root.path().join("home");
+        let error = codex_session_path(&home, id, &json!({})).unwrap_err();
+        assert_eq!(error.kind, ReplayErrorKind::Configuration);
+        assert!(!home.exists());
+        assert_eq!(fs::read_dir(root.path()).unwrap().count(), 0);
+    }
+
+    #[rstest::rstest]
+    fn codex_session_write_failure_preserves_obstruction_and_can_retry() {
+        let root = tempfile::tempdir().unwrap();
+        let home = root.path().join("home");
+        fs::write(&home, b"obstruction").unwrap();
+        let path = codex_session_path(&home, "session_1", &json!({})).unwrap();
+        let events = vec![json!({"type": "session_meta", "payload": {"id": "session_1"}})];
+        let error = write_jsonl(&path, &events).unwrap_err();
+        assert_eq!(error.kind, ReplayErrorKind::Executor);
+        assert!(error.message.contains("create"));
+        assert_eq!(fs::read(&home).unwrap(), b"obstruction");
+        assert_eq!(fs::read_dir(root.path()).unwrap().count(), 1);
+        fs::remove_file(&home).unwrap();
+        write_jsonl(&path, &events).unwrap();
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            events[0].to_string() + "\n"
+        );
+    }
+
+    proptest! {
+        #[test]
+        fn generated_codex_sessions_stage_exact_jsonl_in_generated_directories(
+            id in "[A-Za-z0-9_-]{1,32}",
+            year in 1970u16..2101,
+            month in 1u8..13,
+            day in 1u8..29,
+            hour in 0u8..24,
+            minute in 0u8..60,
+            second in 0u8..60,
+            payload in prop::collection::vec(any::<char>(), 0..33),
+        ) {
+            let root = tempfile::tempdir().unwrap();
+            let home = root.path().join("home");
+            let timestamp = format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}+02:30");
+            let payload: String = payload.into_iter().collect();
+            let prefix = vec![
+                json!({"type": "session_meta", "payload": {
+                    "id": "source", "session_id": "source", "timestamp": timestamp,
+                    "cwd": "recorded-workspace", "cli_version": "recorded-version"
+                }}),
+                json!({"type": "response_item", "payload": {
+                    "type": "message", "role": "user",
+                    "content": [{"type": "input_text", "text": payload}]
+                }}),
+            ];
+            let path = codex_session_path(&home, &id, &json!({"events": prefix})).unwrap();
+            prop_assert!(!home.exists());
+            let relative = format!("sessions/{year:04}/{month:02}/{day:02}/rollout-{year:04}-{month:02}-{day:02}T{hour:02}-{minute:02}-{second:02}-{id}.jsonl");
+            prop_assert_eq!(&path, &home.join(relative));
+            let mut expected = prefix.clone();
+            expected[0]["payload"]["id"] = json!(id);
+            expected[0]["payload"]["session_id"] = json!(id);
+            let staged = codex_staged_events(&prefix, &id, Path::new("new-workspace"));
+            prop_assert_eq!(&staged, &expected);
+            write_jsonl(&path, &staged).unwrap();
+            let raw = fs::read_to_string(&path).unwrap();
+            let wire = expected.iter().map(Value::to_string).collect::<Vec<_>>().join("\n") + "\n";
+            prop_assert_eq!(raw, wire);
+            prop_assert_eq!(fs::read_dir(path.parent().unwrap()).unwrap().count(), 1);
+        }
+    }
 
     #[test]
     fn opencode_nonce_events_are_filtered_from_the_continued_stream() {
