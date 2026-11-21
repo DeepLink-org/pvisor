@@ -3067,6 +3067,7 @@ dependencies = [
  "bzip2",
  "caps",
  "cc",
+ "clap",
  "crossbeam-channel",
  "env_logger",
  "flate2",

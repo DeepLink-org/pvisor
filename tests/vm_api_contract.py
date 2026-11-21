@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Strict real-VM CLI contracts; no runtime capability skips or SDK adapter."""
+"""Strict real-VM public API contracts through a dedicated test probe; no skips."""
 
 import argparse
 import hashlib
@@ -93,7 +93,6 @@ def main():
                 (readonly / "fixture").write_bytes(b"immutable")
                 command = [
                     str(binary),
-                    "vm-run",
                     "--rootfs",
                     str(root.resolve()),
                     "--readonly",
@@ -119,7 +118,7 @@ def main():
                 case.update(actual_exit=actual, seconds=elapsed)
                 verify(directory, cpus, seed, code, actual)
                 case["passed"] = True
-                print(f"VM_CLI round={round_id} cpus={cpus} exit={code} PASS", flush=True)
+                print(f"VM_API round={round_id} cpus={cpus} exit={code} PASS", flush=True)
         report["passed"] = True
     except Exception as error:
         report["error"] = str(error)

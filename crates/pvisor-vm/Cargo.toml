@@ -65,6 +65,7 @@ bzip2 = { version = "0.5" }
 zstd = { version = "0.13" }
 
 [dev-dependencies]
+clap = { workspace = true, features = ["derive"] }
 toml.workspace = true
 syn = { version = "2", features = ["full", "visit"] }
 rstest.workspace = true
@@ -97,6 +98,10 @@ path = "src/probes/readonly_dax_case.rs"
 [[example]]
 name = "guest_exit_case"
 path = "src/probes/guest_exit_case.rs"
+
+[[example]]
+name = "vm_api_case"
+path = "src/probes/vm_api_case.rs"
 
 [[example]]
 name = "guest_metadata_case"

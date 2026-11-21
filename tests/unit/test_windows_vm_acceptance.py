@@ -37,7 +37,7 @@ def fixture(root):
                 )
             )
         else:
-            reports = ["vm-cli"] if suite == "vm-cli" else ["containers-1", "containers-2"]
+            reports = ["vm-api"] if suite == "vm-api" else ["containers-1", "containers-2"]
             for report in reports:
                 path = directory / report / "report.json"
                 path.parent.mkdir()
@@ -45,16 +45,18 @@ def fixture(root):
                     json.dumps(
                         {
                             "passed": True,
-                            "binary_sha256": frozen["inputs_sha256"]["pvisor.exe"],
+                            "binary_sha256": frozen["inputs_sha256"][
+                                "examples/vm_api_case.exe" if suite == "vm-api" else "pvisor.exe"
+                            ],
                             "firmware_sha256"
-                            if suite == "vm-cli"
+                            if suite == "vm-api"
                             else "libkrunfw.dll_sha256": frozen["inputs_sha256"]["libkrunfw.dll"],
                             "guest_sha256"
-                            if suite == "vm-cli"
+                            if suite == "vm-api"
                             else "pvisor-rootfs.bin.gz_sha256": frozen["inputs_sha256"][
-                                "vm-guest" if suite == "vm-cli" else "pvisor-rootfs.bin.gz"
+                                "vm-guest" if suite == "vm-api" else "pvisor-rootfs.bin.gz"
                             ],
-                            "cases" if suite == "vm-cli" else "commands": [{"passed": True}],
+                            "cases" if suite == "vm-api" else "commands": [{"passed": True}],
                         }
                     )
                 )
@@ -120,7 +122,7 @@ class WindowsVmAcceptanceTests(unittest.TestCase):
                 else:
                     report = (
                         directory
-                        / ("vm-cli" if suite == "vm-cli" else "containers-2")
+                        / ("vm-api" if suite == "vm-api" else "containers-2")
                         / "report.json"
                     )
                     report.write_text(json.dumps({"passed": True, "commands": [], "cases": []}))
@@ -130,16 +132,29 @@ class WindowsVmAcceptanceTests(unittest.TestCase):
     def test_driver_report_cannot_claim_another_binary_was_tested(self):
         with workspace() as (root, _):
             candidate, evidence = fixture(root)
-            for suite in ["vm-cli", "containers"]:
+            for suite in ["vm-api", "containers"]:
                 directory = evidence / f"windows-vm-whp-{suite}"
                 path = (
-                    directory / ("vm-cli" if suite == "vm-cli" else "containers-1") / "report.json"
+                    directory / ("vm-api" if suite == "vm-api" else "containers-1") / "report.json"
                 )
                 report = json.loads(path.read_text())
                 report["binary_sha256"] = "0" * 64
                 path.write_text(json.dumps(report))
                 with self.assertRaises(ValueError):
                     acceptance.record(candidate, directory, SHA, suite)
+
+    def test_vm_api_report_must_identify_the_probe_not_the_product_binary(self):
+        with workspace() as (root, _):
+            candidate, evidence = fixture(root)
+            directory = evidence / "windows-vm-whp-vm-api"
+            path = directory / "vm-api/report.json"
+            report = json.loads(path.read_text())
+            report["binary_sha256"] = acceptance.inputs(candidate, SHA)["inputs_sha256"][
+                "pvisor.exe"
+            ]
+            path.write_text(json.dumps(report))
+            with self.assertRaises(ValueError):
+                acceptance.record(candidate, directory, SHA, "vm-api")
 
     def test_failed_command_withdraws_a_stale_pass_receipt(self):
         with workspace() as (root, _):

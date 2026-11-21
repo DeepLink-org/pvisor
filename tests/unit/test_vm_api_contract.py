@@ -5,13 +5,14 @@ import json
 import sys
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
+from pathlib import Path
 from unittest.mock import patch
 
-from tests import vm_cli_contract as contracts
+from tests import vm_api_contract as contracts
 from tests.fixtures import workspace
 
 
-class VmCliContractTests(unittest.TestCase):
+class VmApiContractTests(unittest.TestCase):
     def setUp(self):
         # platform.platform() may spawn `uname -p` on a cold interpreter.
         # Host metadata is not part of these argument/evidence contracts.
@@ -37,7 +38,7 @@ class VmCliContractTests(unittest.TestCase):
                 guest.write_bytes(b"fixture")
                 output = directory / "evidence"
                 arguments = [
-                    "vm_cli_contract",
+                    "vm_api_contract",
                     "--binary",
                     sys.executable,
                     "--guest",
@@ -66,7 +67,7 @@ class VmCliContractTests(unittest.TestCase):
                 guest.write_bytes(b"fixture")
                 output = directory / "evidence"
                 arguments = [
-                    "vm_cli_contract",
+                    "vm_api_contract",
                     "--binary",
                     sys.executable,
                     "--guest",
@@ -133,7 +134,7 @@ class VmCliContractTests(unittest.TestCase):
             receipt = output / "previous-result"
             receipt.write_bytes(b"retained evidence")
             arguments = [
-                "vm_cli_contract",
+                "vm_api_contract",
                 "--binary",
                 sys.executable,
                 "--guest",
@@ -154,7 +155,7 @@ class VmCliContractTests(unittest.TestCase):
             guest.write_bytes(b"fixture")
             output = directory / "evidence"
             arguments = [
-                "vm_cli_contract",
+                "vm_api_contract",
                 "--binary",
                 sys.executable,
                 "--guest",
@@ -173,4 +174,5 @@ class VmCliContractTests(unittest.TestCase):
             report = json.loads((output / "report.json").read_text())
             self.assertFalse(report["passed"])
             self.assertFalse(report["cases"][0]["passed"])
-            self.assertEqual(report["cases"][0]["command"][1], "vm-run")
+            self.assertEqual(report["cases"][0]["command"][0], str(Path(sys.executable).resolve()))
+            self.assertEqual(report["cases"][0]["command"][1], "--rootfs")

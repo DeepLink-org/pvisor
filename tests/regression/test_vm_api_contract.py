@@ -3,11 +3,11 @@
 import sys
 import unittest
 
-from tests import vm_cli_contract as contracts
+from tests import vm_api_contract as contracts
 from tests.fixtures import workspace
 
 
-class VmCliContractTests(unittest.TestCase):
+class VmApiContractTests(unittest.TestCase):
     def test_timeout_fails_and_reaps_child(self):
         with workspace() as (directory, _):
             with self.assertRaisesRegex(RuntimeError, "deadline exceeded"):

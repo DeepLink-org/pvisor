@@ -14,8 +14,6 @@ mod companions;
 mod container_args;
 #[cfg(unix)]
 mod replay;
-#[cfg(not(all(target_os = "macos", target_arch = "x86_64")))]
-mod vm_run;
 #[cfg(any(windows, test))]
 mod windows_terminal;
 // Parse the actual Windows frontend on Unix test hosts as well. This does not

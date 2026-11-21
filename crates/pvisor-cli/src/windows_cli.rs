@@ -1,4 +1,4 @@
-//! Windows frontend for native container VMs and direct execution.
+//! Windows frontend for native container VMs.
 use crate::container_args::{PsRow, batch, environment, memory, ps_header, ps_row};
 use crate::windows_terminal::{StdinSource, Terminal};
 use clap::{Parser, Subcommand};
@@ -49,8 +49,6 @@ enum Command {
         #[command(subcommand)]
         command: ImageCommand,
     },
-    /// Execute a Linux command in a caller-owned rootfs; writes persist directly.
-    VmRun(crate::vm_run::Args),
 }
 
 #[derive(Subcommand)]
@@ -231,211 +229,204 @@ pub(crate) fn main() -> anyhow::Result<()> {
 }
 
 fn dispatch(command: Command) -> anyhow::Result<i32> {
+    let store = Store::open(None)?;
+    let (mut stdout, mut stderr) = (io::stdout().lock(), io::stderr().lock());
     match command {
-        Command::VmRun(args) => crate::vm_run::run(args).map(|_| 0),
-        command => {
-            let store = Store::open(None)?;
-            let (mut stdout, mut stderr) = (io::stdout().lock(), io::stderr().lock());
-            match command {
-                Command::Pull { image } => {
-                    let image = store.pull(&image)?;
-                    println!("Pulled {} {}", image.reference, image.digest);
+        Command::Pull { image } => {
+            let image = store.pull(&image)?;
+            println!("Pulled {} {}", image.reference, image.digest);
+        }
+        Command::Images(Images { json }) => {
+            let images = store.images()?;
+            if json {
+                println!("{}", serde_json::to_string(&images)?);
+            } else {
+                println!("REPOSITORY\tIMAGE ID\tDIGEST");
+                for image in images {
+                    println!("{}\t{}\t{}", image.reference, image.id, image.digest);
                 }
-                Command::Images(Images { json }) => {
-                    let images = store.images()?;
-                    if json {
-                        println!("{}", serde_json::to_string(&images)?);
-                    } else {
-                        println!("REPOSITORY\tIMAGE ID\tDIGEST");
-                        for image in images {
-                            println!("{}\t{}\t{}", image.reference, image.id, image.digest);
-                        }
-                    }
-                }
-                Command::Run(mut args) => {
-                    use std::io::IsTerminal;
-                    anyhow::ensure!(
-                        !(args.tty && args.interactive && !args.detach)
-                            || std::io::stdin().is_terminal(),
-                        "the input device is not a TTY"
-                    );
-                    let (env, unset_env) = environment(&args.env, &args.env_files)?;
-                    let image = args.invocation.remove(0);
-                    let container = store.run(pvisor_containers::api::Run {
-                        network: if args.network == "bridge" {
-                            pvisor_containers::api::Network::Bridge
-                        } else {
-                            pvisor_containers::api::Network::None
-                        },
-                        image,
-                        name: args.name,
-                        command: args.invocation,
-                        env,
-                        unset_env,
-                        cwd: args.cwd,
-                        user: args.user,
-                        entrypoint: args.entrypoint,
-                        cpus: args.cpus,
-                        memory_mib: args.memory,
-                        detach: args.detach,
-                        auto_remove: args.rm,
-                        interactive: args.interactive,
-                        tty: args.tty.then(Terminal::size),
-                    })?;
-                    if args.detach {
-                        println!("{}", container.id);
-                    } else {
-                        let attachment = (|| {
-                            let terminal = Terminal::new(args.tty, args.interactive)?;
-                            let input = if args.interactive {
-                                Some(StdinSource::new()?)
-                            } else {
-                                None
-                            };
-                            Ok::<_, anyhow::Error>((terminal, input))
-                        })();
-                        let (_terminal, mut input) = match attachment {
-                            Ok(attachment) => attachment,
-                            Err(error) => {
-                                // No usable frontend owns this foreground run.
-                                // Do not leave an unattended interactive guest.
-                                store.remove(&container.id, true)?;
-                                return Err(error);
-                            }
-                        };
-                        let code = store.wait(
-                            &container,
-                            input
-                                .as_mut()
-                                .map(|i| i as &mut dyn pvisor_containers::api::InputSource),
-                            &mut stdout,
-                            &mut stderr,
-                        )?;
-                        return Ok(code);
-                    }
-                }
-                Command::Ps(List {
-                    all,
-                    quiet,
-                    no_trunc,
-                    json,
-                }) => {
-                    let containers = store.list(all)?;
-                    if json {
-                        println!("{}", serde_json::to_string(&containers)?);
-                    } else {
-                        ps_header(&mut stdout, quiet)?;
-                        for c in containers {
-                            let state = match c.state {
-                                pvisor_containers::api::State::Starting => "starting",
-                                pvisor_containers::api::State::Running => "running",
-                                pvisor_containers::api::State::Exited => "exited",
-                                pvisor_containers::api::State::Unknown => "unknown",
-                            };
-                            ps_row(
-                                &mut stdout,
-                                PsRow {
-                                    id: &c.id,
-                                    image: &c.image,
-                                    command: &c.command,
-                                    state,
-                                    exit_code: c.exit_code,
-                                    ports: "",
-                                    name: &c.name,
-                                },
-                                quiet,
-                                no_trunc,
-                            )?;
-                        }
-                    }
-                }
-                Command::Exec(Exec {
-                    container,
-                    command,
-                    env,
-                    env_files,
-                    cwd,
-                    user,
-                    interactive,
-                    tty,
-                }) => {
-                    let _terminal = Terminal::new(tty, interactive)?;
-                    let mut input = if interactive {
+            }
+        }
+        Command::Run(mut args) => {
+            use std::io::IsTerminal;
+            anyhow::ensure!(
+                !(args.tty && args.interactive && !args.detach) || std::io::stdin().is_terminal(),
+                "the input device is not a TTY"
+            );
+            let (env, unset_env) = environment(&args.env, &args.env_files)?;
+            let image = args.invocation.remove(0);
+            let container = store.run(pvisor_containers::api::Run {
+                network: if args.network == "bridge" {
+                    pvisor_containers::api::Network::Bridge
+                } else {
+                    pvisor_containers::api::Network::None
+                },
+                image,
+                name: args.name,
+                command: args.invocation,
+                env,
+                unset_env,
+                cwd: args.cwd,
+                user: args.user,
+                entrypoint: args.entrypoint,
+                cpus: args.cpus,
+                memory_mib: args.memory,
+                detach: args.detach,
+                auto_remove: args.rm,
+                interactive: args.interactive,
+                tty: args.tty.then(Terminal::size),
+            })?;
+            if args.detach {
+                println!("{}", container.id);
+            } else {
+                let attachment = (|| {
+                    let terminal = Terminal::new(args.tty, args.interactive)?;
+                    let input = if args.interactive {
                         Some(StdinSource::new()?)
                     } else {
                         None
                     };
-                    let (env, unset_env) = environment(&env, &env_files)?;
-                    let code = store.exec(
-                        &container,
-                        pvisor_guest::api::ExecLaunch {
-                            argv: command,
-                            env,
-                            replace_env: false,
-                            limits: Default::default(),
-                            cwd,
-                            user,
-                            tty: tty.then(Terminal::size),
-                        },
-                        unset_env,
-                        input
-                            .as_mut()
-                            .map(|i| i as &mut dyn pvisor_containers::api::InputSource),
-                        &mut stdout,
-                        &mut stderr,
-                    )?;
-                    return Ok(code);
-                }
-                Command::Logs(Logs { container, follow }) => {
-                    store.logs(&container, follow, &mut stdout, &mut stderr)?
-                }
-                Command::Start(Select { containers }) => {
-                    return batch(&containers, |container| {
-                        store.start(container)?;
-                        println!("{container}");
-                        Ok(())
-                    });
-                }
-                Command::Rmi(RemoveImages { force, images }) => {
-                    return batch(&images, |image| {
-                        for removed in store.remove_image(image, force)? {
-                            println!("Untagged: {}", removed.reference);
-                        }
-                        Ok(())
-                    });
-                }
-                Command::Stop(Stop {
-                    timeout,
-                    containers,
-                    signal,
-                }) => {
-                    return batch(&containers, |container| {
-                        store.stop(
-                            container,
-                            if timeout == -1 {
-                                Duration::MAX
-                            } else {
-                                Duration::from_secs(timeout as u64)
-                            },
-                            signal.as_deref(),
-                        )?;
-                        println!("{container}");
-                        Ok(())
-                    });
-                }
-                Command::Rm(Remove { force, containers }) => {
-                    return batch(&containers, |container| {
-                        store.remove(container, force)?;
-                        println!("{container}");
-                        Ok(())
-                    });
-                }
-                Command::Container { .. } | Command::Image { .. } => unreachable!(),
-                Command::VmRun(_) => unreachable!(),
+                    Ok::<_, anyhow::Error>((terminal, input))
+                })();
+                let (_terminal, mut input) = match attachment {
+                    Ok(attachment) => attachment,
+                    Err(error) => {
+                        // No usable frontend owns this foreground run.
+                        // Do not leave an unattended interactive guest.
+                        store.remove(&container.id, true)?;
+                        return Err(error);
+                    }
+                };
+                let code = store.wait(
+                    &container,
+                    input
+                        .as_mut()
+                        .map(|i| i as &mut dyn pvisor_containers::api::InputSource),
+                    &mut stdout,
+                    &mut stderr,
+                )?;
+                return Ok(code);
             }
-            Ok(0)
         }
+        Command::Ps(List {
+            all,
+            quiet,
+            no_trunc,
+            json,
+        }) => {
+            let containers = store.list(all)?;
+            if json {
+                println!("{}", serde_json::to_string(&containers)?);
+            } else {
+                ps_header(&mut stdout, quiet)?;
+                for c in containers {
+                    let state = match c.state {
+                        pvisor_containers::api::State::Starting => "starting",
+                        pvisor_containers::api::State::Running => "running",
+                        pvisor_containers::api::State::Exited => "exited",
+                        pvisor_containers::api::State::Unknown => "unknown",
+                    };
+                    ps_row(
+                        &mut stdout,
+                        PsRow {
+                            id: &c.id,
+                            image: &c.image,
+                            command: &c.command,
+                            state,
+                            exit_code: c.exit_code,
+                            ports: "",
+                            name: &c.name,
+                        },
+                        quiet,
+                        no_trunc,
+                    )?;
+                }
+            }
+        }
+        Command::Exec(Exec {
+            container,
+            command,
+            env,
+            env_files,
+            cwd,
+            user,
+            interactive,
+            tty,
+        }) => {
+            let _terminal = Terminal::new(tty, interactive)?;
+            let mut input = if interactive {
+                Some(StdinSource::new()?)
+            } else {
+                None
+            };
+            let (env, unset_env) = environment(&env, &env_files)?;
+            let code = store.exec(
+                &container,
+                pvisor_guest::api::ExecLaunch {
+                    argv: command,
+                    env,
+                    replace_env: false,
+                    limits: Default::default(),
+                    cwd,
+                    user,
+                    tty: tty.then(Terminal::size),
+                },
+                unset_env,
+                input
+                    .as_mut()
+                    .map(|i| i as &mut dyn pvisor_containers::api::InputSource),
+                &mut stdout,
+                &mut stderr,
+            )?;
+            return Ok(code);
+        }
+        Command::Logs(Logs { container, follow }) => {
+            store.logs(&container, follow, &mut stdout, &mut stderr)?
+        }
+        Command::Start(Select { containers }) => {
+            return batch(&containers, |container| {
+                store.start(container)?;
+                println!("{container}");
+                Ok(())
+            });
+        }
+        Command::Rmi(RemoveImages { force, images }) => {
+            return batch(&images, |image| {
+                for removed in store.remove_image(image, force)? {
+                    println!("Untagged: {}", removed.reference);
+                }
+                Ok(())
+            });
+        }
+        Command::Stop(Stop {
+            timeout,
+            containers,
+            signal,
+        }) => {
+            return batch(&containers, |container| {
+                store.stop(
+                    container,
+                    if timeout == -1 {
+                        Duration::MAX
+                    } else {
+                        Duration::from_secs(timeout as u64)
+                    },
+                    signal.as_deref(),
+                )?;
+                println!("{container}");
+                Ok(())
+            });
+        }
+        Command::Rm(Remove { force, containers }) => {
+            return batch(&containers, |container| {
+                store.remove(container, force)?;
+                println!("{container}");
+                Ok(())
+            });
+        }
+        Command::Container { .. } | Command::Image { .. } => unreachable!(),
     }
+    Ok(0)
 }
 
 #[cfg(test)]
@@ -553,10 +544,9 @@ mod tests {
 
     #[test]
     fn native_profile_rejects_unported_workflows_and_capabilities() {
-        assert!(
-            Cli::try_parse_from(["pvisor", "vm-run", "--rootfs", "root", "--", "/probe"]).is_ok()
-        );
-        for command in ["daemon", "tui", "replay", "spawn", "build", "network"] {
+        for command in [
+            "vm-run", "daemon", "tui", "replay", "spawn", "build", "network",
+        ] {
             let error = Cli::try_parse_from(["pvisor", command]).err().unwrap();
             assert_eq!(error.kind(), ErrorKind::InvalidSubcommand, "{command}");
         }

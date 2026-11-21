@@ -61,9 +61,6 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
-    /// Execute a Linux command in a VM with a caller-owned rootfs (writes through).
-    #[cfg(not(all(target_os = "macos", target_arch = "x86_64")))]
-    VmRun(crate::vm_run::Args),
     #[command(flatten)]
     Container(docker::DockerCommand),
     /// List runtime experiments.
@@ -159,7 +156,7 @@ fn grouped_commands(command: &clap::Command) -> String {
                 "fork",
             ],
         ),
-        ("Tools", &["daemon", "replay", "feature", "vm-run", "help"]),
+        ("Tools", &["daemon", "replay", "feature", "help"]),
     ];
     let width = command
         .get_subcommands()
@@ -394,14 +391,6 @@ pub(crate) fn main() -> anyhow::Result<()> {
         );
         return vm_check::print(json);
     }
-    #[cfg(not(all(target_os = "macos", target_arch = "x86_64")))]
-    if let Command::VmRun(args) = parsed.command {
-        anyhow::ensure!(
-            parsed.features.is_empty(),
-            "vm-run does not accept runtime experiments"
-        );
-        return crate::vm_run::run(args);
-    }
     parsed.command = match parsed.command {
         Command::Stage(args) => Command::Spawn(Box::new(args.into_run()?)),
         command => command,
@@ -451,8 +440,6 @@ pub(crate) fn main() -> anyhow::Result<()> {
     }
     match parsed.command {
         Command::VmCheck { .. } => unreachable!("VM preflight precedes Session startup"),
-        #[cfg(not(all(target_os = "macos", target_arch = "x86_64")))]
-        Command::VmRun(_) => unreachable!("direct VM dispatch precedes Session startup"),
         Command::Container(_) => {
             unreachable!("container commands dispatch before Session startup")
         }
@@ -536,6 +523,32 @@ mod feature_parser_tests {
             Command::Review(_)
         ));
     }
+
+    #[test]
+    fn product_commands_do_not_expose_a_direct_vm_execution_path() {
+        let command = Cli::command();
+        assert!(command.find_subcommand("vm-run").is_none());
+        assert!(
+            !root_command()
+                .unwrap()
+                .render_help()
+                .to_string()
+                .contains("vm-run")
+        );
+        for args in [
+            vec!["pvisor", "vm-run", "--rootfs", "root", "--", "/probe"],
+            vec!["pvisor", "help", "vm-run"],
+        ] {
+            let normalized =
+                normalize_default_spawn(args.into_iter().map(OsString::from).collect(), &command);
+            assert!(command.clone().try_get_matches_from(normalized).is_err());
+        }
+        assert!(matches!(
+            parse(&["pvisor", "spawn", "--", "vm-run"]).command,
+            Command::Spawn(_)
+        ));
+    }
+
     #[test]
     fn container_commands_precede_default_spawn_and_keep_workload_flags_literal() {
         for args in [
@@ -598,6 +611,7 @@ mod feature_parser_tests {
         let command = Cli::command();
         for args in [
             vec!["pvisor", "unknown-command", "--", "true"],
+            vec!["pvisor", "vm-run", "--rootfs", "root", "--", "/probe"],
             vec!["pvisor", "--config", "./docker", "images"],
             vec![
                 "pvisor", "--config", "./docker", "run", "image", "--", "true",

@@ -64,8 +64,11 @@ are installed or needed at runtime.
 
 ```sh
 export PVISOR_NATIVE_KERNEL=rust
-pvisor vm-run --rootfs /absolute/path/to/disposable/rootfs -- /absolute/guest/program
 ```
+
+Selection applies to the existing Docker-compatible and Agent VM workflows,
+not a separate public execution command. Current named-stdio limitations below
+still reject ordinary captured workloads; this switch does not bypass them.
 
 Selection never downloads, compiles or reads an external kernel at runtime.
 Unset `PVISOR_NATIVE_KERNEL` to return to Linux. If a standalone Cargo
@@ -145,8 +148,10 @@ mise exec -- rustc --edition=2021 --target x86_64-unknown-linux-musl \
   -C linker=rust-lld pvisor-kernel/tests/guest.rs -o target/native-kernel-smoke-guest
 ```
 
-Copy it to a fresh disposable rootfs as `/probe` and run it with `vm-run`
-and argument `7` under a caller-owned deadline. It checks file write/read,
+Copy it to a fresh disposable rootfs as `/probe` and use the test-only
+`vm_api_case` example with argument `7` under a caller-owned deadline.
+The probe must be built with the native payload embedded for native selection.
+It checks file write/read,
 stdout/stderr emission and rejection of forged supervisor ioctls from a
 non-PID-1 process. The expected authenticated exit code is 7.
 

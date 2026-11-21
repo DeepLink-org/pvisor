@@ -1,10 +1,10 @@
-//! The common, direct VM execution profile. No Session owner or host executor is involved.
+//! Hardware-contract probe for the public VM API; not a pvisor product command.
 use std::path::PathBuf;
 
 use pvisor_vm::api::{RuntimeSupport, VmBuilder, VmConfiguration, VmRuntime};
 
-#[derive(Debug, clap::Args)]
-pub(crate) struct Args {
+#[derive(Debug, clap::Parser)]
+struct Args {
     /// Caller-owned writable Linux rootfs. All guest writes persist here.
     #[arg(long)]
     rootfs: PathBuf,
@@ -25,7 +25,11 @@ pub(crate) struct Args {
     command: Vec<String>,
 }
 
-pub(crate) fn run(args: Args) -> anyhow::Result<()> {
+fn main() -> anyhow::Result<()> {
+    run(<Args as clap::Parser>::parse())
+}
+
+fn run(args: Args) -> anyhow::Result<()> {
     anyhow::ensure!(
         args.command[0].starts_with('/') && !args.command[0].contains('\0'),
         "command must be an absolute Linux executable path"
@@ -89,7 +93,7 @@ mod tests {
     #[test]
     fn validates_resources_and_preserves_guest_arguments() {
         let cli = Cli::try_parse_from([
-            "vm-run",
+            "vm_api_case",
             "--rootfs",
             "root",
             "--cpus",
@@ -106,11 +110,17 @@ mod tests {
             ("--memory", "0"),
             ("--memory", "65537"),
         ] {
-            assert!(
-                Cli::try_parse_from(["vm-run", "--rootfs", "root", option, value, "--", "/probe"])
-                    .is_err()
-            );
+            assert!(Cli::try_parse_from([
+                "vm_api_case",
+                "--rootfs",
+                "root",
+                option,
+                value,
+                "--",
+                "/probe"
+            ])
+            .is_err());
         }
-        assert!(Cli::try_parse_from(["vm-run", "--rootfs", "root"]).is_err());
+        assert!(Cli::try_parse_from(["vm_api_case", "--rootfs", "root"]).is_err());
     }
 }

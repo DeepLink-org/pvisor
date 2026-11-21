@@ -1588,31 +1588,23 @@ Network catalog commands report closed-output errors through the normal CLI
 error path instead of panicking. A create/remove may already have committed
 before its output fails; inspect the catalog before retrying a mutation.
 
-## Direct VM execution on Linux, macOS and Windows
+## VM-backed product workflows
 
-`pvisor vm-run --rootfs ROOT --cpus 2 --memory 256 --readonly FIXTURES -- /probe`
-executes a Linux command through KVM (Linux x86_64), HVF (Apple Silicon) or WHP
-(Windows x86_64). Rootfs writes persist directly. It creates no Session, Bundle or
-stage and has no networking, interactive stdin, task stdio ports, live control
-or snapshots.
+Use Docker-compatible `pvisor run` for containers and `pvisor spawn --executor vm`
+for Agent Sessions on supported platforms. Virtualization is an execution backend,
+not a separate public execution command. These workflows retain their existing
+ownership, resource, output and lifecycle contracts.
 
-Use an absolute guest executable. A static Linux program can run in an otherwise
-empty rootfs; dynamic programs need their guest loader and libraries. The caller
-prepares the rootfs, keeps exclusive ownership and enforces command deadlines.
-The command does not extract OCI images. `--firmware FILE` selects trusted
-local firmware; omission uses the build-embedded kernel, then local firmware
-discovery. Linux x86_64/aarch64 and macOS aarch64 product builds embed both kernels; the experimental
-`PVISOR_NATIVE_KERNEL=rust` selector uses the second embedded
-payload without an external bundle; see [`pvisor-kernel`](../../pvisor-kernel/README.md).
-An executable built without that payload fails explicitly for this selector.
-Windows needs the explicit DLL or a packaged adjacent DLL.
-The optional read-only share mounts at `/readonly` and must not
-overlap rootfs.
+`PVISOR_NATIVE_KERNEL=rust` selects the experimental embedded Rust native payload
+within the same VM configuration path; it does not select another CLI workflow.
+The current kernel lacks named task stdio and therefore rejects ordinary captured
+container/Session execution. It never substitutes Linux or bypasses those
+contracts; see [`pvisor-kernel`](../../pvisor-kernel/README.md).
 
-Output uses the VM console. Workload exit codes propagate; setup/runtime errors
-return 1, argument errors 2, and unauthenticated/abnormal guest termination 125.
-Windows builds use `cargo build --locked -p pvisor-cli --bin pvisor`; parser tests
-use `mise run test -- pvisor-cli -- --lib --bin pvisor`. Unix runtime dependencies
+Direct rootfs execution is confined to the `pvisor-vm` example `vm_api_case` and
+the hardware test driver. Neither is installed as a product command. Windows
+builds use `cargo build --locked -p pvisor-cli --bin pvisor`; parser tests use
+`mise run test -- pvisor-cli -- --lib --bin pvisor`. Unix runtime dependencies
 are excluded; Windows container commands use the native profile below.
 
 Full Unix installations also include `pvisor-replay` for replay and
@@ -1688,7 +1680,7 @@ silently falling back to host execution. See the
 
 See the [platform matrix](../../docs/src/en/reference/platforms.md),
 [binary inventory and implementation comparison](../../docs/src/en/reference/platforms.md#binaries)
-and [shared real-VM test driver](../../tests/vm_cli_contract.py).
+and [shared real-VM API test driver](../../tests/vm_api_contract.py).
 
 On Linux x86-64, `pvisor container branch SOURCE --offload --names a b`
 enables explicit memory management for the two children. At an idle command

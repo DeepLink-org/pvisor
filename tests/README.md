@@ -108,7 +108,7 @@ Pass selections to the native runner:
 ```bash
 mise run test -- pvisor-core -- --test network_contracts -E 'test(addresses::)'
 mise run test-py-unit -- -k packaging -v
-mise run test-py -- tests.unit.test_vm_cli_contract tests.regression.test_vm_cli_contract
+mise run test-py -- tests.unit.test_vm_api_contract tests.regression.test_vm_api_contract
 ```
 
 Use direct `cargo test` for doctests or a documented special runner. Self-exec
@@ -124,7 +124,7 @@ tests explicitly; broad `--run-ignored all` can select subprocess-only helpers.
 | `test-hvf-cold-restore`, `test-vm-snapshot-state` | Apple Silicon HVF and signed probes; CPU/RAM and VMM-thread state |
 | `test-vm-lifecycle` | Linux x86_64/KVM or Apple Silicon/HVF, absolute `PVISOR_CASE_VM_FIRMWARE_PATH`; real 1/2-vCPU ready barrier and failed-start owner cleanup/retry, no prerequisite skips |
 | `test-linux-cold-restore`, `test-environment-snapshot` | Apple Silicon HVF, Linux guest and firmware; whole-machine and independent environment restoration |
-| `tests/vm_cli_contract.py` | KVM, HVF or WHP; shared guest workload, authenticated exit, read-only files and cleanup |
+| `tests/vm_api_contract.py` | KVM, HVF or WHP; test-only public API probe, shared guest workload, authenticated exit, read-only files and cleanup |
 | `tests/windows_container_contract.py` | Native Windows/WHP, matching firmware/template; container network, I/O, console and lifecycle |
 
 Linux CI runs strict Host isolation and KVM workflows. Windows CI runs native
@@ -167,7 +167,7 @@ These workflows and `mise.toml` define the executed selections.
 | `docker-cli` | `Feature docker-cli / Cargo / <os>`, `test-feature-native docker-cli` | Ubuntu and hosted macOS; conventional non-ignored native tests only |
 | `docker-compose` | `Feature docker-compose / Cargo / <os>`, `test-feature-native docker-compose` | Ubuntu and hosted macOS; Compose owns embedded `docker_cli` Compose tests as well as `compose_cli` |
 | `docker-cli` | `Feature docker-cli / bats`, `/ go-0`, `/ go-1`, `test-feature-contracts` | Independent Linux/KVM black-box runtime shards using the frozen CLI artifact |
-| Windows VM/container boundary | `Windows` reusable workflow: `WHP / smoke`, `/ vm-cli`, `/ containers` | Native Windows 2025/WHP with its repository-built firmware, guest and root-disk artifacts; not Unix Scrut/Bats acceptance |
+| Windows VM/container boundary | `Windows` reusable workflow: `WHP / smoke`, `/ vm-api`, `/ containers` | Native Windows 2025/WHP with its repository-built firmware, guest and root-disk artifacts; VM API probe and product container coverage are qualified separately; not Unix Scrut/Bats acceptance |
 
 The inventory job discovers feature directories containing `S-*.md`, and Scrut
 task selection discovers the cases. New IDs require no workflow allowlist.

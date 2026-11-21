@@ -111,8 +111,9 @@ Windows 文件模式与 uid/gid 为合成的 Linux 元数据；宿主 ACL 仍生
 chmod/chown 不提供完整语义。共享树由调用方管理，不要允许其他不可信宿主进程
 并发改写它的目录结构。此支持范围是 `pvisor-vm`，不表示 executor、Gateway、
 Core、OverlayFS 或完整 pVisor CLI 已能在 Windows 上构建和运行。
-限定的跨平台 CLI 入口是 `pvisor vm-run`，仅使用此处支持的普通 rootfs/只读共享
-与 supervisor 配置；见 [CLI README](../pvisor-cli/README.md#direct-vm-execution-on-linux-macos-and-windows)。
+产品 CLI 通过 Docker 兼容命令及支持平台上的 Agent Session 选择 VM 后端，
+不单独提供直接 VMM 执行命令。普通 rootfs/只读共享与 supervisor 的底层诊断
+使用测试 example `vm_api_case`，不作为产品命令安装。
 
 退出认证仅在协商了 FUSE `ALLOW_IDMAP` 时接受内核省略的 UID，规则与 Unix
 后端一致；内核 PID 必须仍为 1，其他显式 UID、伪造 token 和重复报告均拒绝。
@@ -149,8 +150,8 @@ Windows 原生检查失败会使主 CI 门禁失败，不再依赖单独 workflo
 不需要仓库变量或自托管 runner。
 
 Linux 托管 runner 每次构建本仓库固件 DLL、静态 Linux probe 和 ext4 模板，
-Windows 原生构建上传 `whp_smoke.exe` 与 `pvisor.exe`。三个独立的临时
-`windows-2025` runner 并行执行 smoke、共同 CLI VM 负载及两轮容器验收；
+Windows 原生构建上传 `whp_smoke.exe`、`vm_api_case.exe` 与 `pvisor.exe`。三个独立的临时
+`windows-2025` runner 并行执行 smoke、共同 VM API 负载及两轮产品容器验收；
 任一组失败不取消其他组。容器组涵盖默认网络、peer TCP、管道 stdin、
 ConPTY、Ctrl+C、退出与控制台恢复。
 测试记录镜像版本、hypervisor 状态和 HypervisorPlatform 功能状态，必要时
@@ -159,7 +160,7 @@ ConPTY、Ctrl+C、退出与控制台恢复。
 被当作通过或静默跳过。即使原生契约测试失败，也继续尝试已有制品的 WHP 验收。
 固件构建失败时下游作业跳过，但 Windows workflow 和主 CI 仍失败。
 证据写入未缓存的 `RUNNER_TEMP`，记录运行镜像与输入哈希，上传为
-`windows-vm-whp-smoke`、`windows-vm-whp-vm-cli` 和
+`windows-vm-whp-smoke`、`windows-vm-whp-vm-api` 和
 `windows-vm-whp-containers`。容器失败只复制每个诊断文件最后最多 1 MiB，
 标明原始大小与偏移，不上传 4 GiB root disk 或镜像 blobs。
 收尾记录 hypervisor 事件及残留进程；只终止该 job 的制品目录下的进程，
@@ -2072,7 +2073,7 @@ node-owned views, compressed snapshots and other platforms retain their previous
 path. This optimization does not enable offload on restored COW memory and does
 not promise a measured total-memory saving before workload validation.
 
-## Shared CLI VM contracts and Windows directory rename
+## Shared VM API contracts and Windows directory rename
 
 Windows directory rename updates cached paths for the directory and all
 known descendants, retaining inode IDs and lookup counts. A native
@@ -2080,9 +2081,10 @@ regression checks nested inodes and a no-op rename; the shared guest workload
 checks the directory move. Full POSIX rename/open-unlinked semantics on Windows
 remain unverified.
 
-`tests/vm_cli_contract.py` drives `pvisor vm-run` with the same static Linux
-workload on KVM, HVF and WHP. Windows CI builds the CLI and retains the existing
-WHP API smoke. See the [platform matrix](../../docs/src/en/reference/platforms.md)
+`tests/vm_api_contract.py` drives the test-only `vm_api_case` example through
+the public API with the same static Linux workload on KVM, HVF and WHP.
+Product CLI coverage remains in the container and Session suites. Windows CI
+retains the existing WHP API smoke. See the [platform matrix](../../docs/src/en/reference/platforms.md)
 for supported features, inputs and results.
 
 ## Snapshot allocation regression measurements

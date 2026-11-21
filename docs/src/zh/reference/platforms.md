@@ -1,11 +1,12 @@
 # 平台与执行器支持矩阵
 
 Linux x86_64 和 macOS Apple Silicon 提供完整 CLI 安装。Windows x86_64 支持
-源码构建的 `pvisor vm-run` 和实验性的原生 WHP 容器 profile，
+源码构建的实验性原生 WHP 容器 profile，
 还不能运行 Session、replay 或本地 Daemon。
 
-一个 `pvisor.exe` 足够运行这个 VM 入口，但仍需 `libkrunfw.dll`、Linux rootfs 和
-其中的工作负载。CI 自动运行 Linux/KVM 和 Windows/WHP 的共同 VM 负载。
+公开执行入口为 Docker 兼容容器命令，以及支持平台上的 Agent Session 命令，
+不单独提供直接 VMM 执行命令。CI 通过测试专用 VM API 探针运行
+Linux/KVM 和 Windows/WHP 的共同 VM 负载。
 macOS 托管 runner 保留构建和常规测试，暂不运行 HVF 实机用例；同一负载仍可在
 支持 HVF 的 Apple Silicon Mac 上手动执行。
 
@@ -16,7 +17,7 @@ Linux/macOS 的完整 wheel 和 native archive 包含三个同版本、同目录
 
 | 程序与归属 | 何时使用 | Windows 状态 |
 | --- | --- | --- |
-| `pvisor` / `pvisor-cli` | 命令入口；自行启动普通 Session owner，`vm-run` 在当前进程执行 VM | `pvisor.exe`：`vm-run` 和原生容器命令子集；不支持 Session |
+| `pvisor` / `pvisor-cli` | Docker 兼容和 Agent 命令；自行启动普通 Session owner | `pvisor.exe`：原生容器命令子集；不支持 Session |
 | `pvisor-replay` / `pvisor-cli` | `pvisor replay`；managed replay 再调用同目录 `pvisor`，沿用 Session/轨迹契约 | 未移植 |
 | `pvisor-daemon` / 独立 crate | `pvisor daemon`、cache/sandbox 服务；`--vm-memory-pool auto` 通过它发现或启动共享内存池 | 未移植 |
 
@@ -25,7 +26,8 @@ Linux/macOS 的完整 wheel 和 native archive 包含三个同版本、同目录
 wheel 目标为 Linux x86_64 musl 和 macOS arm64，安装步骤见[安装指南](../start/installation.md)。
 
 `pvisor-guest` 是 `pvisor-vm` 内嵌的 Linux PID 1 supervisor，在 Windows 上交叉编译后仍是
-Linux payload，不需要安装宿主 `pvisor-guest.exe`。`whp_smoke.exe` 是 CI 探针。
+Linux payload，不需要安装宿主 `pvisor-guest.exe`。`whp_smoke.exe` 和 `vm_api_case`
+是 CI 探针，不作为产品命令安装。
 `containerd-shim-pvisor-v2` 用于 Linux containerd 集成，单独交付。guest 工作负载
 须为 Linux 程序。
 
@@ -37,7 +39,7 @@ Linux payload，不需要安装宿主 `pvisor-guest.exe`。`whp_smoke.exe` 是 C
 
 | 功能 | Linux x86_64 | macOS Apple Silicon | Windows x86_64 |
 | --- | --- | --- | --- |
-| `vm-run` | KVM、可读写 `/dev/kvm`；Linux x86_64 guest | HVF、Hypervisor 签名；Linux aarch64 guest，不需要 macFUSE | WHP；启用功能并重启，嵌套 VM 需虚拟化透传；Linux x86_64 guest |
+| VM 后端执行 | KVM、可读写 `/dev/kvm`；Linux x86_64 guest | HVF、Hypervisor 签名；Linux aarch64 guest | WHP；启用功能并重启，嵌套 VM 需虚拟化透传；Linux x86_64 guest |
 | Host Session（`spawn`）、OverlayFS、review/apply/drop | 暂存需要 FUSE；sandbox 需要 user namespace 和 Landlock | 暂存需要 macFUSE 5.4.0+ FSKit；文件/网络控制使用 Seatbelt | 未移植 |
 | 原生 OCI Session（`container` / `--executor container`） | `crun`/`runc` 和匹配的静态 Linux 注入程序 | 不支持 | 不支持 |
 | Docker 风格 VM 容器及网络策略 | 有实现和独立契约 | 有实现，各能力需 HVF 验证 | 实验性 WHP profile：镜像/生命周期、bridge/none 和 stdin/PTY |
@@ -51,10 +53,10 @@ Linux payload，不需要安装宿主 `pvisor-guest.exe`。`whp_smoke.exe` 是 C
 独立 Linux VM，与原生 OCI Session 分开，也不实现 Docker Engine API。
 Linux arm64 有源码路径，需核对该宿主的构建/KVM 测试及匹配 rootfs；OCI 还需
 `linux/arm64` 注入程序。x86_64 wheel 不覆盖 arm64。Intel macOS 无当前发布支持
-承诺，也不在 `vm-run` 范围内。
+承诺。
 
-安装后先运行 `pvisor --version`。Session 的有效控制查看 Run Bundle；`vm-run` 的
-结果通过退出码和宿主文件检查。
+安装后先运行 `pvisor --version`。Session 的有效控制查看 Run Bundle；
+容器结果通过容器命令契约检查。
 
 Windows 容器要求将匹配的 `libkrunfw.dll` 和 `pvisor-rootfs.bin.gz` 放在程序旁。
 默认 `bridge` 复用 OverlayNet 的 IPv4 TCP/DNS 出网和同一 store 内的 guest 互联；
@@ -93,13 +95,13 @@ SLAT 的外层 hypervisor，或使用具备相应硬件能力的 Windows 宿主�
 
 ## 平台实现差异 {#implementation-parity}
 
-三平台共用 `vm-run` 的参数、GuestConfig 和认证退出协议。执行链为
-`pvisor vm-run → pvisor_vm::api::VmBuilder → 平台 VMM →
+VM 后端流程共用 GuestConfig 和认证退出协议。执行链为
+`Docker 兼容 / Agent 命令 → 生命周期 owner → pvisor_vm::api::VmBuilder → 平台 VMM →
 virtio-fs → Rust PID 1 supervisor → Linux workload → token 认证退出`。
 
 | 实现层 | Linux | macOS | Windows |
 | --- | --- | --- | --- |
-| CLI 与进程 | 完整命令树、Session owner、信号和后代清理 | 相同 Session/companion 结构，终端与资源控制受 macOS 限制 | `vm-run` 及容器 owner、绑定 generation 的 named pipe 和 runner Job；无 Session 状态 |
+| CLI 与进程 | 完整命令树、Session owner、信号和后代清理 | 相同 Session/companion 结构，终端与资源控制受 macOS 限制 | 容器 owner、绑定 generation 的 named pipe 和 runner Job；无 Session 状态 |
 | companion | 同目录发现、Unix uid/mode 检查、`exec` 派发 | 相同检查；解析 Homebrew 入口的真实安装目录 | 无 companion 派发；完整移植需定义 `.exe` 查找、ACL 信任及进程启动/退出传播 |
 | 终端 | PTY、终端前台归属和信号 | PTY 与终端恢复 | 容器 stdin/guest PTY、控制台模式恢复及可取消输入；原生 ConPTY 测试 |
 | 共享服务 | Unix socket、同用户认证、锁和 readiness；sandbox 另需 cgroup/KVM | 使用 Unix IPC；支持缓存/池，sandbox API 不支持 | IPC、端点 ACL、锁、取消和服务回收尚未移植；连接远端 Linux API 不等于本地服务可用 |
@@ -116,16 +118,18 @@ CLI→replay→CLI、CLI→Daemon 的实际调用。测试须覆盖终端恢复�
 
 ## 三平台的特性集合与关键路径
 
-`vm-run` 直接修改调用方提供的 rootfs，不创建 Session、Bundle、stage 或容器实例。
+测试专用 `vm_api_case` example 直接修改调用方提供的 rootfs，不创建 Session、Bundle、stage 或容器实例。
 它不提供网络/vsock、交互 stdin、独立 task stdio、容器生命周期、快照或 Session 策略。
 输出走 VM 控制台，可能含内核日志。workload 退出码直接返回；参数错误为 2、
 准备/运行错误为 1，退出认证失败或 VM 异常终止为 125。超时和进程终止由外部调用方负责。
 
-| 输入/变量 | 影响与要求 |
+下列输入属于 API 探针，不属于产品 CLI。
+
+| 探针输入/变量 | 影响与要求 |
 | --- | --- |
 | `--cpus`、`--memory` | vCPU 启动、中断及内存压力；允许 1 至 64 vCPU、1 至 65536 MiB，固件/宿主可能进一步限制；本组测试只覆盖 1/2 CPU、256 MiB |
 | `--firmware` | 加载可信、匹配 guest 架构的宿主 `.so`/`.dylib`/`.dll`；省略时必须有内嵌 kernel。musl 发布产物内嵌内核，Windows 目前需显式 DLL |
-| `PVISOR_KRUNFW_PATH` / `PVISOR_KRUNFW_KERNEL_BUNDLE` | 产品构建选择的固件/内核输入，区别于运行期 `--firmware` |
+| `PVISOR_KRUNFW_PATH` / `PVISOR_KRUNFW_KERNEL_BUNDLE` | 产品构建选择的固件/内核输入，区别于探针运行期 `--firmware` |
 | `--rootfs`、`--readonly` | 非重叠的普通目录、绝对 UTF-8 宿主路径；只读目录挂到 `/readonly`，guest 命令须为绝对 Linux 路径 |
 | 宿主/guest 页大小、文件系统、大小写、路径长度、ACL | 影响 mmap、rename、inode 缓存和 errno；本组用例未覆盖全部 POSIX 差异 |
 | `--seed`、`--rounds`、`--timeout`（测试驱动） | 控制数据序列、重复启停次数和单次截止时间；线程调度和耗时不固定 |
@@ -138,16 +142,18 @@ CI 制品按提交和 runner 记录运行结果。当前配置的覆盖范围为
 
 | 平台 | 常规检查 | 共同 VM 负载 |
 | --- | --- | --- |
-| Windows | MSVC 原生构建与契约 | WHP smoke 与 CLI 驱动 |
-| Linux | 构建与原生测试 | KVM CLI 驱动 |
+| Windows | MSVC 原生构建与契约 | WHP smoke 与 API 驱动；独立的产品容器驱动 |
+| Linux | 构建与原生测试 | KVM API 驱动；独立的产品容器/Session 套件 |
 | macOS | 构建与常规测试 | 在具备能力的宿主上手动运行 HVF |
 
 能力门禁和覆盖边界见[测试架构](https://github.com/DeepLink-org/pvisor/blob/main/tests/README.md#capability-gates-and-coverage)。
 
 ### 用例和结果检查
 
-[CLI 驱动](https://github.com/DeepLink-org/pvisor/blob/main/tests/vm_cli_contract.py)通过
-真实 `pvisor` 执行同一份[guest 负载](https://github.com/DeepLink-org/pvisor/blob/main/tests/vm_guest.rs)。
+[API 驱动](https://github.com/DeepLink-org/pvisor/blob/main/tests/vm_api_contract.py)通过
+测试专用 `vm_api_case` example 和公开 VM API 执行同一份
+[guest 负载](https://github.com/DeepLink-org/pvisor/blob/main/tests/vm_guest.rs)，
+不能替代产品容器或 Session 验收。
 默认 3 轮，每轮检查 `(1 CPU, exit 0)`、`(2, 0)`、`(2, 7)`、`(1, 255)`，共 12 次启动。
 每次运行 8 个线程，每个线程做 32 次 4 至 8 KiB 写入、fsync、rename、读取和删除，
 并触碰共 16 MiB 内存。还检查在线 CPU、100 ms 计时器、只读拒写和缓存子文件后的目录重命名。
@@ -164,9 +170,9 @@ HVF 实机用例已从托管 CI 移除；macOS 构建和常规测试继续运行
 
 | CI 路径 | 准备与执行 | 制品 |
 | --- | --- | --- |
-| `ci.yml` / Rust Test / Linux / pvisor | 构建产品、x86_64 musl guest，检查 `/dev/kvm`，执行共同驱动 | `vm-cli-Linux` |
+| `ci.yml` / Rust Test / Linux / pvisor | 构建产品、API 探针和 x86_64 musl guest，检查 `/dev/kvm`，执行共同 API 驱动 | `vm-api-Linux` |
 | `ci.yml` / Rust Test / macOS / pvisor | 构建并签名产品，运行常规测试；不运行 HVF 实机负载 | 不生成 VM 运行制品 |
-| `windows-vm.yml` / native + firmware + whp | 独立原生分组检查；源码构建 DLL/guest/ext4 模板；WHP smoke、共同 VM 负载及两轮容器验收并行执行 | `windows-native-contracts`、`windows-vm-whp-smoke`、`windows-vm-whp-vm-cli`、`windows-vm-whp-containers` |
+| `windows-vm.yml` / native + firmware + whp | 独立原生分组检查；源码构建 DLL/guest/ext4 模板；WHP smoke、共同 VM API 负载及两轮产品容器验收并行执行 | `windows-native-contracts`、`windows-vm-whp-smoke`、`windows-vm-whp-vm-api`、`windows-vm-whp-containers` |
 
 Windows 原有 `whp_smoke` 继续检查 pause/resume、ready 回调失败清理和旧退出 ioctl
 拒绝。Windows CLI 构建使用 `cargo build --locked -p pvisor-cli --bin pvisor`，
@@ -177,12 +183,14 @@ Windows nextest profile 增加 180 秒死锁保护，保留测试自身更短的
 最后最多 1 MiB，不上传原始磁盘或 blobs。清理错误或残留 runner 会使验收失败，
 清理只针对该 job 下载的可执行文件。
 
-手动运行前准备可执行的 `pvisor`、匹配架构的静态 guest 和固件；macOS 还需签名。
+手动诊断前准备测试专用 `vm_api_case`、匹配架构的静态 guest 和固件；macOS 还需签名。
 
 ```bash
 # Linux: x86_64-unknown-linux-musl; Apple Silicon: aarch64-unknown-linux-musl.
 mise exec -- rustc --edition=2021 --target aarch64-unknown-linux-musl -C linker=rust-lld tests/vm_guest.rs -o /tmp/vm-guest
-python3 tests/vm_cli_contract.py --binary target/debug/pvisor --guest /tmp/vm-guest --output target/vm-cli-evidence
+mise exec -- cargo build --locked -p pvisor-vm --example vm_api_case
+# macOS: sign target/debug/examples/vm_api_case with crates/pvisor/macos-hypervisor.entitlements.
+python3 tests/vm_api_contract.py --binary target/debug/examples/vm_api_case --guest /tmp/vm-guest --firmware /absolute/path/to/libkrunfw.dylib --output target/vm-api-evidence
 # Windows uses the same driver with --firmware C:/firmware/libkrunfw.dll.
 # --output must be new; --rounds 30 expands coverage to 120 actual boots.
 ```
@@ -200,4 +208,4 @@ Sandbox API 要求 Linux x86_64/KVM 和委派 cgroup v2；macOS HVF 与 Linux ar
 - container 目前不提供 safe 所需的完整控制，`--safe` 会拒绝；所有当前执行器在 `--strict` 下因 Subprocess 缺口拒绝。
 - 资源查看 `resources.effective` 与 `limitations`；macOS 不强制 RLIMIT_AS，普通 host rlimit 不是整棵进程树的总额度。
 
-验证入口：`.github/workflows/ci.yml`、`docs/src/zh/cases/06-stage-apply.md`、`crates/pvisor/tests/` 与 `tests/vm_cli_contract.py`。尚未验证的矩阵格不作成熟度结论；安全范围见[执行器边界](../security/executor-boundaries.md)。
+验证入口：`.github/workflows/ci.yml`、`docs/src/zh/cases/06-stage-apply.md`、`crates/pvisor/tests/` 与 `tests/vm_api_contract.py`。尚未验证的矩阵格不作成熟度结论；安全范围见[执行器边界](../security/executor-boundaries.md)。
