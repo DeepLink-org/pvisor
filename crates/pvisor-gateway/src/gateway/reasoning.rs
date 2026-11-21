@@ -37,8 +37,36 @@ impl ReasoningCache {
 
 #[derive(Debug, Default)]
 pub struct ReasoningCacheHandle {
-    inner: Arc<Mutex<HashMap<String, ReasoningCache>>>,
-    scope: String,
+    inner: Arc<Mutex<HashMap<ReasoningScope, ReasoningCache>>>,
+    scope: ReasoningScope,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Hash)]
+struct ReasoningScope {
+    agent: String,
+    story: String,
+    provider: String,
+    upstream: Option<String>,
+}
+
+impl ReasoningScope {
+    fn bytes(&self) -> usize {
+        fn quoted_len(value: &str) -> usize {
+            value.bytes().fold(2usize, |total, byte| {
+                total.saturating_add(match byte {
+                    b'"' | b'\\' | b'\n' | b'\r' | b'\t' | 8 | 12 => 2,
+                    0..=31 => 6,
+                    _ => 1,
+                })
+            })
+        }
+        // Preserve the former JSON tuple's byte limit without serializing its key.
+        5usize
+            .saturating_add(quoted_len(&self.agent))
+            .saturating_add(quoted_len(&self.story))
+            .saturating_add(quoted_len(&self.provider))
+            .saturating_add(self.upstream.as_deref().map_or(4, quoted_len))
+    }
 }
 
 impl ReasoningCacheHandle {
@@ -49,18 +77,17 @@ impl ReasoningCacheHandle {
     pub(crate) fn scoped(&self, ctx: &crate::engine::CallContext) -> Self {
         Self {
             inner: Arc::clone(&self.inner),
-            scope: serde_json::to_string(&(
-                ctx.agent_id(),
-                ctx.story.story_id(),
-                ctx.provider.as_str(),
-                ctx.upstream_url.as_deref(),
-            ))
-            .expect("serializable reasoning scope"),
+            scope: ReasoningScope {
+                agent: ctx.agent_id().to_string(),
+                story: ctx.story.story_id().as_str().to_string(),
+                provider: ctx.provider.as_str().to_string(),
+                upstream: ctx.upstream_url.clone(),
+            },
         }
     }
 
     pub fn remember(&self, tool_call_ids: &[String], reasoning: &str) {
-        if self.scope.len() > 8192 {
+        if self.scope.bytes() > 8192 {
             return;
         }
         if let Ok(mut g) = self.inner.lock() {
@@ -125,6 +152,38 @@ pub fn apply_deepseek_message_fixup(messages: &mut [Value], cache: &ReasoningCac
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[rstest::rstest]
+    #[case::no_upstream(None)]
+    #[case::escaped_upstream(Some("https://example.invalid/\"\\\n\r\t\u{0001}"))]
+    fn typed_scope_counts_escaped_controls(#[case] upstream: Option<&str>) {
+        let scope = ReasoningScope {
+            agent: "\u{0000}\u{0008}\u{000c}\r\n\t\"\\".into(),
+            story: "你好😀".into(),
+            provider: "test".into(),
+            upstream: upstream.map(str::to_owned),
+        };
+        assert_eq!(
+            scope.bytes(),
+            serde_json::to_string(&(&scope.agent, &scope.story, &scope.provider, &scope.upstream))
+                .unwrap()
+                .len()
+        );
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn typed_scope_retains_json_byte_limit(
+            agent in ".{0,32}", story in ".{0,32}", provider in ".{0,32}",
+            upstream in proptest::option::of(".{0,32}"),
+        ) {
+            let scope = ReasoningScope { agent, story, provider, upstream };
+            let encoded = serde_json::to_string(&(
+                &scope.agent, &scope.story, &scope.provider, &scope.upstream,
+            )).unwrap();
+            proptest::prop_assert_eq!(scope.bytes(), encoded.len());
+        }
+    }
 
     #[test]
     fn scoped_reasoning_does_not_cross_story_or_provider() {

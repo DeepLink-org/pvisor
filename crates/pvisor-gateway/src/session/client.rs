@@ -2,7 +2,7 @@
 
 use std::collections::HashSet;
 use std::fs;
-use std::net::SocketAddr;
+use std::net::{Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
@@ -39,7 +39,7 @@ fn finalize_client_meta(mut meta: SessionClientMeta, peer: SocketAddr) -> Sessio
 fn peer_for_finalize(meta: &SessionClientMeta) -> SocketAddr {
     meta.peer
         .parse()
-        .unwrap_or_else(|_| "127.0.0.1:0".parse().expect("loopback"))
+        .unwrap_or_else(|_| SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -96,7 +96,7 @@ pub fn resolve_client_meta_for_run_dir(
         subagent_id: None,
     };
     client_meta_from_run_child(storage, &route).map(|m| {
-        let peer: SocketAddr = "127.0.0.1:0".parse().expect("loopback");
+        let peer = SocketAddr::from((Ipv4Addr::LOCALHOST, 0));
         finalize_client_meta(m, peer)
     })
 }
@@ -174,7 +174,7 @@ impl SessionClientRegistry {
         key: String,
         lookup: impl FnOnce() -> Option<SessionClientMeta> + Send + 'static,
     ) -> Option<SessionClientMeta> {
-        let mut cache = self.cached.lock().unwrap();
+        let mut cache = self.cached.lock().ok()?;
         if let Some(meta) = cache.get(&key) {
             return meta.clone();
         }
@@ -188,7 +188,9 @@ impl SessionClientRegistry {
         runtime.spawn_blocking(move || {
             let _permit = permit;
             let meta = lookup();
-            owner.cached.lock().unwrap().insert(key, meta);
+            if let Ok(mut cache) = owner.cached.lock() {
+                cache.insert(key, meta);
+            }
         });
         None
     }
@@ -219,7 +221,7 @@ impl SessionClientRegistry {
 
         let key = format!("{}|{agent_id}|{}", storage.display(), route.seq_key());
         {
-            let guard = self.recorded.lock().unwrap();
+            let guard = self.recorded.lock().ok()?;
             if guard.contains(&key) {
                 if should_persist_session_meta_file(storage, route) {
                     return load_session_client_meta(&path)
@@ -277,7 +279,7 @@ impl SessionClientRegistry {
         }
 
         let Some(meta) = meta else {
-            self.recorded.lock().unwrap().insert(key);
+            self.recorded.lock().ok()?.insert(key);
             return None;
         };
 
@@ -289,7 +291,7 @@ impl SessionClientRegistry {
             return None;
         }
 
-        self.recorded.lock().unwrap().insert(key);
+        self.recorded.lock().ok()?.insert(key);
         tracing::debug!(
             target: "pvisor_gateway",
             peer = %meta.peer,
@@ -305,6 +307,54 @@ impl SessionClientRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[rstest::rstest]
+    fn poisoned_lookup_cache_does_not_schedule_or_return_cached_metadata() {
+        let registry = std::sync::Arc::new(SessionClientRegistry::default());
+        assert!(
+            std::panic::catch_unwind(|| {
+                let _guard = registry.cached.lock().unwrap();
+                panic!("injected lookup cache failure");
+            })
+            .is_err()
+        );
+        assert!(
+            registry
+                .schedule_lookup("key".into(), || panic!("must not probe"))
+                .is_none()
+        );
+        assert_eq!(registry.lookup_slots.available_permits(), 4);
+    }
+
+    #[rstest::rstest]
+    fn poisoned_recorded_registry_does_not_probe_or_persist() {
+        let dir = tempfile::tempdir().unwrap();
+        let registry = SessionClientRegistry::default();
+        assert!(
+            std::panic::catch_unwind(|| {
+                let _guard = registry.recorded.lock().unwrap();
+                panic!("injected recorded registry failure");
+            })
+            .is_err()
+        );
+        let route = CaptureRoute {
+            root_session: None,
+            session_id: "s".into(),
+            storage_session_id: "s".into(),
+            subagent_id: None,
+        };
+        assert!(
+            registry
+                .ensure(
+                    dir.path(),
+                    "a",
+                    &route,
+                    SocketAddr::from((Ipv4Addr::LOCALHOST, 0))
+                )
+                .is_none()
+        );
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 0);
+    }
 
     #[test]
     fn session_meta_roundtrip() {

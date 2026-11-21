@@ -13,7 +13,7 @@ use crate::llm::{
 };
 use anyhow::{Context, Result};
 use bytes::Bytes;
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 
 pub fn request_to_chat_completions(
     semantic: &LlmRequestEventPayload,
@@ -153,7 +153,7 @@ pub fn request_to_gemini(semantic: &LlmRequestEventPayload, upstream_model: &str
         contents.push(json!({"role":"user", "parts":[{"text":" "}]}));
     }
 
-    let mut output = json!({"contents": contents});
+    let mut output = Map::from_iter([("contents".into(), json!(contents))]);
     let mut system = request
         .system
         .iter()
@@ -165,7 +165,10 @@ pub fn request_to_gemini(semantic: &LlmRequestEventPayload, upstream_model: &str
         .collect::<Vec<_>>();
     system.extend(inline_system);
     if !system.is_empty() {
-        output["systemInstruction"] = json!({"parts":[{"text":system.join("\n")}]});
+        output.insert(
+            "systemInstruction".into(),
+            json!({"parts":[{"text":system.join("\n")}]}),
+        );
     }
 
     if !request.tools.is_empty() {
@@ -185,7 +188,10 @@ pub fn request_to_gemini(semantic: &LlmRequestEventPayload, upstream_model: &str
             })
             .collect::<Vec<_>>();
         if !declarations.is_empty() {
-            output["tools"] = json!([{"functionDeclarations": declarations}]);
+            output.insert(
+                "tools".into(),
+                json!([{"functionDeclarations": declarations}]),
+            );
         }
     }
     if let Some(choice) = &request.tool_choice {
@@ -200,10 +206,13 @@ pub fn request_to_gemini(semantic: &LlmRequestEventPayload, upstream_model: &str
         {
             config["allowedFunctionNames"] = json!([name]);
         }
-        output["toolConfig"] = json!({"functionCallingConfig": config});
+        output.insert(
+            "toolConfig".into(),
+            json!({"functionCallingConfig": config}),
+        );
     }
     if let Some(config) = render_gemini_generation(request, upstream_model) {
-        output["generationConfig"] = config;
+        output.insert("generationConfig".into(), config);
     }
     for (extension, field) in [
         ("google.cached_content", "cachedContent"),
@@ -211,14 +220,13 @@ pub fn request_to_gemini(semantic: &LlmRequestEventPayload, upstream_model: &str
         ("google.labels", "labels"),
     ] {
         if let Some(value) = request.extensions.get(extension) {
-            output[field] = value.clone();
+            output.insert(field.into(), value.clone());
         }
     }
-    if output.get("cachedContent").is_some() {
-        let object = output.as_object_mut().expect("Gemini request is an object");
-        object.remove("systemInstruction");
-        object.remove("tools");
-        object.remove("toolConfig");
+    if output.contains_key("cachedContent") {
+        output.remove("systemInstruction");
+        output.remove("tools");
+        output.remove("toolConfig");
     }
     Ok(Bytes::from(serde_json::to_vec(&output)?))
 }
@@ -232,28 +240,18 @@ fn push_gemini_content(
     if parts.is_empty() {
         return;
     }
-    let can_merge = contents.last().is_some_and(|last| {
-        last.get("role").and_then(Value::as_str) == Some(role)
-            && last
-                .get("parts")
-                .and_then(Value::as_array)
-                .is_some_and(|parts| {
-                    parts
-                        .iter()
-                        .any(|part| part.get("functionResponse").is_some())
-                        == function_response
-                })
-    });
-    if can_merge {
-        contents
-            .last_mut()
-            .and_then(|content| content.get_mut("parts"))
-            .and_then(Value::as_array_mut)
-            .expect("checked Gemini content parts")
-            .extend(parts);
-    } else {
-        contents.push(json!({"role":role, "parts":parts}));
+    if let Some(last) = contents.last_mut()
+        && last.get("role").and_then(Value::as_str) == Some(role)
+        && let Some(previous_parts) = last.get_mut("parts").and_then(Value::as_array_mut)
+        && previous_parts
+            .iter()
+            .any(|part| part.get("functionResponse").is_some())
+            == function_response
+    {
+        previous_parts.extend(parts);
+        return;
     }
+    contents.push(json!({"role":role, "parts":parts}));
 }
 
 fn render_gemini_image(source: &LlmImageSource, media_type: Option<&str>) -> Result<Value> {
@@ -436,7 +434,7 @@ fn render_chat_response(response: &LlmResponse, fallback_model: &str) -> Value {
         "choices":choices,
     });
     if let Some(usage) = &response.usage {
-        value["usage"] = render_chat_usage(usage);
+        let mut rendered_usage = render_chat_usage(usage);
         for (field, present, count) in [
             (
                 "prompt_tokens_details",
@@ -450,12 +448,10 @@ fn render_chat_response(response: &LlmResponse, fallback_model: &str) -> Value {
             ),
         ] {
             if count == 0 && !response.extensions.contains_key(present) {
-                value["usage"]
-                    .as_object_mut()
-                    .expect("usage object")
-                    .remove(field);
+                rendered_usage.remove(field);
             }
         }
+        value["usage"] = Value::Object(rendered_usage);
     }
     value
 }
@@ -493,21 +489,21 @@ fn render_messages_response(
         })
         .unwrap_or_default();
     let usage = response.usage.as_ref().cloned().unwrap_or_default();
-    let mut value = json!({
-        "id":response.id.as_deref().unwrap_or("msg_proxy"),
-        "type":"message",
-        "role":"assistant",
-        "model":fallback_model,
-        "content":content,
-        "stop_reason":anthropic_finish_reason(candidate.and_then(|c| c.finish_reason.as_deref()), candidate.is_some_and(candidate_has_tools)),
-        "stop_sequence":null,
-        "usage":{
-            "input_tokens":messages_input_tokens(&usage, source),
-            "output_tokens":usage.output_tokens,
-            "cache_read_input_tokens":usage.cache_read_tokens,
-            "cache_creation_input_tokens":usage.cache_write_tokens,
-        }
-    });
+    let mut rendered_usage = Map::from_iter([
+        (
+            "input_tokens".into(),
+            json!(messages_input_tokens(&usage, source)),
+        ),
+        ("output_tokens".into(), json!(usage.output_tokens)),
+        (
+            "cache_read_input_tokens".into(),
+            json!(usage.cache_read_tokens),
+        ),
+        (
+            "cache_creation_input_tokens".into(),
+            json!(usage.cache_write_tokens),
+        ),
+    ]);
     for (field, present, count) in [
         (
             "cache_read_input_tokens",
@@ -521,16 +517,22 @@ fn render_messages_response(
         ),
     ] {
         if count == 0 && !response.extensions.contains_key(present) {
-            value["usage"]
-                .as_object_mut()
-                .expect("usage object")
-                .remove(field);
+            rendered_usage.remove(field);
         }
     }
     if let Some(tier) = response.extensions.get("openai.service_tier") {
-        value["usage"]["service_tier"] = tier.clone();
+        rendered_usage.insert("service_tier".into(), tier.clone());
     }
-    value
+    json!({
+        "id":response.id.as_deref().unwrap_or("msg_proxy"),
+        "type":"message",
+        "role":"assistant",
+        "model":fallback_model,
+        "content":content,
+        "stop_reason":anthropic_finish_reason(candidate.and_then(|c| c.finish_reason.as_deref()), candidate.is_some_and(candidate_has_tools)),
+        "stop_sequence":null,
+        "usage":rendered_usage,
+    })
 }
 
 fn render_responses_response(response: &LlmResponse, fallback_model: &str) -> Value {
@@ -744,14 +746,20 @@ pub(super) fn messages_input_tokens(usage: &LlmUsage, source: &LlmProtocol) -> u
     }
 }
 
-pub(super) fn render_chat_usage(usage: &LlmUsage) -> Value {
-    json!({
-        "prompt_tokens":usage.input_tokens,
-        "completion_tokens":usage.output_tokens,
-        "total_tokens":usage.total_tokens,
-        "prompt_tokens_details":{"cached_tokens":usage.cache_read_tokens},
-        "completion_tokens_details":{"reasoning_tokens":usage.reasoning_tokens},
-    })
+pub(super) fn render_chat_usage(usage: &LlmUsage) -> Map<String, Value> {
+    Map::from_iter([
+        ("prompt_tokens".into(), json!(usage.input_tokens)),
+        ("completion_tokens".into(), json!(usage.output_tokens)),
+        ("total_tokens".into(), json!(usage.total_tokens)),
+        (
+            "prompt_tokens_details".into(),
+            json!({"cached_tokens":usage.cache_read_tokens}),
+        ),
+        (
+            "completion_tokens_details".into(),
+            json!({"reasoning_tokens":usage.reasoning_tokens}),
+        ),
+    ])
 }
 
 pub(super) fn chat_finish_reason(reason: Option<&str>, has_tools: bool) -> &'static str {
@@ -1183,5 +1191,149 @@ fn remove_nulls(value: &mut Value) {
         for value in object.values_mut() {
             remove_nulls(value);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[rstest::rstest]
+    #[case::first(json!([]), false, json!([{"text": "new"}]), json!([{"role": "user", "parts": [{"text": "new"}]}]))]
+    #[case::same_role(json!([{"role": "user", "parts": [{"text": "old"}]}]), false, json!([{"text": "new"}]), json!([{"role": "user", "parts": [{"text": "old"}, {"text": "new"}]}]))]
+    #[case::different_role(json!([{"role": "model", "parts": [{"text": "old"}]}]), false, json!([{"text": "new"}]), json!([{"role": "model", "parts": [{"text": "old"}]}, {"role": "user", "parts": [{"text": "new"}]}]))]
+    #[case::separate_results(json!([{"role": "user", "parts": [{"functionResponse": {}}]}]), false, json!([{"text": "new"}]), json!([{"role": "user", "parts": [{"functionResponse": {}}]}, {"role": "user", "parts": [{"text": "new"}]}]))]
+    #[case::merge_results(json!([{"role": "user", "parts": [{"functionResponse": {"name": "one"}}]}]), true, json!([{"functionResponse": {"name": "two"}}]), json!([{"role": "user", "parts": [{"functionResponse": {"name": "one"}}, {"functionResponse": {"name": "two"}}]}]))]
+    #[case::missing_parts(json!([{"role": "user"}]), false, json!([{"text": "new"}]), json!([{"role": "user"}, {"role": "user", "parts": [{"text": "new"}]}]))]
+    #[case::non_array_parts(json!([{"role": "user", "parts": null}]), false, json!([{"text": "new"}]), json!([{"role": "user", "parts": null}, {"role": "user", "parts": [{"text": "new"}]}]))]
+    #[case::non_object(json!([null]), false, json!([{"text": "new"}]), json!([null, {"role": "user", "parts": [{"text": "new"}]}]))]
+    #[case::empty_incoming(json!([{"role": "user", "parts": [{"text": "old"}]}]), false, json!([]), json!([{"role": "user", "parts": [{"text": "old"}]}]))]
+    fn gemini_content_merge_preserves_boundaries(
+        #[case] contents: Value,
+        #[case] function_response: bool,
+        #[case] parts: Value,
+        #[case] expected: Value,
+    ) {
+        let mut contents = contents.as_array().unwrap().clone();
+        push_gemini_content(
+            &mut contents,
+            "user",
+            function_response,
+            parts.as_array().unwrap().clone(),
+        );
+        assert_eq!(Value::Array(contents), expected);
+    }
+
+    #[rstest::rstest]
+    #[case::absent_zero(0, false, 10)]
+    #[case::present_zero(0, true, 10)]
+    #[case::nonzero_without_marker(3, false, 4)]
+    #[case::maximum(u64::MAX, false, 0)]
+    fn usage_objects_preserve_counts_and_presence(
+        #[case] count: u64,
+        #[case] present: bool,
+        #[case] uncached_input: u64,
+        #[values(
+            LlmProtocol::ChatCompletions,
+            LlmProtocol::Responses,
+            LlmProtocol::Messages,
+            LlmProtocol::Gemini
+        )]
+        source: LlmProtocol,
+    ) {
+        let mut response = LlmResponse {
+            id: Some("fixed".into()),
+            model: None,
+            candidates: vec![],
+            usage: Some(LlmUsage {
+                input_tokens: 10,
+                output_tokens: 2,
+                total_tokens: 12,
+                cache_read_tokens: count,
+                cache_write_tokens: count,
+                reasoning_tokens: count,
+            }),
+            extensions: Default::default(),
+        };
+        if present {
+            for key in [
+                "usage.cache_read_present",
+                "usage.cache_write_present",
+                "usage.reasoning_present",
+            ] {
+                response.extensions.insert(key.into(), json!(false));
+            }
+        }
+        response
+            .extensions
+            .insert("openai.service_tier".into(), json!("priority"));
+        let mut chat_usage =
+            json!({"prompt_tokens": 10, "completion_tokens": 2, "total_tokens": 12});
+        let input = match source {
+            LlmProtocol::ChatCompletions | LlmProtocol::Responses => uncached_input,
+            _ => 10,
+        };
+        let mut messages_usage =
+            json!({"input_tokens": input, "output_tokens": 2, "service_tier": "priority"});
+        if count != 0 || present {
+            chat_usage["prompt_tokens_details"] = json!({"cached_tokens": count});
+            chat_usage["completion_tokens_details"] = json!({"reasoning_tokens": count});
+            messages_usage["cache_read_input_tokens"] = json!(count);
+            messages_usage["cache_creation_input_tokens"] = json!(count);
+        }
+        assert_eq!(
+            render_chat_response(&response, "client")["usage"],
+            chat_usage
+        );
+        assert_eq!(
+            render_messages_response(&response, "client", &source)["usage"],
+            messages_usage
+        );
+    }
+
+    #[rstest::rstest]
+    fn cached_content_presence_retains_null_from_typed_extensions() {
+        let mut semantic = crate::understanding::understand_request_value(
+            crate::protocol::ProtocolKind::ChatCompletions,
+            &json!({
+                "model": "client",
+                "messages": [{"role": "system", "content": "system"}, {"role": "user", "content": "text"}],
+                "tools": [{"type": "function", "function": {"name": "lookup", "parameters": {"type": "object"}}}],
+                "tool_choice": "required"
+            }),
+        ).unwrap();
+        semantic
+            .request
+            .extensions
+            .insert("google.cached_content".into(), Value::Null);
+        let bytes = request_to_gemini(&semantic, "gemini-2.5-pro").unwrap();
+        let wire: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(
+            wire,
+            json!({
+                "contents": [{"role": "user", "parts": [{"text": "text"}]}],
+                "cachedContent": null
+            })
+        );
+    }
+
+    #[rstest::rstest]
+    fn absent_usage_stays_absent_in_chat_and_required_in_messages() {
+        let response = LlmResponse {
+            id: Some("fixed".into()),
+            model: None,
+            candidates: vec![],
+            usage: None,
+            extensions: Default::default(),
+        };
+        assert!(
+            render_chat_response(&response, "client")
+                .get("usage")
+                .is_none()
+        );
+        assert_eq!(
+            render_messages_response(&response, "client", &LlmProtocol::ChatCompletions)["usage"],
+            json!({"input_tokens": 0, "output_tokens": 0})
+        );
     }
 }

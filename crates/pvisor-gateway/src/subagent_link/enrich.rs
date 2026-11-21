@@ -72,7 +72,7 @@ pub fn run_registry_key(route: &CaptureRoute) -> String {
         .clone()
         .unwrap_or_else(|| route.storage_session_id.clone())
 }
-/// Attach cross-reference fields to a capture record (metadata + payload).
+/// Attach cross-reference fields; matcher failures leave record and registry unchanged.
 pub fn enrich_record(
     rec: &mut CaptureRecord,
     route: &CaptureRoute,
@@ -80,7 +80,25 @@ pub fn enrich_record(
     request_body: Option<&Value>,
     assistant_text: Option<&str>,
     registry: &mut SubagentRegistry,
-) -> EnrichOutcome {
+) -> anyhow::Result<EnrichOutcome> {
+    let main = route.subagent_id.is_none();
+    let refs = if main {
+        request_body
+            .map(extract_subagent_ids_from_request)
+            .transpose()?
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    let assistant = assistant_text.filter(|text| main && !text.is_empty());
+    let hints = assistant
+        .map(extract_spawn_hints_from_assistant)
+        .transpose()?
+        .unwrap_or_default();
+    let spawned = assistant
+        .map(extract_subagent_ids_from_text)
+        .transpose()?
+        .unwrap_or_default();
     let mut outcome = EnrichOutcome::default();
     let run_key = run_registry_key(route);
     registry.register_route(
@@ -88,7 +106,7 @@ pub fn enrich_record(
         route,
         rec.call_id.as_deref().unwrap_or(""),
         request_body,
-    );
+    )?;
 
     if let Some(id) = route.subagent_id.clone() {
         rec.subagent_id = Some(id.clone());
@@ -99,7 +117,7 @@ pub fn enrich_record(
             rec.payload["parent_agent_id"] = json!(parent);
         }
         outcome.spawn_link_backfills = registry.on_subagent_registered(&run_key, &id);
-        return outcome;
+        return Ok(outcome);
     }
 
     if let Some(parent) = extract_claude_parent_agent_id(headers) {
@@ -107,37 +125,27 @@ pub fn enrich_record(
         rec.payload["parent_agent_id"] = json!(parent);
     }
 
-    if let Some(body) = request_body {
-        let refs = extract_subagent_ids_from_request(body);
-        if !refs.is_empty() {
-            let trajectories = registry.trajectory_paths(&run_key, &refs);
-            rec.payload["refs_subagent_ids"] = json!(refs);
-            if !trajectories.is_empty() {
-                rec.payload["subagent_trajectories"] = json!(trajectories);
-            }
+    if !refs.is_empty() {
+        let trajectories = registry.trajectory_paths(&run_key, &refs);
+        rec.payload["refs_subagent_ids"] = json!(refs);
+        if !trajectories.is_empty() {
+            rec.payload["subagent_trajectories"] = json!(trajectories);
         }
     }
 
-    if let Some(text) = assistant_text.filter(|s| !s.is_empty()) {
-        let hints = extract_spawn_hints_from_assistant(text);
-        if !hints.is_empty() {
-            rec.payload["spawn_hints"] =
-                json!(hints.iter().map(spawn_hint_to_json).collect::<Vec<_>>());
-            let links = registry.remember_main_spawn(
-                &run_key,
-                rec.call_id.as_deref().unwrap_or(""),
-                &hints,
-            );
-            apply_spawn_links(rec, &links);
-        }
-        let spawned = extract_subagent_ids_from_text(text);
-        if !spawned.is_empty() {
-            let trajectories = registry.trajectory_paths(&run_key, &spawned);
-            merge_string_array_payload(rec, "refs_subagent_ids", &spawned);
-            if !trajectories.is_empty() {
-                merge_string_array_payload(rec, "subagent_trajectories", &trajectories);
-            }
+    if !hints.is_empty() {
+        rec.payload["spawn_hints"] =
+            json!(hints.iter().map(spawn_hint_to_json).collect::<Vec<_>>());
+        let links =
+            registry.remember_main_spawn(&run_key, rec.call_id.as_deref().unwrap_or(""), &hints);
+        apply_spawn_links(rec, &links);
+    }
+    if !spawned.is_empty() {
+        let trajectories = registry.trajectory_paths(&run_key, &spawned);
+        merge_string_array_payload(rec, "refs_subagent_ids", &spawned);
+        if !trajectories.is_empty() {
+            merge_string_array_payload(rec, "subagent_trajectories", &trajectories);
         }
     }
-    outcome
+    Ok(outcome)
 }

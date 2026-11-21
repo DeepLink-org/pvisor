@@ -69,7 +69,7 @@ pub fn understand_response_value(
         ProtocolKind::Responses => parse_responses_response(object),
         ProtocolKind::Gemini => parse_gemini_response(object),
         _ => parse_chat_response(object),
-    };
+    }?;
     Ok(LlmResponseEventPayload {
         output_format: protocol.into(),
         response,
@@ -154,7 +154,7 @@ fn parse_chat_request(object: &Map<String, Value>) -> LlmRequest {
     request
 }
 
-fn parse_chat_response(object: &Map<String, Value>) -> LlmResponse {
+fn parse_chat_response(object: &Map<String, Value>) -> Result<LlmResponse> {
     let candidates = object
         .get("choices")
         .and_then(Value::as_array)
@@ -195,19 +195,19 @@ fn parse_chat_response(object: &Map<String, Value>) -> LlmResponse {
             }
         })
         .collect();
-    LlmResponse {
+    Ok(LlmResponse {
         id: object.get("id").and_then(Value::as_str).map(str::to_string),
         model: object
             .get("model")
             .and_then(Value::as_str)
             .map(str::to_string),
         candidates,
-        usage: object.get("usage").map(parse_usage),
+        usage: object.get("usage").map(parse_usage).transpose()?,
         extensions: response_usage_extensions(object, false),
-    }
+    })
 }
 
-fn parse_messages_response(object: &Map<String, Value>) -> LlmResponse {
+fn parse_messages_response(object: &Map<String, Value>) -> Result<LlmResponse> {
     let parts = parse_content_parts(object.get("content").unwrap_or(&Value::Null));
     let candidates = if parts.is_empty() {
         Vec::new()
@@ -222,19 +222,19 @@ fn parse_messages_response(object: &Map<String, Value>) -> LlmResponse {
             extensions: BTreeMap::new(),
         }]
     };
-    LlmResponse {
+    Ok(LlmResponse {
         id: object.get("id").and_then(Value::as_str).map(str::to_string),
         model: object
             .get("model")
             .and_then(Value::as_str)
             .map(str::to_string),
         candidates,
-        usage: object.get("usage").map(parse_usage),
+        usage: object.get("usage").map(parse_usage).transpose()?,
         extensions: BTreeMap::new(),
-    }
+    })
 }
 
-fn parse_responses_response(object: &Map<String, Value>) -> LlmResponse {
+fn parse_responses_response(object: &Map<String, Value>) -> Result<LlmResponse> {
     let mut parts = Vec::new();
     for item in object
         .get("output")
@@ -274,19 +274,19 @@ fn parse_responses_response(object: &Map<String, Value>) -> LlmResponse {
             extensions: BTreeMap::new(),
         }]
     };
-    LlmResponse {
+    Ok(LlmResponse {
         id: object.get("id").and_then(Value::as_str).map(str::to_string),
         model: object
             .get("model")
             .and_then(Value::as_str)
             .map(str::to_string),
         candidates,
-        usage: object.get("usage").map(parse_usage),
+        usage: object.get("usage").map(parse_usage).transpose()?,
         extensions: BTreeMap::new(),
-    }
+    })
 }
 
-fn parse_gemini_response(object: &Map<String, Value>) -> LlmResponse {
+fn parse_gemini_response(object: &Map<String, Value>) -> Result<LlmResponse> {
     let response_id = object
         .get("responseId")
         .and_then(Value::as_str)
@@ -340,7 +340,7 @@ fn parse_gemini_response(object: &Map<String, Value>) -> LlmResponse {
             extensions: BTreeMap::new(),
         });
     }
-    LlmResponse {
+    Ok(LlmResponse {
         id: object
             .get("responseId")
             .and_then(Value::as_str)
@@ -350,9 +350,9 @@ fn parse_gemini_response(object: &Map<String, Value>) -> LlmResponse {
             .and_then(Value::as_str)
             .map(str::to_string),
         candidates,
-        usage: object.get("usageMetadata").map(parse_usage),
+        usage: object.get("usageMetadata").map(parse_usage).transpose()?,
         extensions: response_usage_extensions(object, true),
-    }
+    })
 }
 
 fn parse_messages_request(object: &Map<String, Value>) -> LlmRequest {
@@ -1021,7 +1021,7 @@ fn response_usage_extensions(object: &Map<String, Value>, gemini: bool) -> BTree
     extensions
 }
 
-fn parse_usage(value: &Value) -> LlmUsage {
+fn parse_usage(value: &Value) -> Result<LlmUsage> {
     let input_tokens = first_u64(
         value,
         &["input_tokens", "prompt_tokens", "promptTokenCount"],
@@ -1054,15 +1054,16 @@ fn parse_usage(value: &Value) -> LlmUsage {
             .and_then(Value::as_u64)
             .unwrap_or(0),
     );
-    LlmUsage {
+    Ok(LlmUsage {
         input_tokens,
         output_tokens,
-        total_tokens: first_u64(value, &["total_tokens", "totalTokenCount"])
-            .max(input_tokens.saturating_add(output_tokens)),
+        total_tokens: first_u64(value, &["total_tokens", "totalTokenCount"]).max(
+            crate::usage::checked_token_add(input_tokens, output_tokens, "total_tokens")?,
+        ),
         cache_read_tokens,
         cache_write_tokens,
         reasoning_tokens,
-    }
+    })
 }
 
 fn first_u64(value: &Value, keys: &[&str]) -> u64 {

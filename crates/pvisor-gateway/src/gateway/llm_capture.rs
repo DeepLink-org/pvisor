@@ -333,12 +333,12 @@ pub(super) async fn llm_capture(
                 request: &model_request,
             },
         )
-        .expect("policy controller must return a valid authorization transition");
+        .context("authorize model control transition")?;
     if !control_transition.is_allowed() {
         let reason = control_transition.reason;
         let _applied_control = control
             .applied()
-            .expect("a denied model control transition can be applied");
+            .context("apply denied model control transition")?;
         tracing::warn!(
             target: "pvisor_gateway",
             run_id = capture_route.root_session.as_deref().unwrap_or("-"),
@@ -362,7 +362,7 @@ pub(super) async fn llm_capture(
     }
     let _applied_control = control
         .applied()
-        .expect("an allowed model control transition can be applied");
+        .context("apply allowed model control transition")?;
 
     if debug_on {
         let body_preview = if cfg.capture_level.includes_full_body() {

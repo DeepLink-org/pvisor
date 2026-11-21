@@ -25,7 +25,7 @@ fn fixture_request_parses_model() {
 fn fixture_response_usage() {
     let body: Value =
         serde_json::from_str(include_str!("fixtures/response/completions/basic.json")).unwrap();
-    let u = extract_usage_from_response(&body);
+    let u = extract_usage_from_response(&body).unwrap();
     assert!(u.total_tokens > 0 || u.input_tokens > 0 || u.output_tokens > 0);
 }
 

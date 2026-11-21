@@ -12,7 +12,7 @@ use crate::llm::{
 };
 use anyhow::{Context, Result};
 use bytes::Bytes;
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 
 use super::{MAX_SSE_FRAME_BYTES, ProtocolBridge};
 use crate::protocol::ProtocolKind;
@@ -110,7 +110,7 @@ struct StreamDecoder {
     metrics: StreamMetrics,
     tool_ids: HashMap<(usize, usize), String>,
     response_call_ids: HashMap<String, String>,
-    message_usage: Value,
+    message_usage: Map<String, Value>,
     accumulator: ResponseAccumulator,
 }
 
@@ -130,7 +130,7 @@ impl StreamDecoder {
             metrics: StreamMetrics::default(),
             tool_ids: HashMap::new(),
             response_call_ids: HashMap::new(),
-            message_usage: json!({}),
+            message_usage: Map::new(),
             accumulator: ResponseAccumulator::new(protocol),
         }
     }
@@ -184,10 +184,10 @@ impl StreamDecoder {
                 LlmProtocol::Unknown => false,
             };
             match self.protocol {
-                LlmProtocol::Gemini => self.decode_gemini(&value, &mut events),
-                LlmProtocol::ChatCompletions => self.decode_chat(&value, &mut events),
-                LlmProtocol::Messages => self.decode_messages(&value, &mut events),
-                LlmProtocol::Responses => self.decode_responses(&value, &mut events),
+                LlmProtocol::Gemini => self.decode_gemini(&value, &mut events)?,
+                LlmProtocol::ChatCompletions => self.decode_chat(&value, &mut events)?,
+                LlmProtocol::Messages => self.decode_messages(&value, &mut events)?,
+                LlmProtocol::Responses => self.decode_responses(&value, &mut events)?,
                 LlmProtocol::Unknown => {}
             }
         }
@@ -231,7 +231,7 @@ impl StreamDecoder {
         Ok(Vec::new())
     }
 
-    fn decode_chat(&mut self, value: &Value, events: &mut Vec<LlmStreamEvent>) {
+    fn decode_chat(&mut self, value: &Value, events: &mut Vec<LlmStreamEvent>) -> Result<()> {
         self.start_from(
             value.get("id").and_then(Value::as_str),
             value.get("model").and_then(Value::as_str),
@@ -325,10 +325,10 @@ impl StreamDecoder {
                 });
             }
         }
-        self.usage_from(value, events);
+        self.usage_from(value, events)
     }
 
-    fn decode_gemini(&mut self, value: &Value, events: &mut Vec<LlmStreamEvent>) {
+    fn decode_gemini(&mut self, value: &Value, events: &mut Vec<LlmStreamEvent>) -> Result<()> {
         self.start_from(
             value.get("responseId").and_then(Value::as_str),
             value.get("modelVersion").and_then(Value::as_str),
@@ -410,10 +410,10 @@ impl StreamDecoder {
                 });
             }
         }
-        self.usage_from(value, events);
+        self.usage_from(value, events)
     }
 
-    fn decode_messages(&mut self, value: &Value, events: &mut Vec<LlmStreamEvent>) {
+    fn decode_messages(&mut self, value: &Value, events: &mut Vec<LlmStreamEvent>) -> Result<()> {
         match value.get("type").and_then(Value::as_str) {
             Some("message_start") => {
                 let message = value.get("message").unwrap_or(value);
@@ -422,7 +422,7 @@ impl StreamDecoder {
                     message.get("model").and_then(Value::as_str),
                     events,
                 );
-                self.usage_from(message, events);
+                self.usage_from(message, events)?;
             }
             Some("content_block_start") => {
                 let block = value.get("content_block").unwrap_or(value);
@@ -499,13 +499,14 @@ impl StreamDecoder {
                         reason: Some(reason.into()),
                     });
                 }
-                self.usage_from(value, events);
+                self.usage_from(value, events)?;
             }
             _ => {}
         }
+        Ok(())
     }
 
-    fn decode_responses(&mut self, value: &Value, events: &mut Vec<LlmStreamEvent>) {
+    fn decode_responses(&mut self, value: &Value, events: &mut Vec<LlmStreamEvent>) -> Result<()> {
         let event_type = value
             .get("type")
             .and_then(Value::as_str)
@@ -582,7 +583,7 @@ impl StreamDecoder {
             }
             "response.completed" | "response.incomplete" | "response.failed" => {
                 let response = value.get("response").unwrap_or(value);
-                self.usage_from(response, events);
+                self.usage_from(response, events)?;
                 events.push(LlmStreamEvent::Finish {
                     candidate: 0,
                     reason: response
@@ -593,6 +594,7 @@ impl StreamDecoder {
             }
             _ => {}
         }
+        Ok(())
     }
 
     fn start_from(
@@ -615,26 +617,32 @@ impl StreamDecoder {
         events.push(LlmStreamEvent::Start { id, model });
     }
 
-    fn usage_from(&mut self, value: &Value, events: &mut Vec<LlmStreamEvent>) {
+    fn usage_from(&mut self, value: &Value, events: &mut Vec<LlmStreamEvent>) -> Result<()> {
         let merged;
+        let mut next_usage = None;
         let value = if self.protocol == LlmProtocol::Messages {
-            if let Some(fields) = value.get("usage").and_then(Value::as_object) {
-                self.message_usage
-                    .as_object_mut()
-                    .expect("usage object")
-                    .extend(fields.clone());
+            let mut fields = self.message_usage.clone();
+            if let Some(update) = value.get("usage").and_then(Value::as_object) {
+                fields.extend(update.clone());
             }
-            merged = json!({"usage": self.message_usage.clone()});
+            merged = json!({"usage": &fields});
+            next_usage = Some(fields);
             &merged
         } else {
             value
         };
-        let usage = extract_usage_from_response(value);
+        let usage = extract_usage_from_response(value).inspect_err(|_| {
+            self.decode_failed = true;
+        })?;
+        if let Some(fields) = next_usage {
+            self.message_usage = fields;
+        }
         if usage != TokenUsage::default() {
             events.push(LlmStreamEvent::Usage {
                 usage: to_llm_usage(&usage),
             });
         }
+        Ok(())
     }
 
     fn observe(&mut self, events: &[LlmStreamEvent]) {
@@ -976,7 +984,7 @@ impl StreamRenderer {
             "choices":choice.into_iter().collect::<Vec<_>>(),
         });
         if matches!(event, LlmStreamEvent::Usage { .. }) {
-            value["usage"] = super::semantic::render_chat_usage(&self.usage);
+            value["usage"] = Value::Object(super::semantic::render_chat_usage(&self.usage));
         }
         output.push_str(&format_sse(None, &value)?);
         Ok(())
@@ -1325,6 +1333,97 @@ fn from_llm_usage(usage: &LlmUsage) -> TokenUsage {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    #[rstest::rstest]
+    fn messages_usage_overflow_preserves_state_and_latches_failure() {
+        let mut decoder = StreamDecoder::new(LlmProtocol::Messages, "client");
+        let mut events = Vec::new();
+        decoder
+            .usage_from(
+                &json!({"usage": {
+                    "input_tokens": u64::MAX, "output_tokens": 0, "opaque": "retained"
+                }}),
+                &mut events,
+            )
+            .unwrap();
+        decoder.observe(&events);
+        events.clear();
+        let before = decoder.message_usage.clone();
+        let metrics = decoder.metrics.clone();
+        assert!(
+            decoder
+                .usage_from(&json!({"usage": {"output_tokens": 1}}), &mut events)
+                .is_err()
+        );
+        assert_eq!(decoder.message_usage, before);
+        assert_eq!(decoder.metrics, metrics);
+        assert!(events.is_empty());
+        decoder
+            .usage_from(&json!({"usage": {"output_tokens": 0}}), &mut events)
+            .unwrap();
+        decoder.terminal_observed = true;
+        assert!(decoder.finish().is_err());
+    }
+
+    #[rstest::rstest]
+    #[case::omitted(json!({}), 10, 2, 2, false)]
+    #[case::null(json!({"usage": null}), 10, 2, 2, false)]
+    #[case::array(json!({"usage": []}), 10, 2, 2, false)]
+    #[case::scalar(json!({"usage": "unknown"}), 10, 2, 2, false)]
+    #[case::output_delta(json!({"usage": {"output_tokens": 7}}), 10, 7, 2, false)]
+    #[case::explicit_zero(json!({"usage": {"output_tokens": 0}}), 10, 0, 2, false)]
+    #[case::input_delta(json!({"usage": {"input_tokens": 20}}), 20, 2, 2, false)]
+    #[case::nested_replace(json!({"usage": {"completion_tokens_details": {"reasoning_tokens": 0}}}), 10, 2, 0, true)]
+    fn messages_usage_updates_keep_existing_shallow_merge_rules(
+        #[case] frame: Value,
+        #[case] input: u64,
+        #[case] output: u64,
+        #[case] reasoning: u64,
+        #[case] replaced_nested: bool,
+    ) {
+        let mut decoder = StreamDecoder::new(LlmProtocol::Messages, "client");
+        let mut events = Vec::new();
+        decoder
+            .usage_from(
+                &json!({"usage": {
+                    "input_tokens": 10, "output_tokens": 2, "total_tokens": 12,
+                    "cache_read_input_tokens": 3, "cache_creation_input_tokens": 1,
+                    "completion_tokens_details": {"reasoning_tokens": 2, "retained": "old"},
+                    "opaque": {"preserved": true}
+                }}),
+                &mut events,
+            )
+            .unwrap();
+        decoder.observe(&events);
+        events.clear();
+        decoder.usage_from(&frame, &mut events).unwrap();
+        decoder.observe(&events);
+        assert_eq!(decoder.metrics.usage.input_tokens, input);
+        assert_eq!(decoder.metrics.usage.output_tokens, output);
+        assert_eq!(decoder.metrics.usage.total_tokens, 12);
+        assert_eq!(decoder.metrics.usage.cache_read_tokens, 3);
+        assert_eq!(decoder.metrics.usage.cache_write_tokens, 1);
+        assert_eq!(decoder.metrics.usage.reasoning_tokens, reasoning);
+        assert_eq!(
+            decoder.message_usage.get("opaque"),
+            Some(&json!({"preserved": true}))
+        );
+        assert_eq!(
+            decoder
+                .message_usage
+                .get("completion_tokens_details")
+                .unwrap()
+                .get("retained")
+                .is_none(),
+            replaced_nested
+        );
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, LlmStreamEvent::Usage { .. }))
+        );
+    }
 
     #[test]
     fn native_messages_input_is_not_discounted_twice() {
@@ -1393,8 +1492,6 @@ mod tests {
             assert!(translator.finish_stream().is_ok());
         }
     }
-    use super::*;
-
     #[test]
     fn eof_requires_a_nonempty_terminal_for_every_observed_candidate() {
         for (protocol, key, finish) in [

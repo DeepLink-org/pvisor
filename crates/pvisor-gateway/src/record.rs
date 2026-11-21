@@ -46,17 +46,16 @@ pub fn unix_ms_from_rfc3339(timestamp: &str) -> Option<u64> {
 }
 
 /// Fix the observation time before delivery to actors.
-pub(crate) fn ensure_timestamp(record: &mut CaptureRecord) {
+pub(crate) fn ensure_timestamp(record: &mut CaptureRecord) -> u64 {
     if record.timestamp.is_none() {
         record.timestamp = Some(now_rfc3339());
     }
-    if record.observed_at_unix_ms.is_none() {
-        record.observed_at_unix_ms = record
-            .timestamp
-            .as_deref()
+    let timestamp = record.timestamp.as_deref();
+    *record.observed_at_unix_ms.get_or_insert_with(|| {
+        timestamp
             .and_then(unix_ms_from_rfc3339)
-            .or_else(|| Some(unix_now_ms()));
-    }
+            .unwrap_or_else(unix_now_ms)
+    })
 }
 
 /// Capture-only interpretation of raw proxy payloads.
@@ -219,7 +218,7 @@ impl CaptureRecord {
         story: crate::engine::StoryContext,
     ) -> anyhow::Result<pvisor_core::event::Event> {
         use pvisor_core::event::{Fact, Granularity, Level, VERSION};
-        ensure_timestamp(&mut self);
+        let observed_at_unix_ms = ensure_timestamp(&mut self);
         let id = self
             .event_id
             .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
@@ -251,7 +250,7 @@ impl CaptureRecord {
             id,
             trace_id,
             producer: "pvisor-gateway".into(),
-            observed_at_unix_ms: self.observed_at_unix_ms.expect("ensured time"),
+            observed_at_unix_ms,
             scope,
             context: None,
             operation: None,

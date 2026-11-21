@@ -91,7 +91,10 @@ impl SessionIndexStore {
     }
 
     pub fn save(&self) -> Result<()> {
-        let mut guard = self.inner.write().unwrap();
+        let mut guard = self
+            .inner
+            .write()
+            .map_err(|_| anyhow::anyhow!("session index lock poisoned"))?;
         guard.updated_at = Utc::now();
         let json = serde_json::to_string_pretty(&*guard)?;
         if let Some(parent) = self.path.parent() {
@@ -111,7 +114,11 @@ pub struct SessionIndexHandle {
 
 impl SessionIndexHandle {
     pub fn rebuild_from_events(&self, records: &[pvisor_core::event::Record]) -> Result<()> {
-        self.inner.write().unwrap().sessions.clear();
+        self.inner
+            .write()
+            .map_err(|_| anyhow::anyhow!("session index lock poisoned"))?
+            .sessions
+            .clear();
         self.mark_dirty();
         for record in records {
             self.observe_event(&record.event)?;
@@ -132,7 +139,7 @@ impl SessionIndexHandle {
                 provider,
                 text("protocol"),
                 text("model"),
-            );
+            )?;
         } else if matches!(event.name(), "llm.response" | "llm.response.stream") {
             let usage = data
                 .content
@@ -153,15 +160,18 @@ impl SessionIndexHandle {
                 text("model"),
                 &usage,
                 cost,
-            );
+            )?;
         }
         if event.name() == "llm.call.cancelled" {
-            self.set_active(&data.story.agent_id, &data.story.route.session_id, false);
+            self.set_active(&data.story.agent_id, &data.story.route.session_id, false)?;
         }
         if let Some(time) =
             chrono::DateTime::from_timestamp_millis(event.observed_at_unix_ms as i64)
         {
-            let mut guard = self.inner.write().unwrap();
+            let mut guard = self
+                .inner
+                .write()
+                .map_err(|_| anyhow::anyhow!("session index lock poisoned"))?;
             if let Some(session) = guard.sessions.iter_mut().find(|s| {
                 s.agent_id == data.story.agent_id && s.session_id == data.story.route.session_id
             }) {
@@ -178,6 +188,7 @@ impl SessionIndexHandle {
         self.dirty.store(true, Ordering::Release);
     }
 
+    /// Record a request; lock poisoning or count overflow leaves the session unchanged.
     pub fn record_request(
         &self,
         agent_id: &str,
@@ -185,16 +196,23 @@ impl SessionIndexHandle {
         provider: ProviderKind,
         protocol: &str,
         model: &str,
-    ) {
+    ) -> Result<()> {
         let now = Utc::now();
-        let mut guard = self.inner.write().unwrap();
+        let mut guard = self
+            .inner
+            .write()
+            .map_err(|_| anyhow::anyhow!("session index lock poisoned"))?;
         if let Some(s) = guard
             .sessions
             .iter_mut()
             .find(|s| s.agent_id == agent_id && s.session_id == session_id)
         {
+            let count = s
+                .request_count
+                .checked_add(1)
+                .context("session request count overflow")?;
             s.last_seen = now;
-            s.request_count += 1;
+            s.request_count = count;
             s.active = true;
             if !model.is_empty() && model != "_unknown" {
                 s.model = model.to_string();
@@ -217,8 +235,10 @@ impl SessionIndexHandle {
             });
         }
         self.mark_dirty();
+        Ok(())
     }
 
+    /// Update a session after a response; counter overflow leaves the session unchanged.
     pub fn record_response(
         &self,
         agent_id: &str,
@@ -227,17 +247,20 @@ impl SessionIndexHandle {
         model: &str,
         usage: &TokenUsage,
         cost_usd: f64,
-    ) {
+    ) -> Result<()> {
         let now = Utc::now();
-        let mut guard = self.inner.write().unwrap();
+        let mut guard = self
+            .inner
+            .write()
+            .map_err(|_| anyhow::anyhow!("session index lock poisoned"))?;
         if let Some(s) = guard
             .sessions
             .iter_mut()
             .find(|s| s.agent_id == agent_id && s.session_id == session_id)
         {
+            s.usage.merge(usage)?;
             s.last_seen = now;
             s.active = false;
-            s.usage.merge(usage);
             s.estimated_cost_usd += cost_usd;
             if !model.is_empty() {
                 s.model = model.to_string();
@@ -245,10 +268,15 @@ impl SessionIndexHandle {
             s.provider = provider.as_str().to_string();
         }
         self.mark_dirty();
+        Ok(())
     }
 
-    pub fn set_active(&self, agent_id: &str, session_id: &str, active: bool) {
-        let mut guard = self.inner.write().unwrap();
+    /// Set activity, returning an error without mutation if the index lock is poisoned.
+    pub fn set_active(&self, agent_id: &str, session_id: &str, active: bool) -> Result<()> {
+        let mut guard = self
+            .inner
+            .write()
+            .map_err(|_| anyhow::anyhow!("session index lock poisoned"))?;
         if let Some(s) = guard
             .sessions
             .iter_mut()
@@ -257,9 +285,11 @@ impl SessionIndexHandle {
             s.active = active;
         }
         self.mark_dirty();
+        Ok(())
     }
 
     pub fn flush_if_dirty(&self) -> Result<()> {
+        anyhow::ensure!(!self.inner.is_poisoned(), "session index lock poisoned");
         if !self.dirty.load(Ordering::Acquire) {
             return Ok(());
         }
@@ -267,7 +297,10 @@ impl SessionIndexHandle {
     }
 
     pub fn flush(&self) -> Result<()> {
-        let guard = self.inner.read().unwrap();
+        let guard = self
+            .inner
+            .read()
+            .map_err(|_| anyhow::anyhow!("session index lock poisoned"))?;
         let json = serde_json::to_string_pretty(&*guard)?;
         if let Some(parent) = self.path.parent() {
             fs::create_dir_all(parent)?;
@@ -277,8 +310,26 @@ impl SessionIndexHandle {
         Ok(())
     }
 
-    pub fn snapshot(&self) -> SessionIndex {
-        self.inner.read().unwrap().clone()
+    /// Clone a consistent index; poisoned state is never returned as a valid snapshot.
+    ///
+    /// ```
+    /// use pvisor_gateway::{provider::ProviderKind, session::index::SessionIndexStore};
+    /// let storage = tempfile::tempdir()?;
+    /// let store = SessionIndexStore::open(storage.path())?;
+    /// let handle = store.clone_handle();
+    /// handle.record_request("agent", "session", ProviderKind::OpenAi, "chat", "model")?;
+    /// handle.set_active("agent", "session", false)?;
+    /// assert_eq!(handle.snapshot()?.sessions[0].request_count, 1);
+    /// handle.flush_if_dirty()?;
+    /// assert!(!SessionIndexStore::load(storage.path())?.sessions[0].active);
+    /// # Ok::<(), anyhow::Error>(())
+    /// ```
+    pub fn snapshot(&self) -> Result<SessionIndex> {
+        Ok(self
+            .inner
+            .read()
+            .map_err(|_| anyhow::anyhow!("session index lock poisoned"))?
+            .clone())
     }
 }
 
@@ -335,6 +386,70 @@ mod tests {
     use crate::provider::ProviderKind;
     use crate::usage::TokenUsage;
 
+    #[rstest::rstest]
+    #[case::clean(false)]
+    #[case::dirty(true)]
+    fn poisoned_index_rejects_reads_writes_and_flush(#[case] dirty: bool) {
+        let dir = tempfile::tempdir().unwrap();
+        let store = SessionIndexStore::open(dir.path()).unwrap();
+        let handle = store.clone_handle();
+        store.save().unwrap();
+        let before = fs::read(&store.path).unwrap();
+        handle.dirty.store(dirty, Ordering::Release);
+        assert!(
+            std::panic::catch_unwind(|| {
+                let _guard = handle.inner.write().unwrap();
+                panic!("injected index failure");
+            })
+            .is_err()
+        );
+        let results = [
+            store.save(),
+            handle.rebuild_from_events(&[]),
+            handle.record_request("a", "s", ProviderKind::OpenAi, "chat", "m"),
+            handle.record_response(
+                "a",
+                "s",
+                ProviderKind::OpenAi,
+                "m",
+                &TokenUsage::default(),
+                0.0,
+            ),
+            handle.set_active("a", "s", true),
+            handle.snapshot().map(|_| ()),
+            handle.flush(),
+            handle.flush_if_dirty(),
+        ];
+        for result in results {
+            assert!(result.unwrap_err().to_string().contains("lock poisoned"));
+        }
+        assert_eq!(fs::read(&store.path).unwrap(), before);
+        assert_eq!(handle.dirty.load(Ordering::Acquire), dirty);
+    }
+
+    #[rstest::rstest]
+    fn request_count_overflow_leaves_session_unchanged() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = SessionIndexStore::open(dir.path()).unwrap();
+        let handle = store.clone_handle();
+        handle
+            .record_request("a", "s", ProviderKind::OpenAi, "chat", "old")
+            .unwrap();
+        handle.inner.write().unwrap().sessions[0].request_count = u64::MAX;
+        handle.flush_if_dirty().unwrap();
+        let before = serde_json::to_value(handle.snapshot().unwrap()).unwrap();
+        assert!(
+            handle
+                .record_request("a", "s", ProviderKind::Anthropic, "messages", "new")
+                .is_err()
+        );
+        assert_eq!(
+            serde_json::to_value(handle.snapshot().unwrap()).unwrap(),
+            before
+        );
+        assert!(!handle.dirty.load(Ordering::Acquire));
+    }
+
     #[test]
     fn flush_if_dirty_skips_when_not_dirty() {
         let dir = tempfile::tempdir().unwrap();
@@ -349,7 +464,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = SessionIndexStore::open(dir.path()).unwrap();
         let handle = store.clone_handle();
-        handle.record_request("agent", "sess", ProviderKind::OpenAi, "chat", "gpt-4");
+        handle
+            .record_request("agent", "sess", ProviderKind::OpenAi, "chat", "gpt-4")
+            .unwrap();
         handle.flush_if_dirty().unwrap();
 
         let loaded = SessionIndexStore::load(dir.path()).unwrap();
@@ -365,24 +482,28 @@ mod tests {
         let writer = store.clone_handle();
         let reader = writer.clone();
 
-        writer.record_request("agent", "sess", ProviderKind::OpenAi, "chat", "m");
+        writer
+            .record_request("agent", "sess", ProviderKind::OpenAi, "chat", "m")
+            .unwrap();
         reader.flush_if_dirty().unwrap();
 
-        writer.record_response(
-            "agent",
-            "sess",
-            ProviderKind::OpenAi,
-            "m",
-            &TokenUsage {
-                input_tokens: 10,
-                output_tokens: 5,
-                total_tokens: 15,
-                cache_read_tokens: 0,
-                cache_write_tokens: 0,
-                reasoning_tokens: 0,
-            },
-            0.01,
-        );
+        writer
+            .record_response(
+                "agent",
+                "sess",
+                ProviderKind::OpenAi,
+                "m",
+                &TokenUsage {
+                    input_tokens: 10,
+                    output_tokens: 5,
+                    total_tokens: 15,
+                    cache_read_tokens: 0,
+                    cache_write_tokens: 0,
+                    reasoning_tokens: 0,
+                },
+                0.01,
+            )
+            .unwrap();
         writer.flush_if_dirty().unwrap();
 
         let loaded = SessionIndexStore::load(dir.path()).unwrap();
@@ -396,13 +517,15 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = SessionIndexStore::open(dir.path()).unwrap();
         let handle = store.clone_handle();
-        handle.record_request(
-            "agent",
-            "sess",
-            ProviderKind::Anthropic,
-            "messages",
-            "claude",
-        );
+        handle
+            .record_request(
+                "agent",
+                "sess",
+                ProviderKind::Anthropic,
+                "messages",
+                "claude",
+            )
+            .unwrap();
         handle.flush_if_dirty().unwrap();
         handle.flush_if_dirty().unwrap();
 

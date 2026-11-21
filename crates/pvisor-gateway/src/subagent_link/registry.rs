@@ -23,22 +23,30 @@ impl SubagentRegistry {
         self.runs.entry(run_key.to_string()).or_default()
     }
 
+    /// Register a route; matcher failure returns before registry mutation.
     pub fn register_route(
         &mut self,
         run_key: &str,
         route: &CaptureRoute,
         call_id: &str,
         request_body: Option<&Value>,
-    ) {
+    ) -> anyhow::Result<()> {
+        let prompt = route
+            .subagent_id
+            .as_ref()
+            .and_then(|_| request_body.and_then(first_user_message_from_json));
+        let doc_target = prompt
+            .as_deref()
+            .map(extract_doc_target)
+            .transpose()?
+            .flatten();
         let run = self.run_mut(run_key);
         if route.subagent_id.is_none() {
             run.main_storage_session_id = Some(route.storage_session_id.clone());
         }
         let Some(id) = route.subagent_id.as_deref() else {
-            return;
+            return Ok(());
         };
-        let prompt = request_body.and_then(first_user_message_from_json);
-        let doc_target = prompt.as_deref().and_then(extract_doc_target);
         run.agents
             .entry(id.to_string())
             .and_modify(|e| {
@@ -56,6 +64,7 @@ impl SubagentRegistry {
                 first_prompt: prompt,
                 doc_target,
             });
+        Ok(())
     }
 
     pub fn trajectory_paths(&self, run_key: &str, ids: &[String]) -> Vec<String> {

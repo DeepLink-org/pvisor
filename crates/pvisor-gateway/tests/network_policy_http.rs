@@ -20,6 +20,93 @@ use tokio::sync::oneshot;
 
 struct DenyModelController;
 
+struct InvalidModelController;
+
+impl ControlController for InvalidModelController {
+    fn authorize(&self, request: ControlRequest<'_>) -> ControlTransition {
+        match request {
+            ControlRequest::Model { .. } => ControlTransition {
+                from: pvisor_core::ControlState::Allowed,
+                to: pvisor_core::ControlState::Allowed,
+                reason: ControlReason::ModelNotAllowed,
+            },
+            network => PolicyControlController.authorize(network),
+        }
+    }
+}
+
+#[tokio::test]
+async fn invalid_model_authorization_fails_closed_without_upstream_dispatch() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let observed = calls.clone();
+    let (stop, stopped) = oneshot::channel();
+    let mock = tokio::spawn(async move {
+        let app = Router::new().route(
+            "/v1/chat/completions",
+            post(move || {
+                let observed = observed.clone();
+                async move {
+                    observed.fetch_add(1, Ordering::SeqCst);
+                    "{}"
+                }
+            }),
+        );
+        axum::serve(listener, app)
+            .with_graceful_shutdown(async {
+                let _ = stopped.await;
+            })
+            .await
+            .unwrap();
+    });
+    let toml = format!(
+        r#"
+listen = "{{{{LISTEN}}}}"
+admin_listen = "{{{{ADMIN}}}}"
+agent_id = "t"
+[network]
+mode = "public"
+[[models]]
+name = "*"
+upstream = "http://127.0.0.1:{port}/v1"
+"#
+    );
+    let (proxy, _storage) = spawn_proxy_with_controller(&toml, Arc::new(InvalidModelController));
+    let client = reqwest::Client::builder()
+        .no_proxy()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .unwrap();
+    let mut statuses = Vec::new();
+    let mut errors = Vec::new();
+    for _ in 0..2 {
+        let response = client
+            .post(format!("http://{}/v1/chat/completions", proxy.listen))
+            .json(
+                &serde_json::json!({"model": "test", "messages": [{"role":"user","content":"hi"}]}),
+            )
+            .send()
+            .await
+            .unwrap();
+        statuses.push(response.status());
+        errors.push(response.text().await.unwrap());
+    }
+    proxy.shutdown().unwrap();
+    let _ = stop.send(());
+    tokio::time::timeout(Duration::from_secs(2), mock)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(statuses, [StatusCode::BAD_GATEWAY; 2]);
+    for error in errors {
+        assert!(error.contains("authorize model control transition"));
+        assert!(error.contains("invalid authorization transition"));
+    }
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+}
+
 impl ControlController for DenyModelController {
     fn authorize(&self, request: ControlRequest<'_>) -> ControlTransition {
         match request {

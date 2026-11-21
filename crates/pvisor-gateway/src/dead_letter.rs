@@ -253,6 +253,7 @@ fn append_dead_letter_with_story(
                         serde_json::from_slice::<Value>(&event.resp_bytes)
                             .ok()
                             .map(|body| crate::usage::extract_usage_from_response(&body))
+                            .transpose()?
                             .unwrap_or_default()
                     }
                     _ => Default::default(),
@@ -542,6 +543,39 @@ mod tests {
     use crate::config::CaptureLevel;
     use crate::protocol::ProtocolKind;
     use crate::provider::ProviderKind;
+
+    #[rstest::rstest]
+    #[case::summary(CaptureLevel::Summary)]
+    #[case::dialogue(CaptureLevel::Dialogue)]
+    fn redacted_dead_letter_rejects_overflow_without_writing_zero_usage(
+        #[case] level: CaptureLevel,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let mut ctx = sample_ctx(dir.path());
+        ctx.level = level;
+        let event = Event::ResponseComplete(CompleteEvent {
+            resp_bytes: Bytes::from(
+                serde_json::json!({
+                    "usage": {"input_tokens": u64::MAX, "output_tokens": 1},
+                    "private": "must-not-be-retained"
+                })
+                .to_string(),
+            ),
+            status: 200,
+            streaming: false,
+            headers: vec![],
+            assistant_content: None,
+            stream_metrics: None,
+            semantic: None,
+        });
+        assert!(
+            append_dead_letter(dir.path(), &ctx, &event, "usage overflow", None)
+                .unwrap_err()
+                .to_string()
+                .contains("total_tokens")
+        );
+        assert!(!dead_letter_path(dir.path()).exists());
+    }
 
     fn sample_ctx(_dir: &Path) -> CallContext {
         CallContext::new(

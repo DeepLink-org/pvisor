@@ -39,9 +39,16 @@ pub fn admin_router(state: AdminState) -> Router {
         .with_state(state)
 }
 
-async fn status_handler(State(st): State<AdminState>) -> Json<StatusResponse> {
-    let index = st.index.snapshot();
-    Json(StatusResponse {
+async fn status_handler(
+    State(st): State<AdminState>,
+) -> Result<Json<StatusResponse>, (axum::http::StatusCode, &'static str)> {
+    let index = st.index.snapshot().map_err(|_| {
+        (
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            "session index unavailable",
+        )
+    })?;
+    Ok(Json(StatusResponse {
         listen: st.listen.clone(),
         admin: st.admin_listen.clone(),
         started_at: st.started_at.clone(),
@@ -51,11 +58,18 @@ async fn status_handler(State(st): State<AdminState>) -> Json<StatusResponse> {
         interception: InterceptionProfile::explicit_proxy(),
         interception_metrics: st.interception_metrics.snapshot(),
         sessions: index.sessions,
-    })
+    }))
 }
 
-async fn sessions_handler(State(st): State<AdminState>) -> Json<SessionIndex> {
-    Json(st.index.snapshot())
+async fn sessions_handler(
+    State(st): State<AdminState>,
+) -> Result<Json<SessionIndex>, (axum::http::StatusCode, &'static str)> {
+    st.index.snapshot().map(Json).map_err(|_| {
+        (
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            "session index unavailable",
+        )
+    })
 }
 
 #[cfg(test)]
@@ -77,7 +91,8 @@ mod tests {
             active_requests: Arc::new(std::sync::atomic::AtomicUsize::new(3)),
             interception_metrics: InterceptionMetrics::default(),
         }))
-        .await;
+        .await
+        .unwrap();
 
         assert_eq!(response.0.listen, "127.0.0.1:9875");
         assert_eq!(response.0.admin, "127.0.0.1:9876");

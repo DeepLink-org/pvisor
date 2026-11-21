@@ -667,7 +667,7 @@ fn normalized_message_events(sse: &str) -> Vec<(String, Value)> {
 fn ag_capture_usage_json_matrix() {
     let report = for_each_existing(USAGE_JSON_FIXTURES, |path| {
         let body = load_json_fixture(path);
-        let usage = extract_usage_from_response(&body);
+        let usage = extract_usage_from_response(&body).unwrap();
         assert!(
             usage.total_tokens > 0 || usage.input_tokens + usage.output_tokens > 0,
             "{path}: expected non-zero usage, got {usage:?}"
@@ -679,14 +679,14 @@ fn ag_capture_usage_json_matrix() {
 #[test]
 fn ag_capture_usage_from_completions_stream() {
     let raw = read_fixture("local/response/completions/stream_tool_call.txt");
-    let usage = extract_usage_from_sse(&raw);
+    let usage = extract_usage_from_sse(&raw).unwrap();
     assert!(usage.total_tokens > 0, "usage: {usage:?}");
 }
 
 #[test]
 fn ag_capture_usage_from_completions_response() {
     let body = load_json_fixture("response/completions/basic.json");
-    let usage = extract_usage_from_response(&body);
+    let usage = extract_usage_from_response(&body).unwrap();
     assert!(usage.total_tokens > 0 || usage.input_tokens + usage.output_tokens > 0);
 }
 
