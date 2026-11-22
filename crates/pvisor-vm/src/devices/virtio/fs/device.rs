@@ -307,13 +307,14 @@ impl VirtioDevice for Fs {
         let read_index = self.profile.rngk_readindex
             && self.profile.guest_cache
             && !self.profile.host_writeback
-            && self.overlay_cfg.as_ref().is_some_and(|cfg| {
-                !cfg.lower_mutability.is_empty()
-                    && cfg
-                        .lower_mutability
-                        .iter()
-                        .all(|m| *m == pvisor_overlay_core::LayerMutability::Immutable)
-            })
+            && matches!(
+                &self.overlay_cfg,
+                Some(OverlaySource::Config(cfg))
+                    if !cfg.lower_mutability.is_empty()
+                        && cfg.lower_mutability.iter().all(|m| {
+                            *m == pvisor_overlay_core::LayerMutability::Immutable
+                        })
+            )
             && self.shm_region.is_none();
         self.avail_features
             | if inline { INLINE_METADATA_FEATURE } else { 0 }

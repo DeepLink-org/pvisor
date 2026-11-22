@@ -302,7 +302,18 @@ async fn run_slot(
             }
             if let Some(Job { spec, image, reply }) = job {
                 claimed = true;
-                let outcome = assign_slot(runtime, &plan, &directory, spec, image, &mut parked, &listener, &mut child).await;
+                let outcome = async {
+                    let identity = publish_assignment(&plan, &directory, spec, image)?;
+                    timeout(READY_TIMEOUT, async {
+                        parked.write_u8(1).await?;
+                        tokio::select! {
+                            result = confirm_startup(&listener, runtime, &identity) => result,
+                            status = child.wait() => bail!("assigned warm supervisor exited: {}", status?),
+                        }
+                    })
+                    .await
+                    .context("assigned warm supervisor did not become ready")?
+                }.await;
                 let cleanup = if let Err(error) = &outcome {
                     eprintln!("warm launch failed: {error:#}");
                     runtime.cleanup_binding(plan.binding.clone()).await
@@ -342,16 +353,12 @@ async fn run_slot(
     result
 }
 
-async fn assign_slot(
-    runtime: &NativeRuntime,
+fn publish_assignment(
     plan: &Plan,
     directory: &Path,
     spec: RuntimeSpec,
     image: PreparedImage,
-    parked: &mut UnixStream,
-    listener: &UnixListener,
-    child: &mut tokio::process::Child,
-) -> Result<()> {
+) -> Result<Identity> {
     validate_spec(&spec)?;
     ensure!(
         spec.id == plan.binding.id
@@ -376,15 +383,7 @@ async fn assign_slot(
     };
     make_run_spec(&identity)?;
     publish_new(&directory.join("identity.json"), &identity)?;
-    timeout(READY_TIMEOUT, async {
-        parked.write_u8(1).await?;
-        tokio::select! {
-            result = confirm_startup(listener, runtime, &identity) => result,
-            status = child.wait() => bail!("assigned warm supervisor exited: {}", status?),
-        }
-    })
-    .await
-    .context("assigned warm supervisor did not become ready")?
+    Ok(identity)
 }
 
 fn open_group(plan: &Plan) -> Result<Group> {

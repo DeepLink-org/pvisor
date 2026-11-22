@@ -128,7 +128,7 @@ systemd-run --user --scope --unit="pvisor-warm-$$" --quiet \
   -p Delegate=yes -p CPUQuota=400% -p MemoryMax=2G -p MemorySwapMax=0 \
   env PVISOR_BENCH_DAEMON_IMAGES=/prepared/images PVISOR_BENCH_DAEMON_IMAGE=ubuntu \
   taskset -c 4,5,6,7 benchmark/criterion/target/release/pvisor-benchmarks \
-  startup/daemon_warm_pool --binary /prepared/pvisor-daemon \
+  startup/daemon_warm_pool.json --binary /prepared/pvisor-daemon \
   --output benchmark/startup/.data/NEW-warm-pool \
   --criterion-output benchmark/startup/.data/NEW-criterion
 ```

@@ -154,7 +154,7 @@ Design: 负载、对照、控制变量与有效样本判据。
 - **想要的结论：** 冷启动与确认命中的 `Create → Running`、`Create → 首条正确命令完成` 各自的 P50、参考 P95 和配对中位数差的 95% bootstrap 区间。池空回退的耗时和实际命中数单列。
 - **实验设计：** 同一冻结 performance daemon、Linux 固件和本地已准备的 Ubuntu native guest 镜像，Linux x86_64/KVM、每实例 4 vCPU / 256 MiB cgroup 上限。在专用 Linux cgroup v2 scope 内，将观察者与两台 daemon 固定于同四个宿主逻辑 CPU，共用四核 CPU 配额、2 GiB 内存上限和零 swap。两个服务的准入预算、HTTP 客户端与请求完全相同，唯一设置差异为一个 `4cx256M` 槽位。使用 loopback HTTP，不含 SDK 构造、daemon 启动、预热等待和镜像导入；计时包括请求内的镜像接入和实际服务就绪。
 - **采样与校验：** 预检和三轮正确性预热之后，Criterion flat 采样，每次操作包含固定种子随机交替的冷/命中串行配对和独立双请求测试。保留 Criterion 所有原始操作（包括其校准和预热），至少 30 对，不把聚合样本当作请求。双请求在恰有一个已停泊槽位时同时发送，独立统计可验证的命中和池空回退，不外推线上命中率。逐次校验绑定的槽位身份、实际限额、正确输出、私有文件、删除后 404 和 cgroup 回收；任一正确性失败或 OOM 停止整批，保留证据，不剔除慢值。只比较相同请求条件下的配对值，不作跨沙箱排名。
-- **入口：** [`startup/daemon_warm_pool`](startup/README.md#daemon-vm-warm-pool)；保留资料在 `startup/.data/`。
+- **入口：** [`startup/daemon_warm_pool.json`](startup/README.md#daemon-vm-warm-pool)；保留资料在 `startup/.data/`。
 
 ### B-LAZY-STARTUP：惰性镜像的本地与远程供给成本 {#b-lazy-startup}
 

@@ -37,7 +37,7 @@ pub fn register(criterion: &mut Criterion) {
 fn register_checked(criterion: &mut Criterion) -> Result<()> {
     let entry = env::var("PVISOR_BENCH_ENTRY").unwrap_or_else(|_| "startup/timing.json".into());
     let name = entry.strip_prefix("startup/").unwrap_or(&entry);
-    if name == "daemon_warm_pool" {
+    if name == "daemon_warm_pool.json" {
         return warm_pool::register(criterion);
     }
     if matches!(
