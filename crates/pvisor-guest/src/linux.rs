@@ -1,6 +1,9 @@
 //! Minimal PID 1: initialize the guest, supervise its workload, and report exit.
 use pvisor_guest::api::GuestValidation;
-use pvisor_guest::api::{CONFIG_PATH, GuestConfig, NetworkConfig};
+use pvisor_guest::api::{
+    CONFIG_PATH, DEFERRED_ROOT_ENV, DEFERRED_ROOT_MOUNTPOINT, DEFERRED_ROOT_TAG, GuestConfig,
+    NetworkConfig,
+};
 use std::ffi::CString;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
@@ -635,6 +638,20 @@ fn startup_profile_enabled(config: &GuestConfig) -> bool {
         .is_some_and(|value| value == "1")
 }
 
+fn enter_deferred_root() -> io::Result<()> {
+    let target = Path::new(DEFERRED_ROOT_MOUNTPOINT);
+    mount_with_options(
+        DEFERRED_ROOT_TAG,
+        target,
+        "virtiofs",
+        libc::MS_RELATIME,
+        None,
+    )?;
+    let target = CString::new(DEFERRED_ROOT_MOUNTPOINT)?;
+    check(unsafe { libc::chroot(target.as_ptr()) })?;
+    std::env::set_current_dir("/")
+}
+
 fn run() -> io::Result<i32> {
     // The opt-in bit lives in the virtual config, unavailable until it is read.
     // This one entry timestamp also accounts for config I/O when profiling is on.
@@ -909,8 +926,12 @@ pub fn main() {
     let mut code = match token
         .as_ref()
         .map_err(|error| io::Error::other(error.to_string()))
-        .and_then(|_| run())
-    {
+        .and_then(|_| {
+            if std::env::var(DEFERRED_ROOT_ENV).as_deref() == Ok("1") {
+                enter_deferred_root()?;
+            }
+            run()
+        }) {
         Ok(code) => code,
         Err(error) => {
             eprintln!("pvisor guest: {error}");

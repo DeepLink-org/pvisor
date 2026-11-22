@@ -33,6 +33,14 @@ use std::{
 /// Absolute guest path of the host-supplied launch JSON.
 pub const CONFIG_PATH: &str = "/.pvisor-guest.json";
 
+/// Kernel-supplied PID 1 environment key. A value of `1` selects a bootstrap
+/// root that contains no workload files; set it only with the mount below.
+pub const DEFERRED_ROOT_ENV: &str = "PVISOR_DEFERRED_ROOT";
+/// Virtio-fs tag of the workload root mounted by PID 1 before reading launch JSON.
+pub const DEFERRED_ROOT_TAG: &str = "pvisor-rootfs";
+/// Absolute mountpoint supplied by the trusted bootstrap filesystem.
+pub const DEFERRED_ROOT_MOUNTPOINT: &str = "/.pvisor-rootfs";
+
 /// A verified OCI layer read through the bootstrap's read-only `pvisor-layers`
 /// share. Paths have Linux syntax and must be immediate SHA-256-named children
 /// of `/.pvisor-layers`. The guest verifies compressed bytes before extraction.
@@ -135,6 +143,11 @@ pub struct GuestConfig {
     /// Enable the host-only vsock command adapter; false starts no listener.
     #[serde(default)]
     pub control: bool,
+    /// After starting the command adapter, notify the host at `CONTROL_READY_PORT`.
+    /// Requires `control`; the caller must bind the host listener before boot.
+    /// A connection wakes the host but does not prove workload or service identity.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub control_ready: bool,
     /// Host-only virtio-console control adapter. Uses the same
     /// request/reply protocol and process registry as vsock, with independent
     /// command and signal ports so stop cannot queue behind a long exec.
@@ -287,6 +300,9 @@ pub struct NetworkConfig {
 
 /// Explicit virtio-vsock port, separate from workload networking.
 pub const CONTROL_PORT: u32 = 1025;
+
+/// Guest-to-host vsock port for a connection-only command-adapter wakeup.
+pub const CONTROL_READY_PORT: u32 = 1026;
 
 /// Named duplex console port for noninteractive command requests.
 pub const SERIAL_COMMAND_PORT: &str = "pvisor-command";

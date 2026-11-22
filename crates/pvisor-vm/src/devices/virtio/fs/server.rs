@@ -168,6 +168,10 @@ impl<F: FileSystem + Sync> Server<F> {
         self.dispatch_profile.clone()
     }
 
+    pub(super) fn set_dispatch_profile(&mut self, profile: pvisor_overlay_core::profile::Profile) {
+        self.dispatch_profile = profile;
+    }
+
     fn phase_profiles(&self, token: u64) -> Option<serde_json::Value> {
         self.profile.report().map(|protocol| {
             let profiles = std::iter::once(protocol)
@@ -2047,7 +2051,7 @@ fn reply_ok<T: ByteValued>(
     Ok(w.bytes_written())
 }
 
-fn reply_error(e: io::Error, unique: u64, mut w: Writer) -> Result<usize> {
+pub(super) fn reply_error(e: io::Error, unique: u64, mut w: Writer) -> Result<usize> {
     debug!("reply error unique={unique} errno={:?}", e.raw_os_error());
     let header = OutHeader {
         len: size_of::<OutHeader>() as u32,

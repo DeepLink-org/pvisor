@@ -8,13 +8,16 @@ mod store;
 #[cfg(test)]
 mod tests;
 
-use crate::api::{Config, DaemonService, Runtime, RuntimeSpec, RuntimeState};
+use crate::api::{
+    Config, DaemonService, NativeRuntime, Runtime, RuntimeSpec, RuntimeState, WarmPoolProfile,
+};
+use crate::runtime::warm::Pool;
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use models::{ApiError, CreateRequest, EndpointResponse, RenewRequest, Sandbox, SandboxStatus};
 use models::{Record, Registry};
 use std::{
     collections::BTreeMap,
-    sync::{Arc, Weak},
+    sync::{Arc, OnceLock, Weak},
     time::Duration,
 };
 use tokio::sync::{Mutex, RwLock, Semaphore};
@@ -30,6 +33,7 @@ pub struct Daemon {
     commits: Mutex<()>,
     operations: Mutex<BTreeMap<String, Weak<RwLock<()>>>>,
     runtime: Arc<dyn Runtime>,
+    warm_pool: OnceLock<Arc<Pool>>,
     proxy: reqwest::Client,
     proxy_slots: Arc<Semaphore>,
     storage_failed: std::sync::atomic::AtomicBool,
@@ -224,9 +228,24 @@ impl Daemon {
         validated: models::Validated,
         claim: Option<models::ClaimRecord>,
     ) -> Result<Sandbox, ApiError> {
+        let slot = if claim.is_none() {
+            self.warm_pool.get().and_then(|pool| {
+                pool.take(
+                    WarmPoolProfile {
+                        cpu_millis: validated.cpu_millis,
+                        memory_bytes: validated.memory_bytes,
+                    },
+                    &validated.image.uri,
+                    &validated.e2b,
+                )
+            })
+        } else {
+            None
+        };
         let id = claim
             .as_ref()
             .map(|c| format!("sb-{}", c.identity.claim_id))
+            .or_else(|| slot.as_ref().map(|slot| slot.id.clone()))
             .unwrap_or_else(|| format!("sb-{}", uuid::Uuid::new_v4()));
         let reserved = claim.is_some();
         let now = Utc::now();
@@ -351,7 +370,11 @@ impl Daemon {
         if reserved {
             return Ok(admitted);
         }
-        if let Err(error) = self.runtime.create(&spec).await {
+        let launched = match slot {
+            Some(slot) => slot.launch(spec).await,
+            None => self.runtime.create(&spec).await,
+        };
+        if let Err(error) = launched {
             if error
                 .downcast_ref::<crate::api::CreateError>()
                 .is_some_and(|error| !error.requires_reconciliation)
@@ -776,6 +799,7 @@ impl DaemonService for Daemon {
             #[cfg(test)]
             reconciled: std::sync::atomic::AtomicBool::new(false),
             runtime,
+            warm_pool: OnceLock::new(),
             proxy_slots: Arc::new(Semaphore::new(MAX_PROXY_STREAMS)),
             proxy: reqwest::Client::builder()
                 .no_proxy()
@@ -836,6 +860,31 @@ impl DaemonService for Daemon {
             }
         });
         Ok(daemon)
+    }
+    async fn open_native(
+        config: Config,
+        profiles: Vec<WarmPoolProfile>,
+        factory: impl FnOnce(String) -> anyhow::Result<NativeRuntime>,
+    ) -> anyhow::Result<Arc<Self>> {
+        crate::runtime::warm::validate_profiles(&profiles, &config)?;
+        let mut backend = None;
+        let daemon = Self::open(config, |owner| {
+            let runtime = Arc::new(factory(owner)?);
+            backend = Some(runtime.clone());
+            Ok(runtime)
+        })
+        .await?;
+        if !profiles.is_empty() {
+            let pool = Pool::start(backend.unwrap(), profiles, daemon.store.clone());
+            assert!(daemon.warm_pool.set(pool).is_ok());
+        }
+        Ok(daemon)
+    }
+    async fn stop_warm_pool(&self) -> anyhow::Result<()> {
+        if let Some(pool) = self.warm_pool.get() {
+            pool.stop().await?;
+        }
+        Ok(())
     }
     fn router(self: Arc<Self>) -> axum::Router {
         http::router(self)

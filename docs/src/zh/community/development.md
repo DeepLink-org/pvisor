@@ -180,7 +180,8 @@ release 构建和隔离环境。网络/Gateway 示例在单独任务运行。
 构建 `pvisor-vm` 的 `init-blob` feature 时，`crates/pvisor-vm/build.rs` 使用 Rust 自带
 `rust-lld`，按 VM 架构把 guest 编译成 release Linux musl ELF。
 独立的 `target/pvisor-guest/` 目录避免与外层 Cargo 构建争抢产物锁。
-libkrun 内嵌该 ELF，暴露为 `/init.krun`，由它担任 guest PID 1。
+`pvisor-vm` 将内嵌的 ELF 暴露为 `/init.pvisor`，由它担任 guest PID 1。
+调用方如果提供自定义 init，也必须放在同一路径。
 
 CLI 和 shim 注入 `/.pvisor-guest.json`，传递 argv、环境变量、cwd、工作区挂载、
 资源限制、可选网络配置和 shim agent 参数。supervisor 初始化 guest 文件系统和

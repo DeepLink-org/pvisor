@@ -6,7 +6,7 @@
 //
 // Virtual inodes are injected into the root directory (parent = ROOT_ID).
 // Ordinary readdir does not list them. READINDEX does: a finished guest
-// directory image treats a missing name as absent, so `/init.krun` has to be
+// directory image treats a missing name as absent, so `/init.pvisor` has to be
 // part of that stream or the kernel cannot exec it.
 //
 // One-shot files can only be looked up once — the name is removed from the

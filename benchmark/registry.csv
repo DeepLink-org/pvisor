@@ -6,6 +6,7 @@ B-LAZY-STARTUP,user-facing,storage/lazy_runtime.json,criterion-rust,criterion/sr
 B-LAZY-STARTUP,user-facing,storage/lazy_remote.json,criterion-rust,criterion/src/storage/mod.rs
 B-OPENSANDBOX-ENG,engineering A/B,startup/opensandbox.json,requires-single-condition-command,
 B-SANDBOX-ENGINE-ENG,engineering A/B,startup/sandbox_engine.json,requires-single-condition-command,
+B-DAEMON-WARM-POOL,user-facing,startup/daemon_warm_pool,criterion-rust,criterion/src/startup/warm_pool.rs
 B-OPENSANDBOX-BURST-DIAG,diagnostic,startup/opensandbox_burst.json,requires-single-condition-command,
 B-OPENSANDBOX-MEMORY-ENG,engineering A/B,memory/opensandbox_memory.json,requires-single-condition-command,
 B-LAZY-STARTUP,user-facing,startup/lazy_startup.json,requires-single-condition-command,

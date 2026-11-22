@@ -71,6 +71,8 @@ use tokio::{
     time::{sleep, timeout},
 };
 
+pub(crate) mod warm;
+
 pub(crate) const EXECD_PORT: u16 = 44772;
 const EGRESS_PORT: u16 = 18080;
 pub(crate) const ENVD_PORT: u16 = 49983;
@@ -80,6 +82,7 @@ const HEALTH_LIMIT: usize = 16 * 1024;
 const CONTROL_TIMEOUT: Duration = Duration::from_secs(30);
 const READY_TIMEOUT: Duration = Duration::from_secs(90);
 const DELETE_TIMEOUT: Duration = Duration::from_secs(30);
+const STARTUP_SOCKET: &str = "ready.sock";
 const MIB: u64 = 1024 * 1024;
 
 impl RuntimeValidation for E2bTemplate {
@@ -133,11 +136,13 @@ struct Identity {
     boot_id: String,
     #[serde(default)]
     memory_pool: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    deferred_root: bool,
 }
 
 /// Durable proof published only with exclusive ownership and an empty native
 /// cgroup (or a changed kernel boot). Contains no workload/control secrets.
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 struct Tombstone {
     version: u32,
@@ -244,6 +249,38 @@ impl NativeRuntime {
     fn directory(&self, id: &str) -> Result<PathBuf> {
         validate_id(id)?;
         Ok(self.config.state_dir.join(id))
+    }
+
+    fn spawn_supervisor(&self, directory: &Path, group: &Group) -> Result<tokio::process::Child> {
+        let stderr = if directory.join(warm::PLAN).is_file() {
+            Stdio::from(
+                OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .mode(0o600)
+                    .open(directory.join(warm::DIAGNOSTICS))?,
+            )
+        } else {
+            Stdio::null()
+        };
+        let mut command = Command::new(&self.config.executable);
+        command
+            .env_clear()
+            .env("TMPDIR", directory.join("run/tmp"))
+            .args(["native-supervisor", "--sandbox-dir"])
+            .arg(directory)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(stderr);
+        configure_cgroup_child(
+            &mut command,
+            group.file("cgroup.procs", true)?,
+            lock_file(directory)?,
+            File::open(directory)?,
+        );
+        command
+            .spawn()
+            .context("launch native supervisor inside owned cgroup")
     }
 
     fn identity(&self, id: &str) -> Result<Option<Identity>> {
@@ -389,14 +426,19 @@ impl NativeRuntime {
     }
 
     async fn cleanup(&self, identity: &Identity) -> Result<()> {
-        if let Some(tombstone) = self.tombstone(&identity.spec.id)? {
+        self.cleanup_binding(Tombstone::from_identity(identity))
+            .await
+    }
+
+    async fn cleanup_binding(&self, proof: Tombstone) -> Result<()> {
+        if let Some(tombstone) = self.tombstone(&proof.id)? {
             ensure!(
-                tombstone.generation == identity.generation,
+                tombstone.generation == proof.generation,
                 "cleanup generation mismatch"
             );
-            return self.finish_tombstone(&identity.spec.id, &tombstone).await;
+            return self.finish_tombstone(&proof.id, &tombstone).await;
         }
-        let directory = self.directory(&identity.spec.id)?;
+        let directory = self.directory(&proof.id)?;
         mark(&directory, "deleting")?;
         // The lock is not inherited by the VMM (CLOEXEC). A late supervisor
         // must take it and observe deletion intent before joining the cgroup.
@@ -404,24 +446,27 @@ impl NativeRuntime {
         timeout(DELETE_TIMEOUT, async {
             loop {
                 let locked = lock.try_lock_exclusive().is_ok();
-                if let Some(group) = self.group(identity)? {
+                if let Some(group) = Group::open_binding(
+                    &proof.cgroup,
+                    proof.cgroup_device,
+                    proof.cgroup_inode,
+                    &proof.boot_id,
+                )? {
                     if group.populated()? {
                         ensure!(
-                            identity.cgroup_inode != 0,
+                            proof.cgroup_inode != 0,
                             "unbound cgroup is populated; refusing kill"
                         );
                         group.write("cgroup.kill", "1")?;
                     }
                     if locked && !group.populated()? {
-                        let tombstone = Tombstone::from_identity(identity);
-                        publish_new(&directory.join("tombstone.json"), &tombstone)?;
-                        self.reclaim(&directory, &tombstone)?;
+                        publish_new(&directory.join("tombstone.json"), &proof)?;
+                        self.reclaim(&directory, &proof)?;
                         return Ok(());
                     }
                 } else if locked {
-                    let tombstone = Tombstone::from_identity(identity);
-                    publish_new(&directory.join("tombstone.json"), &tombstone)?;
-                    self.reclaim(&directory, &tombstone)?;
+                    publish_new(&directory.join("tombstone.json"), &proof)?;
+                    self.reclaim(&directory, &proof)?;
                     return Ok(());
                 }
                 if locked {
@@ -552,6 +597,7 @@ impl Runtime for NativeRuntime {
             return Err(std::io::Error::last_os_error()).context("query KVM API version");
         }
         ensure!(version == 12, "unsupported KVM API version {version}");
+        warm::reclaim_unclaimed(self).await?;
         Ok(())
     }
 
@@ -593,6 +639,7 @@ impl Runtime for NativeRuntime {
                 cgroup_inode: 0,
                 boot_id: current_boot_id()?,
                 memory_pool: self.memory_pool.clone(),
+                deferred_root: false,
             };
             make_run_spec(&identity)?;
             publish_new(&directory.join("preparing.json"), &identity)?;
@@ -625,48 +672,30 @@ impl Runtime for NativeRuntime {
             }
         };
         let result = async {
-            // Detached owner: daemon death/disconnect must not kill this child.
-            // No workload secrets in argv or host environment.
-            let mut command = Command::new(&self.config.executable);
-            command
-                .env_clear()
-                .env("TMPDIR", directory.join("run/tmp"))
-                .args(["native-supervisor", "--sandbox-dir"])
-                .arg(&directory)
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .kill_on_drop(false);
+            let startup_path = directory.join(STARTUP_SOCKET);
+            let startup = UnixListener::bind(&startup_path)?;
             let group = self
                 .group(&identity)?
                 .context("owned launch cgroup disappeared")?;
             group.verify_limits(&identity.spec)?;
-            let procs = group.file("cgroup.procs", true)?;
-            let owner_lock = lock_file(&directory)?;
-            let directory_fd = File::open(&directory)?;
-            configure_cgroup_child(&mut command, procs, owner_lock, directory_fd);
-            let spawned = command.spawn();
-            // Drop the parent's copies of the callback FDs even on exec failure.
-            drop(command);
-            let mut child = spawned.context("launch native supervisor inside owned cgroup")?;
-            // Tokio reaps the exact child on normal completion; never use a saved PID.
-            tokio::spawn(async move {
-                let _ = child.wait().await;
-            });
-            timeout(READY_TIMEOUT, async {
-                loop {
-                    match self.request(&identity, Operation::Inspect).await {
-                        Ok(reply) if reply.state == Some(RuntimeState::Running) => return Ok(()),
-                        Ok(reply) if reply.state == Some(RuntimeState::Stopped) => {
-                            bail!("native run stopped during startup")
-                        }
-                        _ => {}
+            let mut child = self.spawn_supervisor(&directory, &group)?;
+            let result = timeout(READY_TIMEOUT, async {
+                tokio::select! {
+                    result = confirm_startup(&startup, self, &identity) => result,
+                    status = child.wait() => {
+                        bail!("native supervisor exited during startup: {}", status?)
                     }
-                    sleep(Duration::from_millis(5)).await;
                 }
             })
             .await
-            .context("native VM/service readiness timed out")?
+            .context("native VM/service readiness timed out");
+            drop(startup);
+            let _ = fs::remove_file(startup_path);
+            // Reap the exact detached child without tying its lifetime to create.
+            tokio::spawn(async move {
+                let _ = child.wait().await;
+            });
+            result?
         }
         .await;
         if result.is_err() {
@@ -806,13 +835,6 @@ impl NativeRuntimeService for NativeRuntime {
             "supervisor directory must be absolute"
         );
         trusted_private_directory(sandbox_dir)?;
-        let identity: Identity = read_json(&sandbox_dir.join("identity.json"))?;
-        validate_identity(&identity, sandbox_dir)?;
-        validate_launch_resources(&identity, sandbox_dir)?;
-        ensure!(
-            identity.cgroup_inode != 0,
-            "supervisor requires committed cgroup binding"
-        );
         let lock = lock_file(sandbox_dir)?;
         lock.try_lock_exclusive()
             .context("sandbox already has a supervisor")?;
@@ -822,14 +844,29 @@ impl NativeRuntimeService for NativeRuntime {
             "sandbox was already started"
         );
         ensure_not_deleting(sandbox_dir)?;
+        let (identity, parked, warm_ready) = if sandbox_dir.join(warm::PLAN).try_exists()? {
+            let (identity, parked, ready) =
+                warm::supervise_slot(sandbox_dir, &startup_clock, &mut startup).await?;
+            (identity, Some(parked), Some(ready))
+        } else {
+            (read_json(&sandbox_dir.join("identity.json"))?, None, None)
+        };
+        validate_identity(&identity, sandbox_dir)?;
+        validate_launch_resources(&identity, sandbox_dir)?;
+        ensure!(
+            identity.cgroup_inode != 0,
+            "supervisor requires committed cgroup binding"
+        );
         let group = Group::open(&identity)?.context("owned cgroup disappeared")?;
         ensure!(
             group.contains_current_process()?,
             "supervisor was not placed in its cgroup before exec"
         );
         group.verify_limits(&identity.spec)?;
-        startup.insert("validated_us", startup_clock.elapsed().as_micros());
-        mark(sandbox_dir, "started")?;
+        if parked.is_none() {
+            startup.insert("validated_us", startup_clock.elapsed().as_micros());
+            mark(sandbox_dir, "started")?;
+        }
         // Membership was installed before exec, so supervisor/Tokio allocations
         // and every subsequently spawned native runner are charged to this budget.
         let control_path = sandbox_dir.join("control.sock");
@@ -851,9 +888,13 @@ impl NativeRuntimeService for NativeRuntime {
             vec![EXECD_PORT, EGRESS_PORT]
         };
         let native_control = ports_dir.join("guest.sock");
-        if identity.image.native_guest {
+        let cold_ready = if identity.image.native_guest && parked.is_none() {
+            let ready = GuestReady::bind(&ports_dir)?;
             vsock_ports.insert(pvisor_guest::api::CONTROL_PORT, native_control.clone());
-        }
+            Some(ready)
+        } else {
+            None
+        };
         for port in ports {
             let path = ports_dir.join(format!("{port}.sock"));
             let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).await?;
@@ -926,80 +967,42 @@ impl NativeRuntimeService for NativeRuntime {
                 }
             }
         }
-        // A projection contains metadata placeholders, not an unpacked image. Keep
-        // its backend registration alive while VmExecutor exports it to the runner.
-        let run_dir = sandbox_dir.join("run");
-        private_directory(&run_dir)?;
-        // Scratch belongs to this VM; the binding reads the shared V2 pool.
-        let pooled_root = pvisor::docker::Store::open(run_dir.join("image"))?
-            .open_image(&identity.image.pooled_image)?;
-        startup.insert("image_opened_us", startup_clock.elapsed().as_micros());
-        let settings = pvisor::VmSettings {
-            ram_backing: identity
-                .memory_pool
-                .is_none()
-                .then(|| run_dir.join("live-ram")),
-            memory_pool: identity.memory_pool.clone(),
-            rootfs: Some(pooled_root.rootfs().to_path_buf()),
-            rootfs_immutable: false,
-            library_dir: identity.image.library_dir.clone(),
-            memory_mib: u32::try_from(identity.spec.memory_bytes / MIB)?,
-            cpus: u16::try_from(identity.spec.cpu_millis.div_ceil(1000).min(8))?,
-            ..Default::default()
+        let warm = parked.is_some();
+        let (handle, _pooled_root) = if let Some(parked) = parked {
+            parked
+        } else {
+            // Keep the pinned lazy projection registered for the runner lifetime.
+            let run_dir = sandbox_dir.join("run");
+            private_directory(&run_dir)?;
+            let pooled_root = pvisor::docker::Store::open(run_dir.join("image"))?
+                .open_image(&identity.image.pooled_image)?;
+            startup.insert("image_opened_us", startup_clock.elapsed().as_micros());
+            let settings = vm_settings(
+                &run_dir,
+                &identity.spec,
+                &identity.memory_pool,
+                pooled_root.rootfs(),
+                identity.image.library_dir.clone(),
+            )?;
+            let mut executor = pvisor::VmExecutor::new(settings)?.with_vsock_ports(vsock_ports)?;
+            if let Some(ready) = &cold_ready {
+                executor = executor.with_control_ready(ready.path.clone())?;
+            }
+            startup.insert("executor_ready_us", startup_clock.elapsed().as_micros());
+            let handle = start_guest(run_dir, executor, make_run_spec(&identity)?).await?;
+            startup.insert("execution_started_us", startup_clock.elapsed().as_micros());
+            (handle, pooled_root)
         };
-        let executor = pvisor::VmExecutor::new(settings)?.with_vsock_ports(vsock_ports)?;
-        startup.insert("executor_ready_us", startup_clock.elapsed().as_micros());
-        let visor = supervisor_builder()
-            .storage(run_dir)
-            .network(pvisor::NetworkDriverConfig::default())
-            .executors(vec![Arc::new(executor)])
-            .build();
-        let mut run = make_run_spec(&identity)?;
-        run.runtime.max_output_bytes = 64 * 1024;
-        let handle = pvisor::session_service::SessionService::start(&visor, run)
-            .await
-            .context("native VM run admission failed")?;
-        startup.insert("execution_started_us", startup_clock.elapsed().as_micros());
-        publish_new(
-            &sandbox_dir.join("run.json"),
-            &RunRecord {
-                generation: identity.generation.clone(),
-                run_id: handle.run_id().to_string(),
-                execution_id: handle.execution_id().to_string(),
-            },
-        )?;
         let service = handle.execution().clone();
-        // Prove acknowledged live controls before advertising any readiness. This
-        // pauses/resumes the SAME execution briefly; no snapshot/rebuild is involved.
-        let controls_ready = timeout(READY_TIMEOUT, async {
-            service.wait_ready().await?;
-            service
-                .dispatch(HostExecutionCommand::Operation {
-                    kind: pvisor_core::OperationKind::RunPause,
-                })
-                .await?;
-            ensure!(
-                native_state(&service)? == RuntimeState::Paused,
-                "startup pause was not confirmed"
-            );
-            service
-                .dispatch(HostExecutionCommand::Operation {
-                    kind: pvisor_core::OperationKind::RunResume,
-                })
-                .await?;
-            ensure!(
-                native_state(&service)? == RuntimeState::Running,
-                "startup resume was not confirmed"
-            );
-            Ok::<(), anyhow::Error>(())
-        })
-        .await;
-        if !matches!(controls_ready, Ok(Ok(()))) {
-            service.dispatch(HostExecutionCommand::Terminate).await?;
-            let _ = timeout(DELETE_TIMEOUT, handle.wait()).await;
-            bail!("native live VM control verification failed");
+        if !warm {
+            publish_run(sandbox_dir, &identity.generation, &handle)?;
+            if let Err(error) = verify_live_controls(&service).await {
+                service.dispatch(HostExecutionCommand::Terminate).await?;
+                let _ = timeout(DELETE_TIMEOUT, handle.wait()).await;
+                return Err(error);
+            }
+            startup.insert("controls_verified_us", startup_clock.elapsed().as_micros());
         }
-        startup.insert("controls_verified_us", startup_clock.elapsed().as_micros());
         let client = if identity.image.native_opensandbox
             || (identity.image.native_guest && identity.spec.e2b.is_none())
         {
@@ -1037,20 +1040,19 @@ impl NativeRuntimeService for NativeRuntime {
             }
         }
         if identity.image.native_guest {
-            let initialized = timeout(READY_TIMEOUT, async {
-                loop {
-                    if probe_services(&client, &endpoints).await.is_ok() {
-                        break;
-                    }
-                    sleep(Duration::from_millis(5)).await;
-                }
-            })
-            .await;
-            if initialized.is_err() {
+            let ready = cold_ready
+                .or(warm_ready)
+                .context("native readiness listener missing")?;
+            let notified = timeout(READY_TIMEOUT, ready.wait(&service)).await;
+            if !matches!(notified, Ok(Ok(()))) {
                 service.dispatch(HostExecutionCommand::Terminate).await?;
                 let _ = timeout(DELETE_TIMEOUT, handle.wait()).await;
-                bail!("native guest engine readiness failed");
+                bail!("native guest did not signal control readiness: {notified:?}");
             }
+            startup.insert(
+                "guest_ready_notified_us",
+                startup_clock.elapsed().as_micros(),
+            );
         }
         if identity.image.native_e2b {
             let initialized = timeout(
@@ -1064,13 +1066,11 @@ impl NativeRuntimeService for NativeRuntime {
                 bail!("native envd initialization failed: {initialized:?}");
             }
         }
-        startup.insert(
-            "services_initialized_us",
-            startup_clock.elapsed().as_micros(),
-        );
-        // Bounded private diagnostics, no environment, output or host paths. This
-        // is not readiness evidence and has no effect on lifecycle authorization.
-        let _ = publish_new(&sandbox_dir.join("startup.json"), &startup);
+        let mut native_service_unconfirmed = identity.image.native_guest;
+        if !native_service_unconfirmed {
+            record_startup(sandbox_dir, &startup_clock, &mut startup);
+        }
+        notify_startup(sandbox_dir).await;
         // Handle remains in this durable owner. Native transitions are serialized
         // independently of daemon lifetimes, even across IPC client disconnects.
         loop {
@@ -1088,8 +1088,13 @@ impl NativeRuntimeService for NativeRuntime {
                         continue;
                     }
                     let deleted = matches!(request.command.operation, Operation::Terminate);
+                    let inspect = matches!(request.command.operation, Operation::Inspect);
                     let result = execute_control(&service, &identity, sandbox_dir,
                         &client, &endpoints, request.command.operation).await;
+                    if native_service_unconfirmed && inspect && matches!(result, Ok((RuntimeState::Running, _))) {
+                        record_startup(sandbox_dir, &startup_clock, &mut startup);
+                        native_service_unconfirmed = false;
+                    }
                     let mut reply = Response {
                         version: AGENTCTL_HOST_VERSION, request_id: request.request_id,
                         result: result.map(|(state, endpoint)| HostSupervisorResult {
@@ -1123,6 +1128,151 @@ impl NativeRuntimeService for NativeRuntime {
             }
         }
     }
+}
+
+struct GuestReady {
+    listener: UnixListener,
+    path: PathBuf,
+}
+
+impl GuestReady {
+    fn bind(ports: &Path) -> Result<Self> {
+        let path = ports.join("init.sock");
+        let listener = UnixListener::bind(&path)?;
+        Ok(Self { listener, path })
+    }
+
+    async fn wait(&self, service: &pvisor::Execution) -> Result<()> {
+        let mut snapshots = service.subscribe();
+        tokio::select! {
+            result = wait_startup_signal(&self.listener) => result,
+            result = snapshots.wait_for(|snapshot| snapshot.status.state.is_terminal()) => {
+                let _ = result?;
+                bail!("guest stopped before control readiness")
+            }
+        }
+    }
+}
+
+impl Drop for GuestReady {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.path);
+    }
+}
+
+async fn verify_live_controls(service: &pvisor::Execution) -> Result<()> {
+    // Exercise the native controls on this same VM before it can be published.
+    timeout(READY_TIMEOUT, async {
+        service.wait_ready().await?;
+        service.pause().await?;
+        ensure!(
+            native_state(service)? == RuntimeState::Paused,
+            "startup pause was not confirmed"
+        );
+        service.resume().await?;
+        ensure!(
+            native_state(service)? == RuntimeState::Running,
+            "startup resume was not confirmed"
+        );
+        Ok(())
+    })
+    .await
+    .context("native live VM control verification timed out")?
+}
+
+fn publish_run(directory: &Path, generation: &str, handle: &pvisor::RunHandle) -> Result<()> {
+    publish_new(
+        &directory.join("run.json"),
+        &RunRecord {
+            generation: generation.to_owned(),
+            run_id: handle.run_id().to_string(),
+            execution_id: handle.execution_id().to_string(),
+        },
+    )
+}
+
+fn record_startup(
+    directory: &Path,
+    clock: &std::time::Instant,
+    startup: &mut BTreeMap<&str, u128>,
+) {
+    startup.insert("services_initialized_us", clock.elapsed().as_micros());
+    // Not a recovery record. No durability guarantee is needed for diagnostics.
+    let _ = publish_record(&directory.join("startup.json"), startup, false);
+}
+
+async fn wait_startup_signal(listener: &UnixListener) -> Result<()> {
+    loop {
+        let (stream, _) = listener.accept().await?;
+        if authorize_host_peer(&stream).is_ok() {
+            return Ok(());
+        }
+    }
+}
+
+async fn confirm_startup(
+    listener: &UnixListener,
+    runtime: &NativeRuntime,
+    identity: &Identity,
+) -> Result<()> {
+    wait_startup_signal(listener).await?;
+    // The wakeup is not readiness proof. Inspect still checks live state,
+    // the guest service binding and the sandbox's cgroup limits.
+    loop {
+        match runtime.request(identity, Operation::Inspect).await {
+            Ok(reply) if reply.state == Some(RuntimeState::Running) => return Ok(()),
+            Ok(reply) if reply.state == Some(RuntimeState::Stopped) => {
+                bail!("native run stopped during startup")
+            }
+            _ => sleep(Duration::from_millis(5)).await,
+        }
+    }
+}
+
+async fn notify_startup(directory: &Path) {
+    // The creator may have exited; its notification socket is not an owner lease.
+    let _ = timeout(
+        CONTROL_TIMEOUT,
+        UnixStream::connect(directory.join(STARTUP_SOCKET)),
+    )
+    .await;
+}
+
+fn vm_settings(
+    run_directory: &Path,
+    spec: &RuntimeSpec,
+    memory_pool: &Option<PathBuf>,
+    root: &Path,
+    library_dir: Option<PathBuf>,
+) -> Result<pvisor::VmSettings> {
+    Ok(pvisor::VmSettings {
+        ram_backing: memory_pool
+            .is_none()
+            .then(|| run_directory.join("live-ram")),
+        memory_pool: memory_pool.clone(),
+        rootfs: Some(root.to_path_buf()),
+        rootfs_immutable: false,
+        library_dir,
+        memory_mib: u32::try_from(spec.memory_bytes / MIB)?,
+        cpus: u16::try_from(spec.cpu_millis.div_ceil(1000).min(8))?,
+        ..Default::default()
+    })
+}
+
+async fn start_guest(
+    run_dir: PathBuf,
+    executor: pvisor::VmExecutor,
+    mut run: pvisor_core::RunSpec,
+) -> Result<pvisor::RunHandle> {
+    let visor = supervisor_builder()
+        .storage(run_dir)
+        .network(pvisor::NetworkDriverConfig::default())
+        .executors(vec![Arc::new(executor)])
+        .build();
+    run.runtime.max_output_bytes = 64 * 1024;
+    pvisor::session_service::SessionService::start(&visor, run)
+        .await
+        .context("native VM run admission failed")
 }
 
 fn supervisor_builder() -> pvisor::PVisorBuilder {
@@ -1160,31 +1310,28 @@ async fn execute_control(
     };
     let result = timeout(CONTROL_TIMEOUT, service.dispatch(command)).await??;
     let state = native_status(result.status)?;
-    if state == RuntimeState::Running
-        && (identity.image.native_opensandbox
-            || (identity.image.native_guest && identity.spec.e2b.is_none()))
-        && !matches!(operation, Operation::Endpoint { .. })
-    {
-        let ready = probe(client, &format!("{}/ready", endpoints[&EXECD_PORT])).await?;
-        validate_execd_binding(&ready, identity)?;
-    }
-    if state == RuntimeState::Running
-        && (identity.image.native_e2b
-            || (identity.image.native_guest && identity.spec.e2b.is_some()))
-        && !matches!(operation, Operation::Endpoint { .. })
-    {
-        let env = envd_environment(client, &endpoints[&ENVD_PORT]).await?;
-        ensure!(
-            env.get("E2B_SANDBOX_ID") == Some(&identity.spec.id),
-            "envd is bound to another sandbox"
-        );
-    }
     observe_control(
         directory,
-        client,
         endpoints,
         operation,
         || Ok(state),
+        || async {
+            if identity.image.native_guest {
+                return probe_native_services(client, endpoints, identity).await;
+            }
+            if identity.image.native_opensandbox {
+                let ready = probe(client, &format!("{}/ready", endpoints[&EXECD_PORT])).await?;
+                validate_execd_binding(&ready, identity)?;
+            }
+            if identity.image.native_e2b {
+                let env = envd_environment(client, &endpoints[&ENVD_PORT]).await?;
+                ensure!(
+                    env.get("E2B_SANDBOX_ID") == Some(&identity.spec.id),
+                    "envd is bound to another sandbox"
+                );
+            }
+            probe_services(client, endpoints).await
+        },
         || {
             Group::open(identity)?
                 .context("owned cgroup disappeared")?
@@ -1197,12 +1344,12 @@ async fn execute_control(
 // The supervisor authenticates each request before this path. Endpoint resolves
 // only from the current Execution, never a durable observation; readiness and
 // hard-limit reconciliation belong to Inspect and lifecycle controls.
-async fn observe_control(
+async fn observe_control<Probe: std::future::Future<Output = Result<()>>>(
     directory: &Path,
-    client: &reqwest::Client,
     endpoints: &BTreeMap<u16, String>,
     operation: Operation,
     live_state: impl FnOnce() -> Result<RuntimeState>,
+    verify_services: impl FnOnce() -> Probe,
     verify_limits: impl FnOnce() -> Result<()>,
 ) -> Result<(RuntimeState, Option<String>)> {
     ensure_not_deleting(directory)?;
@@ -1218,7 +1365,7 @@ async fn observe_control(
         )
     } else {
         if state == RuntimeState::Running {
-            probe_services(client, endpoints).await?;
+            verify_services().await?;
         }
         verify_limits()?;
         None
@@ -1609,6 +1756,41 @@ async fn probe_services(client: &reqwest::Client, endpoints: &BTreeMap<u16, Stri
     probe(client, &format!("{egress}/healthz")).await?;
     Ok(())
 }
+
+async fn probe_native_services(
+    client: &reqwest::Client,
+    endpoints: &BTreeMap<u16, String>,
+    identity: &Identity,
+) -> Result<()> {
+    if let Some(envd) = endpoints.get(&ENVD_PORT) {
+        let unauthenticated = health_client(None)?;
+        let health = format!("{envd}/health");
+        let envs = format!("{envd}/envs");
+        let (env, _, _) = tokio::try_join!(
+            envd_environment(client, envd),
+            probe_status(client, &health, reqwest::StatusCode::NO_CONTENT),
+            probe_status(&unauthenticated, &envs, reqwest::StatusCode::UNAUTHORIZED),
+        )?;
+        ensure!(
+            env.get("E2B_SANDBOX_ID") == Some(&identity.spec.id),
+            "envd is bound to another sandbox"
+        );
+    } else {
+        let execd = endpoints
+            .get(&EXECD_PORT)
+            .context("execd is not published")?;
+        let egress = endpoints
+            .get(&EGRESS_PORT)
+            .context("egress is not published")?;
+        let ready = format!("{execd}/ready");
+        let health = format!("{egress}/healthz");
+        // Egress health already probes execd's ping; /ready verifies binding.
+        let (binding, _) = tokio::try_join!(probe(client, &ready), probe(client, &health))?;
+        validate_execd_binding(&binding, identity)?;
+    }
+    Ok(())
+}
+
 fn validate_ready(bytes: &[u8]) -> Result<()> {
     let json: serde_json::Value = serde_json::from_slice(bytes)
         .map_err(|_| anyhow!("invalid real execd readiness response"))?;
@@ -2342,6 +2524,10 @@ fn read_json<T: DeserializeOwned>(path: &Path) -> Result<T> {
 /// Publish immutable records without replacement. hard_link makes the final
 /// name atomic while preserving create-new semantics; fsync both file and dir.
 fn publish_new<T: Serialize>(path: &Path, value: &T) -> Result<()> {
+    publish_record(path, value, true)
+}
+
+fn publish_record<T: Serialize>(path: &Path, value: &T, durable: bool) -> Result<()> {
     let parent = path.parent().context("record parent missing")?;
     let temporary = parent.join(format!(".publish-{}", uuid::Uuid::new_v4()));
     let result = (|| {
@@ -2354,9 +2540,13 @@ fn publish_new<T: Serialize>(path: &Path, value: &T) -> Result<()> {
             .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
             .open(&temporary)?;
         file.write_all(&bytes)?;
-        file.sync_all()?;
+        if durable {
+            file.sync_all()?;
+        }
         fs::hard_link(&temporary, path)?;
-        File::open(parent)?.sync_all()?;
+        if durable {
+            File::open(parent)?.sync_all()?;
+        }
         Ok(())
     })();
     let _ = fs::remove_file(&temporary);
@@ -2657,6 +2847,7 @@ mod tests {
             cgroup_inode: 1,
             boot_id: "32345678-1234-4234-8234-123456789abc".into(),
             memory_pool: None,
+            deferred_root: false,
         };
         (identity, directory)
     }
@@ -2671,6 +2862,53 @@ mod tests {
                 executable: directory.join("unused"),
             },
             operations: SandboxLocks::default(),
+        }
+    }
+
+    #[tokio::test]
+    async fn startup_signal_triggers_inspect_but_does_not_prove_readiness() {
+        for state in [HostSupervisorState::Running, HostSupervisorState::Stopped] {
+            let temp = tempfile::tempdir().unwrap();
+            let (identity, directory) = identity_fixture(temp.path());
+            let runtime = runtime_fixture(&identity, &directory);
+            publish_new(
+                &directory.join("run.json"),
+                &RunRecord {
+                    generation: identity.generation.clone(),
+                    run_id: "run".into(),
+                    execution_id: "execution".into(),
+                },
+            )
+            .unwrap();
+            let startup = UnixListener::bind(directory.join(STARTUP_SOCKET)).unwrap();
+            let control = UnixListener::bind(directory.join("control.sock")).unwrap();
+            let mut confirmation = std::pin::pin!(confirm_startup(&startup, &runtime, &identity));
+            assert!(futures_util::poll!(confirmation.as_mut()).is_pending());
+            assert!(futures_util::poll!(std::pin::pin!(control.accept())).is_pending());
+
+            notify_startup(&directory).await;
+            let (confirmed, ()) = timeout(Duration::from_secs(5), async {
+                tokio::join!(confirmation, async {
+                    let (mut stream, _) = control.accept().await.unwrap();
+                    let request: Request = receive_frame(&mut stream).await.unwrap();
+                    assert!(matches!(request.command.operation, Operation::Inspect));
+                    admit_supervisor_request(&identity, "execution", &request).unwrap();
+                    let response = Response {
+                        version: AGENTCTL_HOST_VERSION,
+                        request_id: request.request_id,
+                        result: Ok(HostSupervisorResult {
+                            owner: identity.owner.clone(),
+                            target: request.target.unwrap(),
+                            state,
+                            endpoint: None,
+                        }),
+                    };
+                    send_frame(&mut stream, &response).await.unwrap();
+                })
+            })
+            .await
+            .unwrap();
+            assert_eq!(confirmed.is_ok(), state == HostSupervisorState::Running);
         }
     }
 
@@ -3703,10 +3941,10 @@ mod tests {
         let client = health_client(None).unwrap();
         let result = observe_control(
             &directory,
-            &client,
             &endpoints,
             Operation::Endpoint { port: EXECD_PORT },
             || Ok(RuntimeState::Running),
+            || probe_services(&client, &endpoints),
             || panic!("Endpoint must not verify full cgroup limits"),
         )
         .await
@@ -3753,10 +3991,10 @@ mod tests {
             assert!(
                 observe_control(
                     &directory,
-                    &client,
                     &endpoints,
                     operation,
                     || Ok(RuntimeState::Running),
+                    || probe_services(&client, &endpoints),
                     || {
                         verified.set(true);
                         bail!("changed hard limits")
@@ -3795,10 +4033,10 @@ mod tests {
             assert!(
                 observe_control(
                     &directory,
-                    &client,
                     &endpoints,
                     Operation::Endpoint { port: EXECD_PORT },
                     || Ok(state),
+                    || probe_services(&client, &endpoints),
                     || panic!("Endpoint must not verify limits"),
                 )
                 .await
@@ -3808,10 +4046,10 @@ mod tests {
         assert!(
             observe_control(
                 &directory,
-                &client,
                 &endpoints,
                 Operation::Endpoint { port: EXECD_PORT },
                 || bail!("native run is failed or transitioning"),
+                || probe_services(&client, &endpoints),
                 || panic!("Endpoint must not verify limits"),
             )
             .await
@@ -3822,10 +4060,10 @@ mod tests {
             assert!(
                 observe_control(
                     &directory,
-                    &client,
                     &endpoints,
                     Operation::Endpoint { port: EXECD_PORT },
                     || panic!("deletion must fence live state resolution"),
+                    || probe_services(&client, &endpoints),
                     || panic!("Endpoint must not verify limits"),
                 )
                 .await
@@ -3850,15 +4088,81 @@ mod tests {
         assert!(
             observe_control(
                 &directory,
-                &client,
                 &endpoints,
                 Operation::Inspect,
                 || Ok(RuntimeState::Running),
+                || probe_services(&client, &endpoints),
                 || Ok(()),
             )
             .await
             .is_err()
         );
+    }
+
+    #[tokio::test]
+    async fn native_readiness_requires_matching_binding_and_egress_health() {
+        use axum::{Json, Router, http::StatusCode, routing::get};
+        use serde_json::json;
+
+        for (matching, healthy) in [(true, true), (false, true), (true, false)] {
+            let temp = tempfile::tempdir().unwrap();
+            let (identity, _) = identity_fixture(temp.path());
+            let sandbox = if matching {
+                identity.spec.id.clone()
+            } else {
+                "wrong-sandbox".into()
+            };
+            let generation = execd_generation(&identity).unwrap();
+            let rendezvous = Arc::new(tokio::sync::Barrier::new(2));
+            let egress = rendezvous.clone();
+            let router = Router::new()
+                .route(
+                    "/ready",
+                    get(move || {
+                        let rendezvous = rendezvous.clone();
+                        let sandbox = sandbox.clone();
+                        async move {
+                            rendezvous.wait().await;
+                            Json(json!({
+                                "initialized": true,
+                                "sandboxId": sandbox,
+                                "generation": generation,
+                            }))
+                        }
+                    }),
+                )
+                .route(
+                    "/healthz",
+                    get(move || {
+                        let egress = egress.clone();
+                        async move {
+                            egress.wait().await;
+                            if healthy {
+                                StatusCode::OK
+                            } else {
+                                StatusCode::SERVICE_UNAVAILABLE
+                            }
+                        }
+                    }),
+                );
+            let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+                .await
+                .unwrap();
+            let endpoint = format!("http://{}", listener.local_addr().unwrap());
+            let endpoints =
+                BTreeMap::from([(EXECD_PORT, endpoint.clone()), (EGRESS_PORT, endpoint)]);
+            let client = health_client(None).unwrap();
+            let mut server = JoinSet::new();
+            server.spawn(async move { axum::serve(listener, router).await });
+            let result = timeout(
+                Duration::from_secs(2),
+                probe_native_services(&client, &endpoints, &identity),
+            )
+            .await
+            .expect("independent readiness probes must run concurrently");
+            assert_eq!(result.is_ok(), matching && healthy);
+            server.shutdown().await;
+        }
     }
 
     #[tokio::test]

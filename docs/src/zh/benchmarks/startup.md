@@ -2,13 +2,21 @@
 
 ## Motivation {#motivation}
 
-在用户态环境已准备好、页缓存为热的条件下，pVisor VM 的首条命令等待接近容器，短于所测参考 VM；host 与 staged 的等待更短。一次性短任务每次都要新建环境，这部分等待会随调用量累积。选择执行器时，要将启动等待与所需隔离边界一起考虑。
+对反复创建同规格沙箱的本地 API 用户，预留一个 VM 槽位能缩短命中时的启动等待；池空时仍要冷启动。对于直接启动的执行器，在已准备用户态、页缓存为热的条件下，pVisor VM 的首条输出等待接近容器，短于所测参考 VM；host 和 staged 的等待更短。
 
-pVisor VM 的 Ready 中位数为 130.71 ms，对比 Docker rootless 的 105.03 ms，也低于参考 VM（Firecracker MMIO 287.13 ms、QEMU microvm 260.10 ms、QEMU q35 663.25 ms）。host 与 staged 更快，分别为 33.52 ms 和 50.59 ms。
+本地 API 串行创建时，预热命中将 `Running` 的中位数等待从 77.89 ms 降到 12.48 ms，将首条正确命令完成的中位数等待从 94.54 ms 降到 38.18 ms。独立的命令行实验中，pVisor VM 的 Ready 中位数为 130.71 ms，Docker rootless 为 105.03 ms。
 
 ## 实验设计 {#interpretation}
 
-测量从启动到首条校验通过的 shell 输出，作为环境 Ready 时间。这段时间是系统响应调用方的能力；Ready 时间越短，整个体系应付突发性大规模请求的能力越强。
+测量从发送创建请求到返回 `Running` 和到首条正确命令完成的时间，分别作为 API 创建等待和首次使用等待。独立的命令行实验以进程启动到首条校验通过的 shell 输出为 Ready 时间。这些等待越短，调用方越早能使用新环境。
+
+### 本地 API 的 VM 预热池 {#daemon-warm-pool-design}
+
+同一优化构建的 pVisor daemon 在 AMD Ryzen 7 9700X、Fedora Linux 7.3.3、KVM 上运行，使用同一已准备的 Ubuntu 24.04 镜像，每实例 4 vCPU、256 MiB 进程树内存上限。两台 daemon、观察者及 VM 共用固定的宿主 CPU 4–7、四核 CPU 配额、2 GiB 内存上限和零 swap；唯一配置差异是是否预留一个同规格 VM。
+
+通过本机 HTTP 发起请求，计时包含镜像接入和实际服务就绪，不包含 daemon 启动、镜像导入或等待池补齐。冷启动与确认命中的串行请求按固定种子随机交替。每轮另向只有一个空闲槽位的服务同时发送两个同规格请求，分别记录命中和池空回退。预检和三轮正确性预热不计；此后保留所有有效操作，包括采样器自适应预热。每次都验证槽位归属、实际资源上限、命令输出、私有写入和清理；任何正确性失败或 OOM 使整批无效。
+
+### 直接启动执行器 {#direct-launch-design}
 
 对照使用 Linux x86_64 / KVM，AMD Ryzen 7 9700X，Fedora 宿主。对照为 native、pVisor host、pVisor staged、pVisor VM、Docker rootless / overlay2、Firecracker（virtio-MMIO）、QEMU q35 和 QEMU microvm。进程固定到 CPU 0,1，VM 均为 2 vCPU / 128 MiB；进程和容器不设内存上限。
 
@@ -19,6 +27,19 @@ Firecracker、QEMU 和 QEMU microvm 使用 Fedora 的完整发行版内核，Lin
 Ready 截止到校验后的首条 shell 标记。Firecracker 在校验标记和结果、确认无 panic 后受控终止。失败、panic、输出不匹配或制品改变的样本不计入耗时分布；保留有效慢样本。
 
 ## 实验数据和分析 {#results}
+
+### 本地 API 新实例等待 {#daemon-warm-pool}
+
+| 请求条件 | N | 创建到 `Running` P50 / P95（ms） | 创建到首条正确命令完成 P50 / P95（ms） |
+| --- | ---: | ---: | ---: |
+| 串行，默认冷启动 | 41 | 77.89 / 85.90 | 94.54 / 102.53 |
+| 串行，预热命中 | 41 | 12.48 / 16.59 | 38.18 / 40.46 |
+| 同时两个请求，预热命中 | 41 | 14.04 / 17.67 | 48.20 / 55.74 |
+| 同时两个请求，池空回退 | 41 | 99.67 / 110.73 | 117.99 / 127.79 |
+
+串行配对下，命中节省的时间中位数为 65.63 ms（`Running`，95% bootstrap 区间 63.48–66.76 ms）和 56.72 ms（首条命令完成，54.98–58.59 ms）。没有请求在 1 ms 内返回 `Running`。双请求实验共 82 个请求，41 个命中、41 个回退；这是每轮只有一个预留槽位的结果，不是生产命中率，也不能把并发回退时间和串行冷启动之差归因于预热池。
+
+该批次于 2026-11-22 测量，无失败、未剔除有效操作；P95 仅供参考。它衡量本地 daemon，不含 SDK 或远程网络，也**不与下方命令行数据做跨运行时排名**。见[预热池实验复现步骤](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/startup/README.md#daemon-vm-warm-pool)。
 
 ### 各配置的 Ready 时间 {#ready}
 

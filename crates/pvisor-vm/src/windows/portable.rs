@@ -89,6 +89,12 @@ impl VmConfiguration for VmBuilder {
     fn overlay(&mut self, tag: &str, overlay: OverlayConfig, shm_size: usize) -> io::Result<()> {
         Err(unsupported("overlay"))
     }
+    fn deferred_root(
+        &mut self,
+        prepare: impl FnOnce() -> io::Result<DeferredRoot> + Send + 'static,
+    ) -> io::Result<()> {
+        Err(unsupported("deferred root"))
+    }
     fn virtual_file(
         &mut self,
         tag: &str,

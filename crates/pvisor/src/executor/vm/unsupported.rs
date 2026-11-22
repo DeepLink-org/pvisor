@@ -90,6 +90,16 @@ impl VmExecutor {
         anyhow::bail!(UNSUPPORTED_MESSAGE)
     }
 
+    /// Guest vsock readiness notification is unavailable on Intel macOS.
+    pub fn with_control_ready(self, _path: std::path::PathBuf) -> anyhow::Result<Self> {
+        anyhow::bail!(UNSUPPORTED_MESSAGE)
+    }
+
+    /// Warm root assignment is unavailable on Intel macOS.
+    pub fn with_warm_root(self, _gate: std::os::unix::net::UnixStream) -> anyhow::Result<Self> {
+        anyhow::bail!(UNSUPPORTED_MESSAGE)
+    }
+
     pub fn settings(&self) -> &VmSettings {
         &self.settings
     }

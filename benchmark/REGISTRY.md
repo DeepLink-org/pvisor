@@ -147,6 +147,15 @@ Design: 负载、对照、控制变量与有效样本判据。
   - 完整 Ubuntu 只作为"完整 OS 启动成本"的对照，不与最小 VM 做 VMM 排名。
 - **入口脚本：** `benchmark/startup/timing.json` 是八个后端的 Ready / Exit 对比表，每行调用固定的 Python timing 脚本（3 次预热、60 次样本，同一次 Popen 记录精确 Ready 行与正常退出）。启动命令由 `subjects.py` 固定；解释器启动和输入准备不计时。`mise run benchmark -- startup/timing` 输出整表并生成 `timing.render.json`；`--row` 可选择单行。单后端 `*_timing.json` 可独立执行。旧 hyperfine completion 模板已删除，历史完成时间数据保留原口径。显式保留的成功批次可通过 `update.py --startup-docs` 发布，历史报告归档于 `benchmark/startup/.data/history/`。Firecracker 使用 stock 内核/MMIO，预检失败不报告有效 Exit。复现见 [`benchmark/startup/README.md`](../benchmark/startup/README.md)。历史 runner 已退役，冻结制品和原批次保留原口径；工程实验与诊断见下列独立条目。
 
+### B-DAEMON-WARM-POOL：预留一个 VM 槽位能缩短多少 API 等待 {#b-daemon-warm-pool}
+
+- **角色：** user-facing；在 `startup.md` 独立展示，不与进程到 Ready 的跨后端表合并。
+- **Motivation：** 本地 API 用户要判断是否值得为同规格的短任务预留一个 VM 槽位。
+- **想要的结论：** 冷启动与确认命中的 `Create → Running`、`Create → 首条正确命令完成` 各自的 P50、参考 P95 和配对中位数差的 95% bootstrap 区间。池空回退的耗时和实际命中数单列。
+- **实验设计：** 同一冻结 performance daemon、Linux 固件和本地已准备的 Ubuntu native guest 镜像，Linux x86_64/KVM、每实例 4 vCPU / 256 MiB cgroup 上限。在专用 Linux cgroup v2 scope 内，将观察者与两台 daemon 固定于同四个宿主逻辑 CPU，共用四核 CPU 配额、2 GiB 内存上限和零 swap。两个服务的准入预算、HTTP 客户端与请求完全相同，唯一设置差异为一个 `4cx256M` 槽位。使用 loopback HTTP，不含 SDK 构造、daemon 启动、预热等待和镜像导入；计时包括请求内的镜像接入和实际服务就绪。
+- **采样与校验：** 预检和三轮正确性预热之后，Criterion flat 采样，每次操作包含固定种子随机交替的冷/命中串行配对和独立双请求测试。保留 Criterion 所有原始操作（包括其校准和预热），至少 30 对，不把聚合样本当作请求。双请求在恰有一个已停泊槽位时同时发送，独立统计可验证的命中和池空回退，不外推线上命中率。逐次校验绑定的槽位身份、实际限额、正确输出、私有文件、删除后 404 和 cgroup 回收；任一正确性失败或 OOM 停止整批，保留证据，不剔除慢值。只比较相同请求条件下的配对值，不作跨沙箱排名。
+- **入口：** [`startup/daemon_warm_pool`](startup/README.md#daemon-vm-warm-pool)；保留资料在 `startup/.data/`。
+
 ### B-LAZY-STARTUP：惰性镜像的本地与远程供给成本 {#b-lazy-startup}
 
 - **JSON 入口状态：** 当前 V2 对原生 Docker 的入口为 [storage/lazy_storage.json](storage/lazy_storage.json)、[storage/lazy_runtime.json](storage/lazy_runtime.json)、[storage/lazy_remote.json](storage/lazy_remote.json)、[storage/lazy_local_reads.json](storage/lazy_local_reads.json)，复现前提见 [storage/README.md](storage/README.md)。已有制品的专项入口保留 [startup/image_compare.json](startup/image_compare.json)、[startup/image_lazy_compare.json](startup/image_lazy_compare.json)、[startup/stage_lazy_compare.json](startup/stage_lazy_compare.json)；完整 TurboOCI 四组 [startup/lazy_startup.json](startup/lazy_startup.json) 尚未准备（拒绝测量）。

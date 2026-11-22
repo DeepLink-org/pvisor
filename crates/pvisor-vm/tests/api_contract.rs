@@ -3,6 +3,54 @@
 use pvisor_vm::api::{self, RestoreState, SnapshotState, VmBuilder, VmConfiguration};
 
 #[test]
+fn deferred_root_reserves_tags_without_running_the_factory() {
+    use std::io::ErrorKind;
+
+    let prepare = || panic!("configuration must not run the root factory");
+    let mut vm = VmBuilder::new(1, 128).unwrap();
+    let mut with_snapshot = VmBuilder::new(1, 128).unwrap();
+    let mut with_root = VmBuilder::new(1, 128).unwrap();
+    let root = tempfile::tempdir().unwrap();
+    with_root.filesystem("/dev/root", root.path(), 0).unwrap();
+    if cfg!(all(
+        target_os = "linux",
+        target_arch = "x86_64",
+        feature = "init-blob",
+        not(any(feature = "tee", feature = "aws-nitro", feature = "efi"))
+    )) {
+        assert_eq!(
+            with_root.deferred_root(prepare).unwrap_err().kind(),
+            ErrorKind::InvalidInput
+        );
+        with_root
+            .filesystem(pvisor_guest::api::DEFERRED_ROOT_TAG, root.path(), 0)
+            .unwrap();
+        with_snapshot.snapshot_profile().unwrap();
+        assert_eq!(
+            with_snapshot.deferred_root(prepare).unwrap_err().kind(),
+            ErrorKind::Unsupported
+        );
+        vm.deferred_root(prepare).unwrap();
+        assert_eq!(
+            vm.snapshot_profile().unwrap_err().kind(),
+            ErrorKind::Unsupported
+        );
+        for tag in ["/dev/root", pvisor_guest::api::DEFERRED_ROOT_TAG] {
+            assert_eq!(
+                vm.filesystem(tag, root.path(), 0).unwrap_err().kind(),
+                ErrorKind::InvalidInput
+            );
+        }
+    } else {
+        assert_eq!(
+            vm.deferred_root(prepare).unwrap_err().kind(),
+            ErrorKind::Unsupported
+        );
+        vm.filesystem("/dev/root", root.path(), 0).unwrap();
+    }
+}
+
+#[test]
 fn managed_filesystem_validation_is_atomic_and_excludes_snapshots() {
     let root = tempfile::tempdir().unwrap();
     let mut builder = VmBuilder::new(1, 128).unwrap();

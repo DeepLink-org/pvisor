@@ -25,10 +25,10 @@ class EnvironmentSnapshotTests(unittest.TestCase):
             # The no-std trampoline makes all three descriptors absent on every
             # exec. An empty root also guarantees /dev/null is initially absent.
             shutil.copyfile(
-                support.target_dir() / "debug/probes/guest_closed_stdio", root / "init.krun"
+                support.target_dir() / "debug/probes/guest_closed_stdio", root / "init.pvisor"
             )
             shutil.copyfile(self.guest, root / "init-real")
-            for name in ["init.krun", "init-real"]:
+            for name in ["init.pvisor", "init-real"]:
                 (root / name).chmod(0o700)
             self.assertFalse((root / "dev").exists())
             source = subprocess.run(
@@ -51,8 +51,8 @@ class EnvironmentSnapshotTests(unittest.TestCase):
             runner.chmod(0o700)
             root = base / "rootfs"
             root.mkdir()
-            shutil.copyfile(self.guest, root / "init.krun")
-            (root / "init.krun").chmod(0o700)
+            shutil.copyfile(self.guest, root / "init.pvisor")
+            (root / "init.pvisor").chmod(0o700)
             (root / "unvisited").write_bytes(b"independent filesystem contents")
             env = dict(os.environ, PVISOR_CASE_VM_LIBRARY_DIR=str(self.firmware))
             source = subprocess.run(
@@ -175,7 +175,7 @@ class EnvironmentSnapshotTests(unittest.TestCase):
                                 (self.firmware / "libkrunfw.5.dylib").read_bytes()
                             ).hexdigest(),
                             "guest_sha256": hashlib.sha256(
-                                (work / "init.krun").read_bytes()
+                                (work / "init.pvisor").read_bytes()
                             ).hexdigest(),
                         }
                     )

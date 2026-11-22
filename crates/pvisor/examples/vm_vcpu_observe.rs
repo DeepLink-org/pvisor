@@ -4,8 +4,8 @@ mod experiment {
     use anyhow::{Context, ensure};
     use clap::Parser;
     use pvisor_vm::api::{
-        RuntimeSupport, VcpuObservationControl, VcpuObservationSnapshot, VmBuilder,
-        VmConfiguration, VmPlatform, VmRuntime,
+        GUEST_INIT_PATH, RuntimeSupport, VcpuObservationControl, VcpuObservationSnapshot,
+        VmBuilder, VmConfiguration, VmPlatform, VmRuntime,
     };
     use serde_json::{Value, json};
     use std::{
@@ -131,7 +131,13 @@ print('vcpu-guest-ok', flush=True)
         let mut vm = VmBuilder::new(a.cpus, 256)?;
         vm.disable_implicit_init()?;
         vm.filesystem("/dev/root", &root, 0)?;
-        vm.virtual_file("/dev/root", "/init.krun", fs::read(&a.init)?, 0o755, true)?;
+        vm.virtual_file(
+            "/dev/root",
+            GUEST_INIT_PATH,
+            fs::read(&a.init)?,
+            0o755,
+            true,
+        )?;
         vm.virtual_file("/dev/root", "/vcpu-work.py", GUEST.as_bytes(), 0o444, false)?;
         let launch = json!({"argv":[a.python,"/vcpu-work.py",a.workload,a.cpus.to_string(),a.seconds.to_string()],
             "env":{},"cwd":"/"});

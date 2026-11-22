@@ -12628,7 +12628,7 @@ mod tests {
         .unwrap();
         fs.init(FsOptions::empty()).unwrap();
 
-        // AugmentFs registers /init.krun after constructing its inner
+        // AugmentFs registers /init.pvisor after constructing its inner
         // filesystem. Simulate that allocation and verify the first real
         // lookup cannot reuse the virtual inode number.
         let virtual_inode = inode_alloc.next();

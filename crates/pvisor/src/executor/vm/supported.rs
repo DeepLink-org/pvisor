@@ -35,6 +35,7 @@ const CONTROL_CHILD_FD: RawFd = 199;
 const RAM_CHILD_FD: RawFd = 200;
 const IDLE_CHILD_FD: RawFd = 202;
 const RAW_READY_CHILD_FD: RawFd = 203;
+const ROOT_GATE_CHILD_FD: RawFd = 204;
 
 pub(super) fn runner_fd(fd: RawFd) -> std::io::Result<OwnedFd> {
     // Keep every source descriptor above all fixed destinations, avoiding dup2
@@ -43,7 +44,7 @@ pub(super) fn runner_fd(fd: RawFd) -> std::io::Result<OwnedFd> {
         libc::fcntl(
             fd,
             libc::F_DUPFD_CLOEXEC,
-            RAW_READY_CHILD_FD.max(crate::diagnostics::INHERITED_LOG_FD) + 1,
+            ROOT_GATE_CHILD_FD.max(crate::diagnostics::INHERITED_LOG_FD) + 1,
         )
     };
     if duplicate < 0 {
@@ -119,6 +120,8 @@ pub struct VmExecutor {
     disable_proactive_compaction: bool,
     idle_offload_minimum: std::time::Duration,
     vsock_ports: BTreeMap<u32, PathBuf>,
+    control_ready: Option<PathBuf>,
+    root_gate: Option<RootGate>,
     #[cfg(target_os = "linux")]
     cpu_group: Option<std::sync::Arc<super::cpu_qos::CpuQosGroup>>,
     #[cfg(target_os = "linux")]
@@ -129,6 +132,8 @@ pub struct VmExecutor {
     ))]
     restore: Option<std::sync::Arc<super::checkpoint::PreparedRestore>>,
 }
+
+type RootGate = std::sync::Arc<std::sync::Mutex<Option<std::os::unix::net::UnixStream>>>;
 
 struct OwnedRootfsBase(crate::environment_snapshot::SnapshotBase);
 
@@ -191,6 +196,8 @@ pub(super) struct RunnerSpec {
     #[serde(default)]
     vsock_ports: BTreeMap<u32, PathBuf>,
     #[serde(default)]
+    control_ready: Option<PathBuf>,
+    #[serde(default)]
     pub(super) cpu_qos: Option<pvisor_core::CpuQosClass>,
     #[cfg(target_os = "linux")]
     #[serde(default)]
@@ -202,6 +209,8 @@ pub(super) struct RunnerSpec {
     pub(super) workspace: Option<OverlayDeviceSpec>,
     pub(super) workspace_target: Option<PathBuf>,
     pub(super) guest: pvisor_guest::api::GuestConfig,
+    #[serde(default)]
+    warm_root: bool,
     pub(super) cpus: u8,
     pub(super) memory_mib: u32,
     #[serde(default)]
@@ -219,6 +228,21 @@ pub(super) struct RunnerSpec {
 }
 
 impl RunnerSpec {
+    fn validate_warm_root(&self) -> anyhow::Result<()> {
+        if self.warm_root {
+            anyhow::ensure!(
+                cfg!(all(target_os = "linux", target_arch = "x86_64"))
+                    && self.workspace.is_none()
+                    && !self.root.lowers.is_empty()
+                    && !self.guest_idle
+                    && self.checkpoint.is_none()
+                    && self.restore.is_none(),
+                "warm root requires a fresh Linux x86-64 VM, a private projection store and no workspace, guest-idle or checkpoint"
+            );
+        }
+        Ok(())
+    }
+
     fn validate_ram(&self) -> anyhow::Result<()> {
         anyhow::ensure!(
             !matches!(self.ram_pager, RamPager::Local)
@@ -660,6 +684,8 @@ impl VmExecutor {
             disable_proactive_compaction: false,
             idle_offload_minimum: default_idle_offload_minimum(),
             vsock_ports: BTreeMap::new(),
+            control_ready: None,
+            root_gate: None,
             #[cfg(target_os = "linux")]
             cpu_group: None,
             #[cfg(target_os = "linux")]
@@ -753,7 +779,41 @@ impl VmExecutor {
         }
         let unique = ports.values().collect::<std::collections::BTreeSet<_>>();
         anyhow::ensure!(unique.len() == ports.len(), "duplicate vsock socket path");
+        if let Some(path) = &self.control_ready {
+            validate_control_ready(&ports, path)?;
+        }
         self.vsock_ports = ports;
+        Ok(self)
+    }
+
+    /// Connect the guest's one-shot control readiness notification to a
+    /// pre-bound private host Unix listener. Configure `CONTROL_PORT` first.
+    /// This does not enable guest networking or authenticate readiness.
+    pub fn with_control_ready(mut self, path: PathBuf) -> anyhow::Result<Self> {
+        use std::os::unix::fs::FileTypeExt;
+        validate_control_ready(&self.vsock_ports, &path)?;
+        anyhow::ensure!(
+            std::fs::symlink_metadata(&path)?.file_type().is_socket(),
+            "control readiness requires an existing Unix socket"
+        );
+        self.control_ready = Some(path);
+        Ok(self)
+    }
+
+    /// Park a native VM and consume one [`super::WarmRootAssignment`] frame on
+    /// the gate after sending `[1]`. The configured root must be an exclusive
+    /// projection store; only a brokered projection underneath it can be assigned.
+    /// EOF, invalid frames and a 90-second wait fail launch without retry. The
+    /// gate is single-use even across executor clones. Requires fresh Linux
+    /// x86-64; snapshot/restore, workspaces and guest-idle are unsupported.
+    pub fn with_warm_root(mut self, gate: std::os::unix::net::UnixStream) -> anyhow::Result<Self> {
+        anyhow::ensure!(
+            cfg!(all(target_os = "linux", target_arch = "x86_64")),
+            "warm root requires Linux x86-64"
+        );
+        anyhow::ensure!(self.root_gate.is_none(), "warm root already configured");
+        gate.set_nonblocking(false)?;
+        self.root_gate = Some(std::sync::Arc::new(std::sync::Mutex::new(Some(gate))));
         Ok(self)
     }
 
@@ -1062,6 +1122,22 @@ impl RunExecutor for VmExecutor {
 
     async fn execute(&self, context: &ExecutionContext) -> ExecutorOutput {
         crate::util::startup_mark_run("vm.prepare_begin", context.spec().run_id.as_str());
+        let root_gate = match self
+            .root_gate
+            .as_ref()
+            .map(|gate| {
+                let gate = gate
+                    .lock()
+                    .map_err(|_| std::io::Error::other("deferred root gate poisoned"))?
+                    .take()
+                    .ok_or_else(|| std::io::Error::other("deferred root gate already consumed"))?;
+                runner_fd(gate.as_raw_fd())
+            })
+            .transpose()
+        {
+            Ok(gate) => gate,
+            Err(error) => return failed_to_start(error.to_string()),
+        };
         let mut spec = context.spec().clone();
         let mut vm_inputs = context.vm_inputs().clone();
         if self.guest_idle && (!self.vsock_ports.is_empty() || self.settings.cold_pager_requested())
@@ -1175,16 +1251,7 @@ impl RunExecutor for VmExecutor {
                 return failed_to_start(format!("prepare host authority exclusions: {error:#}"));
             }
         };
-        // AgentCtl uses a host Unix socket. Runtime injection into the
-        // invocation must not expose its credentials to the isolated guest.
-        for key in [
-            crate::AGENTCTL_ENDPOINT_ENV,
-            crate::AGENTCTL_TOKEN_ENV,
-            crate::AGENTCTL_TRANSPORT_ENV,
-            crate::AGENTCTL_VERSION_ENV,
-        ] {
-            env.remove(key);
-        }
+        strip_agentctl(&mut env);
 
         let temporary = match tempfile::Builder::new().prefix("pvisor-krun-").tempdir() {
             Ok(value) => value,
@@ -1331,6 +1398,7 @@ impl RunExecutor for VmExecutor {
         guest.control = self
             .vsock_ports
             .contains_key(&pvisor_guest::api::CONTROL_PORT);
+        guest.control_ready = self.control_ready.is_some();
         if guest.control {
             guest.process = Some(pvisor_guest::api::ProcessConfig {
                 new_session: true,
@@ -1548,6 +1616,7 @@ impl RunExecutor for VmExecutor {
             idle_offload_minimum: self.idle_offload_minimum,
             features: self.features.clone(),
             vsock_ports: self.vsock_ports.clone(),
+            control_ready: self.control_ready.clone(),
             cpu_qos: spec.runtime.cpu_qos,
             #[cfg(target_os = "linux")]
             cpu_group: cpu_group.as_ref().map(|group| group.binding()),
@@ -1557,6 +1626,7 @@ impl RunExecutor for VmExecutor {
             workspace,
             workspace_target: workspace_target.clone(),
             guest,
+            warm_root: root_gate.is_some(),
             cpus: self.settings.cpus as u8,
             memory_mib,
             ram_dedup: self.settings.ram_dedup,
@@ -1593,6 +1663,14 @@ impl RunExecutor for VmExecutor {
             &authority_paths,
         ) {
             return failed_to_start(format!("hide host authority: {error:#}"));
+        }
+        if let Err(error) = runner.validate_warm_root() {
+            return failed_to_start(error.to_string());
+        }
+        if runner.warm_root && runner.root.lowers.last() != Some(&root) {
+            return failed_to_start(
+                "warm root must use the executor's private projection store".into(),
+            );
         }
         #[cfg(any(
             all(target_os = "linux", target_arch = "x86_64"),
@@ -1762,6 +1840,7 @@ impl RunExecutor for VmExecutor {
         }
         let control_source_fd = control_runner.as_raw_fd();
         let ram_source_fd = ram_runner.as_raw_fd();
+        let root_gate_source_fd = root_gate.as_ref().map(AsRawFd::as_raw_fd);
         unsafe {
             command.pre_exec(move || {
                 if let Some(fd) = diagnostic_source_fd
@@ -1787,6 +1866,11 @@ impl RunExecutor for VmExecutor {
                     return Err(std::io::Error::last_os_error());
                 }
                 if libc::dup2(ram_source_fd, RAM_CHILD_FD) < 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                if let Some(fd) = root_gate_source_fd
+                    && libc::dup2(fd, ROOT_GATE_CHILD_FD) < 0
+                {
                     return Err(std::io::Error::last_os_error());
                 }
                 Ok(())
@@ -1833,6 +1917,7 @@ impl RunExecutor for VmExecutor {
         drop(control_runner);
         drop(ram_runner);
         drop(network_runner);
+        drop(root_gate);
         #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
         if let Some((mut host, runner_fd)) = raw_ready_pair {
             drop(runner_fd);
@@ -2475,6 +2560,7 @@ pub fn run_internal_if_requested() -> anyhow::Result<bool> {
 fn run_runner(spec: RunnerSpec) -> anyhow::Result<()> {
     spec.features.validate(crate::RunExecutorKind::Vm)?;
     spec.validate_ram()?;
+    spec.validate_warm_root()?;
     let mut lower_span = crate::startup_profile::Span::start("runner.attach_lazy_lowers");
     let _direct_lowers = crate::image::cache::attach_runner_lowers(
         spec.root.lowers.iter().chain(
@@ -2550,6 +2636,9 @@ fn run_runner(spec: RunnerSpec) -> anyhow::Result<()> {
         );
         let mut read_write = vec![spec.root.upper.clone()];
         read_write.extend(_direct_lowers.read_write.iter().cloned());
+        if spec.warm_root {
+            read_write.extend(spec.root.lowers.last().cloned());
+        }
         read_write.extend(spec.root.work.iter().cloned());
         read_write.extend(spec.root.preimages.iter().cloned());
         // Published sockets have their own private directory; grant only those
@@ -2557,6 +2646,7 @@ fn run_runner(spec: RunnerSpec) -> anyhow::Result<()> {
         read_write.extend(
             spec.vsock_ports
                 .values()
+                .chain(spec.control_ready.iter())
                 .filter_map(|path| path.parent().map(Path::to_owned)),
         );
         if let Some(binding) = &spec.checkpoint {
@@ -2678,7 +2768,6 @@ fn run_linked_krun(
         // SAFETY: isatty only queries this runner's standard descriptor.
         unsafe { libc::isatty(fd as libc::c_int) != 1 }
     }));
-    let guest_config = serde_json::to_vec(&guest)?;
     crate::util::startup_mark_run("runner.context_begin", &spec.run_id);
     #[cfg(any(
         all(target_os = "linux", target_arch = "x86_64"),
@@ -2733,19 +2822,29 @@ fn run_linked_krun(
     // disabling it would change the captured device configuration.
 
     // OverlayFs cannot service FUSE_SETUPMAPPING; keep DAX disabled.
-    add_vm_overlay(
-        &mut vm,
-        "/dev/root",
-        &spec.root,
-        baseline_indexes.first().cloned().flatten(),
-    )?;
-    vm.virtual_file(
-        "/dev/root",
-        "/.pvisor-guest.json",
-        guest_config,
-        0o400,
-        true,
-    )?;
+    let root = vm_overlay_config(&spec.root, baseline_indexes.first().cloned().flatten());
+    let late_lower = std::sync::Arc::new(std::sync::OnceLock::new());
+    if spec.warm_root {
+        let gate = take_root_gate()?;
+        let mut launch = pvisor_vm::api::DeferredRoot {
+            overlay: root,
+            guest: guest.clone(),
+        };
+        let owner = late_lower.clone();
+        vm.deferred_root(move || {
+            assign_warm_root(gate, &mut launch, &owner).map_err(std::io::Error::other)?;
+            Ok(launch)
+        })?;
+    } else {
+        vm.overlay("/dev/root", root, 0)?;
+        vm.virtual_file(
+            "/dev/root",
+            pvisor_guest::api::CONFIG_PATH,
+            serde_json::to_vec(&guest)?,
+            0o400,
+            true,
+        )?;
+    }
     if let Some(workspace) = &spec.workspace {
         add_vm_overlay(
             &mut vm,
@@ -2777,6 +2876,10 @@ fn run_linked_krun(
     // Explicit AF_VSOCK listeners preserve zero-feature vsock: no implicit TSI.
     for (port, path) in &spec.vsock_ports {
         vm.vsock_port(*port, path.clone(), true)?;
+    }
+    if let Some(path) = &spec.control_ready {
+        validate_control_ready(&spec.vsock_ports, path)?;
+        vm.vsock_port(pvisor_guest::api::CONTROL_READY_PORT, path.clone(), false)?;
     }
 
     crate::util::startup_mark_run("runner.devices_configured", &spec.run_id);
@@ -3222,29 +3325,90 @@ fn add_vm_overlay(
     overlay: &OverlayDeviceSpec,
     baseline_content_index: Option<pvisor_vm::api::BaselineContentIndex>,
 ) -> anyhow::Result<()> {
-    use pvisor_vm::api::{OverlayConfig, PermissionSemantics};
-    vm.overlay(
-        tag,
-        OverlayConfig {
-            lower_dirs: overlay.lowers.clone(),
-            lower_mutability: if overlay.lower_mutability.is_empty() {
-                vec![pvisor_overlay_core::LayerMutability::Mutable; overlay.lowers.len()]
-            } else {
-                overlay.lower_mutability.clone()
-            },
-            upper_dir: overlay.upper.clone(),
-            work_dir: overlay.work.clone(),
-            preimage_dir: overlay.preimages.clone(),
-            apply_target: overlay.apply_target.clone(),
-            baseline_lower: overlay.baseline_lower.clone(),
-            baseline_content_index,
-            excluded_paths: overlay.excluded.clone(),
-            access_policy: overlay.access_policy.clone(),
-            semantics: PermissionSemantics::LinuxComplete,
-        },
-        0,
-    )?;
+    vm.overlay(tag, vm_overlay_config(overlay, baseline_content_index), 0)?;
     Ok(())
+}
+
+fn vm_overlay_config(
+    overlay: &OverlayDeviceSpec,
+    baseline_content_index: Option<pvisor_vm::api::BaselineContentIndex>,
+) -> pvisor_vm::api::OverlayConfig {
+    use pvisor_vm::api::{OverlayConfig, PermissionSemantics};
+    OverlayConfig {
+        lower_dirs: overlay.lowers.clone(),
+        lower_mutability: if overlay.lower_mutability.is_empty() {
+            vec![pvisor_overlay_core::LayerMutability::Mutable; overlay.lowers.len()]
+        } else {
+            overlay.lower_mutability.clone()
+        },
+        upper_dir: overlay.upper.clone(),
+        work_dir: overlay.work.clone(),
+        preimage_dir: overlay.preimages.clone(),
+        apply_target: overlay.apply_target.clone(),
+        baseline_lower: overlay.baseline_lower.clone(),
+        baseline_content_index,
+        excluded_paths: overlay.excluded.clone(),
+        access_policy: overlay.access_policy.clone(),
+        semantics: PermissionSemantics::LinuxComplete,
+    }
+}
+
+fn take_root_gate() -> std::io::Result<std::os::unix::net::UnixStream> {
+    // This FD is installed by the runner's pre-exec callback only for gated launches.
+    let fd = ROOT_GATE_CHILD_FD;
+    if unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) } < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(unsafe { std::os::unix::net::UnixStream::from_raw_fd(fd) })
+}
+
+fn assign_warm_root(
+    gate: std::os::unix::net::UnixStream,
+    launch: &mut pvisor_vm::api::DeferredRoot,
+    owner: &std::sync::OnceLock<crate::image::cache::RunnerLowers>,
+) -> anyhow::Result<()> {
+    let request = receive_warm_assignment(gate)?;
+    let lower = launch
+        .overlay
+        .lower_dirs
+        .last_mut()
+        .context("missing private projection store")?;
+    let allowed = lower.canonicalize()?;
+    let root = request.root.canonicalize()?;
+    anyhow::ensure!(
+        root != allowed && root.starts_with(&allowed),
+        "warm root outside private store"
+    );
+    let projection = crate::image::cache::attach_warm_lower(&root)?;
+    owner
+        .set(projection)
+        .map_err(|_| anyhow::anyhow!("warm root already assigned"))?;
+    *lower = root.clone();
+    launch.guest.argv = request.argv;
+    launch.guest.env.clear();
+    prepare_guest_environment(&mut launch.guest.env, &root, &request.env, &[]);
+    strip_agentctl(&mut launch.guest.env);
+    if request.env.contains_key("TMPDIR") {
+        launch.guest.temporary_filesystem = None;
+    } else if let Some(scratch) = &launch.guest.temporary_filesystem {
+        launch
+            .guest
+            .env
+            .insert("TMPDIR".into(), scratch.path.to_string_lossy().into_owned());
+    }
+    launch.guest.validate()?;
+    Ok(())
+}
+
+fn receive_warm_assignment(
+    mut gate: std::os::unix::net::UnixStream,
+) -> anyhow::Result<super::WarmRootAssignment> {
+    use std::io::Write;
+    use std::time::Duration;
+    gate.set_read_timeout(Some(Duration::from_secs(90)))?;
+    gate.set_write_timeout(Some(Duration::from_secs(5)))?;
+    gate.write_all(&[1])?;
+    crate::host_transport::read_host_frame_sync(&mut gate)
 }
 
 use crate::VmStageStdio as StageStdio;
@@ -3296,6 +3460,30 @@ fn prepare_guest_environment(
     env.extend(explicit.clone());
     for name in unset {
         env.remove(name);
+    }
+}
+
+fn validate_control_ready(ports: &BTreeMap<u32, PathBuf>, path: &Path) -> anyhow::Result<()> {
+    use pvisor_guest::api::{CONTROL_PORT, CONTROL_READY_PORT};
+    anyhow::ensure!(
+        ports.contains_key(&CONTROL_PORT)
+            && !ports.contains_key(&CONTROL_READY_PORT)
+            && !ports.values().any(|existing| existing == path)
+            && path.is_absolute()
+            && path.as_os_str().len() < 104,
+        "control readiness requires the guest command adapter and a distinct absolute Unix path"
+    );
+    Ok(())
+}
+
+fn strip_agentctl(env: &mut BTreeMap<String, String>) {
+    for key in [
+        crate::AGENTCTL_ENDPOINT_ENV,
+        crate::AGENTCTL_TOKEN_ENV,
+        crate::AGENTCTL_TRANSPORT_ENV,
+        crate::AGENTCTL_VERSION_ENV,
+    ] {
+        env.remove(key);
     }
 }
 
@@ -3352,6 +3540,7 @@ fn guest_config(
         process: None,
         mounts: Vec::new(),
         control: false,
+        control_ready: false,
         serial_control: false,
         root_disk: None,
     }
@@ -3411,6 +3600,50 @@ fn guest_path_in_root(root: &Path, target: &Path) -> anyhow::Result<PathBuf> {
 
 #[cfg(test)]
 mod tests {
+    #[rstest::rstest]
+    #[case::assignment(
+        Some("{\"root\":\"/image/root\",\"argv\":[\"/bin/true\"],\"env\":{}}\n"),
+        true
+    )]
+    #[case::malformed(Some("1\n"), false)]
+    #[case::owner_disconnected(None, false)]
+    fn parked_runner_requires_a_valid_assignment(#[case] frame: Option<&str>, #[case] ok: bool) {
+        use super::receive_warm_assignment;
+        use std::{
+            io::{Read, Write},
+            os::unix::net::UnixStream,
+            time::Duration,
+        };
+
+        let (mut owner, runner) = UnixStream::pair().unwrap();
+        owner
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let (finished, result) = std::sync::mpsc::channel();
+        let thread = std::thread::spawn(move || {
+            finished
+                .send(receive_warm_assignment(runner).map(|assignment| assignment.argv))
+                .unwrap();
+        });
+        let mut reached = [0];
+        owner.read_exact(&mut reached).unwrap();
+        assert_eq!(reached, [1]);
+        assert!(matches!(
+            result.try_recv(),
+            Err(std::sync::mpsc::TryRecvError::Empty)
+        ));
+        if let Some(frame) = frame {
+            owner.write_all(frame.as_bytes()).unwrap();
+        }
+        drop(owner);
+        let assignment = result.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(assignment.is_ok(), ok);
+        if let Ok(argv) = assignment {
+            assert_eq!(argv, ["/bin/true"]);
+        }
+        thread.join().unwrap();
+    }
+
     #[test]
     fn guest_environment_scrubs_before_explicit_overlay_and_unsets_last() {
         use super::*;

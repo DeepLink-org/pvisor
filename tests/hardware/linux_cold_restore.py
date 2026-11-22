@@ -22,8 +22,8 @@ class LinuxColdRestoreTests(unittest.TestCase):
         with workspace() as (base, _):
             root = base / "rootfs"
             root.mkdir()
-            shutil.copyfile(self.guest, root / "init.krun")
-            (root / "init.krun").chmod(0o700)
+            shutil.copyfile(self.guest, root / "init.pvisor")
+            (root / "init.pvisor").chmod(0o700)
             env = dict(os.environ, PVISOR_CASE_VM_LIBRARY_DIR=str(self.firmware))
             started = time.monotonic()
             source = subprocess.run(
@@ -122,7 +122,7 @@ class LinuxColdRestoreTests(unittest.TestCase):
                                 (self.firmware / "libkrunfw.5.dylib").read_bytes()
                             ).hexdigest(),
                             "guest_sha256": hashlib.sha256(
-                                (root / "init.krun").read_bytes()
+                                (root / "init.pvisor").read_bytes()
                             ).hexdigest(),
                             "cpu_count": len(saved["state"]["cpus"]),
                             "device_inventory": [

@@ -9,7 +9,7 @@ use pvisor_daemon::api::{
     self, Config, Daemon, DaemonService, MemoryPoolService, NativeRuntime, NativeRuntimeConfig,
     NativeRuntimeService,
 };
-use std::{net::SocketAddr, path::PathBuf, sync::Arc};
+use std::{net::SocketAddr, path::PathBuf};
 
 const DEFAULT_IMAGES: &str = ".pvisor/images";
 
@@ -125,6 +125,9 @@ enum Command {
         /// Linux physical sharing, or compression/deduplication (also macOS HVF).
         #[arg(long, value_enum, requires = "memory_pool")]
         memory_pool_mode: Option<pvisor_daemon::api::PoolMode>,
+        /// Keep one parked VM per resource class (e.g. 4cx256M); repeat for more classes.
+        #[arg(long, requires = "sandbox", value_parser = warm_profile)]
+        warm_pool: Vec<api::WarmPoolProfile>,
     },
     /// Print the fixed protocol baseline, not a claim of full API support.
     Protocol,
@@ -259,6 +262,7 @@ async fn run(command: Command) -> anyhow::Result<()> {
             max_timeout_seconds,
             memory_pool,
             memory_pool_mode,
+            warm_pool,
         } => {
             anyhow::ensure!(
                 cache || sandbox || memory_pool,
@@ -341,7 +345,7 @@ async fn run(command: Command) -> anyhow::Result<()> {
                     memory_bytes,
                     max_timeout_seconds,
                 };
-                let daemon = Daemon::open(config, move |owner| {
+                let daemon = Daemon::open_native(config, warm_pool, move |owner| {
                     let runtime = NativeRuntime::new(NativeRuntimeConfig {
                         state_dir: runtime_state.canonicalize()?,
                         owner,
@@ -361,8 +365,7 @@ async fn run(command: Command) -> anyhow::Result<()> {
                     } else {
                         None
                     };
-                    Ok(Arc::new(runtime.with_memory_pool(pool))
-                        as Arc<dyn pvisor_daemon::api::Runtime>)
+                    Ok(runtime.with_memory_pool(pool))
                 })
                 .await?;
                 Some((daemon, listener))
@@ -377,6 +380,7 @@ async fn run(command: Command) -> anyhow::Result<()> {
             let maintenance = sandbox_service
                 .as_ref()
                 .map(|(daemon, _)| daemon.start_maintenance());
+            let warm_owner = sandbox_service.as_ref().map(|(daemon, _)| daemon.clone());
             let (api_stop, api_stopped) = tokio::sync::oneshot::channel::<()>();
             let api_enabled = sandbox_service.is_some();
             let api = async {
@@ -419,6 +423,14 @@ async fn run(command: Command) -> anyhow::Result<()> {
             if let Some(task) = maintenance {
                 task.abort();
             }
+            let warm_stopped = if let Some(daemon) = warm_owner {
+                tokio::time::timeout(std::time::Duration::from_secs(35), daemon.stop_warm_pool())
+                    .await
+                    .map_err(|_| anyhow::anyhow!("warm pool shutdown timed out"))
+                    .and_then(|result| result)
+            } else {
+                Ok(())
+            };
             let cache_stopped = if let Some(mut child) = cache {
                 cache_component::stop(&mut child).await
             } else {
@@ -426,10 +438,30 @@ async fn run(command: Command) -> anyhow::Result<()> {
             };
             result?;
             drained?;
+            warm_stopped?;
             cache_stopped?;
         }
     }
     Ok(())
+}
+
+fn warm_profile(value: &str) -> Result<api::WarmPoolProfile, String> {
+    let invalid = || "expected CPU cores and memory in MiB, for example 4cx256M".to_owned();
+    let (cpu, memory) = value.split_once("cx").ok_or_else(invalid)?;
+    let memory = memory.strip_suffix('M').ok_or_else(invalid)?;
+    let number = |s: &str, min: u64, max: u64| {
+        if !s.bytes().all(|b| b.is_ascii_digit()) {
+            return Err(invalid());
+        }
+        s.parse::<u64>()
+            .ok()
+            .filter(|n| (min..=max).contains(n))
+            .ok_or_else(invalid)
+    };
+    Ok(api::WarmPoolProfile {
+        cpu_millis: number(cpu, 1, 8)? * 1000,
+        memory_bytes: number(memory, 6, u64::from(u32::MAX))? * 1024 * 1024,
+    })
 }
 
 fn validate_listen(listen: SocketAddr, allow_insecure: bool) -> anyhow::Result<()> {
@@ -492,6 +524,64 @@ fn shutdown() -> std::io::Result<impl std::future::Future<Output = ()>> {
 mod tests {
     use super::*;
     use pvisor_daemon::api::PoolMode;
+
+    #[test]
+    fn warm_pool_accepts_repeatable_resource_classes_only_for_sandboxes() {
+        let args = Args::try_parse_from([
+            "pvisor-daemon",
+            "serve",
+            "--sandbox",
+            "--cgroup-root",
+            "/cg",
+            "--warm-pool",
+            "4cx256M",
+            "--warm-pool",
+            "1cx64M",
+        ])
+        .unwrap();
+        let Command::Serve { warm_pool, .. } = args.command else {
+            unreachable!()
+        };
+        assert_eq!(
+            warm_pool,
+            [
+                api::WarmPoolProfile {
+                    cpu_millis: 4000,
+                    memory_bytes: 256 * 1024 * 1024,
+                },
+                api::WarmPoolProfile {
+                    cpu_millis: 1000,
+                    memory_bytes: 64 * 1024 * 1024,
+                },
+            ]
+        );
+        for input in [
+            "0cx256M", "9cx256M", "4cx0M", "ubuntu", "4cx256", "4cx+256M", "4cx256Mi",
+        ] {
+            assert!(warm_profile(input).is_err(), "{input}");
+        }
+        assert!(
+            Args::try_parse_from([
+                "pvisor-daemon",
+                "serve",
+                "--cache",
+                "--warm-pool",
+                "4cx256M",
+            ])
+            .is_err()
+        );
+        assert!(
+            Args::try_parse_from([
+                "pvisor-daemon",
+                "serve",
+                "--sandbox",
+                "--cgroup-root",
+                "/cg",
+                "--deferred-root",
+            ])
+            .is_err()
+        );
+    }
 
     #[test]
     fn cluster_credentials_are_not_accepted_in_argv() {
