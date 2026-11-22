@@ -245,6 +245,7 @@ Design: 负载、对照、控制变量与有效样本判据。
 
 - **双固件工程子集：** Linux 与 Rust native 的任务日志、按需读页批处理、原始批次及配对区间见[工程记录](evidence/rust-kernel-filesystem.md)。共享 rootfs VM API 结果不填充九运行时用户表。
 - **Rust native 写路径：** [配对实验](evidence/rust-kernel-write-path.md)对照按需页缓存、写入权限检查和完成通知策略；1 KiB 写、同步写、完整发布与无能力调用者单独比较，不合成用户性能分数。
+- **Rust native 引入报告：** [架构决定与初步性能数据](evidence/rust-native-kernel-intro.zh.md)，含端到端任务和路径查询对照。
 - **JSON 入口状态：** 可执行 [filesystem/dax_ab.json](filesystem/dax_ab.json)；未准备 [filesystem/ab.json](filesystem/ab.json)（拒绝测量）。
 
 - **文档：** `docs/src/*/lab-notes/filesystem-performance-analysis.md`、
