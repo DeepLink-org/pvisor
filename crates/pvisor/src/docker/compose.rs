@@ -215,6 +215,7 @@ impl Default for Environment {
 pub struct Project {
     name: String,
     document: Document,
+    service_env_files_resolved: bool,
 }
 
 impl Project {
@@ -232,6 +233,22 @@ impl Project {
     /// Image-dependent executable validation occurs during admission, not load.
     /// No shell or host command is executed. Config output can contain secrets.
     pub fn load(file: Option<&Path>, name: Option<&str>) -> anyhow::Result<Self> {
+        Self::load_config(file, name, true)
+    }
+
+    /// Load a definition for operations on existing containers.
+    /// Project identification and interpolation follow [Self::load].
+    /// Existing containers use their persisted environment, so this path
+    /// does not read service `env_file` files.
+    pub fn load_for_existing(file: Option<&Path>, name: Option<&str>) -> anyhow::Result<Self> {
+        Self::load_config(file, name, false)
+    }
+
+    fn load_config(
+        file: Option<&Path>,
+        name: Option<&str>,
+        resolve_service_env_files: bool,
+    ) -> anyhow::Result<Self> {
         let file = match file {
             Some(file) => file.canonicalize().context("read Compose file")?,
             None => discover_file()?,
@@ -264,7 +281,7 @@ impl Project {
                     .filter(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || "-_".contains(*c))
                     .collect()
             });
-        ensure!(project_name(&name), "invalid Compose project name: {name}");
+        Self::validate_name(&name)?;
         ensure!(
             !document.services.is_empty(),
             "Compose services must not be empty"
@@ -353,7 +370,7 @@ impl Project {
                 Some(Files::Many(files)) => files,
                 None => vec![],
             };
-            for file in files {
+            for file in files.into_iter().filter(|_| resolve_service_env_files) {
                 let mut values = BTreeMap::new();
                 read_environment(
                     &fs::read_to_string(base.join(file))?,
@@ -421,7 +438,11 @@ impl Project {
             }
         }
         // Full-graph validation precedes every operation, including selection.
-        let project = Self { name, document };
+        let project = Self {
+            name,
+            document,
+            service_env_files_resolved: resolve_service_env_files,
+        };
         project.order(&[], true)?;
         Ok(project)
     }
@@ -436,6 +457,10 @@ impl Project {
     /// output does not interpret already-resolved values as new substitutions.
     /// No Docker storage or VM is touched; callers must protect secret output.
     pub fn config(&self) -> anyhow::Result<String> {
+        ensure!(
+            self.service_env_files_resolved,
+            "Compose config requires resolved service env files"
+        );
         let mut value = serde_yaml::to_value(&self.document)?;
         escape_config_dollars(&mut value);
         Ok(serde_yaml::to_string(&value)?)
@@ -487,7 +512,18 @@ impl Project {
         Ok(ordered)
     }
 
+    /// Validate an explicit Compose project name.
+    pub fn validate_name(name: &str) -> anyhow::Result<()> {
+        ensure!(project_name(name), "invalid Compose project name: {name}");
+        Ok(())
+    }
+
     fn lease(&self, store: &Store) -> anyhow::Result<File> {
+        Self::lease_named(store, &self.name)
+    }
+
+    fn lease_named(store: &Store, name: &str) -> anyhow::Result<File> {
+        Self::validate_name(name)?;
         let directory = store.root.join("compose");
         private_directory(&directory)?;
         let file = OpenOptions::new()
@@ -497,7 +533,7 @@ impl Project {
             .truncate(false)
             .mode(0o600)
             .custom_flags(libc::O_NOFOLLOW)
-            .open(directory.join(format!("{}.lock", self.name)))?;
+            .open(directory.join(format!("{name}.lock")))?;
         file.lock_exclusive()?;
         Ok(file)
     }
@@ -562,6 +598,10 @@ impl Project {
         options: &UpOptions,
         progress: &mut dyn FnMut(PullProgress),
     ) -> anyhow::Result<Vec<Instance>> {
+        ensure!(
+            self.service_env_files_resolved,
+            "Compose up requires resolved service env files"
+        );
         let _lease = self.lease(store)?;
         ensure!(
             !options.wait_timeout.is_zero(),
@@ -641,7 +681,7 @@ impl Project {
         let timeout = timeout.into();
         let _lease = self.lease(store)?;
         for instance in self.instances(store, services)?.into_iter().rev() {
-            store.stop(
+            store.stop_recorded(
                 &instance.id,
                 timeout.unwrap_or(Duration::from_millis(instance.config.stop_timeout_ms)),
                 None,
@@ -684,22 +724,44 @@ impl Project {
                         .is_some_and(|member| member.project == self.name)
             }));
         }
-        for instance in instances.into_iter().rev() {
-            store.stop(
-                &instance.id,
-                timeout.unwrap_or(Duration::from_millis(instance.config.stop_timeout_ms)),
-                None,
-            )?;
-            store.remove(&instance.id, remove_volumes)?;
-        }
+        Self::remove_members(store, instances.into_iter().rev(), timeout, remove_volumes)?;
         if remove_volumes {
             self.remove_volumes(store)?;
         }
-        if let Some(network) = store.networks()?.into_iter().find(|network| {
-            network.name == format!("{}_default", self.name)
-                && network.compose_project.as_deref() == Some(&self.name)
-        }) {
-            store.remove_network(&network.id, false)?;
+        store.remove_project_network(&self.name)
+    }
+
+    /// Tear down recorded containers and the owned default network for an explicit project.
+    /// The caller supplies the recorded project name. Volumes are retained.
+    pub fn down_project_only(
+        store: &Store,
+        name: &str,
+        timeout: Option<Duration>,
+    ) -> anyhow::Result<()> {
+        let _lease = Self::lease_named(store, name)?;
+        Self::cleanup_pending_named(store, name, false)?;
+        let members = store.instances(true)?.into_iter().rev().filter(|instance| {
+            instance
+                .compose
+                .as_ref()
+                .is_some_and(|member| member.project == name)
+        });
+        Self::remove_members(store, members, timeout, false)?;
+        store.remove_project_network(name)
+    }
+
+    fn remove_members(
+        store: &Store,
+        members: impl IntoIterator<Item = Instance>,
+        timeout: Option<Duration>,
+        remove_volumes: bool,
+    ) -> anyhow::Result<()> {
+        for instance in members {
+            store.stop_and_remove_recorded(
+                &instance.id,
+                timeout.unwrap_or(Duration::from_millis(instance.config.stop_timeout_ms)),
+                remove_volumes,
+            )?;
         }
         Ok(())
     }
@@ -1018,6 +1080,37 @@ mod tests {
         let file = directory.join("compose.yaml");
         fs::write(&file, text)?;
         Project::load(Some(&file), Some("test"))
+    }
+
+    #[test]
+    fn existing_project_load_does_not_admit_with_unresolved_service_environment() {
+        let temporary = tempfile::tempdir().unwrap();
+        let file = temporary.path().join("compose.yaml");
+        fs::write(
+            &file,
+            "services: {app: {image: alpine, env_file: missing.env}}",
+        )
+        .unwrap();
+        assert!(Project::load(Some(&file), Some("fixture")).is_err());
+        let existing = Project::load_for_existing(Some(&file), Some("fixture")).unwrap();
+        assert!(existing.config().is_err());
+        let store = Store::open(temporary.path().join("store")).unwrap();
+        let build_error = existing
+            .build(&store, &[], &BuildSettings::default())
+            .unwrap_err();
+        assert!(
+            build_error
+                .to_string()
+                .contains("resolved service env files")
+        );
+        let error = existing.up(&store, &[], &UpOptions::default(), &mut |_| {});
+        assert!(
+            error
+                .unwrap_err()
+                .to_string()
+                .contains("resolved service env files")
+        );
+        assert!(store.instances(true).unwrap().is_empty());
     }
 
     #[test]

@@ -9,6 +9,85 @@ fn reconcile(project: &Project, store: &Store) -> Vec<Instance> {
 }
 
 #[test]
+fn project_only_down_retries_after_a_failed_stop_request_under_concurrent_invocations() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = store(directory.path());
+    let project = load(
+        directory.path(),
+        r#"
+services:
+  first:
+    image: fixture:latest
+    volumes: [data:/state]
+  blocked:
+    image: fixture:latest
+volumes:
+  data: {}
+"#,
+    )
+    .unwrap();
+    let members = reconcile(&project, &store);
+    let member = |service: &str| {
+        members
+            .iter()
+            .find(|entry| entry.compose.as_ref().unwrap().service == service)
+            .unwrap()
+            .clone()
+    };
+    let first = member("first");
+    let mut blocked = member("blocked");
+    blocked.created_ms = first.created_ms + 1;
+    blocked.generation = uuid();
+    blocked.owner_epoch = blocked.generation.clone();
+    blocked.state = "running".into();
+    store.save(&blocked).unwrap();
+
+    let mut outside = super::super::tests::request();
+    outside.image = "fixture:latest".into();
+    outside.name = Some("unrelated".into());
+    let outside = store.create(outside).unwrap();
+    let volume = store.volume(&format!("{}_data", project.name)).unwrap();
+    fs::write(volume.join("sentinel"), b"retain").unwrap();
+    let network = format!("{}_default", project.name);
+
+    let blocked_dir = store.directory(&blocked.id);
+    let owner = lease_file(&blocked_dir.join("owner.lock")).unwrap();
+    owner.lock_exclusive().unwrap();
+    let blocked_request = blocked_dir.join("stop-request.json");
+    fs::create_dir(&blocked_request).unwrap();
+
+    let error = Project::down_project_only(&store, &project.name, None).unwrap_err();
+    assert!(error.chain().any(|cause| {
+        cause
+            .downcast_ref::<std::io::Error>()
+            .is_some_and(|io| io.kind() == std::io::ErrorKind::IsADirectory)
+    }));
+    assert!(!store.directory(&first.id).exists());
+    assert!(blocked_dir.is_dir());
+    assert!(store.directory(&outside.id).is_dir());
+    assert!(store.network_instances(&network).is_ok());
+    assert_eq!(fs::read(volume.join("sentinel")).unwrap(), b"retain");
+
+    fs::remove_dir(blocked_request).unwrap();
+    drop(owner);
+    let barrier = std::sync::Barrier::new(2);
+    std::thread::scope(|scope| {
+        let retry = || {
+            barrier.wait();
+            Project::down_project_only(&store, &project.name, None)
+        };
+        let first = scope.spawn(retry);
+        let second = scope.spawn(retry);
+        first.join().unwrap().unwrap();
+        second.join().unwrap().unwrap();
+    });
+    assert!(!blocked_dir.exists());
+    assert!(store.directory(&outside.id).is_dir());
+    assert!(store.network_instances(&network).is_err());
+    assert_eq!(fs::read(volume.join("sentinel")).unwrap(), b"retain");
+}
+
+#[test]
 fn compose_empty_stop_signal_inherits_image_and_has_the_unset_config_identity() {
     let directory = tempfile::tempdir().unwrap();
     let store = store(directory.path());
@@ -590,6 +669,24 @@ fn compose_replacement_admission_failure_keeps_all_old_members_and_retry_cleans_
             .to_string()
             .contains("cannot be started directly")
     );
+    let mut invalid = pending.clone();
+    invalid.state = "exited".into();
+    invalid.generation = uuid();
+    invalid.owner_epoch = uuid();
+    invalid.exit_code = Some(1);
+    store.save(&invalid).unwrap();
+    let error = Project::down_project_only(&store, &project.name, None).unwrap_err();
+    assert!(error.to_string().contains("unexpected lifecycle"));
+    assert_eq!(store.instances(true).unwrap().len(), 3);
+    store.save(&pending).unwrap();
+
+    let mut unrelated = super::super::tests::request();
+    unrelated.image = "fixture:latest".into();
+    unrelated.name = Some(pending.id.clone());
+    let mut unrelated = store.create(unrelated).unwrap();
+    unrelated.created_ms = pending.created_ms.saturating_add(1);
+    store.save(&unrelated).unwrap();
+
     project
         .document
         .services
@@ -598,7 +695,9 @@ fn compose_replacement_admission_failure_keeps_all_old_members_and_retry_cleans_
         .working_dir = None;
     let updated = reconcile(&project, &store);
     assert_eq!(updated.len(), 2);
-    assert_eq!(store.instances(true).unwrap().len(), 2);
+    assert_eq!(store.instances(true).unwrap().len(), 3);
+    assert!(store.find_id(&pending.id).unwrap().is_none());
+    assert!(store.find_id(&unrelated.id).unwrap().is_some());
     assert!(
         updated
             .iter()
