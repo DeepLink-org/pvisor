@@ -21,7 +21,7 @@ use ostd::{boot::EarlyCmdline, log::LevelFilter};
 /// Kernel command-line keys consumed by [`early_cmdline_parser`].
 ///
 /// These are stripped during dispatch so they are not forwarded to init.
-const EARLY_PARAMS: &[&str] = &["earlycon", "loglevel"];
+const EARLY_PARAMS: &[&str] = &["earlycon", "loglevel", "quiet"];
 
 /// Returns whether `key` is handled only by the early parser.
 pub(super) fn is_early_param(key: &str) -> bool {
@@ -36,12 +36,13 @@ pub(super) fn is_early_param(key: &str) -> bool {
 /// # Recognized tokens
 ///
 /// - `earlycon` — enables the early UART console (exact token match).
+/// - `quiet` — suppresses informational and debug console output.
 /// - `loglevel=N` — sets the OSTD log filter (`N` in `0..=8`, see [`LevelFilter`]).
 /// - `loglevel=LEVEL` — also accepts textual levels such as `error` or `debug`.
 /// - `--` — stops parsing; all following tokens are for the init process.
 ///
 /// Double quotes (`"`) protect spaces inside one token (Linux-compatible).
-/// Other tokens are ignored. When `loglevel` is absent, the default is `8`
+/// Other tokens are ignored. Without `quiet` or `loglevel`, the default is `8`
 /// ([`LevelFilter::Debug`]). When `earlycon` is absent, the early console stays disabled.
 #[ostd::early_cmdline_parser]
 const fn early_cmdline_parser(cmdline: &str) -> EarlyCmdline {
@@ -80,6 +81,8 @@ const fn early_cmdline_parser(cmdline: &str) -> EarlyCmdline {
             break;
         } else if matches!(token, b"earlycon") {
             has_early_console = true;
+        } else if matches!(token, b"quiet") {
+            log_level = LevelFilter::Warning;
         } else if let Some((key, value)) = token.split_at_checked(9)
             && matches!(key, b"loglevel=")
             && let Some(parsed_log_level) = parse_loglevel_at(value)
@@ -221,6 +224,23 @@ mod tests {
         );
         assert_eq!(
             early_cmdline_parser("loglevel=Warn").log_level,
+            LevelFilter::Debug
+        );
+    }
+
+    #[ktest]
+    fn quiet_respects_explicit_level_and_init_boundary() {
+        assert!(is_early_param("quiet"));
+        assert_eq!(
+            early_cmdline_parser("quiet").log_level,
+            LevelFilter::Warning
+        );
+        assert_eq!(
+            early_cmdline_parser("quiet loglevel=debug").log_level,
+            LevelFilter::Debug
+        );
+        assert_eq!(
+            early_cmdline_parser("-- quiet").log_level,
             LevelFilter::Debug
         );
     }

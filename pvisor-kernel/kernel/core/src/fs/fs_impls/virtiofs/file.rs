@@ -99,7 +99,7 @@ impl FileOps for VirtioFsFile {
 
         if self.cache_policy == CachePolicy::Cached && !status_flags.contains(StatusFlags::O_DIRECT)
         {
-            self.inode.cached_read_at(offset, writer, fh, file_flags)
+            self.inode.cached_read_at(offset, writer, fh)
         } else {
             self.inode.direct_read_at(offset, writer, fh, file_flags)
         }
@@ -159,10 +159,7 @@ impl PerOpenFileOps for VirtioFsFile {
             return_errno_with_message!(Errno::ENODEV, "the file is not mappable");
         }
 
-        self.inode
-            .page_cache()
-            .map(MappableObject::Vmo)
-            .ok_or_else(|| Error::with_message(Errno::ENODEV, "the file is not mappable"))
+        Ok(MappableObject::Vmo(self.inode.cache_for_read()?))
     }
 
     fn check_seekable(&self) -> Result<()> {

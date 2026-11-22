@@ -243,6 +243,9 @@ Design: 负载、对照、控制变量与有效样本判据。
 
 ### B-FS-ENG：文件系统改动的工程 A/B {#b-fs-eng}
 
+- **双固件工程子集：** Linux 与 Rust native 的任务日志、按需读页批处理、原始批次及配对区间见[工程记录](evidence/rust-kernel-filesystem.md)。共享 rootfs VM API 结果不填充九运行时用户表。
+- **Rust native 写路径：** [配对实验](evidence/rust-kernel-write-path.md)对照按需页缓存、写入权限检查和完成通知策略；1 KiB 写、同步写、完整发布与无能力调用者单独比较，不合成用户性能分数。
+- **Rust native 引入报告：** [架构决定与初步性能数据](evidence/rust-native-kernel-intro.zh.md)，含端到端任务和路径查询对照。
 - **JSON 入口状态：** 可执行 [filesystem/dax_ab.json](filesystem/dax_ab.json)；未准备 [filesystem/ab.json](filesystem/ab.json)（拒绝测量）。
 
 - **文档：** `docs/src/*/lab-notes/filesystem-performance-analysis.md`、
@@ -823,6 +826,7 @@ Design: 负载、对照、控制变量与有效样本判据。
 - **想要的结论：** 各阶段计时及计时边界，不作为用户启动水位。
 - **实验设计：** 固定 guest payload 与 runner；早期内核时钟和收尾时间分别解释。
 - **历史入口：** `firmware_boot.py`。
+- **双固件阶段诊断：** `startup/firmware_stages.py` 在 KVM 上用同一 VM API runner、独立 rootfs 和 1 vCPU/256 MiB 配对采集配置开始至 guest 确认控制台设备的宿主时钟。附带校验 shell 文件标记与退出；不把阶段耗时当作 shell Ready。
 - **版本退化诊断：** 冻结历史与指定版本制品，在启动工程对照的私有环境下启用 `PVISOR_STARTUP_TIMING=1` / `PVISOR_STARTUP_PROFILE=1`，各做少量独立试次，保留 stderr 阶段记录。诊断行命令与输出独立归档；插桩时间不发布为性能水位，不将重叠 span 相加，缺失阶段标记视为未知。
 - **当前阶段诊断入口：** `startup/startup_profile.py --collect NEW_DIR -- COMMAND` 独立采集少量新进程试次，以唯一精确 Ready 行和零退出校验成功；失败/超时保留 stdout、stderr 与 observer。固定原始 argv、cwd、二进制/harness 摘要和 CPU affinity，每次使用独立 Run store，不清理宿主页缓存或修改全局系统状态。`startup_profile.py LOG...` 可离线汇总。宿主 checkpoint 只在同 PID 内求间隔；owner 交接仅使用显式 frontend/owner 绑定。VMM/宿主/guest supervisor span 按各自 process-local epoch 展示，嵌套/重叠不相加；缺失与 unknown outcome 明示，执行/收尾不计入启动。Popen→Ready 包含 observer 管道与调度延迟；VMM-built→Ready 包含 callback、event loop、guest 与输出观察，不能称为纯内核启动。profile=1 的诊断时间不作为性能水位；泛用 `diagnostic.json` 仍未接线，不通过用户表发布。
 - **FD 扩展微诊断：** `startup/fd_probe.rs` 复现 runner 的 Linux `F_DUPFD_CLOEXEC >= 202`，在独立新进程中交替比较单线程、多线程及创建线程前预扩展表三组，每组至少五次；每次记录首次和表已扩展后的第二次复制原值，校验获得不同的有效 FD。只打开 `/dev/null`，不修改全局策略/资源限制；该结果只归因于宿主 FD 管理成本，不能直接充当 VM 加速幅度或安全替代设计的验证。

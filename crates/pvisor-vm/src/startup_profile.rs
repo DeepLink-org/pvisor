@@ -5,6 +5,10 @@ static ENABLED: LazyLock<bool> =
     LazyLock::new(|| std::env::var("PVISOR_STARTUP_PROFILE").as_deref() == Ok("1"));
 static EPOCH: LazyLock<Instant> = LazyLock::new(Instant::now);
 
+pub(crate) fn enabled() -> bool {
+    *ENABLED
+}
+
 pub(crate) struct Span {
     stage: &'static str,
     role: &'static str,

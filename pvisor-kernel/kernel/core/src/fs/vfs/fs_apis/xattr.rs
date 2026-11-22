@@ -8,6 +8,7 @@ use crate::{
     prelude::*,
     process::{UserNamespace, credentials::capabilities::CapSet, posix_thread::AsPosixThread},
     security::lsm::hooks as lsm_hooks,
+    thread::Thread,
 };
 
 pub(crate) const XATTR_NAME_MAX_LEN: usize = 255;
@@ -33,26 +34,29 @@ pub(in crate::fs) fn clear_file_priv(dentry: &Dentry) -> Result<()> {
 }
 
 fn clear_set_id_bits(dentry: &Dentry) -> Result<()> {
+    let current_thread = Thread::current();
+    let posix_thread = current_thread
+        .as_deref()
+        .and_then(AsPosixThread::as_posix_thread);
+    // If both bits may be retained, their current values need no filesystem round trip.
+    if let Some(thread) = posix_thread
+        && lsm_hooks::on_capable(lsm_hooks::CapableContext::new(
+            UserNamespace::get_init_singleton().as_ref(),
+            thread,
+            CapSet::FSETID,
+        ))
+        .is_ok()
+    {
+        return Ok(());
+    }
+
     let inode = dentry.inode().as_ref();
     let mut mode = inode.mode()?;
     if !mode.intersects(InodeMode::S_ISUID | InodeMode::S_ISGID) {
         return Ok(());
     }
 
-    let current_thread = current_thread!();
-    let posix_thread = current_thread.as_posix_thread().unwrap();
-
-    // Callers with `CAP_FSETID` may preserve both set-ID bits across content changes.
-    if lsm_hooks::on_capable(lsm_hooks::CapableContext::new(
-        UserNamespace::get_init_singleton().as_ref(),
-        posix_thread,
-        CapSet::FSETID,
-    ))
-    .is_ok()
-    {
-        return Ok(());
-    }
-
+    let posix_thread = posix_thread.ok_or(Errno::EPERM)?;
     let original_mode = mode;
     mode.remove(InodeMode::S_ISUID);
 
