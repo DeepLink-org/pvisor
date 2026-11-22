@@ -774,10 +774,15 @@ pub fn build_microvm_for_arch<A: crate::backend::Architecture>(
         serial_devices.push(setup_serial_device(event_manager, None, None)?);
     };
     if vm_resources.rust_native_kernel {
+        let diagnostics: Box<dyn io::Write + Send> = if vm_resources.disable_implicit_console {
+            Box::new(port_io::PortOutputLog::default())
+        } else {
+            Box::new(std::io::stderr())
+        };
         serial_devices.push(setup_serial_device(
             event_manager,
             None,
-            Some(Box::new(std::io::stderr())),
+            Some(diagnostics),
         )?);
     }
 
@@ -1199,8 +1204,11 @@ pub fn build_microvm_for_arch<A: crate::backend::Architecture>(
         .map_err(StartMicrovmError::Internal)?;
         #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
         if vm_resources.rust_native_kernel {
-            crate::arch::x86_64::acpi::install(&vmm.guest_memory)
-                .map_err(|error| StartMicrovmError::GuestMemoryMmap(error.to_string()))?;
+            crate::arch::x86_64::acpi::install(
+                &vmm.guest_memory,
+                vm_resources.vcpu_config().vcpu_count,
+            )
+            .map_err(|error| StartMicrovmError::GuestMemoryMmap(error.to_string()))?;
         }
     }
 
@@ -2320,9 +2328,9 @@ fn autoconfigure_console_ports(
 ) -> std::result::Result<Vec<PortDescription>, StartMicrovmError> {
     use self::StartMicrovmError::*;
 
-    if vm_resources.rust_native_kernel {
+    if vm_resources.rust_native_kernel && cfg.is_none() {
         return Ok(vec![PortDescription::console(
-            Some(port_io::input_empty().map_err(|error| OpenConsoleFile(error.into()))?),
+            None,
             Some(
                 port_io::output_to_raw_fd_dup(STDOUT_FILENO)
                     .map_err(|error| OpenConsoleFile(error.into()))?,

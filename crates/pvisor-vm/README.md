@@ -16,7 +16,8 @@ Linux x86_64/aarch64 和 macOS aarch64 的产品构建同时内嵌 Linux 与 Rus
 也不在构建时选择内核。独立 Cargo 构建若未嵌入该载荷，选择实验内核会明确报错，
 不下载、不编译、不回退到 Linux。实验内核不接受 `set_firmware_path`。
 
-实验 profile 限于全新单 vCPU、至少 256 MiB 的 Linux x86_64/aarch64 KVM 或 macOS aarch64 HVF VM，
+实验 profile 限于全新、至少 256 MiB 的 Linux x86_64/aarch64 KVM 或 macOS aarch64 HVF VM。
+x86_64 支持单、双 vCPU；aarch64 仍限于单 vCPU。两种架构都
 不支持 EFI、TEE、快照/恢复和 Linux idle handoff。继续使用同一
 virtio-MMIO、virtio-fs `/dev/root` 和 guest supervisor；启动时仅补充
 实验 x86 内核需要的 ACPI CPU/IRQ/reset 描述。原有 Linux 启动路径不写入这些表。
@@ -342,11 +343,12 @@ PVISOR_CASE_VM_FIRMWARE_PATH=/absolute/path/to/libkrunfw.so.5.6.2 \
 
 Linux x86_64 选择 `ready_before_execution` 与 `ready_abort_kvm`；Apple Silicon
 选择 `ready_before_execution` 与 `ready_abort_hvf`，使用本机可信 `.dylib` 固件。
-固件必须是已有绝对文件路径。入口只执行这些 ignored 硬件用例，串行运行，
-没有选中测试、固件缺失或 hypervisor 不可用都失败，不以跳过代替资格通过。
-Linux CI 的 pvisor shard 自动调用此入口，并保留生命周期日志；其他分组不承担
-这个硬件门禁。macOS 托管 runner 的编译/普通契约不证明真实 HVF 可用，HVF
-生命周期资格仍须在具有权限的 Apple Silicon 主机运行同一入口。
+Linux 客体固件必须是已有绝对文件路径。Linux x86_64/KVM 也可设置
+`PVISOR_NATIVE_KERNEL=rust` 和 `PVISOR_BUILD_NATIVE_KERNEL_BUNDLE`，使用构建时
+内嵌的 Rust 内核，此时不得设置 `PVISOR_CASE_VM_FIRMWARE_PATH`。
+入口只串行执行这些 ignored 硬件用例；无测试、缺固件或 hypervisor 不可用都失败。
+Linux CI 的 pvisor shard 对两种固件分别运行并保留日志。Hosted macOS 不提供真实
+HVF 覆盖；在具有权限的 Apple Silicon 主机使用 Linux 客体固件运行同一入口。
 私有 KVM microtests 另外覆盖无定时器 idle、claimed 后 wake 和双 CPU standby
 的有界回收；这不是完整 SMP guest 验收，也不覆盖卡住的宿主内核/设备 I/O、
 冷 RAM pager 或其他平台。

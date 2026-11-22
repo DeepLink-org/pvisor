@@ -83,9 +83,11 @@ impl ConsoleDevice {
     }
 
     pub(crate) fn init(mut device_transport: DeviceTransport) -> Result<(), VirtioDeviceError> {
-        let control = super::control::ConsoleControl::new(device_transport.as_mut())?;
         let config_manager = VirtioConsoleConfig::new_manager(device_transport.as_ref());
-        debug!("virtio_console_config = {:?}", config_manager.read_config());
+        let config = config_manager.read_config();
+        debug!("virtio_console_config = {:?}", config);
+        let control =
+            super::control::ConsoleControl::new(device_transport.as_mut(), config.max_nr_ports)?;
 
         const RECV0_QUEUE_INDEX: u16 = 0;
         const TRANSMIT0_QUEUE_INDEX: u16 = 1;

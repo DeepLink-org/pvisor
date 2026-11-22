@@ -3,6 +3,10 @@
     all(target_os = "linux", target_arch = "x86_64"),
     all(target_os = "macos", target_arch = "aarch64")
 ))]
+
+#[path = "lifecycle/firmware.rs"]
+mod firmware;
+
 use pvisor_vm::api::{VmBuilder, VmConfiguration, VmControl, VmRuntime};
 use sha2::{Digest, Sha256};
 use std::{
@@ -28,19 +32,17 @@ fn ram_digest(file: &File) -> Vec<u8> {
 }
 
 #[test]
-#[ignore = "requires real KVM/HVF and PVISOR_CASE_VM_FIRMWARE_PATH; serial 1/2 CPU VMs"]
+#[ignore = "requires real KVM/HVF and trusted firmware; serial 1/2 CPU VMs"]
 fn fresh_ready_holds_all_cpus_and_abort_never_changes_guest_ram() {
     const CHILD: &str = "PVISOR_READY_CPU_CHILD";
+    let firmware = firmware::external_firmware();
     if let Ok(cpus) = std::env::var(CHILD) {
         let root = tempfile::tempdir().unwrap();
         let backing = tempfile::tempfile().unwrap();
         let mut vm = VmBuilder::new(cpus.parse().unwrap(), 256).unwrap();
-        vm.set_firmware_path(
-            std::env::var_os("PVISOR_CASE_VM_FIRMWARE_PATH")
-                .unwrap()
-                .into(),
-        )
-        .unwrap();
+        if let Some(firmware) = firmware {
+            vm.set_firmware_path(firmware).unwrap();
+        }
         vm.filesystem("/dev/root", root.path(), 0).unwrap();
         vm.ram_backing(backing.try_clone().unwrap()).unwrap();
         let error = vm
@@ -61,10 +63,6 @@ fn fresh_ready_holds_all_cpus_and_abort_never_changes_guest_ram() {
         assert_eq!(error.to_string(), "ready refused");
         return;
     }
-    assert!(
-        std::env::var_os("PVISOR_CASE_VM_FIRMWARE_PATH").is_some(),
-        "set trusted local firmware path"
-    );
     for cpus in ["1", "2"] {
         let mut child = Command::new(std::env::current_exe().unwrap())
             .args([

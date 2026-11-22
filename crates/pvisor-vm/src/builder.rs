@@ -49,10 +49,17 @@ impl<B: Backend> Builder<B> {
         let mut resources = VmResources::default();
         resources.rust_native_kernel = crate::experimental_kernel::selection()?
             == crate::experimental_kernel::Selection::RustNative;
-        if resources.rust_native_kernel && (cpus != 1 || memory_mib < 256) {
+        if resources.rust_native_kernel && memory_mib < 256 {
             return Err(io::Error::new(
                 io::ErrorKind::Unsupported,
-                "experimental Rust native kernel requires one vCPU and at least 256 MiB RAM",
+                "experimental Rust native kernel requires at least 256 MiB RAM",
+            ));
+        }
+        let native_cpu_limit = if cfg!(target_arch = "x86_64") { 2 } else { 1 };
+        if resources.rust_native_kernel && !(1..=native_cpu_limit).contains(&cpus) {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                format!("experimental Rust native kernel requires 1..={native_cpu_limit} vCPUs"),
             ));
         }
         resources
@@ -244,12 +251,6 @@ impl<B: Backend> Builder<B> {
     /// contract; this replaces the implicit console configuration.
     pub fn task_stdio(&mut self, stdin: i32, stdout: i32, stderr: i32) -> io::Result<()> {
         use std::os::fd::RawFd;
-        if self.resources.rust_native_kernel {
-            return Err(io::Error::new(
-                io::ErrorKind::Unsupported,
-                "Rust native kernel currently supports only the primary VM console",
-            ));
-        }
         if self.resources.virtio_consoles.iter().any(|console| {
             matches!(
                 console,
@@ -373,6 +374,7 @@ impl<B: Backend> Builder<B> {
         {
             self.install_default_kernel(crate::firmware::embedded_kernel())?;
         }
+        let uses_default_cmdline = self.guest_cmdline.is_none();
         let mut command = self
             .guest_cmdline
             .take()
@@ -382,10 +384,11 @@ impl<B: Backend> Builder<B> {
                 epilog: Some(" -- ".into()),
             });
         if self.resources.rust_native_kernel {
-            command
-                .prolog
-                .get_or_insert_with(String::new)
-                .push_str(" root=/dev/root earlycon");
+            let prolog = command.prolog.get_or_insert_with(String::new);
+            prolog.push_str(" root=/dev/root earlycon");
+            if uses_default_cmdline {
+                prolog.push_str(" loglevel=warn");
+            }
         }
         if self.guest_idle {
             command

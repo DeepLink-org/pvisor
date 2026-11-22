@@ -356,7 +356,7 @@ impl SocketTimeouts {
     }
 }
 
-fn check_current_privileged() -> Result<()> {
+pub(in crate::net::socket) fn check_current_privileged() -> Result<()> {
     let current = current_thread!();
     let posix_thread = current.as_posix_thread().unwrap();
     lsm_hooks::on_capable(lsm_hooks::CapableContext::new(

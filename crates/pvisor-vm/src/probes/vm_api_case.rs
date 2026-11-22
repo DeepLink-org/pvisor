@@ -20,6 +20,9 @@ struct Args {
     /// Host directory exposed read-only at /readonly in the guest.
     #[arg(long)]
     readonly: Option<PathBuf>,
+    /// Route stdin, stdout and stderr through the named virtio-serial ports (requires pipes).
+    #[arg(long)]
+    task_stdio: bool,
     /// Absolute Linux executable and arguments; no host shell expansion.
     #[arg(last = true, required = true)]
     command: Vec<String>,
@@ -48,10 +51,13 @@ fn run(args: Args) -> anyhow::Result<()> {
         vm.set_firmware_path(pvisor_vm::api::VmPlatform::resolve_firmware_path(None)?)?;
     }
     vm.filesystem("/dev/root", &root, 0)?;
+    if args.task_stdio {
+        vm.task_stdio(0, 1, 2)?;
+    }
     let mut config = pvisor_guest::api::GuestConfig {
         argv: args.command,
         cwd: "/".into(),
-        stdio_ports: Some([false; 3]),
+        stdio_ports: Some([args.task_stdio; 3]),
         ..Default::default()
     };
     if let Some(readonly) = args.readonly {

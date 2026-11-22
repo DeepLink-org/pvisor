@@ -64,12 +64,22 @@ fn selection_child() {
                     &VmPlatform::embedded_kernel().unwrap().bytes,
                 ));
             }
-            for (cpus, memory) in [(2, 256), (1, 128)] {
+            if cfg!(target_arch = "aarch64") {
                 assert_eq!(
-                    VmBuilder::new(cpus, memory).err().unwrap().kind(),
+                    VmBuilder::new(2, 256).err().unwrap().kind(),
                     io::ErrorKind::Unsupported
                 );
+            } else {
+                VmBuilder::new(2, 256).unwrap();
             }
+            assert_eq!(
+                VmBuilder::new(3, 256).err().unwrap().kind(),
+                io::ErrorKind::Unsupported
+            );
+            assert_eq!(
+                VmBuilder::new(1, 128).err().unwrap().kind(),
+                io::ErrorKind::Unsupported
+            );
             let mut vm = VmBuilder::new(1, 256).unwrap();
             assert_eq!(
                 vm.snapshot_profile().unwrap_err().kind(),
@@ -80,8 +90,13 @@ fn selection_child() {
                 io::ErrorKind::Unsupported
             );
             assert_eq!(
+                vm.task_stdio(-1, -1, -1).unwrap_err().kind(),
+                io::ErrorKind::InvalidInput
+            );
+            vm.task_stdio(-1, 1, 2).unwrap();
+            assert_eq!(
                 vm.task_stdio(-1, 1, 2).unwrap_err().kind(),
-                io::ErrorKind::Unsupported
+                io::ErrorKind::AlreadyExists
             );
             let root = tempfile::tempdir().unwrap();
             let file = root.path().join("kernel.bin");

@@ -447,21 +447,53 @@ jobs:
           mise exec -- cargo build --locked -p pvisor-vm --example vm_api_case
           python3 tests/vm_api_contract.py --binary target/debug/examples/vm_api_case --guest "$RUNNER_TEMP/vm-guest" --firmware "$api_firmware" --output "$RUNNER_TEMP/vm-api-${{ runner.os }}"
 
-      - name: Ready barrier and failed-start ownership / KVM
+      - name: Rust guest named stdio and authenticated exit / KVM
+        id: native-stdio
         if: runner.os == 'Linux' && matrix.shard == 'pvisor'
+        shell: bash
+        run: |
+          native_bundle="$(mise run kernel -- build)"
+          echo "bundle=$native_bundle" >> "$GITHUB_OUTPUT"
+          PVISOR_BUILD_NATIVE_KERNEL_BUNDLE="$native_bundle" mise exec -- cargo build --locked -p pvisor-vm --example vm_api_case
+          mise exec -- rustc --edition=2021 --target x86_64-unknown-linux-musl -C linker=rust-lld pvisor-kernel/tests/guest.rs -o "$RUNNER_TEMP/native-stdio-guest"
+          python3 pvisor-kernel/tests/task_stdio.py --binary target/debug/examples/vm_api_case --guest "$RUNNER_TEMP/native-stdio-guest"
+
+      - name: Ready barrier and failed-start ownership / Linux and Rust guests / KVM
+        if: runner.os == 'Linux' && matrix.shard == 'pvisor'
+        env:
+          PVISOR_BUILD_NATIVE_KERNEL_BUNDLE: ${{ steps.native-stdio.outputs.bundle }}
         shell: bash
         run: |
           set -euo pipefail
           lifecycle_firmware="$(mise run fw -- build --target x86_64-unknown-linux-musl)"
-          export PVISOR_CASE_VM_FIRMWARE_PATH="$lifecycle_firmware"
-          mise run test-vm-lifecycle 2>&1 | tee "$RUNNER_TEMP/vm-lifecycle.log"
+          junit=target/nextest/vm-lifecycle/junit.xml
+          status=0
+          for kernel in linux rust; do
+            evidence="$RUNNER_TEMP/vm-lifecycle/$kernel"
+            mkdir -p "$evidence"
+            rm -f "$junit"
+            (
+              if [[ "$kernel" == rust ]]; then
+                export PVISOR_NATIVE_KERNEL=rust
+                unset PVISOR_CASE_VM_FIRMWARE_PATH
+              else
+                unset PVISOR_NATIVE_KERNEL
+                export PVISOR_CASE_VM_FIRMWARE_PATH="$lifecycle_firmware"
+              fi
+              mise run test-vm-lifecycle
+            ) 2>&1 | tee "$evidence/nextest.log" || status=1
+            if [[ -f "$junit" ]]; then
+              cp "$junit" "$evidence/junit.xml"
+            else
+              status=1
+            fi
+          done
+          exit "$status"
       - uses: actions/upload-artifact@v4
         if: always() && runner.os == 'Linux' && matrix.shard == 'pvisor'
         with:
           name: vm-lifecycle-Linux
-          path: |
-            ${{ runner.temp }}/vm-lifecycle.log
-            target/nextest/vm-lifecycle/junit.xml
+          path: ${{ runner.temp }}/vm-lifecycle/
           if-no-files-found: error
           retention-days: 7
 
@@ -573,7 +605,7 @@ jobs:
         run: mise run test -- pvisor-cli -- -E 'not (binary(=docker_cli) | binary(=docker_p0_cli) | binary(=docker_staged_cli) | binary(=docker_staged_native) | binary(=compose_cli))'
 
   podman-contracts:
-    name: Feature docker-cli / ${{ matrix.suite }} / Linux KVM
+    name: Feature docker-cli / ${{ matrix.suite }} / Linux KVM / ${{ matrix.kernel }} guest
     needs: cli-test
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -581,6 +613,7 @@ jobs:
       fail-fast: false
       matrix:
         suite: [bats, go-0, go-1]
+        kernel: [linux, rust]
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup-build-env
@@ -608,6 +641,7 @@ jobs:
       - name: Run contract shard
         env:
           SUITE: ${{ matrix.suite }}
+          PVISOR_NATIVE_KERNEL: ${{ matrix.kernel }}
           PVISOR_BINARY: ${{ runner.temp }}/podman-runtime/pvisor
           PVISOR_TEST_IMAGE: mirror.gcr.io/library/alpine:3.20
           PVISOR_KRUN_LOG: "1"
@@ -629,7 +663,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: podman-contracts-linux-amd64-${{ matrix.suite }}
+          name: podman-contracts-linux-amd64-${{ matrix.kernel }}-${{ matrix.suite }}
           path: ${{ runner.temp }}/podman-contracts/
           if-no-files-found: error
 

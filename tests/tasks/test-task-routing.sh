@@ -266,6 +266,21 @@ if [[ -n "$abort_test" ]]; then
 else
   PVISOR_CASE_VM_FIRMWARE_PATH="$firmware" expect_failure test-vm-lifecycle
 fi
+bundle="$work/native bundle"
+mkdir "$bundle"
+PVISOR_NATIVE_KERNEL=rust PVISOR_BUILD_NATIVE_KERNEL_BUNDLE="$work/missing-bundle" \
+  expect_failure test-vm-lifecycle
+test ! -s "$PVISOR_TASK_TEST_LOG"
+PVISOR_NATIVE_KERNEL=rust PVISOR_BUILD_NATIVE_KERNEL_BUNDLE="$bundle" \
+  PVISOR_CASE_VM_FIRMWARE_PATH="$firmware" expect_failure test-vm-lifecycle
+test ! -s "$PVISOR_TASK_TEST_LOG"
+if [[ "$abort_test" == ready_abort_kvm ]]; then
+  PVISOR_NATIVE_KERNEL=rust PVISOR_BUILD_NATIVE_KERNEL_BUNDLE="$bundle" run test-vm-lifecycle
+  check_line cargo nextest run --locked -p pvisor-vm --test ready_before_execution --test "$abort_test" --profile vm-lifecycle --run-ignored only --no-tests fail --test-threads 1
+else
+  PVISOR_NATIVE_KERNEL=rust PVISOR_BUILD_NATIVE_KERNEL_BUNDLE="$bundle" expect_failure test-vm-lifecycle
+  test ! -s "$PVISOR_TASK_TEST_LOG"
+fi
 # One representative native usage route checks literal paths and failure
 # propagation; snapshot semantics belong to the real hardware TestCases.
 : > "$PVISOR_TASK_TEST_LOG"

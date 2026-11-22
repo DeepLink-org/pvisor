@@ -206,7 +206,11 @@ impl VirtioFsInode {
             .checked_add(written)
             .ok_or_else(|| Error::with_message(Errno::EOVERFLOW, "virtiofs write size overflow"))?;
 
-        let new_size = self.size().max(new_size);
+        let old_size = self.size();
+        let new_size = old_size.max(new_size);
+        if new_size > old_size && let Some(cache) = inner.page_cache_mut() {
+            cache.resize_from_backing(new_size, old_size)?;
+        }
         let attr_version = self.fs_ref().session().bump_attr_version();
         inner.commit_local_write(new_size, attr_version);
         self.set_size(new_size);

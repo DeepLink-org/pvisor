@@ -985,7 +985,14 @@ impl VsockMuxer {
             .read()
             .unwrap()
             .get(&id)
-            .map(|proxy| proxy.lock().unwrap().update_peer_credit(pkt));
+            .map(|proxy| {
+                let mut proxy = proxy.lock().unwrap();
+                let mut update = proxy.update_peer_credit(pkt);
+                if let Some((id, fd, events)) = update.polling.take() {
+                    self.update_polling(id, fd, events);
+                }
+                update
+            });
         if let Some(update) = update {
             self.process_proxy_update(id, update);
         }

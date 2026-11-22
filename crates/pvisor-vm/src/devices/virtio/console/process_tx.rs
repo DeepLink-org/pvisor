@@ -44,7 +44,8 @@ pub(crate) fn process_tx(
             queue.undo_pop();
         } else {
             log::trace!("Tx add used {bytes_written}");
-            if let Err(e) = queue.add_used(&mem, head_index, bytes_written as u32) {
+            // The used length counts bytes written to guest memory, not to the host port.
+            if let Err(e) = queue.add_used(&mem, head_index, 0) {
                 error!("failed to add used elements to the queue: {e:?}");
             }
         }

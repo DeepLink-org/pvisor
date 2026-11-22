@@ -24,7 +24,8 @@ Local changes:
   selection instead of retaining a second root filesystem boot path.
 - Derive FUSE request credentials from kernel tasks; forward only the existing
   PID-1 claim/report directory ioctls.
-- Initialize the primary console using the virtio-console control protocol.
+- Discover the primary console and named virtio-serial ports through control
+  messages and expose raw streams through devtmpfs and sysfs.
 - Disable legacy PCI probing on the MMIO-only pVisor platform.
 - Disable confidential-guest defaults and repair the upstream no-feature x86
   build's conditional imports.

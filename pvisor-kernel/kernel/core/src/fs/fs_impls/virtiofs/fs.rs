@@ -5,7 +5,8 @@
 //! This module defines the filesystem type and objects for virtio-fs.
 
 use aster_fuse::{
-    EntryReply, FUSE_ROOT_ID, Kstatfs, StatfsOperation, ops::lookup::LookupOperation,
+    EntryReply, FUSE_ROOT_ID, FuseFileHandle, GetattrFlags, GetattrOperation, GetattrReq, Kstatfs,
+    StatfsOperation,
 };
 use aster_virtio::device::filesystem::device::{self, AttrVersion, FileSystemDevice, FuseSession};
 use device_id::DeviceId;
@@ -101,11 +102,17 @@ impl VirtioFs {
         // No update is made for these fields later.
         let sb = SuperBlock::from((container_dev_id, statfs));
 
-        let root_entry = session.do_fuse_op(FUSE_ROOT_ID, LookupOperation::new("."))?;
+        let root_attr = session.do_fuse_op(
+            FUSE_ROOT_ID,
+            GetattrOperation::new(GetattrReq::new(
+                GetattrFlags::empty(),
+                FuseFileHandle::new(0),
+            )),
+        )?;
 
         Ok(Arc::new_cyclic(|weak_fs| {
             let root = VirtioFsInode::new_root(
-                root_entry,
+                root_attr,
                 weak_fs.clone(),
                 container_dev_id,
                 session.bump_attr_version(),

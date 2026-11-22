@@ -249,13 +249,31 @@ impl PageCache {
     /// assert_eq!(page_cache.size(), PAGE_SIZE);
     /// ```
     pub(crate) fn resize(&mut self, new_file_size: usize, old_file_size: usize) -> Result<()> {
+        self.resize_impl(new_file_size, old_file_size, true)
+    }
+
+    /// Reflects a size change already applied by the backing filesystem.
+    /// The caller must invalidate cached pages affected by the change.
+    pub(crate) fn resize_from_backing(&mut self, new_size: usize, old_size: usize) -> Result<()> {
+        self.resize_impl(new_size, old_size, false)
+    }
+
+    fn resize_impl(
+        &mut self,
+        new_file_size: usize,
+        old_file_size: usize,
+        zero_tail: bool,
+    ) -> Result<()> {
         let vmo = &self.0;
         assert!(vmo.flags.contains(VmoFlags::RESIZABLE));
 
-        if new_file_size < old_file_size && !new_file_size.is_multiple_of(PAGE_SIZE) {
+        if zero_tail && new_file_size < old_file_size && !new_file_size.is_multiple_of(PAGE_SIZE) {
             let fill_zero_end = old_file_size.min(new_file_size.align_up(PAGE_SIZE));
             self.fill_zeros(new_file_size..fill_zero_end)?;
-        } else if new_file_size > old_file_size && !old_file_size.is_multiple_of(PAGE_SIZE) {
+        } else if zero_tail
+            && new_file_size > old_file_size
+            && !old_file_size.is_multiple_of(PAGE_SIZE)
+        {
             let fill_zero_end = new_file_size.min(old_file_size.align_up(PAGE_SIZE));
             self.fill_zeros(old_file_size..fill_zero_end)?;
         }

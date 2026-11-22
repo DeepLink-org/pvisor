@@ -1,6 +1,9 @@
 //! Production-library teardown, not the unit-test vCPU exit implementation.
 #![cfg(all(target_os = "linux", target_arch = "x86_64"))]
 
+#[path = "lifecycle/firmware.rs"]
+mod firmware;
+
 use pvisor_vm::api::{VmBuilder, VmConfiguration, VmControl, VmRuntime};
 use std::{
     collections::BTreeSet,
@@ -29,12 +32,9 @@ fn resources() -> (BTreeSet<(PathBuf, PathBuf)>, BTreeSet<PathBuf>) {
 }
 
 #[test]
-#[ignore = "requires /dev/kvm and PVISOR_CASE_VM_FIRMWARE_PATH; one serial 256 MiB VM"]
+#[ignore = "requires /dev/kvm and trusted firmware; one serial 256 MiB VM"]
 fn ready_abort_releases_vcpu_bus_and_owned_descriptors_before_retry() {
-    let firmware = PathBuf::from(
-        std::env::var_os("PVISOR_CASE_VM_FIRMWARE_PATH")
-            .expect("set an absolute trusted local firmware path"),
-    );
+    let firmware = firmware::external_firmware();
     let root = tempfile::tempdir().unwrap();
     let baseline = resources();
     let mut stale = None;
@@ -43,7 +43,9 @@ fn ready_abort_releases_vcpu_bus_and_owned_descriptors_before_retry() {
         let backing = tempfile::tempfile().unwrap();
         let (network, mut peer) = UnixStream::pair().unwrap();
         let mut vm = VmBuilder::new(1, 256).unwrap();
-        vm.set_firmware_path(firmware.clone()).unwrap();
+        if let Some(firmware) = &firmware {
+            vm.set_firmware_path(firmware.clone()).unwrap();
+        }
         vm.filesystem("/dev/root", root.path(), 0).unwrap();
         vm.ram_backing(backing.try_clone().unwrap()).unwrap();
         vm.network(network, [2, 0, 0, 0, 0, 44]).unwrap();

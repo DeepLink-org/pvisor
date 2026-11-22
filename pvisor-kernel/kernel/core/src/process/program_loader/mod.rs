@@ -212,10 +212,6 @@ impl ProgramToLoad {
 }
 
 fn check_executable_inode(inode: &dyn Inode) -> Result<()> {
-    if inode.type_().is_directory() {
-        return_errno_with_message!(Errno::EISDIR, "the inode is a directory");
-    }
-
     if inode.type_() == InodeType::SymLink {
         return_errno_with_message!(Errno::ELOOP, "the inode is a symbolic link");
     }

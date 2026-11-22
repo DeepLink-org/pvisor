@@ -23,7 +23,7 @@ mod table;
 
 use entry::{RouteAddressFamily, RouteEntry, RouteMetric, RouteTableId, RouteType};
 
-static IPV4_ROUTE_MANAGER: Once<RouteManager<Ipv4Address>> = Once::new();
+static IPV4_ROUTE_MANAGER: Once<RwMutex<RouteManager<Ipv4Address>>> = Once::new();
 static IPV6_ROUTE_MANAGER: Once<RouteManager<Ipv6Address>> = Once::new();
 
 /// A route lookup key for one address family.
@@ -45,24 +45,12 @@ impl<A: RouteAddressFamily> RouteLookupKey<A> {
     }
 }
 
-pub(super) fn init() {
-    const LOCAL_RULE_PRIORITY: u32 = 0;
-    const MAIN_RULE_PRIORITY: u32 = 32766;
-    const DEFAULT_RULE_PRIORITY: u32 = 32767;
+const LOCAL_RULE_PRIORITY: u32 = 0;
+const MAIN_RULE_PRIORITY: u32 = 32766;
+const DEFAULT_RULE_PRIORITY: u32 = 32767;
 
-    IPV4_ROUTE_MANAGER.call_once(|| {
-        let routes = iface::iter_all_ifaces()
-            .flat_map(iface_ipv4_routes)
-            .collect();
-        RouteManager::new(
-            &[
-                Rule::lookup(LOCAL_RULE_PRIORITY, RouteTableId::LOCAL),
-                Rule::lookup(MAIN_RULE_PRIORITY, RouteTableId::MAIN),
-                Rule::lookup(DEFAULT_RULE_PRIORITY, RouteTableId::DEFAULT),
-            ],
-            routes,
-        )
-    });
+pub(super) fn init() {
+    IPV4_ROUTE_MANAGER.call_once(|| RwMutex::new(ipv4_manager()));
 
     IPV6_ROUTE_MANAGER.call_once(|| {
         let routes = iface::iter_all_ifaces()
@@ -76,6 +64,27 @@ pub(super) fn init() {
             routes,
         )
     });
+}
+
+fn ipv4_manager() -> RouteManager<Ipv4Address> {
+    RouteManager::new(
+        &[
+            Rule::lookup(LOCAL_RULE_PRIORITY, RouteTableId::LOCAL),
+            Rule::lookup(MAIN_RULE_PRIORITY, RouteTableId::MAIN),
+            Rule::lookup(DEFAULT_RULE_PRIORITY, RouteTableId::DEFAULT),
+        ],
+        iface::iter_all_ifaces()
+            .flat_map(iface_ipv4_routes)
+            .collect(),
+    )
+}
+
+/// Publish new routes for socket lookup together with the interface update.
+pub(super) fn configure_ipv4(update: impl FnOnce() -> Result<()>) -> Result<()> {
+    let mut routes = IPV4_ROUTE_MANAGER.get().unwrap().write();
+    update()?;
+    *routes = ipv4_manager();
+    Ok(())
 }
 
 fn iface_ipv4_routes(iface: &Arc<Iface>) -> Vec<RouteEntry<Ipv4Address>> {
@@ -194,6 +203,7 @@ pub(super) fn lookup_iface(dst: IpAddress) -> Result<Arc<Iface>> {
         IpAddress::Ipv4(dst) => IPV4_ROUTE_MANAGER
             .get()
             .unwrap()
+            .read()
             .lookup_entry(&RouteLookupKey::new(dst))?
             .output_iface()
             .clone(),
@@ -214,6 +224,7 @@ pub(super) fn lookup_local_iface(address: IpAddress) -> Result<Arc<Iface>> {
             let entry = IPV4_ROUTE_MANAGER
                 .get()
                 .unwrap()
+                .read()
                 .lookup_in_local_table(&RouteLookupKey::new(address))
                 .ok_or_else(|| {
                     Error::with_message(
@@ -263,6 +274,7 @@ pub(super) fn is_broadcast_endpoint(endpoint: &IpEndpoint) -> bool {
         || IPV4_ROUTE_MANAGER
             .get()
             .unwrap()
+            .read()
             .lookup_entry(&RouteLookupKey::new(address))
             .is_ok_and(|entry| entry.type_() == RouteType::Broadcast)
 }

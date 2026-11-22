@@ -26,8 +26,8 @@ impl VirtioFsInode {
     /// installed as a complete metadata snapshot and its TTL becomes the new
     /// attribute-cache deadline. If the reply is stale, `stale_action` decides
     /// whether the reply is ignored or whether selected fields may still be
-    /// merged. Page-cache invalidation is derived from the committed metadata
-    /// change and is performed after dropping the metadata lock.
+    /// merged. The inode lock serializes cache invalidation and resizing with
+    /// local I/O.
     pub(super) fn commit_attr_reply(
         &self,
         attr_reply: FuseAttrReply,
@@ -65,16 +65,15 @@ impl VirtioFsInode {
         self.set_size(new_size);
         let is_mtime_changed = old_mtime != inner.metadata.last_modify_at;
 
-        let Some(page_cache) = &mut inner.page_cache else {
-            return Ok(());
-        };
-
-        if new_size != old_size {
-            page_cache.resize(new_size, old_size)?;
+        if new_size != old_size
+            || (session_flags.contains(FuseInitFlags::AUTO_INVAL_DATA) && is_mtime_changed)
+        {
+            inner.invalidate_page_cache()?;
         }
 
-        if session_flags.contains(FuseInitFlags::AUTO_INVAL_DATA) && is_mtime_changed {
-            inner.invalidate_page_cache()?;
+        if new_size != old_size && let Some(page_cache) = &mut inner.page_cache {
+            // The server has already applied the size change; don't zero bytes in its last page.
+            page_cache.resize_from_backing(new_size, old_size)?;
         }
 
         Ok(())

@@ -793,6 +793,59 @@ impl VsockPacket {
 mod tests {
     use super::*;
 
+    #[rstest::rstest]
+    #[case(defs::uapi::VSOCK_OP_REQUEST, 0)]
+    #[case(defs::uapi::VSOCK_OP_RESPONSE, 0)]
+    #[case(defs::uapi::VSOCK_OP_CREDIT_REQUEST, 30)]
+    #[case(defs::uapi::VSOCK_OP_CREDIT_UPDATE, 30)]
+    fn control_packets_replace_stale_rx_headers(#[case] op: u16, #[case] fwd_cnt: u32) {
+        use crate::devices::virtio::vsock::{muxer::MuxerRx, muxer_rxq::rx_to_pkt};
+        use crate::devices::virtio::{queue, Descriptor};
+        use vm_memory::{Bytes, GuestMemoryMmap};
+
+        let mem = GuestMemoryMmap::from_ranges(&[(GuestAddress(0), 8192)]).unwrap();
+        mem.write_obj(
+            Descriptor {
+                addr: 4096,
+                len: 64,
+                flags: queue::VIRTQ_DESC_F_WRITE,
+                next: 0,
+            },
+            GuestAddress(0),
+        )
+        .unwrap();
+        mem.write_slice(&[0xff; 64], GuestAddress(4096)).unwrap();
+        let chain = DescriptorChain::checked_new(&mem, GuestAddress(0), 1, 0).unwrap();
+        let mut packet = VsockPacket::from_rx_virtq_head(&chain).unwrap();
+        let message = match op {
+            defs::uapi::VSOCK_OP_REQUEST => MuxerRx::OpRequest {
+                local_port: 10,
+                peer_port: 20,
+            },
+            defs::uapi::VSOCK_OP_RESPONSE => MuxerRx::OpResponse {
+                local_port: 10,
+                peer_port: 20,
+            },
+            defs::uapi::VSOCK_OP_CREDIT_UPDATE => MuxerRx::CreditUpdate {
+                local_port: 10,
+                peer_port: 20,
+                fwd_cnt,
+            },
+            defs::uapi::VSOCK_OP_CREDIT_REQUEST => MuxerRx::CreditRequest {
+                local_port: 10,
+                peer_port: 20,
+                fwd_cnt,
+            },
+            _ => unreachable!(),
+        };
+        rx_to_pkt(3, message, &mut packet);
+        assert_eq!((packet.op(), packet.len(), packet.flags()), (op, 0, 0));
+        assert_eq!(
+            (packet.src_port(), packet.dst_port(), packet.fwd_cnt()),
+            (10, 20, fwd_cnt)
+        );
+    }
+
     #[test]
     fn packet_retains_memory_access_after_descriptor_is_dropped() {
         use crate::devices::virtio::{memory_gate, queue, Descriptor};

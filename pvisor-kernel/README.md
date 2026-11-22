@@ -67,8 +67,7 @@ export PVISOR_NATIVE_KERNEL=rust
 ```
 
 Selection applies to the existing Docker-compatible and Agent VM workflows,
-not a separate public execution command. Current named-stdio limitations below
-still reject ordinary captured workloads; this switch does not bypass them.
+not a separate public execution command.
 
 Selection never downloads, compiles or reads an external kernel at runtime.
 Unset `PVISOR_NATIVE_KERNEL` to return to Linux. If a standalone Cargo
@@ -84,24 +83,32 @@ The combined product firmware receipt retains both payloads' source identities.
 selection instead of loading a file or falling back to Linux.
 
 The current profile selects Linux x86_64/aarch64 KVM or macOS aarch64 HVF,
-with a fresh single-vCPU VM and at least 256 MiB
+with a fresh VM and at least 256 MiB
 RAM, without EFI, TEE, snapshots, restore or Linux idle handoff.
+ARM requires a single vCPU. The x86_64 profile supports one or two vCPUs;
+the MADT lists each configured vCPU.
 ARM64 uses the existing RAM base `0x80000000`, an Image/header entry at
 `0x80200000`, FDT in `x0`, GICv3, the architectural timer and PSCI.
 The Image header branches to `_start`; entering the ELF `_start` directly
 does not establish the link register required by its load-address check.
 The VMM copies the image into ordinary guest RAM and reserves the FDT tail.
 Linux ARM KVM hosts without GICv3 fail explicitly for this kernel.
-The driver profile includes only the primary VM console. Named task stdio ports are not
-available, so workflows requiring `task_stdio`, including ordinary captured
-container execution, return `Unsupported`. Multiport character devices and
-their sysfs names must be implemented before enabling those workflows.
+Captured task streams use raw virtio-serial character devices, separate from
+the primary TTY. PID 1 discovers their names under `/sys/class/virtio-ports`.
+The guest supervisor can configure the virtio Ethernet device's IPv4 address,
+netmask and on-link default gateway through socket ioctls. These operations
+require `CAP_NET_ADMIN`; arbitrary route entries and device selection via
+`SIOCADDRT` are unsupported.
+`/proc/net/tcp` exposes IPv4 listeners; it does not enumerate established
+connections or provide real queue and timer statistics.
 Do not treat this as Linux syscall or workload compatibility.
 
 ## Tests and hardware acceptance
 
-Current status: Rust native kernel builds and embeds, but its complete Linux/KVM
-workload acceptance test still times out during primary-console initialization.
+On Linux x86_64/KVM the `vm_api_case` probe with one or two vCPUs runs the guest supervisor
+and a static workload on a writable virtio-fs root. The workload checks the boot
+ID, reads back its write, rejects forged exit ioctls, and exits with code 7.
+This probe uses the primary console, not named task stdio.
 The aarch64 source and cross-build path are restored; ARM KVM/HVF workload
 acceptance requires an ARM host and has not been run on the x86_64 development host.
 The ARM64 boot-only QEMU/TCG diagnostic passed through kernel-thread startup
@@ -111,9 +118,8 @@ Common filesystem records and control framing compile independently of
 backend-only checkpoint/restore code. The macOS VMM cross-check
 on Linux is blocked by the missing Darwin FUSE SDK; a native macOS build is
 still required.
-Its shared-rootfs command execution and authenticated guest exit have not passed
-end-to-end acceptance. Packaging and runtime selection are implemented; the
-experimental payload is not yet a usable replacement for Linux task execution.
+The primary-console result does not qualify the Docker CLI workload matrix
+or ARM guest execution.
 
 ```sh
 mise run kernel -- test
@@ -154,6 +160,17 @@ The probe must be built with the native payload embedded for native selection.
 It checks file write/read,
 stdout/stderr emission and rejection of forged supervisor ioctls from a
 non-PID-1 process. The expected authenticated exit code is 7.
+
+To verify captured streams on Linux x86_64/KVM, run the same static workload
+with the embedded-kernel probe:
+
+```sh
+python3 pvisor-kernel/tests/task_stdio.py --binary /path/to/vm_api_case \
+  --guest target/native-kernel-smoke-guest
+```
+
+This checks immediate EOF and a multi-page binary input, byte-exact stdout,
+separate stderr, shared-rootfs contents and exit status in fresh two-vCPU VMs.
 
 ## License
 
