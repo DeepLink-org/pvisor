@@ -42,7 +42,12 @@ use crate::{
 /// accidentally load a wrong GDT and TSS that actually belongs to another CPU.
 pub(super) unsafe fn init_on_cpu() {
     // No races because the caller guarantees that no preemption can occur.
-    let gdt = GDT.get_on_cpu(CpuId::current_racy());
+    let cpu = CpuId::current_racy();
+    let gdt = GDT.get_on_cpu(cpu);
+    gdt.cpu_node.store(
+        USER_READONLY_DATA | u64::from(u32::from(cpu) & 0xfff),
+        Ordering::Relaxed,
+    );
 
     let tss_ptr = UnsafeCell::raw_get(LOCAL_TSS.as_ptr());
 
@@ -126,7 +131,14 @@ struct Gdt {
     // Mutable part: They are initialized at runtime; the LTR instruction will set the BUSY bit.
     tss0: AtomicU64,
     tss1: AtomicU64,
+    _reserved_after_tss: [u64; 6],
+    // Linux's vDSO uses LSL on selector 0x7b; the byte limit contains CPU[11:0] and NUMA node 0.
+    cpu_node: AtomicU64,
 }
+
+const_assert!(offset_of!(Gdt, cpu_node) == 0x78);
+
+const USER_READONLY_DATA: u64 = 0x0000_F100_0000_0000;
 
 cpu_local! {
     static GDT: Gdt = Gdt {
@@ -139,6 +151,8 @@ cpu_local! {
         ucode64: UCODE64,
         tss0: AtomicU64::new(0), // To be set in `init_on_cpu`.
         tss1: AtomicU64::new(0), // To be set in `init_on_cpu`.
+        _reserved_after_tss: [0; 6],
+        cpu_node: AtomicU64::new(0),
     };
 }
 

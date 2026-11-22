@@ -11,6 +11,7 @@ use aster_util::mem_obj_slice::Slice;
 use dma_pool::{DmaArenaPool, DmaBuffer, DmaPool};
 use ostd::{
     Result,
+    boot::{boot_info, memory_region::MemoryRegionType},
     mm::{
         HasSize, Infallible, PAGE_SIZE, USegment, VmReader, VmWriter,
         dma::{DmaDirection, DmaStream, FromDevice, ToDevice},
@@ -43,25 +44,34 @@ const POOL_INIT_SIZE: usize = 8;
 /// Retains enough free segments for request bursts.
 const POOL_HIGH_WATERMARK: usize = 64;
 
-/// Preserves the previous worst-case budget of eight cached 1-MiB streams.
-const DMA_ARENA_SIZE_PAGES: usize = 8 * 1024 * 1024 / PAGE_SIZE;
+const MAX_DMA_ARENA_PAGES: usize = 8 * 1024 * 1024 / PAGE_SIZE;
 
 /// A pool of DMA arenas for buffers received from the device.
-static VIRTIOFS_DMA_ARENA_RPOOL: Once<Arc<DmaArenaPool<FromDevice>>> = Once::new();
+static VIRTIOFS_DMA_ARENA_RPOOL: Once<Option<Arc<DmaArenaPool<FromDevice>>>> = Once::new();
 /// A pool of DMA arenas for buffers sent to the device.
-static VIRTIOFS_DMA_ARENA_WPOOL: Once<Arc<DmaArenaPool<ToDevice>>> = Once::new();
+static VIRTIOFS_DMA_ARENA_WPOOL: Once<Option<Arc<DmaArenaPool<ToDevice>>>> = Once::new();
 
 /// Returns the shared virtio-fs DMA arena pools, initializing them on first use.
 pub(super) fn dma_arena_pools_singleton() -> (
-    &'static Arc<DmaArenaPool<ToDevice>>,
-    &'static Arc<DmaArenaPool<FromDevice>>,
+    Option<&'static Arc<DmaArenaPool<ToDevice>>>,
+    Option<&'static Arc<DmaArenaPool<FromDevice>>>,
 ) {
-    VIRTIOFS_DMA_ARENA_RPOOL.call_once(|| DmaArenaPool::new(DMA_ARENA_SIZE_PAGES).unwrap());
-    VIRTIOFS_DMA_ARENA_WPOOL.call_once(|| DmaArenaPool::new(DMA_ARENA_SIZE_PAGES).unwrap());
+    let usable_pages: usize = boot_info()
+        .memory_regions
+        .iter()
+        .filter(|region| region.typ() == MemoryRegionType::Usable)
+        .map(|region| region.len() / PAGE_SIZE)
+        .sum();
+    // Both directions together may reserve at most one eighth of usable RAM.
+    let pages = (usable_pages / 16).min(MAX_DMA_ARENA_PAGES);
 
     (
-        VIRTIOFS_DMA_ARENA_WPOOL.get().unwrap(),
-        VIRTIOFS_DMA_ARENA_RPOOL.get().unwrap(),
+        VIRTIOFS_DMA_ARENA_WPOOL
+            .call_once(|| DmaArenaPool::new(pages).ok())
+            .as_ref(),
+        VIRTIOFS_DMA_ARENA_RPOOL
+            .call_once(|| DmaArenaPool::new(pages).ok())
+            .as_ref(),
     )
 }
 
@@ -69,12 +79,12 @@ pub(super) fn dma_arena_pools_singleton() -> (
 #[derive(Debug)]
 pub(super) struct VirtiofsDmaPool<D: DmaDirection> {
     classes: [Arc<DmaPool<D>>; N_CLASSES],
-    arena_pool: &'static Arc<DmaArenaPool<D>>,
+    arena_pool: Option<&'static Arc<DmaArenaPool<D>>>,
 }
 
 impl<D: DmaDirection> VirtiofsDmaPool<D> {
     /// Creates a DMA buffer pool with predefined size classes.
-    pub(super) fn new(arena_pool: &'static Arc<DmaArenaPool<D>>) -> Self {
+    pub(super) fn new(arena_pool: Option<&'static Arc<DmaArenaPool<D>>>) -> Self {
         let classes = core::array::from_fn(|i| {
             let segment_size = 1 << (MIN_SHIFT + i);
             DmaPool::<D>::new(segment_size, POOL_INIT_SIZE, POOL_HIGH_WATERMARK, false)
@@ -97,7 +107,7 @@ impl<D: DmaDirection> VirtiofsDmaPool<D> {
             DmaBuffer::Pooled(self.classes[shift - MIN_SHIFT].alloc_segment()?)
         } else {
             let pages = len.div_ceil(PAGE_SIZE);
-            match self.arena_pool.alloc(pages) {
+            match self.arena_pool.and_then(|pool| pool.alloc(pages)) {
                 Some(arena) => DmaBuffer::Arena(arena),
                 None => DmaBuffer::Direct(DmaStream::alloc_uninit(pages, false)?),
             }

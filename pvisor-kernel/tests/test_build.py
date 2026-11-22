@@ -67,6 +67,7 @@ class SourceTests(unittest.TestCase):
                         "RUSTC": str(stable_bin / "rustc"),
                         "RUSTDOC": str(stable_bin / "rustdoc"),
                         "RUSTUP_HOME": str(root / "selected-rustup"),
+                        "OSTD_TASK_STACK_SIZE_IN_PAGES": "128",
                     },
                 )
             )
@@ -91,7 +92,7 @@ class SourceTests(unittest.TestCase):
                 mock.patch.object(
                     build,
                     "kernel_image",
-                    return_value=(bytes(8192), 0x08000000, 0x08001200),
+                    return_value=(bytes(8192), 0x00200000, 0x00201200),
                 )
             )
 
@@ -100,6 +101,7 @@ class SourceTests(unittest.TestCase):
                 if "cargo" in command or command[0].endswith("cargo-osdk"):
                     env = kwargs["env"]
                     self.assertEqual(env["RUSTUP_HOME"], str(root / "selected-rustup"))
+                    self.assertEqual(env["OSTD_TASK_STACK_SIZE_IN_PAGES"], "16")
                     self.assertEqual(env["PATH"].split(os.pathsep)[0], str(nightly_bin))
                     for variable, executable in (
                         ("CARGO", "cargo"),
@@ -254,7 +256,7 @@ class ElfTests(unittest.TestCase):
             2,
             62,
             1,
-            0x08001200,
+            0x00201200,
             64,
             0x2100,
             0,
@@ -266,7 +268,7 @@ class ElfTests(unittest.TestCase):
             3,
         )
         for index, (offset, address, filesz, memsz, flags) in enumerate(
-            [(0x1000, 0x08000000, 16, 4096, 4), (0x1200, 0x08001000, 1024, 4096, 5)]
+            [(0x1000, 0x00200000, 16, 4096, 4), (0x1200, 0x00201000, 1024, 4096, 5)]
         ):
             struct.pack_into(
                 "<IIQQQQQQ",
@@ -285,7 +287,7 @@ class ElfTests(unittest.TestCase):
         data[0x1200:0x1600] = bytes([0xAB]) * 1024
         strings = b"\0__linux64_boot\0"
         data[0x2000 : 0x2000 + len(strings)] = strings
-        struct.pack_into("<IBBHQQ", data, 0x2040 + 24, 1, 0x12, 0, 1, 0x08001200, 1)
+        struct.pack_into("<IBBHQQ", data, 0x2040 + 24, 1, 0x12, 0, 1, 0x00201200, 1)
         names = b"\0.symtab\0.strtab\0.shstrtab\0"
         data[0x2080 : 0x2080 + len(names)] = names
         struct.pack_into("<IIQQQQIIQQ", data, 0x2140, 1, 2, 0, 0, 0x2040, 48, 2, 1, 8, 24)
@@ -346,7 +348,7 @@ class ElfTests(unittest.TestCase):
             file = Path(temporary) / "kernel.elf"
             file.write_bytes(self.elf())
             image, base, entry = build.kernel_image(file)
-            self.assertEqual((base, entry), (0x08000000, 0x08001200))
+            self.assertEqual((base, entry), (0x00200000, 0x00201200))
             self.assertEqual(image[:16], bytes(range(16)))
             self.assertEqual(image[16:4096], bytes(4096 - 16))
             self.assertEqual(image[4096:5120], bytes([0xAB]) * 1024)
@@ -355,7 +357,7 @@ class ElfTests(unittest.TestCase):
     def test_rejects_wrong_architecture_overlaps_and_non_executable_entry(self):
         for name, offset, fmt, value in (
             ("architecture", 18, "<H", 183),
-            ("overlap", 64 + 56 + 24, "<Q", 0x08000000),
+            ("overlap", 64 + 56 + 24, "<Q", 0x00200000),
             ("entry flags", 64 + 56 + 4, "<I", 4),
             ("file larger than memory", 64 + 40, "<Q", 1),
             ("oversized image", 64 + 56 + 40, "<Q", build.MAX_IMAGE_SIZE + 1),

@@ -25,18 +25,7 @@ const AP_BOOT_STACK_SIZE: usize = PAGE_SIZE * 64;
 struct ApBootInfo {
     /// Raw boot information for each AP.
     per_ap_raw_info: Box<[PerApRawInfo]>,
-    /// Boot information for each AP.
-    #[cfg_attr(target_arch = "x86_64", expect(dead_code))]
-    per_ap_info: Box<[PerApInfo]>,
-}
-
-struct PerApInfo {
-    // TODO: When the AP starts up and begins executing tasks, the boot stack will
-    // no longer be used, and the `Segment` can be deallocated (this problem also
-    // exists in the boot processor, but the memory it occupies should be returned
-    // to the frame allocator).
-    #[cfg_attr(target_arch = "x86_64", expect(dead_code))]
-    boot_stack_pages: Segment<KernelMeta>,
+    boot_stacks: Box<[SpinLock<Option<Segment<KernelMeta>>>]>,
 }
 
 /// Raw boot information for APs.
@@ -80,8 +69,8 @@ pub(crate) unsafe fn boot_all_aps() {
     }
     crate::info!("Booting {} processors", num_cpus - 1);
 
-    let mut per_ap_raw_info = Vec::with_capacity(num_cpus);
-    let mut per_ap_info = Vec::with_capacity(num_cpus);
+    let mut per_ap_raw_info = Vec::with_capacity(num_cpus - 1);
+    let mut boot_stacks = Vec::with_capacity(num_cpus - 1);
 
     for ap in 1..num_cpus {
         let boot_stack_pages = FrameAllocOptions::new()
@@ -93,13 +82,13 @@ pub(crate) unsafe fn boot_all_aps() {
             stack_top: paddr_to_vaddr(boot_stack_pages.end_paddr()) as *mut u8,
             cpu_local: paddr_to_vaddr(crate::cpu::local::get_ap(ap.try_into().unwrap())) as *mut u8,
         });
-        per_ap_info.push(PerApInfo { boot_stack_pages });
+        boot_stacks.push(SpinLock::new(Some(boot_stack_pages)));
     }
 
     assert!(!AP_BOOT_INFO.is_completed());
     AP_BOOT_INFO.call_once(move || ApBootInfo {
         per_ap_raw_info: per_ap_raw_info.into_boxed_slice(),
-        per_ap_info: per_ap_info.into_boxed_slice(),
+        boot_stacks: boot_stacks.into_boxed_slice(),
     });
 
     crate::info!("Booting all application processors...");
@@ -113,6 +102,23 @@ pub(crate) unsafe fn boot_all_aps() {
     wait_for_all_aps_started(num_cpus);
 
     crate::info!("All application processors started. The BSP continues to run.");
+}
+
+/// Releases this AP's boot stack.
+///
+/// # Safety
+///
+/// The first task must already be running with local IRQs disabled. The CPU
+/// must never return to its boot stack.
+pub(crate) unsafe fn reclaim_ap_boot_stack() {
+    let cpu = crate::cpu::CpuId::current_racy().as_usize();
+    if let Some(ap) = cpu.checked_sub(1) {
+        let stack = AP_BOOT_INFO.get().unwrap().boot_stacks[ap]
+            .disable_irq()
+            .lock()
+            .take();
+        drop(stack);
+    }
 }
 
 static AP_LATE_ENTRY: Once<fn()> = Once::new();

@@ -1010,12 +1010,13 @@ pub(crate) fn start<S: ColdRamStore + 'static>(
         if branch && !options.share_resident {
             return Err(io::Error::other("cold pager cannot replace branch delta mappings"));
         }
-        if (locked.has_compact_restore_ram() && !branch) || locked.is_paused()
+        if (locked.has_compact_restore_ram() && !branch)
+            || (locked.is_paused() && !locked.fresh_boot_parked())
             || locked.device_memory_gate().has_prepare()
             || locked.device_memory_gate().has_dedup_advice()
         {
             return Err(io::Error::other(
-                "Linux cold RAM requires running VM without device preparation or RAM dedup advice",
+                "Linux cold RAM requires a fresh parked or running VM without device preparation or RAM dedup advice",
             ));
         }
         let memory = locked.guest_memory().clone();
@@ -1048,7 +1049,7 @@ pub(crate) fn start<S: ColdRamStore + 'static>(
             None
         };
         let faults = Arc::new(crate::devices::virtio::memory_gate::ColdFaultActivity::default());
-        let register = || handle.ram_quiesced(|vmm| {
+        let register = || handle.ram_registration_quiesced(|vmm| {
                 // Disable the other destructive RAM owner before registration.
                 // A closed idle gate guarantees every old balloon lease drained.
                 vmm.device_memory_gate()

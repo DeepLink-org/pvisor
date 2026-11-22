@@ -843,19 +843,16 @@ destination = "./capture"
 大小限制在运行结束后检查，因此不限制 Agent 运行期间的峰值占用。
 
 `--container-image IMAGE` 自动选择原生 OCI container executor；
-`--executor container` 让选择显式。传输层生成标准 OCI bundle，使用当前或显式提供的
-兼容 Linux pVisor，挂进 rootfs，设置 process args，并走普通
-`pvisor spawn --executor host --spec ...` 路径。Agent 命令放在 RunSpec
-内，而不是暴露在 OCI runner argv。注入的 pVisor 创建自己的 AgentCtl 并
-返回类型化 RunResult。最终 OverlayFS cwd 和会话 Gateway 配置挂在稳定路径。
+`--executor container` 显式选择。pVisor 准备 OCI bundle，任务由 `process.args`
+直接启动。宿主 Session 管理执行结果，并提供 OverlayFS 工作区与 Gateway 配置；
+容器内不运行 pVisor。
 `--container-rootfs PATH` 可直接指定已有 rootfs；否则 pVisor 使用自带 OCI
-image store 准备 `--container-image`。运行时必须是 `runc` 或 `crun`，pVisor 不调用
-Docker/Podman。用户 mount 是可重复的 TOML inline table，例如：
+image store 准备 `--container-image`。运行时默认 `runc`，可用
+`--container-runtime` 选择 `crun`。用户 mount 是可重复的 TOML inline table，例如：
 
 ```bash
 pvisor spawn \
   --container-image example/codex-agent:latest \
-  --container-pvisor-binary ./dist/pvisor-linux-amd64 \
   --container-platform linux/amd64 \
   --container-network none \
   --container-mount \
@@ -865,9 +862,8 @@ pvisor spawn \
 
 上方示例假设 Linux x86_64。`--container-platform linux/amd64` 或 `linux/arm64`
 断言原生宿主架构；匹配时接受，跨架构值会被拒绝，即使提供了预制
-`--container-rootfs`。host 和 VM 配置会拒绝此选项。它不选择模拟执行，也不自动发现／下载程序。
-注入二进制默认是当前运行的 pVisor；需要时用 `--container-pvisor-binary` 指定自行准备、
-兼容原生架构和 rootfs ABI 的 Linux 构建。参见[容器准备](../guides/executors/container.md)与
+`--container-rootfs`。host 和 VM 配置会拒绝此选项。它不启用模拟执行。
+旧版 `--container-pvisor-binary` 仍可传入，但不再生效。参见[容器准备](../guides/executors/container.md)与
 [配置取值](config.md#settings)。
 
 进程内 Gateway 和显式 OverlayNet 代理当前要求 `container.network = "host"`，

@@ -151,10 +151,10 @@ pub struct NetworkStream {
 pub trait VmConfiguration: Sized {
     /// Construct a configuration; equivalent to `from_config` with explicit sizing.
     /// Captures `PVISOR_GUEST_KERNEL`; unset or `linux` retains Linux.
-    /// `rust-native` requires plain Linux x86_64/aarch64 KVM or macOS aarch64 HVF,
-    /// and at least 256 MiB. x86 supports one or two vCPUs; ARM requires one
-    /// vCPU and GICv3. Workload compatibility
-    /// remains experimental, not established by successful construction.
+    /// `rust-native` on Linux x86_64/KVM accepts 1–64 vCPUs and requires at least
+    /// 16 MiB or 1.5 MiB per vCPU rounded up, whichever is larger.
+    /// On Linux aarch64/KVM or macOS aarch64/HVF it requires GICv3, one vCPU and
+    /// at least 256 MiB. These are admission limits, not workload RAM guarantees.
     /// Invalid selectors return `InvalidInput`; unsupported profiles return
     /// `Unsupported` before VM creation. Set selection before constructing builders
     /// and do not mutate process environment concurrently with discovery/creation.
@@ -628,6 +628,9 @@ pub trait ColdRamControl: VmControl {
     /// rechecked before remapping. Snapshots are bounded to 4 MiB per batch.
     /// The worker lives with the runner; a failed mapping transition terminates
     /// that runner. Call once, before allowing control requests or guest work.
+    /// On Linux, call from a fresh VM's ready callback to register before the
+    /// initial CPU resume; registration leaves the CPUs parked. A VM paused
+    /// after startup or still waiting to resume from restore is not eligible.
     fn start_cold_pager<S: ColdRamStore + 'static>(
         &self,
         store: S,

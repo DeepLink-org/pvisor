@@ -96,7 +96,7 @@ Keep all runtime paths absolute and unchanged on daemon restart. Per-sandbox `co
 | `gateway` | Optional capture/routes | Default mode `off`; capture requires Gateway feature |
 | `record.destination` | Optional path | `--record-destination`; file or directory |
 | `policies.session/workspace/user` | Policy layers | Strictest intersection |
-| `container` | OCI settings | Default runtime `crun`, network `host`; image or rootfs |
+| `container` | OCI settings | Default runtime `runc`, network `host`; image or rootfs |
 | `vm` | VM settings | `memory_mib = 2048`, `cpus = 2`; macOS requires Linux rootfs/image |
 
 Definitions come from `crates/pvisor/src/config.rs`. Internally resolved and `serde(skip)` fields are not configuration interfaces.
@@ -140,13 +140,13 @@ Enforcement depends on the executor. Check requested, effective, mechanisms, and
 
 | Table | Fields and defaults |
 | --- | --- |
-| `container` | `runtime = "crun"`, `image = ""`, `network = "host"`, `read_only_rootfs = false`, `mounts = []` |
+| `container` | `runtime = "runc"`, `image = ""`, `network = "host"`, `read_only_rootfs = false`, `mounts = []` |
 | Optional `container` fields | `rootfs`, `pvisor_binary`, `platform`, `workdir`, `user` |
 | Each `container.mounts` entry | `source`, `target`, `read_only = false` |
 | `vm` | `memory_mib = 2048`, `cpus = 2`, `rootfs_immutable = false`, `ram_compression = false`, `cold_ram_compression = false`, `ram_dedup = false` |
 | Optional `vm` fields | `rootfs`, `prepared_rootfs`, `image`, `image_store`, `library_dir`, `control_socket`, `ram_backing`, `memory_pool`, `node_socket`, `snapshot_filesystem_pool` |
 
-`container.platform` accepts `linux-amd64` or `linux-arm64` as an optional native host architecture assertion. Matching values are accepted; cross-architecture values are rejected even with a prepared `container.rootfs`. Host and VM configurations reject a configured platform. It does not enable emulation or executable auto-discovery/download. `container.pvisor_binary` defaults to the running executable; an explicit Linux binary and rootfs must be compatible with the native architecture and guest ABI. See [container setup](../guides/executors/container.md). `container.network` accepts `host`, `bridge`, or `none`, but `bridge` is currently rejected without implemented CNI support.
+`container.platform` accepts `linux-amd64` or `linux-arm64` as an optional native host architecture assertion. Matching values are accepted; cross-architecture values are rejected even with a prepared `container.rootfs`. Host and VM configurations reject a configured platform. It does not enable emulation. See [container setup](../guides/executors/container.md). `container.network` accepts `host`, `bridge`, or `none`, but `bridge` is currently rejected without implemented CNI support.
 
 #### VM control and memory overrides {#vm-control-memory}
 
@@ -339,10 +339,10 @@ Field names and types are checked against the Rust serde structures during the d
 | `run.filesystem` | `Vec<FilesystemCapability>` | `[]` | Host capabilities outside the workspace; entry fields below |
 | `run.resource_limits` | `ResourceLimits` | `{}` | Requested limits; compare effective values in the Bundle |
 | `run.command` | `Vec<String>` | `[]` | Argument vector; command after `--` replaces it; no shell expansion |
-| `container.runtime` | `PathBuf` | `"crun"` | OCI runtime executable; `--container-runtime` |
+| `container.runtime` | `PathBuf` | `"runc"` | OCI runtime executable; `--container-runtime` |
 | `container.image` | `String` | `""` | OCI image reference; `--container-image` |
 | `container.rootfs` | `Option<PathBuf>` | `unset` | Prepared rootfs instead of image; `--container-rootfs` |
-| `container.pvisor_binary` | `Option<PathBuf>` | `unset` | Injected Linux executable; default current binary; `--container-pvisor-binary` |
+| `container.pvisor_binary` | `Option<PathBuf>` | `unset` | Legacy field accepted but ignored; `--container-pvisor-binary` |
 | `container.platform` | `Option<ContainerPlatform>` | `unset` | Native architecture assertion: linux-amd64 or linux-arm64; container only; `--container-platform` |
 | `container.network` | `ContainerNetwork` | `"host"` | host, bridge, none; `--container-network` |
 | `container.workdir` | `Option<PathBuf>` | `unset` | Container cwd when no Run cwd is mounted; `--container-workdir` |

@@ -16,8 +16,9 @@ Linux x86_64/aarch64 和 macOS aarch64 的产品构建同时内嵌 Linux 与 Rus
 也不在构建时选择内核。独立 Cargo 构建若未嵌入该载荷，选择实验内核会明确报错，
 不下载、不编译、不回退到 Linux。实验内核不接受 `set_firmware_path`。
 
-实验 profile 限于全新、至少 256 MiB 的 Linux x86_64/aarch64 KVM 或 macOS aarch64 HVF VM。
-x86_64 支持单、双 vCPU；aarch64 仍限于单 vCPU。两种架构都
+实验 profile 只支持全新 VM。Linux x86_64/KVM 支持 1–64 vCPU，内存下限为
+16 MiB 与每 vCPU 1.5 MiB（向上取整）中的较大值；实际工作负载可能需要更多。
+Linux aarch64/KVM 和 macOS aarch64/HVF 仍限于单 vCPU、至少 256 MiB。两种架构都
 不支持 EFI、TEE、快照/恢复和 Linux idle handoff。继续使用同一
 virtio-MMIO、virtio-fs `/dev/root` 和 guest supervisor；启动时仅补充
 实验 x86 内核需要的 ACPI CPU/IRQ/reset 描述。原有 Linux 启动路径不写入这些表。
@@ -26,6 +27,11 @@ aarch64 沿用既有 FDT、GICv3、timer 和 PSCI；镜像从 `0x80200000`
 ARM KVM 不为实验内核回退到 GICv2。ARM64 内核已交叉编译，真实 KVM/HVF 启动尚未验收。
 bundle 元数据、物理地址、长度和 SHA-256 在编译嵌入前验证；摘要检测损坏，
 不证明来源可信，构建者仍须信任本地构建输入。内核在进程内按需解包并共享。
+
+Linux x86_64/KVM 的冷页 pager 可在全新 VM 的 ready 回调中注册。
+注册期间 CPU 继续停在启动屏障，由运行时在回调完成后首次恢复；
+其他暂停状态不能注册。Rust guest 的宿主内存能力按
+[KVM 内存验收](../../pvisor-kernel/README.md#kvm-memory-acceptance) 分项验证。
 
 ## 设备支持范围
 

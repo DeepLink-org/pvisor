@@ -41,7 +41,7 @@ pub(crate) fn load(directory: &Path, architecture: &str) -> io::Result<(Vec<u8>,
     let metadata: Metadata =
         serde_json::from_str(&metadata).map_err(|error| invalid(error.to_string()))?;
     let layout = match architecture {
-        "x86_64" => ("linux64", 0x0800_0000, 0x0800_1200),
+        "x86_64" => ("linux64", 0x0020_0000, 0x0020_1200),
         "aarch64" => ("linux-arm64", 0x8020_0000, 0x8020_0000),
         _ => {
             return Err(invalid(
@@ -102,8 +102,8 @@ mod tests {
                 "kernel": "rust-native",
                 "architecture": "x86_64",
                 "boot_protocol": "linux64",
-                "guest_addr": 0x0800_0000u64,
-                "entry_addr": 0x0800_1200u64,
+                "guest_addr": 0x0020_0000u64,
+                "entry_addr": 0x0020_1200u64,
                 "size": bytes.len(),
                 "sha256": digest(&bytes),
             }))
@@ -118,8 +118,8 @@ mod tests {
         bundle(directory.path());
         let (bytes, guest, entry) = load(directory.path(), "x86_64").unwrap();
         assert_eq!(bytes, vec![0xab; 8192]);
-        assert_eq!(guest, 0x0800_0000);
-        assert_eq!(entry, 0x0800_1200);
+        assert_eq!(guest, 0x0020_0000);
+        assert_eq!(entry, 0x0020_1200);
     }
 
     #[rstest::rstest]

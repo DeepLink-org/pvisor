@@ -119,7 +119,12 @@ pub use runtime::{RunRecord, RunRecordState, SessionDirectoryLock, control_obser
 
 // Explicit frontend/embedding APIs; runtime implementation stays private.
 pub use config::{FilesystemAccessLevel, FilesystemAccessRule, FilesystemMount, GatewayProfile};
-pub use executor::delegated::DelegatedRunOutput;
+/// Result envelope for caller-supplied prepared JSON RunSpecs.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub struct DelegatedRunOutput {
+    pub result: pvisor_core::RunResult,
+    pub agentctl: AgentCtlSnapshot,
+}
 pub use executor::process::landlock_only_runtime_available;
 #[cfg(target_os = "linux")]
 pub use executor::process::rootless_runtime_available;

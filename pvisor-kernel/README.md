@@ -82,11 +82,14 @@ The combined product firmware receipt retains both payloads' source identities.
 `--firmware` cannot override the Rust native payload; it is rejected for this
 selection instead of loading a file or falling back to Linux.
 
-The current profile selects Linux x86_64/aarch64 KVM or macOS aarch64 HVF,
-with a fresh VM and at least 256 MiB
-RAM, without EFI, TEE, snapshots, restore or Linux idle handoff.
-ARM requires a single vCPU. The x86_64 profile supports one or two vCPUs;
-the MADT lists each configured vCPU.
+The profile requires a fresh VM without EFI, TEE, snapshots, restore or Linux
+idle handoff. Linux x86_64/KVM accepts **1–64 vCPUs**, with at least **16 MiB**
+or **1.5 MiB per vCPU rounded up**, whichever is larger. That is 16 MiB for
+1–10 vCPUs, 17 MiB for 11, 24 MiB for 16, 48 MiB for 32 and 96 MiB for 64.
+These are launch limits, not a guarantee that an arbitrary workload fits.
+The MADT lists each configured vCPU; the kernel reports the scheduling CPU
+through both `getcpu(2)` and the Linux vDSO.
+Linux aarch64/KVM and macOS aarch64/HVF still require one vCPU and at least 256 MiB.
 ARM64 uses the existing RAM base `0x80000000`, an Image/header entry at
 `0x80200000`, FDT in `x0`, GICv3, the architectural timer and PSCI.
 The Image header branches to `_start`; entering the ELF `_start` directly
@@ -131,10 +134,9 @@ default-on path. `PVISOR_VM_GUEST_CACHE=0` also disables the protocol.
 
 ## Tests and hardware acceptance
 
-On Linux x86_64/KVM the `vm_api_case` probe with one or two vCPUs runs the guest supervisor
-and a static workload on a writable virtio-fs root. The workload checks the boot
-ID, reads back its write, rejects forged exit ioctls, and exits with code 7.
-This probe uses the primary console, not named task stdio.
+On Linux x86_64/KVM `vm_api_case` runs the guest supervisor and a static
+workload on a writable virtio-fs root. The workload checks the boot ID, reads
+back its write, rejects forged exit ioctls, and exits with code 7.
 The aarch64 source and cross-build path are restored; ARM KVM/HVF workload
 acceptance requires an ARM host and has not been run on the x86_64 development host.
 The ARM64 boot-only QEMU/TCG diagnostic passed through kernel-thread startup
@@ -144,8 +146,8 @@ Common filesystem records and control framing compile independently of
 backend-only checkpoint/restore code. The macOS VMM cross-check
 on Linux is blocked by the missing Darwin FUSE SDK; a native macOS build is
 still required.
-The primary-console result does not qualify the Docker CLI workload matrix
-or ARM guest execution.
+These VM API probes do not qualify the Docker CLI workload matrix or ARM guest
+execution.
 
 ```sh
 mise run kernel -- test
@@ -278,6 +280,8 @@ python3 pvisor-kernel/tests/task_stdio.py --binary /path/to/vm_api_case \
 This checks immediate EOF and a multi-page binary input, byte-exact stdout,
 separate stderr, shared-rootfs contents and exit status in fresh two-vCPU VMs.
 
+### KVM metadata acceptance
+
 On Linux x86_64/KVM, validate `newfstatat` against host mutations in the
 default mode and with the inline path disabled:
 
@@ -307,6 +311,74 @@ with two request queues, concurrent stats and seeded namespace changes. It
 checks old descriptors and final file state. The seed controls the operations,
 not thread scheduling.
 These are correctness checks, not timing gates.
+
+### KVM memory acceptance
+
+Run on Linux x86_64 with KVM, host KSM advice support, and permission to
+read `/proc/<child>/mem` and `/proc/<child>/pagemap` for child runners.
+Use a directory on a disk filesystem for `--backing-dir`; tmpfs cannot
+demonstrate a reduction in file-backed residency.
+
+```sh
+# Set to the bundle directory printed by `mise run kernel -- build`.
+export PVISOR_BUILD_NATIVE_KERNEL_BUNDLE=/absolute/path/to/bundle
+mise exec -- cargo build --locked -p pvisor --example native_memory_case
+mise exec -- rustc --edition=2024 --target x86_64-unknown-linux-musl \
+  -C linker=rust-lld -C opt-level=2 pvisor-kernel/tests/memory_guest.rs \
+  -o target/native-memory-guest
+python3 pvisor-kernel/tests/memory.py --binary target/debug/examples/native_memory_case \
+  --guest target/native-memory-guest --backing-dir target
+```
+
+Repeat with `--firmware /absolute/path/to/libkrunfw.so.5` to run the same
+memory checks on the Linux guest. Use the path printed by `mise run fw -- build`.
+
+The probe checks KSM advice and guest readback without claiming KSM merges or
+changing the host scanner. It measures host residency before and after manual
+file-backed offload, then verifies the same workload's bytes after resume. Two
+separate VMs must map identical workload pages to the same physical-pool file
+slots before one writes. The writer verifies its changes, the other VM verifies
+the original bytes, and both must exit through the guest supervisor.
+
+These are host memory mechanisms. Linux guest-idle automatic offload requires
+an interrupt-safe idle offer and timer deadline from the guest. The native
+kernel does not supply that protocol. Snapshot/restore COW is also unsupported;
+the physical pool tests live sharing, not snapshot-backed cloning.
+
+### x86_64 vCPU/RAM matrix
+
+Build the native payload and the VM API probe, then run the matrix on a host
+with `/dev/kvm`. Use the static guest compiled above:
+
+```sh
+export PVISOR_BUILD_NATIVE_KERNEL_BUNDLE="$(mise run kernel -- build -j4)"
+mise exec -- cargo build --locked -p pvisor-vm --example vm_api_case
+python3 pvisor-kernel/tests/resource_matrix.py \
+  --binary target/debug/examples/vm_api_case \
+  --guest target/native-kernel-smoke-guest --repeat 3
+```
+
+The matrix covers odd CPU counts, the 16→17 MiB admission step, and up to
+64 vCPUs. Each case checks that the initial affinity mask contains exactly the
+configured CPUs and that concurrent userspace threads actually execute on
+every vCPU. It also checks named stdio, shared-rootfs contents and authenticated
+exit status. Use `--case VCPUS:MIB` (repeatable) to target particular pairs.
+Each run gets a fresh rootfs and has a 30-second deadline; increase `--timeout`
+on hosts with fewer physical CPUs.
+
+On an AMD Ryzen 7 9700X KVM host, the matrix passed at 10 vCPUs with 16 MiB
+and 64 vCPUs with 96 MiB. Alpine through `pvisor run` also reported the
+configured CPU count at both sizes. With admission bypassed
+for diagnosis, a single-vCPU probe passed at 8 MiB but the image did not fit
+at 7 MiB. Before boot-stack reclamation, a 16-vCPU boot at 16 MiB exhausted
+the kernel heap. These observations do not extend the supported sizes.
+
+The x86 image starts at 2 MiB rather than 128 MiB. The guest uses 64 KiB task
+stacks and caps the two virtio-fs DMA arena reservations together at one eighth
+of usable RAM (at most 16 MiB total). If the optional arenas cannot be reserved,
+large transfers use per-request DMA buffers. Each AP releases its boot stack
+after switching to its first task. Startup still needs all of those stacks
+and the per-CPU kernel workers still consume RAM as vCPU count rises.
 
 ## License
 
