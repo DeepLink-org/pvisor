@@ -18,6 +18,8 @@ Each measured executor process has a 90-second limit and must exit normally, val
 
 ## Data and analysis {#results}
 
+See the [Rust native guest kernel (RNGK) engineering comparison](../lab-notes/filesystem-performance-analysis.md#rngk-filesystem-comparison) for the same workloads, with before/after results, a Docker bind-mount reference and large-working-set failures.
+
 ### Startup and complete tasks {#complete-task}
 
 | Mode | Ready ms | Repository s | Incremental build s | Publication s |

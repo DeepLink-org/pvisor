@@ -81,6 +81,96 @@ The selected frozen source/defaults completed the cross-runtime seven-tool cohor
 
 macOS [responsiveness during copying and journal locks](#host-concurrency) and Linux HOST [immutable-lower caching](#immutable-lower-cache) have separate valid experiments. [Extended kernel caching](#host-cache-evidence) has passing correctness and request-count evidence, with no accepted formal timing. Cold disks, large repositories and concurrent throughput lack matching new measurements. The local engineering evidence CSV retains each table row's cohort, metric, source and full precision.
 
+## Rust native guest kernel (RNGK) filesystem comparison {#rngk-filesystem-comparison}
+
+Retaining clean pages for the immutable lower reduced RNGK incremental-build
+median time from 1.145 s to 0.409 s. Docker with a bind mount took 0.055 s in
+the same comparison, leaving a gap of about 7.4×. Sequential reopen reads and
+per-write `fsync` are closer to Docker; path lookups, small writes and large
+working sets still show substantial gaps.
+
+2026-11-22: Fedora x86_64/KVM, Ryzen 7 9700X, Linux `7.3.3-300.fc45.x86_64`
+and Btrfs. Both RNGK builds come from the engineering comparison in
+[PR #188](https://github.com/DeepLink-org/pvisor/pull/188). The baseline already
+includes directory batching, the small-write metadata optimization and
+`syncfs` forwarding. The candidate also retains clean pages on closing
+`FOPEN_KEEP_CACHE` files. Both use the same VM API runner source, an immutable
+rootfs lower, private upper/work directories, 2 vCPUs and 512 MiB, with
+writeback and DAX off. Docker 29.9.3 uses the local daemon, the same tools and
+inputs on read-only bind mounts, and a writable Btrfs bind mount for output.
+The container is limited to 2 GiB with no swap. Arms use CPUs 0–1; the separate
+publication rerun uses CPUs 4–5 and may overlap the pressure trials. There is
+no common parent cgroup budget. These differences preclude attributing the
+gap to the kernel or virtio-fs alone or adding the results to the
+[nine-runtime table](../benchmarks/filesystem.md#results).
+
+The three configurations are randomly interleaved in blocks for each workload.
+Each complete cell has three fresh environments with three rounds per
+environment. Completion adds work and final sync across the three rounds
+before taking the median across environments. It excludes Ready, setup and
+exit. Runs must pass each round's checks, exit normally, and pass a separate
+host content check. Incremental compilation was rerun after fixing the runner's
+output cleanup. Unpack and publish was rerun with the registered visible-output
+check, retaining the original upper and its valid overlay markers. Reruns
+were not pooled with earlier attempts, and valid slow samples were kept.
+
+### Ready and complete workflows
+
+| Metric | RNGK baseline | RNGK retaining cache | Docker bind, same comparison |
+| --- | ---: | ---: | ---: |
+| Positive metadata workload Ready (ms) | 125.97 | 128.30 | 97.17 |
+| Repository inspection (s) | 1.588 | 1.166 | 0.035 |
+| Incremental compilation (s) | 1.145 | 0.409 | 0.055 |
+| Unpack and publish (s) | 8.915 | 8.749 | 1.731 |
+
+Ready measures from host launch of the VM runner or `docker run` until the
+payload's Ready marker arrives, a different boundary from the nine-runtime
+table. In a separate instrumented comparison, FUSE `READ` requests for the
+incremental-build VM lifetime, including the initial build, fell from
+342,787 to 9,623. `OPEN` went from 4,156 to 4,155 and `WRITE` stayed at 2,033.
+Instrumented runs are excluded from timing.
+
+### Mechanism workloads
+
+| Operation (ms) | RNGK baseline | RNGK retaining cache | Docker bind, same comparison |
+| --- | ---: | ---: | ---: |
+| Positive metadata | 90.72 | 89.19 | 6.06 |
+| Negative metadata | 205.04 | 208.35 | 2.97 |
+| Directory enumeration | 16.91 | 16.09 | 2.53 |
+| Sequential reopen/read | 36.16 | 35.95 | 29.59 |
+| Fixed random read | 43.33 | 44.84 | 10.94 |
+| 1 KiB write | 417.30 | 447.26 | 25.76 |
+| 1 MiB write | 35.22 | 38.15 | 11.77 |
+| 4 KiB random overwrite | 111.60 | 115.78 | 15.09 |
+| Small files | 685.91 | 668.30 | 290.27 |
+| Per-write `fsync` | 366.67 | 358.53 | 253.52 |
+| Mixed read/write | 227.01 | 233.29 | 19.68 |
+| Create and delete | 457.49 | 445.03 | 153.99 |
+
+RNGK took about 1.2× Docker's time for sequential reopen/read and 1.4× for
+per-write `fsync`, versus about 70× for negative lookups and 17× for 1 KiB
+writes sent to the host. The 1 KiB write case was slower in all three RNGK
+pairs (median paired change +39.80 ms, range +12.28 to +49.15 ms); the cause
+is unresolved. The earlier unprivileged small-write probe tested the metadata
+optimization, which is already in this baseline. The two cohorts cannot be pooled.
+
+### Working set and concurrency
+
+| Working set / workers (s) | RNGK baseline | RNGK retaining cache | Docker bind, same comparison |
+| --- | ---: | ---: | ---: |
+| 128 MiB / 1 | 40.492 | 40.411 | 3.027 |
+| 128 MiB / 4 | 21.827 | 21.684 | 1.645 |
+| 640 MiB / 1 | `ENOMEM` | `ENOMEM` | 3.996 |
+| 640 MiB / 4 | `ENOMEM` | 90 s timeout | 2.382 |
+
+The 128 MiB cells show no clear improvement. Each 640 MiB RNGK cell stopped
+after its first failure and has no median; these results do not locate a
+capacity threshold. N=3 is exploratory, with no tail estimates or
+cross-configuration ranking. See [PR #188](https://github.com/DeepLink-org/pvisor/pull/188)
+for the engineering record and paired differences. Local records are under
+`target/native-fs-matrix/`: `revisions/`, `remaining/`, `publication/`, and the
+separate `profile-S02-*` runs.
+
 ## Documentation workloads: revision and opt-in cache retest {#docs-workload-retest}
 
 **The opt-in cache combination improves complete Python library scans but slows
