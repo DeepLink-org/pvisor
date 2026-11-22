@@ -408,7 +408,7 @@ pub(super) struct Exec {
 }
 
 pub(super) use crate::container_args::environment;
-use crate::container_args::{PsRow, batch, ps_header, ps_row};
+use crate::container_args::{PsRow, batch, batch_results, ps_header, ps_row};
 
 pub(super) fn memory(value: &str) -> Result<u32, String> {
     docker::parse_memory_limit(value).map_err(|error| error.to_string())
@@ -716,10 +716,10 @@ pub(super) fn run(command: DockerCommand) -> anyhow::Result<i32> {
             });
         }
         DockerCommand::Wait(args) => {
-            return batch(&args.containers, |selector| {
-                println!("{}", store.wait(selector)?);
+            return batch_results(store.wait_each(&args.containers)?.map(|result| {
+                println!("{}", result?);
                 Ok(())
-            });
+            }));
         }
         DockerCommand::Cp(args) => {
             let source = query::copy_endpoint(&args.source)?;
