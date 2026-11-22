@@ -718,8 +718,12 @@ timeouts override it.
 
 `wait` prints the selected generation's exit code and exits zero when observation
 succeeds, even when that workload failed. It does not wait for all automatic retries.
-Foreground `run` also follows its initial generation; use `-d` for services whose
-owner should continue automatic retries independently of the frontend.
+For several selectors, `wait` selects all generations before waiting and
+prints their results in argument order. A full container ID takes precedence
+over an identical container name.
+Foreground `run` returns the initial generation's exit status and output.
+`logs` continues to show accumulated output across generations. Use `-d` for
+services whose owner should continue retries independently of the frontend.
 Created/unstarted containers return zero because they are not running; this
 does not certify that a command ran. Per-generation private completion
 receipts survive fast successors and auto-removal; missing completion after owner
