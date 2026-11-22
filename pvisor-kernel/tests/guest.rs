@@ -5,6 +5,8 @@ use std::{
     io::{Read, Seek, Write},
     os::fd::AsRawFd,
     os::unix::fs::{FileExt, PermissionsExt},
+    sync::atomic::{AtomicBool, Ordering},
+    thread,
 };
 
 #[repr(C)]
@@ -23,6 +25,8 @@ struct CapData {
 
 unsafe extern "C" {
     fn ioctl(fd: i32, request: i32, ...) -> i32;
+    fn sched_getaffinity(pid: i32, len: usize, mask: *mut u64) -> i32;
+    fn sched_getcpu() -> i32;
     fn mmap(addr: *mut u8, len: usize, prot: i32, flags: i32, fd: i32, offset: i64) -> *mut u8;
     fn munmap(addr: *mut u8, len: usize) -> i32;
     fn capget(header: *mut CapHeader, data: *mut CapData) -> i32;
@@ -126,6 +130,45 @@ fn check_write_cache() {
     }
 }
 
+fn check_smp(cpus: usize) {
+    assert!((1..=64).contains(&cpus));
+    let expected = u64::MAX >> (64 - cpus);
+    let mut affinity = [0u64; 16];
+    assert_eq!(
+        unsafe { sched_getaffinity(0, size_of_val(&affinity), affinity.as_mut_ptr()) },
+        0,
+        "sched_getaffinity: {}",
+        std::io::Error::last_os_error(),
+    );
+    assert_eq!(affinity[0], expected);
+    assert!(affinity[1..].iter().all(|&part| part == 0));
+
+    let spawning = AtomicBool::new(true);
+    let observed = thread::scope(|scope| {
+        let workers: Vec<_> = (0..2 * cpus)
+            .map(|_| {
+                thread::Builder::new()
+                    .stack_size(64 * 1024)
+                    .spawn_scoped(scope, || {
+                        let cpu = unsafe { sched_getcpu() };
+                        while spawning.load(Ordering::Acquire) {
+                            std::hint::spin_loop();
+                        }
+                        cpu
+                    })
+            })
+            .collect();
+        spawning.store(false, Ordering::Release);
+        workers.into_iter().fold(0, |mask, worker| {
+            let cpu = worker.unwrap().join().unwrap();
+            assert!((0..cpus as i32).contains(&cpu), "unexpected CPU {cpu}");
+            mask | (1 << cpu)
+        })
+    });
+    assert_eq!(observed, expected, "workers did not execute on every CPU");
+    println!("RUST_NATIVE_KERNEL_SMP_OK {observed:016x}");
+}
+
 fn main() {
     let boot_id_path = "/proc/sys/kernel/random/boot_id";
     let boot_id = fs::read(boot_id_path).unwrap();
@@ -151,21 +194,6 @@ fn main() {
     uuid.read_exact(&mut reread).unwrap();
     assert_eq!(id, reread);
     assert_ne!(id.as_slice(), fs::read(uuid_path).unwrap());
-    if std::env::args().nth(2).as_deref() == Some("--check-write-cache") {
-        check_write_cache();
-        check_setid_writes();
-    }
-    if std::env::args().nth(2).as_deref() == Some("--check-read-fixture") {
-        let file = fs::File::open("/read-fixture").unwrap();
-        // A preexisting 4 MiB fixture avoids warming the guest cache by writing the data.
-        let expected = |offset: usize| (offset / 4096 + offset % 251) as u8;
-        for (offset, count) in [(8192, 1), (17, 256 * 1024), (4 * 1024 * 1024 - 9, 64)] {
-            let mut bytes = vec![0; count];
-            let read = file.read_at(&mut bytes, offset as u64).unwrap();
-            assert_eq!(read, count.min(4 * 1024 * 1024 - offset));
-            assert!((0..read).all(|i| bytes[i] == expected(offset + i)));
-        }
-    }
     fs::write("/pvisor-kernel-smoke", b"shared rootfs\n").unwrap();
     assert_eq!(
         fs::read("/pvisor-kernel-smoke").unwrap(),
@@ -195,10 +223,33 @@ fn main() {
     assert_eq!(std::io::Error::last_os_error().raw_os_error(), Some(1));
     assert_eq!(unsafe { ioctl(root.as_raw_fd(), 0x7602, 0u64) }, -1);
     assert_eq!(std::io::Error::last_os_error().raw_os_error(), Some(25));
-    if std::env::args().nth(2).as_deref() == Some("--echo-stdin") {
-        std::io::copy(&mut std::io::stdin().lock(), &mut std::io::stdout().lock()).unwrap();
+    let mut args = std::env::args().skip(1);
+    let code = args.next().unwrap().parse().unwrap();
+    while let Some(option) = args.next() {
+        match option.as_str() {
+            "--echo-stdin" => {
+                std::io::copy(&mut std::io::stdin().lock(), &mut std::io::stdout().lock()).unwrap();
+            }
+            "--smp" => check_smp(args.next().unwrap().parse().unwrap()),
+            "--check-write-cache" => {
+                check_write_cache();
+                check_setid_writes();
+            }
+            "--check-read-fixture" => {
+                let file = fs::File::open("/read-fixture").unwrap();
+                // A preexisting fixture avoids warming the guest cache by writing the data.
+                let expected = |offset: usize| (offset / 4096 + offset % 251) as u8;
+                for (offset, count) in [(8192, 1), (17, 256 * 1024), (4 * 1024 * 1024 - 9, 64)] {
+                    let mut bytes = vec![0; count];
+                    let read = file.read_at(&mut bytes, offset as u64).unwrap();
+                    assert_eq!(read, count.min(4 * 1024 * 1024 - offset));
+                    assert!((0..read).all(|i| bytes[i] == expected(offset + i)));
+                }
+            }
+            _ => panic!("unknown probe option: {option}"),
+        }
     }
     println!("RUST_NATIVE_KERNEL_SHARED_ROOTFS_OK");
     eprintln!("RUST_NATIVE_KERNEL_STDERR_OK");
-    std::process::exit(std::env::args().nth(1).unwrap().parse().unwrap());
+    std::process::exit(code);
 }

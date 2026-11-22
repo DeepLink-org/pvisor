@@ -132,6 +132,8 @@ pub(super) unsafe fn after_switching_to() {
 
         Some(prev_task)
     } else {
+        // SAFETY: The first switch has left the boot stack permanently and kept IRQs disabled.
+        unsafe { crate::boot::smp::reclaim_ap_boot_stack() };
         None
     };
 

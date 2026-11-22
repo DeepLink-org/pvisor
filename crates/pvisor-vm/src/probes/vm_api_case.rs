@@ -1,7 +1,7 @@
 //! Hardware-contract probe for the public VM API; not a pvisor product command.
 use std::path::PathBuf;
 
-use pvisor_vm::api::{RuntimeSupport, VmBuilder, VmConfiguration, VmRuntime};
+use pvisor_vm::api::{RuntimeSupport, VmBuilder, VmConfiguration, VmPlatform, VmRuntime};
 
 #[derive(Debug, clap::Parser)]
 struct Args {
@@ -29,6 +29,7 @@ struct Args {
 }
 
 fn main() -> anyhow::Result<()> {
+    VmPlatform::init_logging("off");
     run(<Args as clap::Parser>::parse())
 }
 
@@ -47,8 +48,8 @@ fn run(args: Args) -> anyhow::Result<()> {
     let mut vm = VmBuilder::new(args.cpus, args.memory)?;
     if let Some(firmware) = args.firmware {
         vm.set_firmware_path(firmware.canonicalize()?)?;
-    } else if pvisor_vm::api::VmPlatform::embedded_kernel().is_none() {
-        vm.set_firmware_path(pvisor_vm::api::VmPlatform::resolve_firmware_path(None)?)?;
+    } else if VmPlatform::embedded_kernel().is_none() {
+        vm.set_firmware_path(VmPlatform::resolve_firmware_path(None)?)?;
     }
     vm.filesystem("/dev/root", &root, 0)?;
     if args.task_stdio {

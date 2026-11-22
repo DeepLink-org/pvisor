@@ -41,6 +41,32 @@ pub(crate) fn selection() -> io::Result<Selection> {
     Ok(selection)
 }
 
+pub(crate) fn validate_resources(cpus: u8, memory_mib: u32) -> io::Result<()> {
+    let x86 = cfg!(target_arch = "x86_64");
+    let cpu_limit = if x86 { 64 } else { 1 };
+    if !(1..=cpu_limit).contains(&cpus) {
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            format!("experimental Rust native kernel requires 1..={cpu_limit} vCPUs"),
+        ));
+    }
+    let minimum_mib = if x86 {
+        // AP stacks and per-CPU kernel workers consume RAM even before PID 1 runs.
+        16.max((3 * u32::from(cpus)).div_ceil(2))
+    } else {
+        256
+    };
+    if memory_mib < minimum_mib {
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            format!(
+                "experimental Rust native kernel requires at least {minimum_mib} MiB RAM for {cpus} vCPUs"
+            ),
+        ));
+    }
+    Ok(())
+}
+
 pub(crate) fn fits_memory(
     guest_address: u64,
     size: u64,
@@ -66,8 +92,8 @@ mod tests {
     #[case::below_ram(0x4020_0000, 0x4000, 0x8000_0000, 0x1000_0000, 0x20_0000, false)]
     #[case::address_wrap(u64::MAX, 0x4000, 0, 0x1000_0000, 0, false)]
     #[case::reservation_exceeds_ram(0, 4096, 0, 4096, 8192, false)]
-    #[case::x86_boundary(0x0800_0000, 0x0800_0000, 0, 0x1000_0000, 0, true)]
-    #[case::x86_overflow(0x0800_0000, 0x0800_0001, 0, 0x1000_0000, 0, false)]
+    #[case::x86_boundary(0x0020_0000, 0x00e0_0000, 0, 0x0100_0000, 0, true)]
+    #[case::x86_overflow(0x0020_0000, 0x00e0_0001, 0, 0x0100_0000, 0, false)]
     fn kernel_and_reserved_fdt_fit_ram(
         #[case] address: u64,
         #[case] size: u64,
