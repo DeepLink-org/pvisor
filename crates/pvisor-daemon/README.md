@@ -705,6 +705,11 @@ Supervisor loss is not recoverable process replay or a checkpoint.
 Native RPC connections wait for temporary Unix accept-queue saturation within
 the existing five-second connection deadline. Only an unconnected EAGAIN is
 retried; requests are sent once after connection and commands are never replayed.
+During creation the native guest wakes the supervisor over a private vsock
+connection once its command listener is live. The supervisor still checks
+authenticated service responses bound to the current sandbox and generation
+before reporting `Running`. Compatibility backends keep their own readiness
+protocols.
 HTTP/process admission and socket backlog limits remain unchanged.
 
 The native core supports foreground/background commands, separate stdout/stderr,
@@ -972,6 +977,39 @@ including paused/failed/uncertain records; this is not a measured whole-node
 physical-memory budget.
 
 The launch callback joins the identity-bound cgroup **before exec**, using a pre-opened `cgroup.procs` FD under the owner lock and checking started/deletion/tombstone markers. Supervisor startup verifies membership instead of moving an already-running Tokio process; supervisor/Tokio allocations and subsequent VM/helper children are charged inside the sandbox budget. Direct hidden-command invocation outside that cgroup fails closed.
+
+On create, the supervisor wakes the daemon over a private Unix socket once live
+VM controls and guest services are initialized. The daemon no longer polls
+while the VM boots. It still confirms the live sandbox with an authenticated
+Inspect before returning `Running`. The wakeup socket is not a lifecycle lease:
+a supervisor continues to serve its control socket if the creating daemon exits.
+
+### Opt-in VM warm pool
+
+Add `--warm-pool 4cx256M` to `serve --sandbox` to keep one idle four-vCPU VM
+with a 4,000 millicore CPU quota and a 256 MiB hard memory limit. `M` means MiB.
+Repeat `--warm-pool` for distinct classes (at most eight). No image is selected
+at boot. Unassigned VMs have their own limits before exec; idle capacity is
+additional to active sandbox capacity, and the sum of configured idle profiles
+must fit within the daemon's configured admission limits.
+
+Linux x86-64/KVM native guest images using the daemon's default Linux firmware
+can consume a parked VM when both requested limits match exactly. The caller
+still selects the prepared image, environment and command in its create request.
+Upstream service images, custom firmware and pool misses use the ordinary cold
+path. There is no separate option for the
+[deferred root](../pvisor-vm/README.md#deferred-overlayfs-root).
+
+The pool advertises a slot only after PID 1 reaches its root mount and the
+supervisor confirms live pause and resume. The assigned
+VM opens a projection in its private state using a read-only broker bound to the
+selected image; the runner cannot open the whole image repository. A slot is
+never returned after assignment. Idle slots expire and refill, and clean shutdown
+reclaims the unassigned cgroups; API restart keeps assigned supervisors and reclaims
+leftover idle cgroups. A warm launch does not return `Running` before authenticated
+guest readiness. In `startup.json`, `pid1_waiting_for_root_us` marks arrival at
+the mount, `warm_root_assigned_us` marks assignment and `guest_ready_notified_us`
+marks the notification before service checks. None is a service-ready timestamp.
 
 Images are trusted local `images_dir/<key>.json` manifests, not registry
 references. Every manifest requires `pooled_image`, the owning Docker API's
@@ -1592,6 +1630,11 @@ uv run --no-project --with e2b==2.59.0 python \
   --images-dir /srv/pvi --template e2b-base \
   --cgroup-root /sys/fs/cgroup/pvd --state /tmp/pvisor-sdk-restart
 ```
+
+Add `--warm-pool 1cx512M` to exercise one warm slot in the same restart test.
+Use a native template with those exact limits and default (bundled or
+executable-adjacent) firmware. The test checks that the first create consumed
+an actual parked slot.
 
 ### Atomic user-service endpoint publication
 

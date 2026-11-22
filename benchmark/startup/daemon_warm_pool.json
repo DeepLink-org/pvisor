@@ -1,0 +1,6 @@
+{
+  "engine": "criterion",
+  "entry": "startup/daemon_warm_pool.json",
+  "implementation": "../criterion/src/startup/warm_pool.rs",
+  "config_env": "PVISOR_BENCH_DAEMON_IMAGES"
+}

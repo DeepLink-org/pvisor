@@ -28,15 +28,15 @@ class CriterionRegistrationContracts(unittest.TestCase):
     def test_all_registered_ids_entries_and_readiness_remain_explicit(self):
         fields, rows = registry()
         self.assertEqual(fields, ["benchmark_id", "role", "entry", "status", "implementation"])
-        self.assertEqual(len(rows), 63)
-        self.assertEqual(len({row["entry"] for row in rows}), 63)
+        self.assertEqual(len(rows), 64)
+        self.assertEqual(len({row["entry"] for row in rows}), 64)
         expected_ids = {
             line.split("：")[0].removeprefix("### ")
             for line in (ROOT / "REGISTRY.md").read_text().splitlines()
             if line.startswith("### B-")
         } - {"B-OVERVIEW / B-METHOD", "B-COMPARE", "B-CLUSTER"}
         self.assertEqual({row["benchmark_id"] for row in rows}, expected_ids)
-        self.assertEqual(sum(row["status"] == "criterion-rust" for row in rows), 30)
+        self.assertEqual(sum(row["status"] == "criterion-rust" for row in rows), 31)
         self.assertEqual(
             sum(row["status"] == "requires-single-condition-command" for row in rows), 33
         )
@@ -67,7 +67,7 @@ class CriterionRegistrationContracts(unittest.TestCase):
                         )
                     )
 
-    def test_all_thirty_active_descriptors_point_to_rust_not_python_commands(self):
+    def test_all_active_descriptors_point_to_rust_not_python_commands(self):
         _, rows = registry()
         for row in rows:
             if row["status"] != "criterion-rust":

@@ -257,7 +257,9 @@ impl Builder {
                 "WHP virtual files currently require a root-level name",
             ));
         }
-        if share.synthetic.contains_key(name) || (name == "init.krun" && share.implicit_init) {
+        if share.synthetic.contains_key(name)
+            || (share.implicit_init && name == GUEST_INIT_PATH.trim_start_matches('/'))
+        {
             return Err(invalid("duplicate virtual file"));
         }
         share.synthetic.insert(
@@ -294,7 +296,7 @@ impl Builder {
         }
         self.resources
             .set_kernel_cmdline(KernelCmdlineConfig {
-                prolog: Some(format!("{DEFAULT_KERNEL_CMDLINE} init=/init.krun")),
+                prolog: Some(format!("{DEFAULT_KERNEL_CMDLINE} init={GUEST_INIT_PATH}")),
                 krun_env: Some("     ".into()),
                 epilog: Some(" -- ".into()),
             })

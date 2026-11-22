@@ -16,6 +16,7 @@ use super::super::{
     VirtioShmRegion,
 };
 use super::defs::REQ_INDEX;
+#[cfg(test)]
 use super::overlay::Config as OverlayConfig;
 use super::passthrough;
 use super::virtual_entry::VirtualDirEntry;
@@ -24,6 +25,7 @@ use super::ExportTable;
 use super::{defs, defs::uapi};
 use crate::devices::virtio::passthrough::PermissionSemantics;
 use crate::devices::virtio::InterruptTransport;
+use crate::vmm::vmm_config::fs::OverlaySource;
 
 const INLINE_METADATA_FEATURE: u64 = 1 << 23;
 const READ_INDEX_FEATURE: u64 = 1 << 24;
@@ -56,7 +58,7 @@ pub struct Fs {
     allow_idmap: bool,
     shm_region: Option<VirtioShmRegion>,
     passthrough_cfg: Option<passthrough::Config>,
-    overlay_cfg: Option<OverlayConfig>,
+    overlay_cfg: Option<OverlaySource>,
     read_only: bool,
     virtual_entries: Vec<VirtualDirEntry>,
     worker_thread: Option<JoinHandle<FsWorker>>,
@@ -89,7 +91,7 @@ impl Fs {
                 shared_dir,
                 read_only,
                 virtual_entries,
-                overlay: overlay_cfg,
+                overlay: overlay_cfg.map(|config| OverlaySource::Config(Box::new(config))),
                 shm_size: None,
                 managed: false,
             },
@@ -216,6 +218,9 @@ impl VirtioDevice for Fs {
     }
 
     fn freeze(&mut self) -> Result<bool, String> {
+        if matches!(self.overlay_cfg, Some(OverlaySource::Deferred(_))) {
+            return Err("deferred-root filesystem freeze unsupported".into());
+        }
         if self.shm_region.is_some() {
             return Err("filesystem DAX/SHM freeze unsupported".into());
         }
@@ -302,13 +307,14 @@ impl VirtioDevice for Fs {
         let read_index = self.profile.rngk_readindex
             && self.profile.guest_cache
             && !self.profile.host_writeback
-            && self.overlay_cfg.as_ref().is_some_and(|cfg| {
-                !cfg.lower_mutability.is_empty()
-                    && cfg
-                        .lower_mutability
-                        .iter()
-                        .all(|m| *m == pvisor_overlay_core::LayerMutability::Immutable)
-            })
+            && matches!(
+                &self.overlay_cfg,
+                Some(OverlaySource::Config(cfg))
+                    if !cfg.lower_mutability.is_empty()
+                        && cfg.lower_mutability.iter().all(|m| {
+                            *m == pvisor_overlay_core::LayerMutability::Immutable
+                        })
+            )
             && self.shm_region.is_none();
         self.avail_features
             | if inline { INLINE_METADATA_FEATURE } else { 0 }

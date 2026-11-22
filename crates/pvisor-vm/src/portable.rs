@@ -220,6 +220,60 @@ fn unsupported(operation: &str) -> io::Error {
     )
 }
 
+#[cfg(not(any(feature = "tee", feature = "aws-nitro")))]
+fn prepare_overlay(
+    overlay: OverlayConfig,
+) -> io::Result<crate::devices::virtio::fs::OverlayConfig> {
+    if !overlay.lower_mutability.is_empty()
+        && overlay.lower_mutability.len() != overlay.lower_dirs.len()
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "lower mutability length mismatch",
+        ));
+    }
+    let path = |path: &Path| -> io::Result<String> {
+        path.to_str().map(str::to_owned).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("VM filesystem path is not UTF-8: {}", path.display()),
+            )
+        })
+    };
+    Ok(crate::devices::virtio::fs::OverlayConfig {
+        lower_dirs: overlay
+            .lower_dirs
+            .iter()
+            .map(|p| path(p))
+            .collect::<io::Result<_>>()?,
+        lower_mutability: if overlay.lower_mutability.is_empty() {
+            vec![pvisor_overlay_core::LayerMutability::Immutable; overlay.lower_dirs.len()]
+        } else {
+            overlay.lower_mutability
+        },
+        upper_dir: path(&overlay.upper_dir)?,
+        work_dir: overlay.work_dir.as_deref().map(path).transpose()?,
+        preimage_dir: overlay.preimage_dir.as_deref().map(path).transpose()?,
+        apply_target: overlay.apply_target.as_deref().map(path).transpose()?,
+        baseline_lower: overlay.baseline_lower.as_deref().map(path).transpose()?,
+        baseline_content_index: overlay
+            .baseline_content_index
+            .map(|index| {
+                path(&index.root)?;
+                path(&index.file)?;
+                Ok::<_, io::Error>(index)
+            })
+            .transpose()?,
+        excluded_paths: overlay
+            .excluded_paths
+            .iter()
+            .map(|p| path(p))
+            .collect::<io::Result<_>>()?,
+        access_policy: overlay.access_policy,
+        semantics: overlay.semantics,
+    })
+}
+
 impl VmConfiguration for VmBuilder {
     fn guest_idle_handoff(&mut self) -> io::Result<()> {
         self.inner.guest_idle_handoff()
@@ -362,66 +416,56 @@ impl VmConfiguration for VmBuilder {
     fn overlay(&mut self, tag: &str, overlay: OverlayConfig, shm_size: usize) -> io::Result<()> {
         #[cfg(not(any(feature = "tee", feature = "aws-nitro")))]
         {
-            if !overlay.lower_mutability.is_empty()
-                && overlay.lower_mutability.len() != overlay.lower_dirs.len()
-            {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "lower mutability length mismatch",
-                ));
-            }
-            let path = |path: &Path| -> io::Result<String> {
-                path.to_str().map(str::to_owned).ok_or_else(|| {
-                    io::Error::new(
-                        io::ErrorKind::InvalidInput,
-                        format!("VM filesystem path is not UTF-8: {}", path.display()),
-                    )
-                })
-            };
-            self.inner.overlay(
-                tag,
-                crate::devices::virtio::fs::OverlayConfig {
-                    lower_dirs: overlay
-                        .lower_dirs
-                        .iter()
-                        .map(|p| path(p))
-                        .collect::<io::Result<_>>()?,
-                    lower_mutability: if overlay.lower_mutability.is_empty() {
-                        vec![
-                            pvisor_overlay_core::LayerMutability::Immutable;
-                            overlay.lower_dirs.len()
-                        ]
-                    } else {
-                        overlay.lower_mutability
-                    },
-                    upper_dir: path(&overlay.upper_dir)?,
-                    work_dir: overlay.work_dir.as_deref().map(path).transpose()?,
-                    preimage_dir: overlay.preimage_dir.as_deref().map(path).transpose()?,
-                    apply_target: overlay.apply_target.as_deref().map(path).transpose()?,
-                    baseline_lower: overlay.baseline_lower.as_deref().map(path).transpose()?,
-                    baseline_content_index: overlay
-                        .baseline_content_index
-                        .map(|index| {
-                            path(&index.root)?;
-                            path(&index.file)?;
-                            Ok::<_, io::Error>(index)
-                        })
-                        .transpose()?,
-                    excluded_paths: overlay
-                        .excluded_paths
-                        .iter()
-                        .map(|p| path(p))
-                        .collect::<io::Result<_>>()?,
-                    access_policy: overlay.access_policy,
-                    semantics: overlay.semantics,
-                },
-                shm_size,
-            )
+            self.inner.overlay(tag, prepare_overlay(overlay)?, shm_size)
         }
         #[cfg(any(feature = "tee", feature = "aws-nitro"))]
         {
             let _ = (tag, overlay, shm_size);
             Err(unsupported("overlay filesystem"))
+        }
+    }
+    fn deferred_root(
+        &mut self,
+        prepare: impl FnOnce() -> io::Result<DeferredRoot> + Send + 'static,
+    ) -> io::Result<()> {
+        #[cfg(all(
+            target_os = "linux",
+            target_arch = "x86_64",
+            feature = "init-blob",
+            not(any(feature = "tee", feature = "aws-nitro", feature = "efi"))
+        ))]
+        {
+            self.inner.deferred_root(Box::new(move || {
+                use pvisor_guest::api::GuestValidation;
+                let DeferredRoot { overlay, guest } = prepare()?;
+                if !matches!(overlay.semantics, PermissionSemantics::LinuxComplete)
+                    || guest.root_disk.is_some()
+                {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "deferred root requires LinuxComplete semantics and no root disk",
+                    ));
+                }
+                guest.validate()?;
+                let bytes = serde_json::to_vec(&guest)?;
+                if bytes.len() > 1 << 20 {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "guest config exceeds 1 MiB",
+                    ));
+                }
+                Ok((prepare_overlay(overlay)?, bytes))
+            }))
+        }
+        #[cfg(not(all(
+            target_os = "linux",
+            target_arch = "x86_64",
+            feature = "init-blob",
+            not(any(feature = "tee", feature = "aws-nitro", feature = "efi"))
+        )))]
+        {
+            let _ = prepare;
+            Err(unsupported("deferred root"))
         }
     }
     fn virtual_file(

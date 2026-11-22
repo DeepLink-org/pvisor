@@ -56,7 +56,7 @@ def main() -> None:
                 "-device",
                 f"loader,file={(args.bundle / 'kernel.bin').resolve()},addr=0x80200000,force-raw=on",
                 "-append",
-                "earlycon root=/dev/root rootfstype=virtiofs init=/init.krun",
+                "earlycon root=/dev/root rootfstype=virtiofs init=/init.pvisor",
             ],
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,

@@ -55,7 +55,6 @@ pub use executor::container::ContainerExecutor;
 pub use executor::process::ProcessExecutor;
 #[cfg(target_os = "linux")]
 pub use executor::vm::CpuQosGroup;
-pub use executor::vm::VmExecutor;
 /// Dispatch synchronous self-exec internal modes before creating a Tokio runtime,
 /// starting threads, or parsing CLI arguments.
 ///
@@ -66,6 +65,7 @@ pub use executor::vm::VmExecutor;
 pub use executor::vm::run_internal_if_requested as run_krun_internal_if_requested;
 #[cfg(target_os = "linux")]
 pub use executor::vm::sample_supervisor_memory;
+pub use executor::vm::{VmExecutor, WarmRootAssignment};
 pub use executor::{ExecutorOutput, RunExecutor};
 pub use pvisor_core::host_protocol::{
     AGENTCTL_HOST_MAX_FRAME_BYTES, AGENTCTL_HOST_VERSION, AgentCtlHostError, AgentCtlHostErrorCode,

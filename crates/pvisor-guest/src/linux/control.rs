@@ -49,6 +49,26 @@ pub(super) fn listener() -> io::Result<OwnedFd> {
     Ok(listener)
 }
 
+fn notify_host_ready() -> io::Result<()> {
+    let fd = unsafe { libc::socket(libc::AF_VSOCK, libc::SOCK_STREAM | libc::SOCK_CLOEXEC, 0) };
+    check(fd)?;
+    let socket = unsafe { OwnedFd::from_raw_fd(fd) };
+    let address = libc::sockaddr_vm {
+        svm_family: libc::AF_VSOCK as _,
+        svm_reserved1: 0,
+        svm_port: control::CONTROL_READY_PORT,
+        svm_cid: libc::VMADDR_CID_HOST,
+        svm_zero: [0; 4],
+    };
+    check(unsafe {
+        libc::connect(
+            socket.as_raw_fd(),
+            (&address as *const libc::sockaddr_vm).cast(),
+            std::mem::size_of_val(&address) as _,
+        )
+    })
+}
+
 fn pump(mut reader: impl Read, writer: Arc<Mutex<UnixStream>>, stream: u8) -> io::Result<()> {
     let mut buffer = [0; 16 * 1024];
     loop {
@@ -336,6 +356,7 @@ pub(super) fn start(
     input: Option<Box<dyn Write + Send>>,
 ) {
     let input: Input = Arc::new(Mutex::new(input));
+    let notify = config.control_ready;
     std::thread::spawn(move || {
         let active = Arc::new(AtomicUsize::new(0));
         loop {
@@ -397,6 +418,13 @@ pub(super) fn start(
             });
         }
     });
+    if notify {
+        std::thread::spawn(|| {
+            if let Err(error) = notify_host_ready() {
+                eprintln!("pvisor guest: notify host of control readiness: {error}");
+            }
+        });
+    }
 }
 
 pub(super) fn serial_ports() -> io::Result<(std::fs::File, std::fs::File)> {

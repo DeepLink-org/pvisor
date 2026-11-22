@@ -198,6 +198,15 @@ pub struct NativeRuntimeConfig {
     pub executable: PathBuf,
 }
 
+/// One resource class in the native VM warm pool. No image is selected at boot.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct WarmPoolProfile {
+    /// Exact requested CPU quota in millicores.
+    pub cpu_millis: u64,
+    /// Exact requested hard memory limit in bytes.
+    pub memory_bytes: u64,
+}
+
 /// Local manifest schema. `image` is a key, NOT a registry reference or path.
 /// Entrypoint is a long-lived guest bootstrap, followed by requested workload
 /// argv (or cmd when the request is empty). No executable runs on the host.
@@ -346,6 +355,19 @@ pub trait DaemonService: Sized {
         config: Config,
         factory: impl FnOnce(String) -> Result<Arc<dyn Runtime>>,
     ) -> Result<Arc<Self>>;
+    /// Open the native service and start one idle VM per distinct profile.
+    /// An empty profile list leaves pooling disabled. Eligible creates consume
+    /// a matching slot once; cold create remains available on a miss.
+    /// Idle slots use separate, explicit capacity in addition to `config`.
+    async fn open_native(
+        config: Config,
+        profiles: Vec<WarmPoolProfile>,
+        factory: impl FnOnce(String) -> Result<NativeRuntime>,
+    ) -> Result<Arc<Self>>;
+    /// After draining HTTP creates, stop replenishment and reclaim idle slots.
+    /// Assigned sandboxes remain live under their detached supervisors.
+    /// Errors leave uncertain slots durably recorded for the next startup.
+    async fn stop_warm_pool(&self) -> Result<()>;
     /// Build authenticated OpenSandbox/E2B routes sharing this owner's lifecycle
     /// locks and proxy budget. The router retains the owner and its state lock.
     /// Serve behind TLS on untrusted networks; unsupported features fail explicitly.

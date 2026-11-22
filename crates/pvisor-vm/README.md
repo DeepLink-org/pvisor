@@ -49,6 +49,30 @@ Guest kernel/init 诊断通过 `init_or_kernel` debug 日志转发，不作为�
 `tee`、`amd-sev`、`tdx`、`aws-nitro`、`efi` 是内部可选实现，
 不属于已验收的产品 profile。
 
+## Deferred OverlayFS root
+
+`VmConfiguration::deferred_root` boots Linux x86-64/KVM with a virtual-only
+`/dev/root` containing built-in init and its mountpoints. PID 1 mounts a
+separate `pvisor-rootfs` share. Its first FUSE INIT runs the caller's one-shot
+callback on a filesystem worker; no OverlayFS backend or writable stage is
+opened by the VM before then. The callback can wait for assignment and supply
+the request's `OverlayConfig` and `GuestConfig`. PID 1 enters that mount before
+reading launch JSON or running workload code.
+
+The runner must bound the callback's wait and keep the selected image/overlay
+owners alive through teardown. Failure aborts the guest launch; the slot is
+not reusable. Snapshot/restore, guest-idle handoff and non-Linux firmware
+profiles are unsupported. Existing `overlay` attachments remain eager.
+The daemon uses this primitive for its [opt-in VM pool](../pvisor-daemon/README.md#opt-in-vm-warm-pool).
+
+Run the hardware regression with trusted Linux firmware and the
+`x86_64-unknown-linux-musl` Rust target installed:
+
+```sh
+PVISOR_CASE_VM_FIRMWARE_PATH=/absolute/path/to/libkrunfw.so \
+  mise run test -- pvisor-vm -- --test deferred_root --run-ignored only
+```
+
 ## Unix FS 环境设置
 
 FS 环境变量名称、默认值和解析规则集中在私有 `src/env.rs`。
@@ -1267,7 +1291,7 @@ dentry、readdir，以及普通文件和目录的只读 open，都在 guest 内�
 一次请求使用协商得到的 FUSE 页预算，
 最大 1 MiB（256 个 4 KiB 客机页）。宿主用一次 `readdirplus` 填满这次预算，
 并在返回前关闭这次目录句柄。只有带 `COMPLETE` 的页能证明某个名字不存在。这一页包含
-`synthetic_entries` 里的注入文件（例如 `/init.krun` 和
+`synthetic_entries` 里的注入文件（例如 `/init.pvisor` 和
 `/.pvisor-guest.json`）；它们不在底层目录的 `readdir` 结果中，但完整镜像
 仍必须能按名字找到它们。
 一次性注入文件保留零 entry/attribute 缓存期限；guest 只记录其名字，

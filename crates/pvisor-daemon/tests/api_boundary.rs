@@ -207,7 +207,16 @@ fn public_behavior_has_one_canonical_surface() {
                 "e2b_template",
             ],
         ),
-        ("DaemonService", vec!["open", "router", "start_maintenance"]),
+        (
+            "DaemonService",
+            vec![
+                "open",
+                "open_native",
+                "stop_warm_pool",
+                "router",
+                "start_maintenance",
+            ],
+        ),
         (
             "NativeRuntimeService",
             vec!["new", "with_memory_pool", "run_supervisor"],

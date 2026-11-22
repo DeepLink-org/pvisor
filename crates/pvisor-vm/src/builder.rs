@@ -1,5 +1,5 @@
 use crate::{
-    api::VmmHandle,
+    api::{VmmHandle, GUEST_INIT_PATH},
     backend::{Architecture, Backend, NativeBackend},
     firmware::KernelOwner,
     polly::event_manager::EventManager,
@@ -19,7 +19,7 @@ use crate::{
         virtual_entry::{VirtualDirEntry, VirtualEntry, VirtualEntryContent},
         OverlayConfig,
     },
-    vmm::vmm_config::fs::FsDeviceConfig,
+    vmm::vmm_config::fs::{FsDeviceConfig, OverlaySource},
 };
 use std::{
     collections::HashMap,
@@ -37,6 +37,7 @@ pub(crate) struct Builder<B: Backend = NativeBackend> {
     kernel: KernelOwner,
     firmware_path: Option<PathBuf>,
     implicit_init: bool,
+    deferred_root: bool,
     guest_idle: bool,
     disable_proactive_compaction: bool,
     idle_offload_minimum: std::time::Duration,
@@ -65,6 +66,7 @@ impl<B: Backend> Builder<B> {
             kernel: KernelOwner::default(),
             firmware_path: None,
             implicit_init: cfg!(feature = "init-blob"),
+            deferred_root: false,
             guest_idle: false,
             disable_proactive_compaction: false,
             idle_offload_minimum: std::time::Duration::from_secs(1),
@@ -99,6 +101,7 @@ impl<B: Backend> Builder<B> {
             || cfg!(any(feature = "tee", feature = "efi", feature = "aws-nitro"))
             || !(1..=2).contains(&self.resources.vcpu_config().vcpu_count)
             || self.resources.snapshot_profile
+            || self.deferred_root
             || !self.vsock_ports.is_empty()
         {
             return Err(io::Error::new(
@@ -213,7 +216,6 @@ impl<B: Backend> Builder<B> {
         self.kernel = owner;
         Ok(())
     }
-    /// Call before attaching rootfs; native-init restore must not inject init.krun.
     pub fn disable_implicit_init(&mut self) -> io::Result<()> {
         #[cfg(not(any(feature = "tee", feature = "aws-nitro")))]
         if self.resources.fs.iter().any(|fs| fs.fs_id == "/dev/root") {
@@ -369,10 +371,19 @@ impl<B: Backend> Builder<B> {
             .guest_cmdline
             .take()
             .unwrap_or_else(|| KernelCmdlineConfig {
-                prolog: Some(format!("{DEFAULT_KERNEL_CMDLINE} init=/init.krun")),
+                prolog: Some(format!("{DEFAULT_KERNEL_CMDLINE} init={GUEST_INIT_PATH}")),
                 krun_env: Some("     ".into()),
                 epilog: Some(" -- ".into()),
             });
+        if self.deferred_root {
+            use std::fmt::Write as _;
+            write!(
+                command.prolog.get_or_insert_with(String::new),
+                " {}=1",
+                pvisor_guest::api::DEFERRED_ROOT_ENV
+            )
+            .expect("writing to String");
+        }
         if self.resources.rust_native_kernel {
             let prolog = command.prolog.get_or_insert_with(String::new);
             prolog.push_str(" root=/dev/root earlycon");
@@ -607,7 +618,8 @@ impl<B: Backend> Builder<B> {
         #[cfg(feature = "init-blob")]
         if config.fs_id == "/dev/root" && self.implicit_init {
             config.virtual_entries.push(VirtualDirEntry {
-                name: std::ffi::CString::new("init.krun").expect("literal"),
+                name: std::ffi::CString::new(GUEST_INIT_PATH.trim_start_matches('/'))
+                    .expect("guest init basename"),
                 entry: VirtualEntry {
                     mode: 0o755,
                     one_shot: true,
@@ -783,10 +795,77 @@ impl<B: Backend> Builder<B> {
             shm_size: (shm_size != 0).then_some(shm_size),
             read_only: false,
             managed: false,
-            overlay: Some(overlay),
+            overlay: Some(OverlaySource::Config(Box::new(overlay))),
             virtual_entries: Vec::new(),
         })
     }
+
+    #[cfg(all(
+        target_os = "linux",
+        target_arch = "x86_64",
+        feature = "init-blob",
+        not(feature = "efi")
+    ))]
+    pub(crate) fn deferred_root(
+        &mut self,
+        prepare: crate::vmm::vmm_config::fs::PrepareOverlay,
+    ) -> io::Result<()> {
+        use pvisor_guest::api::{DEFERRED_ROOT_MOUNTPOINT, DEFERRED_ROOT_TAG};
+        if !self.implicit_init
+            || self.resources.rust_native_kernel
+            || self.resources.snapshot_profile
+            || self.guest_idle
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "deferred root requires fresh Linux firmware and built-in init",
+            ));
+        }
+        if self
+            .resources
+            .fs
+            .iter()
+            .any(|fs| matches!(fs.fs_id.as_str(), "/dev/root" | DEFERRED_ROOT_TAG))
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "deferred root conflicts with an existing filesystem",
+            ));
+        }
+        let attachment = |tag: &str, overlay, virtual_entries| FsDeviceConfig {
+            fs_id: tag.into(),
+            shared_dir: None,
+            semantics: PermissionSemantics::LinuxComplete,
+            shm_size: None,
+            read_only: false,
+            managed: false,
+            overlay,
+            virtual_entries,
+        };
+        let mountpoint = |name: &str| VirtualDirEntry {
+            name: std::ffi::CString::new(name.trim_start_matches('/')).expect("mountpoint literal"),
+            entry: VirtualEntry {
+                mode: 0o755,
+                one_shot: false,
+                content: VirtualEntryContent::Dir {
+                    children: Vec::new(),
+                },
+            },
+        };
+        self.attach_fs(attachment(
+            "/dev/root",
+            None,
+            vec![mountpoint("/dev"), mountpoint(DEFERRED_ROOT_MOUNTPOINT)],
+        ))?;
+        self.resources.add_fs_device(attachment(
+            DEFERRED_ROOT_TAG,
+            Some(OverlaySource::Deferred(Arc::new(Mutex::new(Some(prepare))))),
+            Vec::new(),
+        ));
+        self.deferred_root = true;
+        Ok(())
+    }
+
     pub fn virtual_file(
         &mut self,
         tag: &str,
@@ -795,6 +874,12 @@ impl<B: Backend> Builder<B> {
         mode: u32,
         one_shot: bool,
     ) -> io::Result<()> {
+        if self.deferred_root && matches!(tag, "/dev/root" | pvisor_guest::api::DEFERRED_ROOT_TAG) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "deferred root owns its virtual entries",
+            ));
+        }
         let fs = self
             .resources
             .fs
@@ -855,6 +940,12 @@ impl<B: Backend> Builder<B> {
 ))]
 impl<B: crate::backend::SnapshotBackend> Builder<B> {
     pub fn snapshot_profile(&mut self) -> io::Result<()> {
+        if self.deferred_root {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "deferred root cannot use snapshot profiles",
+            ));
+        }
         if self.resources.rust_native_kernel {
             return Err(io::Error::new(
                 io::ErrorKind::Unsupported,
@@ -962,7 +1053,7 @@ fn command_line<A: Architecture>(
         env.push(format!("\"{key}={value}\""));
     }
     let config = KernelCmdlineConfig {
-        prolog: Some(format!("{DEFAULT_KERNEL_CMDLINE} init=/init.krun")),
+        prolog: Some(format!("{DEFAULT_KERNEL_CMDLINE} init={GUEST_INIT_PATH}")),
         krun_env: Some(format!(
             " KRUN_INIT={} KRUN_WORKDIR={}   {}",
             command.executable,
@@ -1031,20 +1122,21 @@ mod contract_tests {
                 0,
             )
             .unwrap();
-            assert_eq!(
-                vm.inner.resources.fs[0]
-                    .overlay
-                    .as_ref()
-                    .unwrap()
-                    .lower_mutability,
-                [expected]
-            );
+            let Some(OverlaySource::Config(config)) = &vm.inner.resources.fs[0].overlay else {
+                panic!("eager overlay config missing");
+            };
+            assert_eq!(config.lower_mutability, [expected]);
         }
     }
 
     #[test]
     fn custom_init_preserves_the_explicit_empty_legacy_command_contract() {
         let result = command_line::<<NativeBackend as Backend>::Arch>(&command()).unwrap();
+        assert!(result
+            .prolog
+            .as_deref()
+            .unwrap()
+            .ends_with(" init=/init.pvisor"));
         assert_eq!(
             result.krun_env.as_deref(),
             Some(" KRUN_INIT=/payload KRUN_WORKDIR=/   ")

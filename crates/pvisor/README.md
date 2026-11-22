@@ -2136,6 +2136,17 @@ product builds; published executables need no firmware shared library. Linux sou
 `rustup target add x86_64-unknown-linux-musl`. Use `mise run build` so target
 selection and kernel preparation match release builds.
 
+`VmExecutor::with_warm_root` transfers one Unix socket endpoint to a fresh
+Linux x86-64 VM runner. The runner sends `[1]` when PID 1 reaches the workload
+mount, then accepts one `WarmRootAssignment` over the existing host frame
+codec. The selected image must be inside the slot's private projection store
+and served by a pinned Unix broker. The runner does not open other image
+repositories. The gate is not a service-readiness signal.
+
+`VmExecutor::with_control_ready` maps guest vsock port 1026 to a pre-bound
+private host socket when the command adapter is configured. The guest makes
+one connection after starting the adapter; the connection is only a wakeup.
+
 ## Links
 
 - [Operation and Event](../../docs/src/zh/design/operations-events.md): operation requests, actual rewrites,
