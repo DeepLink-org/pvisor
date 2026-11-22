@@ -145,3 +145,20 @@ Evidence paths below are relative to those worktree roots.
   passed; no campaign scope remained.
 - Evidence: `target/chaos-native-20261122/evidence/`, including
   `s2-20261122-052125-resume3/` for the completed graceful-stop round and safety stop.
+
+### Continuation on the same host
+
+- Passed under the same limits: the two-vCPU direct-TERM lifecycle through its
+  post-restart idle; loopback HTTP recovery after a client disconnected before
+  a paced response finished, including same-port restart and release; and
+  staged-bind conflict refusal, selective apply and discard.
+- Limits: the initial HTTP fixture lacked `httpd` and did not reach listening
+  readiness under either kernel. The corrected fixture used the image's `nc`
+  applet. No runtime defect was reproduced.
+- Stop: the short log-follow attempt stopped on a missing harness marker.
+  After correcting that marker, five minutes of preflight did not find a clean
+  90-second window because of host swap-out and memory pressure. No retry VM
+  started; neither log-follow recovery nor the six-hour campaign was completed.
+- Cleanup: owned containers and scopes were removed. Private evidence is under
+  `target/chaos-native-20261122/evidence/`, including `s2-stage-conflict-retry1/`
+  and `s2-logs-disconnect-retry1-preflight/`.
