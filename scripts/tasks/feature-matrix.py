@@ -7,7 +7,10 @@ from pathlib import Path
 
 def discover(root):
     """New case files join their owner's job without a testcase allowlist."""
-    features = sorted(p.name for p in root.iterdir() if p.is_dir() and any(p.glob("S-*.md")))
+    features = sorted(
+        (p.name for p in root.iterdir() if p.is_dir() and any(p.glob("S-*.md"))),
+        key=lambda feature: (feature != "vm", feature),
+    )
     if not features:
         raise ValueError("empty product feature inventory")
     return [

@@ -1,4 +1,4 @@
-//! Minimal ACPI topology for the single-vCPU Rust native kernel profile.
+//! ACPI topology for the Rust native kernel on x86 KVM.
 
 use crate::arch_gen::x86::bootparam::boot_params;
 use std::io;
@@ -8,7 +8,7 @@ use vm_memory::{Bytes, GuestAddress, GuestMemoryMmap};
 const RSDP: u64 = 0xe0000;
 const RSDT: u64 = RSDP + 0x40;
 const MADT: u64 = RSDP + 0x80;
-const FADT: u64 = RSDP + 0x100;
+const FADT: u64 = RSDP + 0x1000;
 // Imported bootparam bindings predate this field; it occupies the first 8 bytes of _pad3.
 const RSDP_BOOT_OFFSET: usize = std::mem::offset_of!(boot_params, _pad3);
 
@@ -32,7 +32,7 @@ fn table(signature: &[u8; 4], body: &[u8]) -> Vec<u8> {
     bytes
 }
 
-fn tables() -> (Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>) {
+fn tables(cpus: u8) -> (Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>) {
     let mut rsdp = vec![0; 20];
     rsdp[..8].copy_from_slice(b"RSD PTR ");
     rsdp[9..15].copy_from_slice(b"PVISOR");
@@ -46,10 +46,11 @@ fn tables() -> (Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>) {
     let mut body = Vec::new();
     body.extend_from_slice(&0xfee0_0000u32.to_le_bytes());
     body.extend_from_slice(&1u32.to_le_bytes());
-    // Enabled bootstrap CPU, APIC ID 0.
-    body.extend_from_slice(&[0, 8, 0, 0, 1, 0, 0, 0]);
-    // I/O APIC ID 1, MMIO address 0xfec00000, GSI base 0.
-    body.extend_from_slice(&[1, 12, 1, 0, 0, 0, 0xc0, 0xfe, 0, 0, 0, 0]);
+    for id in 0..cpus {
+        body.extend_from_slice(&[0, 8, id, id, 1, 0, 0, 0]);
+    }
+    // Match the I/O APIC ID in the MP table.
+    body.extend_from_slice(&[1, 12, cpus + 1, 0, 0, 0, 0xc0, 0xfe, 0, 0, 0, 0]);
     // PIT IRQ 0 is wired to GSI 2.
     body.extend_from_slice(&[2, 10, 0, 0, 2, 0, 0, 0, 0, 0]);
     let mut fixed = vec![0; 240];
@@ -64,8 +65,8 @@ fn tables() -> (Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>) {
     (rsdp, rsdt, table(b"APIC", &body), fadt)
 }
 
-pub(crate) fn install(memory: &GuestMemoryMmap) -> io::Result<()> {
-    let (rsdp, rsdt, madt, fadt) = tables();
+pub(crate) fn install(memory: &GuestMemoryMmap, cpus: u8) -> io::Result<()> {
+    let (rsdp, rsdt, madt, fadt) = tables(cpus);
     for (address, bytes) in [(RSDP, rsdp), (RSDT, rsdt), (MADT, madt), (FADT, fadt)] {
         memory
             .write_slice(&bytes, GuestAddress(address))
@@ -81,9 +82,12 @@ pub(crate) fn install(memory: &GuestMemoryMmap) -> io::Result<()> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn topology_has_valid_lengths_checksums_and_reserved_addresses() {
-        let (rsdp, rsdt, madt, fadt) = tables();
+    #[rstest::rstest]
+    #[case(1)]
+    #[case(2)]
+    #[case(64)]
+    fn topology_has_valid_lengths_checksums_and_reserved_addresses(#[case] cpus: u8) {
+        let (rsdp, rsdt, madt, fadt) = tables(cpus);
         for bytes in [&rsdp, &rsdt, &madt, &fadt] {
             assert_eq!(
                 bytes.iter().fold(0u8, |sum, byte| sum.wrapping_add(*byte)),
@@ -98,9 +102,12 @@ mod tests {
         assert_eq!(&fadt[120..128], &0x64u64.to_le_bytes());
         assert_eq!(fadt[128], 0xfe);
         assert_eq!(&madt[4..8], &(madt.len() as u32).to_le_bytes());
-        assert_eq!(&madt[44..52], &[0, 8, 0, 0, 1, 0, 0, 0]);
+        for id in 0..cpus {
+            let start = 44 + usize::from(id) * 8;
+            assert_eq!(&madt[start..start + 8], &[0, 8, id, id, 1, 0, 0, 0]);
+        }
         const { assert!(RSDP > super::super::layout::EBDA_START) };
-        assert!(MADT + madt.len() as u64 <= super::super::layout::HIMEM_START);
+        assert!(MADT + madt.len() as u64 <= FADT);
         assert!(FADT + fadt.len() as u64 <= super::super::layout::HIMEM_START);
     }
 
@@ -111,7 +118,7 @@ mod tests {
         let offset = super::super::layout::ZERO_PAGE_START + RSDP_BOOT_OFFSET as u64;
         memory.write_obj(0xaau8, GuestAddress(offset - 1)).unwrap();
         memory.write_obj(0xbbu8, GuestAddress(offset + 8)).unwrap();
-        install(&memory).unwrap();
+        install(&memory, 2).unwrap();
         assert_eq!(memory.read_obj::<u64>(GuestAddress(offset)).unwrap(), RSDP);
         assert_eq!(
             memory.read_obj::<u8>(GuestAddress(offset - 1)).unwrap(),

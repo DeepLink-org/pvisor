@@ -37,12 +37,38 @@ struct MountEntry<'a> {
     pass: u32,
 }
 
+struct MountField<'a>(&'a str);
+
+impl core::fmt::Display for MountField<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let mut start = 0;
+        for (i, byte) in self.0.bytes().enumerate() {
+            let escaped = match byte {
+                b' ' => "\\040",
+                b'\t' => "\\011",
+                b'\n' => "\\012",
+                b'\\' => "\\134",
+                _ => continue,
+            };
+            f.write_str(&self.0[start..i])?;
+            f.write_str(escaped)?;
+            start = i + 1;
+        }
+        f.write_str(&self.0[start..])
+    }
+}
+
 impl core::fmt::Display for MountEntry<'_> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(
             f,
             "{} {} {} {} {} {}",
-            self.source, self.mount_point, self.fs_type, self.mount_flags, self.dump, self.pass,
+            MountField(self.source),
+            MountField(self.mount_point),
+            self.fs_type,
+            self.mount_flags,
+            self.dump,
+            self.pass,
         )
     }
 }

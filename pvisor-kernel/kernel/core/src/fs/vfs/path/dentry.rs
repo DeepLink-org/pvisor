@@ -696,23 +696,16 @@ impl DirDentry<'_> {
         let child_dentry = self.remove_child(name, |dir_inode, child| dir_inode.rmdir(child))?;
         let child_inode = child_dentry.inode();
 
-        let nlinks = child_inode.metadata()?.nr_hard_links;
-        if nlinks == 0 {
-            // FIXME: `DELETE_SELF` should be generated after closing the last FD.
-            fs::vfs::notify::on_inode_removed(child_inode);
-        }
+        // A removed directory has no links; a remote filesystem may already
+        // refuse GETATTR for its inode.
+        fs::vfs::notify::on_inode_removed(child_inode);
         fs::vfs::notify::on_delete(dir_inode, child_inode, || name.to_string());
-        if nlinks == 0 {
-            // Ideally, we would use `fs_event_publisher()` here to avoid creating a
-            // `FsEventPublisher` instance on a dying inode. However, it isn't possible because we
-            // need to disable new subscribers.
-            let publisher = child_inode.fs_event_publisher_or_init();
-            let removed_nr_subscribers = publisher.disable_new_and_remove_subscribers();
-            child_inode
-                .fs()
-                .fs_event_subscriber_stats()
-                .remove_subscribers(removed_nr_subscribers);
-        }
+        let publisher = child_inode.fs_event_publisher_or_init();
+        let removed_nr_subscribers = publisher.disable_new_and_remove_subscribers();
+        child_inode
+            .fs()
+            .fs_event_subscriber_stats()
+            .remove_subscribers(removed_nr_subscribers);
         Ok(())
     }
 

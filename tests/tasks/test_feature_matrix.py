@@ -39,6 +39,14 @@ class FeatureMatrixTests(unittest.TestCase):
         for row in DISCOVER(self.root):
             self.assertFalse(any(value for key, value in row.items() if key != "feature"))
 
+    def test_long_vm_shard_is_first_without_changing_discovery(self):
+        for feature in ("config", "vm", "stage"):
+            self.add(feature)
+        self.assertEqual(
+            [row["feature"] for row in DISCOVER(self.root)],
+            ["vm", "config", "stage"],
+        )
+
     def test_hardware_features_keep_their_required_capabilities(self):
         expected = {
             "checkpoint": {"userns", "fuse"},

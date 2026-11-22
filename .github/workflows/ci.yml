@@ -41,7 +41,7 @@ jobs:
 
   feature-cases:
     name: Feature ${{ matrix.feature }} / Scrut / Linux / ${{ github.event.inputs.case_gate || 'normal' }}
-    needs: [feature-inventory, cli-test]
+    needs: [feature-inventory, linux-product]
     runs-on: ubuntu-latest
     timeout-minutes: 45
     strategy:
@@ -447,21 +447,53 @@ jobs:
           mise exec -- cargo build --locked -p pvisor-vm --example vm_api_case
           python3 tests/vm_api_contract.py --binary target/debug/examples/vm_api_case --guest "$RUNNER_TEMP/vm-guest" --firmware "$api_firmware" --output "$RUNNER_TEMP/vm-api-${{ runner.os }}"
 
-      - name: Ready barrier and failed-start ownership / KVM
+      - name: Rust guest named stdio and authenticated exit / KVM
+        id: native-stdio
         if: runner.os == 'Linux' && matrix.shard == 'pvisor'
+        shell: bash
+        run: |
+          native_bundle="$(mise run kernel -- build)"
+          echo "bundle=$native_bundle" >> "$GITHUB_OUTPUT"
+          PVISOR_BUILD_NATIVE_KERNEL_BUNDLE="$native_bundle" mise exec -- cargo build --locked -p pvisor-vm --example vm_api_case
+          mise exec -- rustc --edition=2021 --target x86_64-unknown-linux-musl -C linker=rust-lld pvisor-kernel/tests/guest.rs -o "$RUNNER_TEMP/native-stdio-guest"
+          python3 pvisor-kernel/tests/task_stdio.py --binary target/debug/examples/vm_api_case --guest "$RUNNER_TEMP/native-stdio-guest"
+
+      - name: Ready barrier and failed-start ownership / Linux and Rust guests / KVM
+        if: runner.os == 'Linux' && matrix.shard == 'pvisor'
+        env:
+          PVISOR_BUILD_NATIVE_KERNEL_BUNDLE: ${{ steps.native-stdio.outputs.bundle }}
         shell: bash
         run: |
           set -euo pipefail
           lifecycle_firmware="$(mise run fw -- build --target x86_64-unknown-linux-musl)"
-          export PVISOR_CASE_VM_FIRMWARE_PATH="$lifecycle_firmware"
-          mise run test-vm-lifecycle 2>&1 | tee "$RUNNER_TEMP/vm-lifecycle.log"
+          junit=target/nextest/vm-lifecycle/junit.xml
+          status=0
+          for kernel in linux rust-native; do
+            evidence="$RUNNER_TEMP/vm-lifecycle/$kernel"
+            mkdir -p "$evidence"
+            rm -f "$junit"
+            (
+              if [[ "$kernel" == rust-native ]]; then
+                export PVISOR_GUEST_KERNEL=rust-native
+                unset PVISOR_CASE_VM_FIRMWARE_PATH
+              else
+                unset PVISOR_GUEST_KERNEL
+                export PVISOR_CASE_VM_FIRMWARE_PATH="$lifecycle_firmware"
+              fi
+              mise run test-vm-lifecycle
+            ) 2>&1 | tee "$evidence/nextest.log" || status=1
+            if [[ -f "$junit" ]]; then
+              cp "$junit" "$evidence/junit.xml"
+            else
+              status=1
+            fi
+          done
+          exit "$status"
       - uses: actions/upload-artifact@v4
         if: always() && runner.os == 'Linux' && matrix.shard == 'pvisor'
         with:
           name: vm-lifecycle-Linux
-          path: |
-            ${{ runner.temp }}/vm-lifecycle.log
-            target/nextest/vm-lifecycle/junit.xml
+          path: ${{ runner.temp }}/vm-lifecycle/
           if-no-files-found: error
           retention-days: 7
 
@@ -496,10 +528,10 @@ jobs:
         if: matrix.shard == 'cli'
         run: mise run test-rust -- pvisor-cli -- -E 'not (binary(=docker_cli) | binary(=docker_p0_cli) | binary(=docker_staged_cli) | binary(=docker_staged_native) | binary(=compose_cli))'
 
-  cli-test:
-    name: Rust Test / Linux / cli
+  linux-product:
+    name: Build Linux x86_64 CLI test artifact
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup-build-env
@@ -508,40 +540,8 @@ jobs:
           static-musl: "true"
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: ci-rust-cli
-      - name: Enable Linux runtime test prerequisites
-        shell: bash
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq --no-install-recommends fuse3 util-linux
-          if sysctl kernel.unprivileged_userns_clone >/dev/null 2>&1; then
-            sudo sysctl -w kernel.unprivileged_userns_clone=1
-          fi
-          if sysctl kernel.apparmor_restrict_unprivileged_userns >/dev/null 2>&1; then
-            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-          fi
-          test -c /dev/fuse
-          unshare --user --map-root-user --mount --net /bin/true
-          sudo chown "$(id -u):$(id -g)" /dev/kvm
-          test -r /dev/kvm && test -w /dev/kvm
-
+          shared-key: ci-linux-product
       - run: mise run smoke
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "24"
-      - name: Run documented Pi, DSH and Codex tasks through the real CLI
-        env:
-          PVISOR_PLUGIN_BINARY: ${{ github.workspace }}/target/debug/pvisor
-          PVISOR_PLUGIN_TEST_OUTPUT_DIR: ${{ runner.temp }}/agent-plugin-cases
-        run: mise run test-agent-plugins-native
-      - uses: actions/upload-artifact@v4
-        if: failure()
-        with:
-          name: agent-plugin-native-cases
-          path: ${{ runner.temp }}/agent-plugin-cases
-          if-no-files-found: ignore
-      # Freeze the static product before Cargo's native tests can replace the
-      # staged binaries. Contract jobs reuse this exact build on separate VMs.
       - name: Archive static CLI for contract jobs
         run: |
           # Retain matching firmware for the native SDK driver, which is built
@@ -569,18 +569,67 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  cli-test:
+    name: Rust Test / Linux / cli
+    needs: linux-product
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-build-env
+        with:
+          static-musl: "true"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ci-rust-cli
+      - name: Enable Linux runtime test prerequisites
+        shell: bash
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends fuse3 util-linux
+          if sysctl kernel.unprivileged_userns_clone >/dev/null 2>&1; then
+            sudo sysctl -w kernel.unprivileged_userns_clone=1
+          fi
+          if sysctl kernel.apparmor_restrict_unprivileged_userns >/dev/null 2>&1; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+          test -c /dev/fuse
+          unshare --user --map-root-user --mount --net /bin/true
+          sudo chown "$(id -u):$(id -g)" /dev/kvm
+          test -r /dev/kvm && test -w /dev/kvm
+      - uses: actions/download-artifact@v4
+        with:
+          name: podman-runtime
+          path: ${{ runner.temp }}/cli-runtime
+      - name: Extract frozen CLI
+        run: tar -xzf "$RUNNER_TEMP/cli-runtime/podman-runtime.tgz" -C "$RUNNER_TEMP/cli-runtime"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - name: Run documented Pi, DSH and Codex tasks through the real CLI
+        env:
+          PVISOR_PLUGIN_BINARY: ${{ runner.temp }}/cli-runtime/pvisor
+          PVISOR_PLUGIN_TEST_OUTPUT_DIR: ${{ runner.temp }}/agent-plugin-cases
+        run: mise run test-agent-plugins-native
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: agent-plugin-native-cases
+          path: ${{ runner.temp }}/agent-plugin-cases
+          if-no-files-found: ignore
       - name: Run CLI tests
         run: mise run test -- pvisor-cli -- -E 'not (binary(=docker_cli) | binary(=docker_p0_cli) | binary(=docker_staged_cli) | binary(=docker_staged_native) | binary(=compose_cli))'
 
   podman-contracts:
-    name: Feature docker-cli / ${{ matrix.suite }} / Linux KVM
-    needs: cli-test
+    name: Feature docker-cli / ${{ matrix.suite }} / Linux KVM / ${{ matrix.kernel }} guest
+    needs: linux-product
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
         suite: [bats, go-0, go-1]
+        kernel: [linux, rust-native]
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup-build-env
@@ -608,6 +657,7 @@ jobs:
       - name: Run contract shard
         env:
           SUITE: ${{ matrix.suite }}
+          PVISOR_GUEST_KERNEL: ${{ matrix.kernel }}
           PVISOR_BINARY: ${{ runner.temp }}/podman-runtime/pvisor
           PVISOR_TEST_IMAGE: mirror.gcr.io/library/alpine:3.20
           PVISOR_KRUN_LOG: "1"
@@ -629,7 +679,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: podman-contracts-linux-amd64-${{ matrix.suite }}
+          name: podman-contracts-linux-amd64-${{ matrix.kernel }}-${{ matrix.suite }}
           path: ${{ runner.temp }}/podman-contracts/
           if-no-files-found: error
 
@@ -767,7 +817,7 @@ jobs:
   ci:
     name: CI
     if: always()
-    needs: [agent-plugins, checks, python, firmware, native-components, rust-test, cli-test, podman-contracts, gateway-features, pvisor-isolation-regression, examples, spec-fixtures, windows, feature-inventory, feature-cases, feature-native]
+    needs: [agent-plugins, checks, python, firmware, native-components, rust-test, linux-product, cli-test, podman-contracts, gateway-features, pvisor-isolation-regression, examples, spec-fixtures, windows, feature-inventory, feature-cases, feature-native]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

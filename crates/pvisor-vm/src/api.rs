@@ -77,7 +77,7 @@ pub trait RuntimeSupport {
     /// Build-embedded kernel, if present. This does not load host firmware.
     /// The shared bytes are immutable; addresses describe the guest boot layout.
     /// Selects Linux by default, or the embedded Rust native payload when
-    /// `PVISOR_NATIVE_KERNEL=rust`. Returns `None` when that payload
+    /// `PVISOR_GUEST_KERNEL=rust-native`. Returns `None` when that payload
     /// was not embedded, or selection is invalid/unsupported; never returns Linux
     /// for an experimental selection. Native bytes are unpacked once in memory,
     /// without opening firmware files or reading a runtime bundle path.
@@ -150,9 +150,10 @@ pub struct NetworkStream {
 /// configuration usable; init selection precedes root filesystem attachment.
 pub trait VmConfiguration: Sized {
     /// Construct a configuration; equivalent to `from_config` with explicit sizing.
-    /// Captures `PVISOR_NATIVE_KERNEL`; unset or `linux` retains Linux.
-    /// `rust` requires plain Linux x86_64/aarch64 KVM or macOS aarch64 HVF,
-    /// one vCPU and at least 256 MiB; ARM requires GICv3. Workload compatibility
+    /// Captures `PVISOR_GUEST_KERNEL`; unset or `linux` retains Linux.
+    /// `rust-native` requires plain Linux x86_64/aarch64 KVM or macOS aarch64 HVF,
+    /// and at least 256 MiB. x86 supports one or two vCPUs; ARM requires one
+    /// vCPU and GICv3. Workload compatibility
     /// remains experimental, not established by successful construction.
     /// Invalid selectors return `InvalidInput`; unsupported profiles return
     /// `Unsupported` before VM creation. Set selection before constructing builders
@@ -381,8 +382,8 @@ pub trait VmConfiguration: Sized {
     /// This separates workload stdio from process diagnostics: stderr
     /// logging (`init_logging`) can target the process's own stderr while
     /// guest output still reaches the caller's descriptors.
-    /// The experimental Rust native kernel has only its primary console and
-    /// returns `Unsupported` without changing attachments.
+    /// On the experimental Rust native kernel, captured streams use named
+    /// virtio-serial ports rather than the primary TTY.
     fn task_stdio(&mut self, stdin: i32, stdout: i32, stderr: i32) -> io::Result<()>;
     /// Transfer the framed Ethernet stream and explicit guest-init options.
     /// Has network() ownership/nonblocking requirements; unavailable networking

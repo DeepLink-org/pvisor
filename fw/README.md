@@ -31,7 +31,7 @@ require a kernel compiler.
 
 These product builds also compile and embed the experimental Rust native
 kernel from `pvisor-kernel/`, using the same compressed storage. Linux remains
-the default; `PVISOR_NATIVE_KERNEL=rust` selects the second embedded payload at
+the default; `PVISOR_GUEST_KERNEL=rust-native` selects the second embedded payload at
 runtime without an external bundle or any build-time kernel choice.
 The product `libkrunfw.SOURCE` receipt includes its
 source and artifact identities under `rust_native_kernel`.

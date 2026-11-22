@@ -122,7 +122,7 @@ tests explicitly; broad `--run-ignored all` can select subprocess-only helpers.
 | `mise run test-isolation` | Linux user/mount/PID/network namespaces, read-write `/dev/fuse`, fusermount3; real Host isolation and prepared-rootfs admission |
 | `mise run test-macos-fuse` | macOS with working macFUSE; real staging, isolation and checkpoint workflows |
 | `test-hvf-cold-restore`, `test-vm-snapshot-state` | Apple Silicon HVF and signed probes; CPU/RAM and VMM-thread state |
-| `test-vm-lifecycle` | Linux x86_64/KVM or Apple Silicon/HVF, absolute `PVISOR_CASE_VM_FIRMWARE_PATH`; real 1/2-vCPU ready barrier and failed-start owner cleanup/retry, no prerequisite skips |
+| `test-vm-lifecycle` | Linux x86_64/KVM or Apple Silicon/HVF; real 1/2-vCPU ready barrier and failed-start owner cleanup/retry, no prerequisite skips |
 | `test-linux-cold-restore`, `test-environment-snapshot` | Apple Silicon HVF, Linux guest and firmware; whole-machine and independent environment restoration |
 | `tests/vm_api_contract.py` | KVM, HVF or WHP; test-only public API probe, shared guest workload, authenticated exit, read-only files and cleanup |
 | `tests/windows_container_contract.py` | Native Windows/WHP, matching firmware/template; container network, I/O, console and lifecycle |
@@ -132,12 +132,16 @@ contracts and WHP acceptance. Hosted macOS CI runs builds and conventional tests
 real HVF and macFUSE acceptance needs a capable Mac. See
 [platform requirements](../docs/src/en/reference/platforms.md).
 
-The Linux `pvisor` shard also runs `test-vm-lifecycle` with repository-built
-native firmware and retains its native JUnit and task log. The task selects only
-the current platform's ready/abort targets, signs test binaries on macOS, and
-uses a two-minute per-test watchdog without retries. Missing firmware, unsupported
-hosts and an empty test selection fail. Hosted macOS does not run this hardware
-gate; invoke it explicitly on a capable Mac.
+The Linux `pvisor` shard runs `test-vm-lifecycle` with both repository-built
+firmwares and retains separate native JUnit reports and task logs. Linux guests
+use an absolute `PVISOR_CASE_VM_FIRMWARE_PATH`. On Linux x86_64/KVM, setting
+`PVISOR_GUEST_KERNEL=rust-native` uses the payload embedded at build time from
+`PVISOR_BUILD_NATIVE_KERNEL_BUNDLE` instead and rejects a firmware path.
+The task runs the current platform's ready/abort targets serially with a two-minute
+per-test watchdog and no retries. Missing firmware, unsupported hosts and an
+empty test selection fail. Hosted macOS does not run this hardware gate; invoke
+it explicitly on a capable Mac using the Linux guest firmware, with test binaries
+signed by the task.
 
 The VM filesystem, VM terminal and ZCode Python regressions are opt-in through
 `PVISOR_TEST_GUEST_FS_DIRS`, `PVISOR_TEST_VM_BIN` and `PVISOR_TEST_ZCODE`.
@@ -174,10 +178,13 @@ task selection discovers the cases. New IDs require no workflow allowlist.
 `ci-feature-matrix` declares capabilities at the feature boundary. A new
 feature is discovered automatically without hardware assumptions; if its cases
 need hardware, add its prerequisite declaration rather than accepting skips.
-Feature Scrut concurrency is capped at three runners, native Cargo at two;
+Feature Scrut concurrency is capped at three runners, with the longer `vm`
+shard placed first in the matrix. Native Cargo concurrency is capped at two;
 Bats and the two Go shards retain their independent 30-minute budgets.
-Each Scrut job downloads the frozen Linux product built by `cli-test`, prepares
-real Host/KVM prerequisites and uploads its own report, log and case resources.
+The `linux-product` job publishes the frozen static artifact independently of
+the Linux CLI tests. The plugin scenarios, Scrut jobs and Bats/Go shards reuse it.
+Each Scrut job prepares real Host/KVM prerequisites and uploads its own report,
+log and case resources.
 The artifact includes `pvisor-replay`, the matching repository-built firmware
 library and its source receipt, as well as the static CLI and daemon.
 Linux VM/SDK cases explicitly use host rootfs `/` and `/usr/bin/python3`;

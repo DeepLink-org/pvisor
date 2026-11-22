@@ -231,6 +231,17 @@ impl<E: Ext> SocketTable<E> {
         Ok(())
     }
 
+    pub(crate) fn tcp_listener_endpoints(&self) -> Vec<IpEndpoint> {
+        self.listener_buckets
+            .iter()
+            .flat_map(|bucket| &bucket.listeners)
+            .map(|listener| {
+                let key = listener.listener_key();
+                IpEndpoint::new(key.addr, key.port)
+            })
+            .collect()
+    }
+
     pub(crate) fn insert_connection(
         &mut self,
         connection: Arc<TcpConnectionBg<E>>,

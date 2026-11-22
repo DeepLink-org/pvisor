@@ -4,7 +4,7 @@ use alloc::{sync::Arc, vec::Vec};
 
 use smoltcp::{
     iface::Route,
-    wire::{EthernetAddress, Ipv4Address, Ipv4Cidr, Ipv6Cidr},
+    wire::{EthernetAddress, IpEndpoint, Ipv4Address, Ipv4Cidr, Ipv6Cidr},
 };
 
 use super::{
@@ -88,6 +88,16 @@ impl<E: Ext> dyn Iface<E> {
         self.common().ipv4_cidr()
     }
 
+    /// Reconfigures the interface's existing IPv4 address and drops unreachable gateways.
+    pub fn set_ipv4_cidr(&self, cidr: Ipv4Cidr) {
+        self.common().interface().set_ipv4_cidr(cidr);
+    }
+
+    /// Installs a default gateway in the packet-processing stack.
+    pub fn add_ipv4_gateway(&self, gateway: Ipv4Address) -> bool {
+        self.common().interface().add_ipv4_gateway(gateway)
+    }
+
     /// Gets the IPv6 CIDR of the iface, if any.
     pub fn ipv6_cidr(&self) -> Option<Ipv6Cidr> {
         self.common().ipv6_cidr()
@@ -103,6 +113,11 @@ impl<E: Ext> dyn Iface<E> {
     /// Returns routes currently installed in the interface.
     pub fn routes(&self) -> Vec<Route> {
         self.common().routes()
+    }
+
+    /// Returns the local endpoints of TCP listeners on this interface.
+    pub fn tcp_listener_endpoints(&self) -> Vec<IpEndpoint> {
+        self.common().sockets().tcp_listener_endpoints()
     }
 
     /// Returns a reference to the associated [`ScheduleNextPoll`].

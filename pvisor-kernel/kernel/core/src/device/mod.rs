@@ -8,6 +8,7 @@ mod model;
 mod pty;
 pub mod registry;
 pub(crate) mod tty;
+mod virtio_ports;
 
 use device_id::DeviceId;
 pub(crate) use mem::{getrandom, geturandom};
@@ -66,6 +67,7 @@ pub(crate) fn init_in_first_kthread() {
 /// Initializes device state after mounting rootfs.
 pub(crate) fn init_in_first_process() -> Result<()> {
     tty::init_in_first_process()?;
+    virtio_ports::init()?;
     registry::init_in_first_process()?;
 
     Ok(())

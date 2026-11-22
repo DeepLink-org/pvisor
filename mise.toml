@@ -807,11 +807,23 @@ case "$(uname -s)-$(uname -m)" in
   Darwin-arm64) abort_test=ready_abort_hvf ;;
   *) echo "requires Linux x86_64/KVM or Apple Silicon/HVF" >&2; exit 2 ;;
 esac
-firmware="${PVISOR_CASE_VM_FIRMWARE_PATH:?set an absolute trusted local firmware path}"
-if [[ "$firmware" != /* || ! -f "$firmware" ]]; then
-  echo "PVISOR_CASE_VM_FIRMWARE_PATH must name an existing absolute firmware file" >&2
-  exit 2
-fi
+case "${PVISOR_GUEST_KERNEL-linux}" in
+  linux)
+    firmware="${PVISOR_CASE_VM_FIRMWARE_PATH:?set an absolute trusted local firmware path}"
+    if [[ "$firmware" != /* || ! -f "$firmware" ]]; then
+      echo "PVISOR_CASE_VM_FIRMWARE_PATH must name an existing absolute firmware file" >&2
+      exit 2
+    fi
+    ;;
+  rust-native)
+    if [[ "$abort_test" != ready_abort_kvm || -n "${PVISOR_CASE_VM_FIRMWARE_PATH+x}" \
+          || ! -d "${PVISOR_BUILD_NATIVE_KERNEL_BUNDLE:-}" ]]; then
+      echo "Rust lifecycle requires Linux x86_64/KVM, PVISOR_BUILD_NATIVE_KERNEL_BUNDLE, and no PVISOR_CASE_VM_FIRMWARE_PATH" >&2
+      exit 2
+    fi
+    ;;
+  *) echo "PVISOR_GUEST_KERNEL must be linux or rust-native" >&2; exit 2 ;;
+esac
 mise run test -- pvisor-vm -- --test ready_before_execution --test "$abort_test" \
   --profile vm-lifecycle --run-ignored only --no-tests fail --test-threads 1
 '''

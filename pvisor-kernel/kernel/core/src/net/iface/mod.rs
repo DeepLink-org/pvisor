@@ -4,9 +4,13 @@ mod ext;
 mod init;
 mod poll;
 mod sched;
+mod sysfs;
 
 pub(super) use init::{init, iter_all_ifaces};
-pub(super) use poll::init_in_first_kthread;
+pub(super) fn init_in_first_kthread() {
+    sysfs::register_interfaces().expect("failed to publish network interfaces");
+    poll::init_in_first_kthread();
+}
 
 pub(super) type Iface = dyn aster_bigtcp::iface::Iface<ext::BigtcpExt>;
 pub(super) type BoundTcpPort = aster_bigtcp::iface::BoundTcpPort<ext::BigtcpExt>;

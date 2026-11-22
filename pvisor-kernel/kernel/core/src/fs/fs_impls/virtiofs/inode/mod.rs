@@ -89,18 +89,18 @@ pub(super) struct VirtioFsInode {
 impl VirtioFsInode {
     /// Creates the root inode.
     pub(super) fn new_root(
-        root_entry: EntryReply,
+        root_attr: aster_fuse::FuseAttrReply,
         fs: Weak<VirtioFs>,
         container_device_id: DeviceId,
         attr_version: AttrVersion,
     ) -> Arc<Self> {
         Self::new(
             FUSE_ROOT_ID,
-            root_entry.generation(),
-            metadata_from_attr(root_entry.attr(), container_device_id),
+            FuseGeneration::new(0),
+            metadata_from_attr(root_attr.attr(), container_device_id),
             fs,
             Duration::MAX,
-            valid_until(root_entry.attr_valid(), root_entry.attr_valid_nsec()),
+            valid_until(root_attr.attr_valid(), root_attr.attr_valid_nsec()),
             attr_version,
         )
     }

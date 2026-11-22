@@ -157,7 +157,6 @@ Capabilities depend on the interface, executor, and platform.
 - Native Sessions: use `pvisor spawn` with Host, OCI, or VM execution and explicit staging for review/apply.
 - Agent plugins: [Pi, DSH and Codex task adapters](plugins/README.md) use native `spawn → review → apply/drop`; built-in Agent tools remain separate.
 - Embedded runtime: integrate the [Rust runtime](crates/pvisor/README.md).
-- Experimental second guest kernel: [Rust native kernel / pvisor-kernel](pvisor-kernel/README.md), with build/selection paths for Linux x86_64/aarch64 KVM and macOS aarch64 HVF; Linux remains the default.
 - Platform APIs: use the [local daemon](crates/pvisor-daemon/README.md) for partial OpenSandbox/E2B SDK profiles on Linux/KVM, or the [containerd shim](crates/pvisor-shim/README.md).
 - Container workflows: the experimental [Docker-style CLI](crates/pvisor-cli/README.md#docker-command-profile-experimental) runs one VM per container.
 
@@ -166,6 +165,21 @@ binds have their own review/apply/drop contract. Start with the
 [VM tool-execution tutorial](https://deeplink-org.github.io/pvisor/start/infrastructure/)
 for a caller-script example, or consult the
 [integration matrix](https://deeplink-org.github.io/pvisor/guides/infrastructure/integration/).
+
+### Try the experimental Rust guest kernel
+
+On Linux x86_64 with KVM, use a `pvisor` build that embeds the Rust guest kernel
+(`mise run build` builds one from this checkout). Select it for a single run:
+
+```bash
+PVISOR_GUEST_KERNEL=rust-native pvisor run --rm --cpus 2 --memory 512m alpine:3.20 echo hello
+```
+
+Expect `hello`. The environment setting applies only to this command. Linux
+remains the default; if you exported the variable, run `unset PVISOR_GUEST_KERNEL`
+to switch back. The Rust profile on x86_64 supports one or two vCPUs and at least
+256 MiB of guest RAM; snapshot and restore are not supported. See the
+[Rust guest kernel README](pvisor-kernel/README.md#experimental-selection) for details.
 
 ## Documentation
 

@@ -68,13 +68,7 @@ bitflags! {
 pub(super) struct VirtioNetConfig {
     pub mac: [u8; 6],
     pub status: Status,
-    max_virtqueue_pairs: u16,
     pub mtu: u16,
-    speed: u32,
-    duplex: u8,
-    rss_max_key_size: u8,
-    rss_max_indirection_table_length: u16,
-    supported_hash_types: u32,
 }
 
 impl VirtioNetConfig {
@@ -88,42 +82,22 @@ impl VirtioNetConfig {
 }
 
 impl ConfigManager<VirtioNetConfig> {
-    pub(super) fn read_config(&self) -> VirtioNetConfig {
+    pub(super) fn read_config(&self, features: NetworkFeatures) -> VirtioNetConfig {
         let mut net_config = VirtioNetConfig::new_zeroed();
-        // Only following fields are defined in legacy interface.
-        for i in 0..6 {
-            net_config.mac[i] = self
-                .read_once::<u8>(offset_of!(VirtioNetConfig, mac) + i)
+        if features.contains(NetworkFeatures::VIRTIO_NET_F_MAC) {
+            for i in 0..6 {
+                net_config.mac[i] = self.read_once::<u8>(i).unwrap();
+            }
+        }
+        if features.contains(NetworkFeatures::VIRTIO_NET_F_STATUS) {
+            net_config.status.bits = self
+                .read_once::<u16>(offset_of!(VirtioNetConfig, status))
                 .unwrap();
         }
-        net_config.status.bits = self
-            .read_once::<u16>(offset_of!(VirtioNetConfig, status))
-            .unwrap();
-
-        if self.is_modern() {
-            net_config.max_virtqueue_pairs = self
-                .read_once::<u16>(offset_of!(VirtioNetConfig, max_virtqueue_pairs))
-                .unwrap();
+        if features.contains(NetworkFeatures::VIRTIO_NET_F_MTU) {
+            // max_virtqueue_pairs occupies the two preceding bytes even without MQ.
             net_config.mtu = self
-                .read_once::<u16>(offset_of!(VirtioNetConfig, mtu))
-                .unwrap();
-            net_config.speed = self
-                .read_once::<u32>(offset_of!(VirtioNetConfig, speed))
-                .unwrap();
-            net_config.duplex = self
-                .read_once::<u8>(offset_of!(VirtioNetConfig, duplex))
-                .unwrap();
-            net_config.rss_max_key_size = self
-                .read_once::<u8>(offset_of!(VirtioNetConfig, rss_max_key_size))
-                .unwrap();
-            net_config.rss_max_indirection_table_length = self
-                .read_once::<u16>(offset_of!(
-                    VirtioNetConfig,
-                    rss_max_indirection_table_length
-                ))
-                .unwrap();
-            net_config.supported_hash_types = self
-                .read_once::<u32>(offset_of!(VirtioNetConfig, supported_hash_types))
+                .read_once::<u16>(10)
                 .unwrap();
         }
 

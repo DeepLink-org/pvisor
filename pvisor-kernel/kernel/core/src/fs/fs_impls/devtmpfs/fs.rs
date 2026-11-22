@@ -6,10 +6,12 @@ use spin::Once;
 
 use crate::{
     fs::{
+        file::mkmod,
         tmpfs::TmpFs,
         vfs::{
             file_system::FileSystem,
             inode::RevalidationPolicy,
+            path::Dentry,
             registry::{FsCreationCtx, FsProperties, FsType},
         },
     },
@@ -24,10 +26,19 @@ pub(in crate::fs) fn singleton() -> &'static Arc<TmpFs> {
         // outside the VFS path operation that may have cached the dentry.
         // Revalidate directory entries so cached positive/negative dentries
         // reflect the latest devtmpfs tree.
-        TmpFs::new_tmpfs_backing(
+        let fs = TmpFs::new_tmpfs_backing(
             "devtmpfs",
             RevalidationPolicy::REVALIDATE_EXISTS | RevalidationPolicy::REVALIDATE_ABSENT,
+        );
+        let root = fs.root_inode();
+        root.create_symlink(
+            &Dentry::new_root(root.clone()),
+            "ptmx",
+            "pts/ptmx",
+            mkmod!(a + rwx),
         )
+        .expect("cannot create the PTY multiplexer link in devtmpfs");
+        fs
     })
 }
 

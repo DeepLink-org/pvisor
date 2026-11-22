@@ -89,7 +89,6 @@ pub(crate) fn acquire_major(major: MajorId) -> Result<MajorIdOwner> {
 ///
 /// The returned `MajorIdOwner` object represents the ownership to the major ID.
 /// Until the object is dropped, this major ID cannot be acquired via `acquire_major` or `allocate_major` again.
-#[expect(dead_code)]
 pub(crate) fn allocate_major() -> Result<MajorIdOwner> {
     let mut majors = MAJORS.lock();
 

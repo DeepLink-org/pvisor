@@ -22,11 +22,10 @@ use crate::{
         },
     },
     queue::{self, VirtQueue},
-    transport::{ConfigManager, DeviceTransport},
+    transport::DeviceTransport,
 };
 
 pub struct NetworkDevice {
-    config_manager: ConfigManager<VirtioNetConfig>,
     // For smoltcp use
     caps: DeviceCapabilities,
     mac_addr: EthernetAddress,
@@ -76,12 +75,12 @@ impl NetworkDevice {
 
     pub(crate) fn init(mut device_transport: DeviceTransport) -> Result<(), VirtioDeviceError> {
         let config_manager = VirtioNetConfig::new_manager(device_transport.as_ref());
-        let config = config_manager.read_config();
-        debug!("virtio_net_config = {:?}", config);
-        let mac_addr = EthernetAddress(config.mac);
         let features = NetworkFeatures::from_bits_truncate(Self::negotiate_features(
             device_transport.read_device_features(),
         ));
+        let config = config_manager.read_config(features);
+        debug!("virtio_net_config = {:?}", config);
+        let mac_addr = EthernetAddress(config.mac);
         debug!("features = {:?}", features);
 
         let caps = init_caps(&features, &config);
@@ -103,7 +102,6 @@ impl NetworkDevice {
         }
 
         let mut device = Self {
-            config_manager,
             caps,
             mac_addr,
             send_queue,
@@ -355,7 +353,6 @@ impl AnyNetworkDevice for NetworkDevice {
 impl Debug for NetworkDevice {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("NetworkDevice")
-            .field("config", &self.config_manager.read_config())
             .field("mac_addr", &self.mac_addr)
             .field("send_queue", &self.send_queue)
             .field("recv_queue", &self.recv_queue)

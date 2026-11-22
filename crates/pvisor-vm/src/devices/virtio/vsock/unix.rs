@@ -211,7 +211,7 @@ impl UnixProxy {
     }
 
     fn peer_avail_credit(&self) -> usize {
-        (Wrapping(self.peer_buf_alloc) - (self.rx_cnt - self.peer_fwd_cnt)).0 as usize
+        self.peer_buf_alloc.saturating_sub((self.rx_cnt - self.peer_fwd_cnt).0) as usize
     }
 
     fn recv_to_pkt(&self, pkt: &mut VsockPacket) -> RecvPkt {
@@ -317,6 +317,7 @@ impl UnixProxy {
             .set_src_port(self.local_port)
             .set_dst_port(self.peer_port)
             .set_type(uapi::VSOCK_TYPE_STREAM)
+            .set_flags(0)
             .set_buf_alloc(defs::CONN_TX_BUF_SIZE as u32)
             .set_fwd_cnt(self.tx_cnt.0);
     }
@@ -407,11 +408,11 @@ impl Proxy for UnixProxy {
     }
 
     fn sendmsg(&mut self, pkt: &VsockPacket) -> ProxyUpdate {
-        let mut update = ProxyUpdate::default();
-
         if self.fd.is_none() {
-            return update;
+            return ProxyUpdate::default();
         }
+        // The peer can acknowledge received bytes on data packets as well.
+        let mut update = self.update_peer_credit(pkt);
         let ret = if let Some(buf) = pkt.buf() {
             #[cfg(target_os = "macos")]
             let flags = MsgFlags::empty();
@@ -492,6 +493,9 @@ impl Proxy for UnixProxy {
         self.peer_buf_alloc = pkt.buf_alloc();
         self.peer_fwd_cnt = Wrapping(pkt.fwd_cnt());
 
+        if self.status != ProxyStatus::WaitingCreditUpdate || self.peer_avail_credit() == 0 {
+            return ProxyUpdate::default();
+        }
         self.status = ProxyStatus::Connected;
 
         ProxyUpdate {
@@ -782,6 +786,46 @@ mod tests {
     use super::*;
     use std::io::Read;
     use vm_memory::GuestAddress;
+
+    #[rstest::rstest]
+    #[case::duplicate_ack(10, 0, false)]
+    #[case::smaller_window(9, 0, false)]
+    #[case::advanced_ack(10, 1, true)]
+    fn stalled_proxy_resumes_only_with_credit(
+        #[case] window: u32,
+        #[case] acknowledged: u32,
+        #[case] resumes: bool,
+    ) {
+        use crate::devices::virtio::{queue, Descriptor, DescriptorChain};
+        use vm_memory::Bytes;
+
+        let (host, _peer) = std::os::unix::net::UnixStream::pair().unwrap();
+        let mem = GuestMemoryMmap::from_ranges(&[(GuestAddress(0), 8192)]).unwrap();
+        mem.write_obj(
+            Descriptor {
+                addr: 4096,
+                len: 64,
+                flags: queue::VIRTQ_DESC_F_WRITE,
+                next: 0,
+            },
+            GuestAddress(0),
+        )
+        .unwrap();
+        let chain = DescriptorChain::checked_new(&mem, GuestAddress(0), 1, 0).unwrap();
+        let mut header = VsockPacket::from_rx_virtq_head(&chain).unwrap();
+        header.set_buf_alloc(window).set_fwd_cnt(acknowledged);
+        let guest = super::super::proxy::ProxyGuest {
+            cid: 3,
+            mem: mem.clone(),
+            queue: Arc::new(Mutex::new(VirtQueue::new(256))),
+            rxq: Arc::new(Mutex::new(MuxerRxQ::new())),
+        };
+        let mut proxy = UnixProxy::new_reverse(1, 1026, 1025, Some(host.into()), guest);
+        proxy.rx_cnt = Wrapping(10);
+        proxy.status = ProxyStatus::WaitingCreditUpdate;
+        assert_eq!(proxy.update_peer_credit(&header).polling.is_some(), resumes);
+        assert_eq!(proxy.status == ProxyStatus::Connected, resumes);
+    }
 
     #[test]
     fn released_connection_keeps_tombstone_without_holding_host_socket() {

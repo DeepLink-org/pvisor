@@ -384,7 +384,10 @@ fn interface_up(fd: libc::c_int, name: &str) -> io::Result<()> {
     let mut request = interface(name);
     check(unsafe { libc::ioctl(fd, libc::SIOCGIFFLAGS as _, &mut request) })?;
     unsafe {
-        request.ifr_ifru.ifru_flags |= (libc::IFF_UP | libc::IFF_RUNNING) as libc::c_short;
+        if request.ifr_ifru.ifru_flags & libc::IFF_UP as libc::c_short != 0 {
+            return Ok(());
+        }
+        request.ifr_ifru.ifru_flags |= libc::IFF_UP as libc::c_short;
     }
     check(unsafe { libc::ioctl(fd, libc::SIOCSIFFLAGS as _, &request) })
 }

@@ -47,6 +47,27 @@ impl<E: Ext> PollableIface<E> {
         })
     }
 
+    pub(super) fn set_ipv4_cidr(&mut self, cidr: smoltcp::wire::Ipv4Cidr) {
+        use smoltcp::wire::{IpAddress, IpCidr};
+        self.interface.update_ip_addrs(|addrs| {
+            if let Some(addr) = addrs.iter_mut().find(|a| matches!(a, IpCidr::Ipv4(_))) {
+                *addr = IpCidr::Ipv4(cidr);
+            }
+        });
+        self.interface.routes_mut().update(|routes| {
+            routes.retain(
+                |r| !matches!(r.via_router, IpAddress::Ipv4(gw) if !cidr.contains_addr(&gw)),
+            );
+        });
+    }
+
+    pub(super) fn add_ipv4_gateway(&mut self, gateway: smoltcp::wire::Ipv4Address) -> bool {
+        self.interface
+            .routes_mut()
+            .add_default_ipv4_route(gateway)
+            .is_ok()
+    }
+
     pub(super) fn ipv6_cidr(&self) -> Option<smoltcp::wire::Ipv6Cidr> {
         self.interface.ip_addrs().iter().find_map(|cidr| {
             if let smoltcp::wire::IpCidr::Ipv6(ipv6_cidr) = cidr {

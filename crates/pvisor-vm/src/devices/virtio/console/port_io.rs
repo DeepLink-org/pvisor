@@ -265,7 +265,15 @@ impl PortOutput for PortOutputLog {
     }
     fn write_volatile(&mut self, buf: &VolatileSlice) -> Result<usize, io::Error> {
         self.buf.write_volatile(buf).map_err(io::Error::other)?;
+        self.log_complete_lines();
+        Ok(buf.len())
+    }
 
+    fn wait_until_writable(&self) {}
+}
+
+impl PortOutputLog {
+    fn log_complete_lines(&mut self) {
         let mut start = 0;
         for (i, ch) in self.buf.iter().cloned().enumerate() {
             if ch == b'\n' {
@@ -278,10 +286,19 @@ impl PortOutput for PortOutputLog {
         if self.buf.len() > PortOutputLog::FORCE_FLUSH_TRESHOLD {
             self.force_flush()
         }
-        Ok(buf.len())
+    }
+}
+
+impl io::Write for PortOutputLog {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        self.buf.extend_from_slice(bytes);
+        self.log_complete_lines();
+        Ok(bytes.len())
     }
 
-    fn wait_until_writable(&self) {}
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
 }
 
 pub struct PortInputSigInt {

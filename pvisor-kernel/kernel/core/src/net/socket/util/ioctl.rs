@@ -21,14 +21,14 @@ mod ioctl_defs {
     use crate::{ioc, util::ioctl::InOutData};
 
     // Reference: <https://elixir.bootlin.com/linux/v7.1/source/include/uapi/linux/sockios.h#L56>.
-    pub(super) type GetIfName       = ioc!(SIOCGIFNAME,     0x8910, InOutData<CIfReq>);
-    pub(super) type GetIfConf       = ioc!(SIOCGIFCONF,     0x8912, InOutData<CIfConf>);
-    pub(super) type GetIfFlags      = ioc!(SIOCGIFFLAGS,    0x8913, InOutData<CIfReq>);
-    pub(super) type GetIfMetric     = ioc!(SIOCGIFMETRIC,   0x891D, InOutData<CIfReq>);
-    pub(super) type GetIfMtu        = ioc!(SIOCGIFMTU,      0x8921, InOutData<CIfReq>);
-    pub(super) type GetIfHwAddr     = ioc!(SIOCGIFHWADDR,   0x8927, InOutData<CIfReq>);
-    pub(super) type GetIfIndex      = ioc!(SIOCGIFINDEX,    0x8933, InOutData<CIfReq>);
-    pub(super) type GetIfTxQueueLen = ioc!(SIOCGIFTXQLEN,   0x8942, InOutData<CIfReq>);
+    pub(super) type GetIfName = ioc!(SIOCGIFNAME, 0x8910, InOutData<CIfReq>);
+    pub(super) type GetIfConf = ioc!(SIOCGIFCONF, 0x8912, InOutData<CIfConf>);
+    pub(super) type GetIfFlags = ioc!(SIOCGIFFLAGS, 0x8913, InOutData<CIfReq>);
+    pub(super) type GetIfMetric = ioc!(SIOCGIFMETRIC, 0x891D, InOutData<CIfReq>);
+    pub(super) type GetIfMtu = ioc!(SIOCGIFMTU, 0x8921, InOutData<CIfReq>);
+    pub(super) type GetIfHwAddr = ioc!(SIOCGIFHWADDR, 0x8927, InOutData<CIfReq>);
+    pub(super) type GetIfIndex = ioc!(SIOCGIFINDEX, 0x8933, InOutData<CIfReq>);
+    pub(super) type GetIfTxQueueLen = ioc!(SIOCGIFTXQLEN, 0x8942, InOutData<CIfReq>);
 }
 
 pub(crate) fn socket_ioctl<T: Socket>(socket: &T, raw_ioctl: RawIoctl) -> Result<i32> {
@@ -206,12 +206,24 @@ union CIfReqData {
 /// Reference: <https://elixir.bootlin.com/linux/v7.1/source/include/linux/socket.h#L36>.
 #[repr(C)]
 #[derive(Clone, Copy, Pod)]
-struct CSocketAddr {
+pub(in crate::net::socket) struct CSocketAddr {
     family: u16,
     data: [u8; 14],
 }
 
 impl CSocketAddr {
+    pub(in crate::net::socket) fn ipv4(&self) -> Result<Ipv4Address> {
+        if self.family != CSocketAddrFamily::AF_INET as u16 {
+            return_errno!(Errno::EAFNOSUPPORT);
+        }
+        Ok(Ipv4Address::new(
+            self.data[2],
+            self.data[3],
+            self.data[4],
+            self.data[5],
+        ))
+    }
+
     fn new_ipv4(ipv4_addr: Ipv4Address) -> Self {
         let family = CSocketAddrFamily::AF_INET as u16;
 
@@ -260,6 +272,10 @@ struct CIfMap {
 }
 
 impl CIfReq {
+    pub(in crate::net::socket) fn ipv4(&self) -> Result<Ipv4Address> {
+        self.data.addr().ipv4()
+    }
+
     pub(in crate::net::socket) fn set_sockaddr_ipv4(&mut self, ipv4_addr: Ipv4Address) {
         let socket_addr = CSocketAddr::new_ipv4(ipv4_addr);
         self.data = CIfReqData::new_addr(socket_addr);
