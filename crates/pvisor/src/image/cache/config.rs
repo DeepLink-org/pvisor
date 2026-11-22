@@ -29,9 +29,7 @@ impl std::str::FromStr for CacheBackend {
             "s3" => Ok(Self::S3),
             "gcs" | "gs" => Ok(Self::Gcs),
             "http" | "https" => Ok(Self::Http),
-            _ => Err(format!(
-                "invalid cache backend; expected server, filesystem, s3, gcs or http"
-            )),
+            _ => Err("invalid cache backend; expected server, filesystem, s3, gcs or http".into()),
         }
     }
 }
