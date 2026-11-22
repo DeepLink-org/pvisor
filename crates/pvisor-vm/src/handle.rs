@@ -118,6 +118,47 @@ impl VmmHandle {
         Ok(locked.experimental_ram_residency())
     }
 
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    pub(crate) fn ram_registration_quiesced<T>(
+        &self,
+        action: impl FnOnce(&mut vmm::Vmm) -> Result<T, String>,
+    ) -> Result<Option<T>, String> {
+        {
+            let _transition = self
+                .transition
+                .lock()
+                .map_err(|_| "VM transition lock poisoned")?;
+            let vmm = self.vmm.upgrade().ok_or("VMM has stopped")?;
+            let mut locked = vmm.lock().map_err(|_| "VMM lock poisoned")?;
+            if locked.is_paused() {
+                if !locked.fresh_boot_parked() {
+                    return Ok(None);
+                }
+                let gate = locked.device_memory_gate();
+                match gate.try_close() {
+                    Ok(true) => {}
+                    Ok(false) => return Ok(None),
+                    Err(error) => {
+                        locked.fail_control();
+                        return Err(error.into());
+                    }
+                }
+                // Only the runtime releases the startup CPU barrier.
+                return match action(&mut locked) {
+                    Ok(value) => {
+                        gate.open();
+                        Ok(Some(value))
+                    }
+                    Err(error) => {
+                        locked.fail_control();
+                        Err(error)
+                    }
+                };
+            }
+        }
+        self.ram_quiesced(action)
+    }
+
     /// Experimental optional mapping transaction. None skips a paused VM or
     /// busy devices without invoking action. Mapping errors park the VM.
     #[cfg(any(target_os = "macos", all(target_os = "linux", target_arch = "x86_64")))]

@@ -628,6 +628,9 @@ pub trait ColdRamControl: VmControl {
     /// rechecked before remapping. Snapshots are bounded to 4 MiB per batch.
     /// The worker lives with the runner; a failed mapping transition terminates
     /// that runner. Call once, before allowing control requests or guest work.
+    /// On Linux, call from a fresh VM's ready callback to register before the
+    /// initial CPU resume; registration leaves the CPUs parked. A VM paused
+    /// after startup or still waiting to resume from restore is not eligible.
     fn start_cold_pager<S: ColdRamStore + 'static>(
         &self,
         store: S,

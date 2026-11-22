@@ -1046,6 +1046,8 @@ pub fn build_microvm_for_arch<A: crate::backend::Architecture>(
         exit_observers: Vec::new(),
         exit_code: exit_code.clone(),
         paused: false,
+        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+        initial_resume_pending: !restoring,
         control_failed: false,
         #[cfg(any(
             all(target_os = "macos", target_arch = "aarch64"),
