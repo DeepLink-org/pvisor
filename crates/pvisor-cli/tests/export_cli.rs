@@ -149,8 +149,8 @@ fn run_and_spawn_help_match_their_pinned_baselines() {
         ),
         (
             "spawn",
-            // Pin lifecycle/RAM wording and the outside-storage result export rule.
-            "be055fd50ddb3e41434bde7fd7b67d43fdb902f8744b4519f9d990e43ae2632c",
+            // Includes the runc default and the deprecated OCI binary option.
+            "906ab5a3a633a503b6f2d5b582bb82124ee2b83c408120ed9d44210b5277e905",
         ),
     ] {
         let text = help(root.path(), &[command, "--help"]);

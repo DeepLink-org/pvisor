@@ -2,14 +2,12 @@
 //! runc/crun; no Docker or Podman daemon is required.
 
 use crate::config::{ContainerMount, ContainerPlatform, ContainerSettings};
-use crate::executor::artifact::resolve_pvisor_binary;
-use crate::executor::delegated::{DelegatedRunFiles, RESULT_FILENAME, SPEC_FILENAME};
 use crate::executor::{Captured, read_limited, stdio};
 use crate::executor::{ExecutionContext, ExecutorOutput, RunExecutor, SessionEnd as End};
 use async_trait::async_trait;
 use pvisor_core::{
-    ExecutorKind, ExecutorPlan, IsolationKind, ProcessOutput, RunFailure, RunFailureKind,
-    RunInvocation, RunSpec, RunState,
+    ExecutorKind, ExecutorPlan, IsolationKind, ProcessOutput, ResourceLimits, RunFailure,
+    RunFailureKind, RunInvocation, RunSpec, RunState, StdioMode,
 };
 use std::collections::BTreeMap;
 use std::fs;
@@ -18,8 +16,14 @@ use std::time::Duration;
 use tokio::process::{Child, Command};
 
 const CAPTURE_CONFIG_ENV: &str = "PVISOR_CAPTURE_CONFIG";
-const GUEST_PVISOR: &str = "/opt/pvisor";
-const GUEST_CONTROL_DIR: &str = "/run/pvisor";
+
+#[derive(Debug)]
+struct Launch {
+    command: Command,
+    state_root: PathBuf,
+    pid_file: PathBuf,
+    name: String,
+}
 
 #[derive(Debug, Clone)]
 pub struct ContainerExecutor {
@@ -80,9 +84,9 @@ impl ContainerExecutor {
         &self,
         spec: &RunSpec,
         execution_id: &str,
-        pvisor_binary: &Path,
-        files: &DelegatedRunFiles,
-    ) -> anyhow::Result<Command> {
+        control_dir: &Path,
+        rootfs_source: &Path,
+    ) -> anyhow::Result<Launch> {
         let RunInvocation::Process(invocation) = &spec.invocation;
         let run_id = spec.run_id.as_str();
         let limits = &spec.runtime.resource_limits;
@@ -93,27 +97,6 @@ impl ContainerExecutor {
                 bind_mount(&mount.source, &mount.target, mount.read_only)?,
             )?;
         }
-        add_mount(
-            &mut mounts,
-            bind_mount(pvisor_binary, Path::new(GUEST_PVISOR), true)?,
-        )?;
-        add_mount(
-            &mut mounts,
-            bind_mount(
-                &files.spec_path,
-                &Path::new(GUEST_CONTROL_DIR).join(SPEC_FILENAME),
-                true,
-            )?,
-        )?;
-        add_mount(
-            &mut mounts,
-            bind_mount(
-                files.result_path.parent().unwrap(),
-                &Path::new(GUEST_CONTROL_DIR).join("output"),
-                false,
-            )?,
-        )?;
-
         let workdir = invocation
             .cwd
             .as_deref()
@@ -138,15 +121,11 @@ impl ContainerExecutor {
             }
         }
 
-        let control_dir = files.spec_path.parent().unwrap();
-        let bundle = control_dir.join(format!("oci-bundle-{}", execution_id));
+        let bundle = control_dir.join("bundle");
         fs::create_dir_all(&bundle)?;
-        let configured_rootfs = self
-            .settings
-            .rootfs
-            .clone()
-            .unwrap_or_else(|| PathBuf::from("/"));
-        let rootfs = if configured_rootfs == Path::new("/") {
+        let configured_rootfs = rootfs_source.canonicalize()?;
+        let private_control = control_dir.canonicalize()?;
+        let rootfs = if rootfs_source == Path::new("/") {
             // A host-root container gets a private synthetic root directory.
             // Standard host directories are mounted read-only into it, so OCI
             // mountpoint creation never mutates the real host `/`.
@@ -173,29 +152,20 @@ impl ContainerExecutor {
                 configured_rootfs.display()
             );
             anyhow::ensure!(
-                !fs::canonicalize(control_dir)?.starts_with(fs::canonicalize(&configured_rootfs)?),
-                "OCI rootfs must not contain delegated host control storage"
+                !private_control.starts_with(&configured_rootfs)
+                    && !configured_rootfs.starts_with(&private_control),
+                "OCI rootfs overlaps host control storage"
             );
             // An independent rootfs copy avoids retaining a source mount/session owner.
             let private = bundle.join("rootfs");
             pvisor_overlay_core::apply::restore_overlay_upper(&configured_rootfs, &private)?;
             private
         };
-        let private_control = fs::canonicalize(control_dir)?;
-        let spec_source = fs::canonicalize(&files.spec_path)?;
-        let output_source = fs::canonicalize(files.result_path.parent().unwrap())?;
         for mount in mounts.values() {
-            let source = fs::canonicalize(&mount.source)?;
-            if (source == spec_source
-                && mount.target == Path::new(GUEST_CONTROL_DIR).join(SPEC_FILENAME))
-                || (source == output_source
-                    && mount.target == Path::new(GUEST_CONTROL_DIR).join("output"))
-            {
-                continue;
-            }
+            let source = &mount.source;
             anyhow::ensure!(
-                !private_control.starts_with(&source) && !source.starts_with(&private_control),
-                "OCI mount {} exposes delegated host control storage",
+                !private_control.starts_with(source) && !source.starts_with(&private_control),
+                "OCI mount {} exposes host control storage",
                 mount.source.display()
             );
         }
@@ -234,23 +204,25 @@ impl ContainerExecutor {
         let process_user = requested_user;
         namespaces.insert(0, serde_json::json!({"type":"user"}));
         let resources = serde_json::json!({"memory": limits.memory_bytes.map(|v| serde_json::json!({"limit":v})), "pids": limits.processes.map(|v| serde_json::json!({"limit":v}))});
-        let mut env_json = Vec::new();
-        for (key, value) in &invocation.env {
-            env_json.push(format!("{key}={value}"));
-        }
+        let mut env = invocation.env.clone();
         if invocation.inherit_env {
             for (key, value) in std::env::vars() {
-                if valid_env_name(&key) && !invocation.env.contains_key(&key) {
-                    env_json.push(format!("{key}={value}"));
-                }
+                env.entry(key).or_insert(value);
             }
         }
+        env.retain(|key, _| valid_env_name(key) && !key.starts_with("PVISOR_AGENTCTL_"));
+        env.entry("PATH".into()).or_insert_with(|| {
+            "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin".into()
+        });
+        let env = env
+            .iter()
+            .map(|(k, v)| format!("{k}={v}"))
+            .collect::<Vec<_>>();
         let devices = [
             ("/dev/null", 1, 3), ("/dev/zero", 1, 5), ("/dev/random", 1, 8),
             ("/dev/urandom", 1, 9), ("/dev/tty", 5, 0),
         ].into_iter().map(|(path, major, minor)| serde_json::json!({"path":path,"type":"c","major":major,"minor":minor,"fileMode":438,"uid":0,"gid":0})).collect::<Vec<_>>();
-        // Keep the workload mapped to the caller so declared writable mounts
-        // and the private delegated control directory retain their ownership.
+        // Keep the workload mapped to the caller so writable mounts retain their ownership.
         // A non-root workload also needs a separate, authorized mapping for
         // namespace root; never silently replace its requested identity.
         let (uid_mappings, gid_mappings) = if requested_user == (0, 0) {
@@ -267,23 +239,59 @@ impl ContainerExecutor {
                 mapping_entries(requested_user.1, 0, 1),
             )
         };
-        let cfg = serde_json::json!({"ociVersion":"1.0.2","process":{"terminal":false,"cwd":workdir.as_deref().unwrap_or(Path::new("/")),"args":[GUEST_PVISOR,"spawn","--executor","host","--stdio","capture","--spec",format!("{GUEST_CONTROL_DIR}/{SPEC_FILENAME}"),"--result-file",format!("{GUEST_CONTROL_DIR}/output/{RESULT_FILENAME}" )],"env":env_json,"user":{"uid":process_user.0,"gid":process_user.1}},"root":{"path":rootfs,"readonly":self.settings.read_only_rootfs},"mounts":mounts_json,"linux":{"namespaces":namespaces,"resources":resources,"devices":devices,"uidMappings":uid_mappings,"gidMappings":gid_mappings},"annotations":{"io.pvisor.run_id":run_id,"io.pvisor.execution_id":execution_id}});
+        let argv = std::iter::once(&invocation.program)
+            .chain(&invocation.args)
+            .collect::<Vec<_>>();
+        let cfg = serde_json::json!({
+            "ociVersion": "1.0.2",
+            "process": {
+                "terminal": false,
+                "cwd": workdir.as_deref().unwrap_or(Path::new("/")),
+                "args": argv,
+                "env": env,
+                "user": {"uid":process_user.0,"gid":process_user.1},
+                "rlimits": process_limits(limits),
+            },
+            "root": {"path":rootfs,"readonly":self.settings.read_only_rootfs},
+            "mounts": mounts_json,
+            "linux": {
+                "namespaces": namespaces,
+                "resources": resources,
+                "devices": devices,
+                "uidMappings": uid_mappings,
+                "gidMappings": gid_mappings,
+            },
+            "annotations": {"io.pvisor.run_id":run_id,"io.pvisor.execution_id":execution_id},
+        });
         crate::util::write_private_json(&config, &cfg)?;
-        let state = control_dir.join("oci-state");
-        fs::create_dir_all(&state)?;
-        let mut command = self.runtime_command(&state)?;
+        let state_root = control_dir.join("state");
+        fs::create_dir_all(&state_root)?;
+        let pid_file = control_dir.join("init.pid");
+        let name = container_name(run_id, execution_id);
+        let mut command = self.runtime_command(&state_root)?;
         command
             .arg("run")
             .arg("--bundle")
             .arg(bundle)
-            .arg(container_name(run_id, execution_id));
+            .arg("--pid-file")
+            .arg(&pid_file)
+            .arg(&name);
 
+        let stdin = match invocation.stdin {
+            StdioMode::Capture => StdioMode::Null,
+            mode => mode,
+        };
         command
-            .stdin(stdio(invocation.stdin))
+            .stdin(stdio(stdin))
             .stdout(stdio(invocation.stdout))
             .stderr(stdio(invocation.stderr))
             .kill_on_drop(true);
-        Ok(command)
+        Ok(Launch {
+            command,
+            state_root,
+            pid_file,
+            name,
+        })
     }
 
     fn runtime_command(&self, state_root: &Path) -> anyhow::Result<Command> {
@@ -415,40 +423,50 @@ impl RunExecutor for ContainerExecutor {
     }
 
     async fn execute(&self, context: &ExecutionContext) -> ExecutorOutput {
-        let spec = context.spec().clone();
+        let spec = context.spec();
         context
             .execution()
-            .starting(Some("injecting pVisor into OCI container".into()))
+            .starting(Some("preparing OCI workload".into()))
             .await;
 
         let prepared = async {
-            let binary = resolve_pvisor_binary(self.settings.pvisor_binary.as_deref())?;
-            let files = DelegatedRunFiles::new_with_stdio(&spec, true)?;
-            let mut executor = self.clone();
-            if executor.settings.rootfs.is_none() {
-                anyhow::ensure!(
-                    !executor.settings.image.trim().is_empty(),
-                    "container requires --container-rootfs or --container-image"
-                );
-                let image = executor.settings.image.clone();
-                let prepared = tokio::task::spawn_blocking(move || {
-                    crate::image::oci::ImageStore::new(None)?.prepare(&image)
+            let rootfs = if let Some(rootfs) = &self.settings.rootfs {
+                rootfs.clone()
+            } else {
+                let image = self.settings.image.clone();
+                tokio::task::spawn_blocking(move || {
+                    let prepared = crate::image::oci::ImageStore::new(None)?.prepare(&image)?;
+                    Ok::<_, anyhow::Error>(prepared.rootfs)
                 })
-                .await??;
-                executor.settings.rootfs = Some(prepared.rootfs);
-            }
-            let command =
-                executor.build_command(&spec, context.execution_id().as_str(), &binary, &files)?;
-            Ok::<_, anyhow::Error>((files, command))
+                .await??
+            };
+            // Keep private state out of caller-controlled TMPDIR and standard host-root binds.
+            let temporary = tempfile::Builder::new()
+                .prefix("pvisor-oci-")
+                .tempdir_in("/tmp")?;
+            let launch = self.build_command(
+                spec,
+                context.execution_id().as_str(),
+                temporary.path(),
+                &rootfs,
+            )?;
+            Ok::<_, anyhow::Error>((temporary, launch))
         }
         .await;
-        let (files, mut command) = match prepared {
+        let (
+            _temporary,
+            Launch {
+                mut command,
+                state_root,
+                pid_file,
+                name,
+            },
+        ) = match prepared {
             Ok(prepared) => prepared,
             Err(error) => {
                 return failed_to_start(error.to_string());
             }
         };
-        let name = container_name(spec.run_id.as_str(), context.execution_id().as_str());
         let mut child = match command.spawn() {
             Ok(child) => child,
             Err(error) => {
@@ -465,19 +483,16 @@ impl RunExecutor for ContainerExecutor {
         });
         context.execution().ready().await;
 
-        let watchdog_ms = spec.runtime.timeout_ms.map(|timeout| {
-            timeout
-                .saturating_add(spec.runtime.termination_grace_ms)
-                .saturating_add(10_000)
-        });
-        let end = context.wait_child(&mut child, watchdog_ms).await;
+        let end = context
+            .wait_child(&mut child, spec.runtime.timeout_ms)
+            .await;
 
         let mut warnings = Vec::new();
         if matches!(end, End::Cancelled | End::Deadline)
             && let Some(warning) = self
                 .terminate(
                     &mut child,
-                    &files.spec_path.parent().unwrap().join("oci-state"),
+                    &state_root,
                     &name,
                     spec.runtime.termination_grace_ms,
                 )
@@ -486,31 +501,16 @@ impl RunExecutor for ContainerExecutor {
             warnings.push(warning);
         }
 
-        let transport_stdout = join_capture_bounded(stdout_task).await;
-        let transport_stderr = join_capture_bounded(stderr_task).await;
-        if let End::Exited(Ok(status)) = &end {
-            match files.read_result(&spec.run_id, context.execution_id()) {
-                Ok(output) => {
-                    // Only the host-observed runtime status determines completion.
-                    // Boundary-writable results supply transcript bytes, never controls or evidence.
-                    let mut result = container_exit_output(
-                        *status,
-                        output.result.output,
-                        spec.runtime.max_output_bytes,
-                    );
-                    result.warnings.extend(warnings);
-                    return result;
-                }
-                Err(error) => warnings.push(format!("decode delegated pVisor result: {error}")),
-            }
-        }
-
+        let (stdout, stderr) = tokio::join!(
+            join_capture_bounded(stdout_task),
+            join_capture_bounded(stderr_task)
+        );
         let mut output = ProcessOutput::default();
-        if let Some(captured) = transport_stdout {
+        if let Some(captured) = stdout {
             output.stdout = Some(captured.text);
             output.stdout_truncated = captured.truncated;
         }
-        if let Some(captured) = transport_stderr {
+        if let Some(captured) = stderr {
             output.stderr = Some(captured.text);
             output.stderr_truncated = captured.truncated;
         }
@@ -521,28 +521,22 @@ impl RunExecutor for ContainerExecutor {
                 None,
                 Some(RunFailure {
                     kind: RunFailureKind::DeadlineExceeded,
-                    message: "delegated pVisor did not finish before the transport watchdog".into(),
+                    message: "OCI workload exceeded its execution deadline".into(),
                     retryable: false,
                 }),
             ),
-            End::Exited(Ok(status)) if status.code() == Some(125) => (
+            // The runtime writes this outside all container mounts. Exit codes
+            // such as 125 are also valid workload exit codes.
+            End::Exited(Ok(status)) if !pid_file.is_file() => (
                 RunState::Failed,
-                status.code(),
+                status.code().filter(|&code| code != 0),
                 Some(RunFailure {
                     kind: RunFailureKind::Infrastructure,
-                    message: "container runtime failed before injected pVisor started".into(),
+                    message: "OCI runtime exited without reporting a container init PID".into(),
                     retryable: false,
                 }),
             ),
-            End::Exited(Ok(status)) => (
-                RunState::Failed,
-                status.code(),
-                Some(RunFailure {
-                    kind: RunFailureKind::Infrastructure,
-                    message: "injected pVisor exited without a valid RunResult".into(),
-                    retryable: false,
-                }),
-            ),
+            End::Exited(Ok(status)) => crate::executor::exit_outcome(status),
             End::Exited(Err(error)) => (
                 RunState::Failed,
                 None,
@@ -570,39 +564,22 @@ impl RunExecutor for ContainerExecutor {
     }
 }
 
-fn container_exit_output(
-    status: std::process::ExitStatus,
-    mut output: ProcessOutput,
-    max_output_bytes: usize,
-) -> ExecutorOutput {
-    for (text, truncated) in [
-        (&mut output.stdout, &mut output.stdout_truncated),
-        (&mut output.stderr, &mut output.stderr_truncated),
-    ] {
-        if let Some(text) = text
-            && text.len() > max_output_bytes
-        {
-            let mut end = max_output_bytes;
-            while !text.is_char_boundary(end) {
-                end -= 1;
-            }
-            text.truncate(end);
-            *truncated = true;
-        }
-    }
-    let (state, exit_code, failure) = crate::executor::exit_outcome(status);
-    ExecutorOutput {
-        state,
-        exit_code,
-        failure,
-        output,
-        executor_observations: Default::default(),
-        value: None,
-        metrics: Default::default(),
-        artifacts: Vec::new(),
-        event_stream_ref: None,
-        warnings: Vec::new(),
-    }
+fn process_limits(limits: &ResourceLimits) -> Vec<serde_json::Value> {
+    [
+        ("RLIMIT_AS", limits.memory_bytes),
+        ("RLIMIT_NPROC", limits.processes),
+        (
+            "RLIMIT_CPU",
+            limits.cpu_time_ms.map(|ms| ms.div_ceil(1000).max(1)),
+        ),
+        ("RLIMIT_NOFILE", limits.open_files),
+        ("RLIMIT_FSIZE", limits.file_size_bytes),
+    ]
+    .into_iter()
+    .filter_map(|(kind, value)| {
+        value.map(|value| serde_json::json!({"type":kind,"soft":value,"hard":value}))
+    })
+    .collect()
 }
 
 fn failed_to_start(message: String) -> ExecutorOutput {
@@ -814,14 +791,13 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let image = temp.path().join("image");
         fs::create_dir(&image).unwrap();
-        let binary = temp.path().join("pvisor");
-        executable(&binary);
+        let control = temp.path().join("private");
+        fs::create_dir(&control).unwrap();
         let spec = RunSpec::process("private-control", "test", "true");
-        let files = DelegatedRunFiles::new_with_stdio(&spec, false).unwrap();
         let executor = ContainerExecutor::new(ContainerSettings {
-            rootfs: Some(image),
+            rootfs: Some(image.clone()),
             mounts: vec![ContainerMount {
-                source: files.spec_path.parent().unwrap().to_path_buf(),
+                source: control.clone(),
                 target: "/exposed".into(),
                 read_only: false,
             }],
@@ -829,7 +805,7 @@ mod tests {
         })
         .unwrap();
         let error = executor
-            .build_command(&spec, "execution", &binary, &files)
+            .build_command(&spec, "execution", &control, &image)
             .unwrap_err();
         assert!(
             error.to_string().contains("host control storage"),
@@ -837,53 +813,13 @@ mod tests {
         );
     }
 
-    #[test]
-    fn runtime_exit_status_cannot_be_overridden_by_delegated_success() {
-        use std::os::unix::process::ExitStatusExt;
-        for code in [0, 1, 125] {
-            let output = container_exit_output(
-                std::process::ExitStatus::from_raw(code << 8),
-                ProcessOutput {
-                    stdout: Some("workload transcript".into()),
-                    ..Default::default()
-                },
-                1024,
-            );
-            assert_eq!(output.exit_code, Some(code));
-            assert_eq!(
-                output.state,
-                if code == 0 {
-                    RunState::Completed
-                } else {
-                    RunState::Failed
-                }
-            );
-            assert!(
-                output
-                    .executor_observations
-                    .enforcement
-                    .dimensions
-                    .is_empty()
-            );
-            assert_eq!(output.output.stdout.as_deref(), Some("workload transcript"));
-        }
-    }
-
-    #[test]
-    fn delegated_transcript_obeys_host_output_limit_at_utf8_boundaries() {
-        use std::os::unix::process::ExitStatusExt;
-        let result = container_exit_output(
-            std::process::ExitStatus::from_raw(0),
-            ProcessOutput {
-                stdout: Some("a界b".into()),
-                stderr: Some("abcdef".into()),
-                ..Default::default()
-            },
-            2,
-        );
-        assert_eq!(result.output.stdout.as_deref(), Some("a"));
-        assert_eq!(result.output.stderr.as_deref(), Some("ab"));
-        assert!(result.output.stdout_truncated && result.output.stderr_truncated);
+    #[tokio::test]
+    async fn direct_transcript_obeys_host_output_limit_at_utf8_boundaries() {
+        let stdout = read_limited("a界b".as_bytes(), 2).await.unwrap();
+        let stderr = read_limited("abcdef".as_bytes(), 2).await.unwrap();
+        assert_eq!(stdout.text, "a");
+        assert_eq!(stderr.text, "ab");
+        assert!(stdout.truncated && stderr.truncated);
     }
 
     #[tokio::test]
@@ -901,23 +837,26 @@ mod tests {
         let image = temp.path().join("image");
         fs::create_dir(&image).unwrap();
         fs::write(image.join("unchanged"), b"cache").unwrap();
-        let binary = temp.path().join("pvisor");
-        executable(&binary);
+        let file = temp.path().join("input");
+        fs::write(&file, b"mount source").unwrap();
+        let control = temp.path().join("private");
         let executor = ContainerExecutor::new(ContainerSettings {
             rootfs: Some(image.clone()),
+            mounts: vec![ContainerMount {
+                source: file,
+                target: "/input".into(),
+                read_only: true,
+            }],
             ..Default::default()
         })
         .unwrap();
         let spec = RunSpec::process("r", "a", "true");
-        let files = DelegatedRunFiles::new_with_stdio(&spec, false).unwrap();
-        executor.build_command(&spec, "a", &binary, &files).unwrap();
-        let private = files
-            .spec_path
-            .parent()
-            .unwrap()
-            .join("oci-bundle-a/rootfs");
-        assert!(private.join("opt/pvisor").is_file());
-        assert!(!image.join("opt").exists());
+        executor
+            .build_command(&spec, "a", &control, &image)
+            .unwrap();
+        let private = control.join("bundle/rootfs");
+        assert!(private.join("input").is_file());
+        assert!(!image.join("input").exists());
         fs::write(private.join("unchanged"), b"changed").unwrap();
         assert_eq!(fs::read(image.join("unchanged")).unwrap(), b"cache");
         let command = executor
@@ -933,29 +872,22 @@ mod tests {
     }
     use super::*;
     use crate::config::{ContainerNetwork, ContainerPlatform};
-    use pvisor_core::ResourceLimits;
     use std::ffi::OsStr;
-    #[cfg(unix)]
-    use std::os::unix::fs::PermissionsExt;
 
-    #[cfg(unix)]
-    fn executable(path: &Path) {
-        std::fs::write(path, b"runtime").unwrap();
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn command_injects_pvisor_and_never_executes_agent_directly() {
+    #[test]
+    fn bundle_runs_workload_directly_with_host_prepared_drivers() {
         let temporary = tempfile::tempdir().unwrap();
-        let runtime = temporary.path().join("pvisor");
-        executable(&runtime);
+        let rootfs = temporary.path().join("rootfs");
+        fs::create_dir(&rootfs).unwrap();
+        let control = temporary.path().join("private");
         let cwd = temporary.path().join("workspace");
-        std::fs::create_dir(&cwd).unwrap();
+        fs::create_dir(&cwd).unwrap();
+        let capture = temporary.path().join("capture.json");
+        fs::write(&capture, b"{}").unwrap();
         let executor = ContainerExecutor::new(ContainerSettings {
-            image: "example/agent:latest".into(),
-            pvisor_binary: Some(runtime.clone()),
-            network: ContainerNetwork::None,
+            rootfs: Some(rootfs.clone()),
+            pvisor_binary: Some("/not-used".into()),
+            network: ContainerNetwork::Host,
             ..ContainerSettings::default()
         })
         .unwrap();
@@ -969,67 +901,71 @@ mod tests {
         let RunInvocation::Process(invocation) = &mut spec.invocation;
         invocation.cwd = Some(cwd.display().to_string());
         invocation.inherit_env = false;
-        let files = DelegatedRunFiles::new_with_stdio(&spec, false).unwrap();
-        let command = executor
-            .build_command(&spec, "execution-one", &runtime, &files)
+        invocation.args = vec!["literal ;$ argument".into()];
+        invocation
+            .env
+            .insert("HTTP_PROXY".into(), "http://127.0.0.1:8080".into());
+        invocation
+            .env
+            .insert(CAPTURE_CONFIG_ENV.into(), capture.display().to_string());
+        invocation
+            .env
+            .insert("PVISOR_AGENTCTL_TOKEN".into(), "not-for-oci".into());
+        let launch = executor
+            .build_command(&spec, "execution-one", &control, &rootfs)
             .unwrap();
-        let args = command
+        let args = launch
+            .command
             .as_std()
             .get_args()
             .map(|arg| arg.to_string_lossy().into_owned())
             .collect::<Vec<_>>();
         assert!(
             args.iter()
-                .any(|arg| arg.contains("oci-bundle-execution-one"))
+                .any(|arg| arg == &control.join("bundle").display().to_string())
         );
         assert!(!args.iter().any(|arg| arg == "secret-agent"));
-        let config: serde_json::Value = serde_json::from_slice(
-            &fs::read(
-                files
-                    .spec_path
-                    .parent()
-                    .unwrap()
-                    .join("oci-bundle-execution-one/config.json"),
-            )
-            .unwrap(),
-        )
-        .unwrap();
+        let config: serde_json::Value =
+            serde_json::from_slice(&fs::read(control.join("bundle/config.json")).unwrap()).unwrap();
         assert_eq!(
             config["process"]["args"],
+            serde_json::json!(["secret-agent", "literal ;$ argument"])
+        );
+        let env = config["process"]["env"].as_array().unwrap();
+        assert!(
+            env.iter()
+                .any(|entry| entry == "HTTP_PROXY=http://127.0.0.1:8080")
+        );
+        assert!(
+            env.iter()
+                .all(|entry| !entry.as_str().unwrap().starts_with("PVISOR_AGENTCTL_"))
+        );
+        assert_eq!(config["process"]["cwd"], serde_json::json!(cwd));
+        assert_eq!(
+            config["process"]["rlimits"],
             serde_json::json!([
-                "/opt/pvisor",
-                "spawn",
-                "--executor",
-                "host",
-                "--stdio",
-                "capture",
-                "--spec",
-                "/run/pvisor/run-spec.json",
-                "--result-file",
-                "/run/pvisor/output/run-result.json",
+                {"type":"RLIMIT_AS","soft":1_048_576,"hard":1_048_576},
+                {"type":"RLIMIT_NPROC","soft":8,"hard":8},
+                {"type":"RLIMIT_NOFILE","soft":32,"hard":32}
             ])
         );
+        assert_eq!(config["linux"]["resources"]["memory"]["limit"], 1_048_576);
+        assert_eq!(config["linux"]["resources"]["pids"]["limit"], 8);
         let mounts = config["mounts"].as_array().unwrap();
-        let spec_mount = mounts
+        let bind_mounts = mounts
             .iter()
-            .find(|mount| mount["destination"] == "/run/pvisor/run-spec.json")
-            .unwrap();
+            .filter(|m| m["type"] == "bind")
+            .collect::<Vec<_>>();
+        assert_eq!(bind_mounts.len(), 2);
         assert!(
-            spec_mount["options"]
-                .as_array()
-                .unwrap()
+            bind_mounts
                 .iter()
-                .any(|option| option == "ro")
+                .any(|m| m["source"] == serde_json::json!(capture) && m["options"][1] == "ro")
         );
         assert!(
-            mounts
+            bind_mounts
                 .iter()
-                .any(|mount| mount["destination"] == "/run/pvisor/output")
-        );
-        assert!(
-            !mounts
-                .iter()
-                .any(|mount| mount["destination"] == "/run/pvisor")
+                .any(|m| m["source"] == serde_json::json!(cwd) && m["options"][1] == "rw")
         );
     }
 

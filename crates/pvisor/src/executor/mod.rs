@@ -1,8 +1,6 @@
 //! Executor contract, concrete backends, and their isolation helpers.
 
-pub(crate) mod artifact;
 pub(crate) mod container;
-pub(crate) mod delegated;
 #[cfg(target_os = "linux")]
 pub(crate) mod host_exec;
 pub(crate) mod process;
@@ -118,10 +116,12 @@ pub(crate) async fn read_limited<R: AsyncRead + Unpin>(
         retained.extend_from_slice(&buffer[..keep]);
         truncated |= keep < read;
     }
-    Ok(Captured {
-        text: String::from_utf8_lossy(&retained).into_owned(),
-        truncated,
-    })
+    let mut text = String::from_utf8_lossy(&retained).into_owned();
+    if text.len() > limit {
+        text.truncate(text.floor_char_boundary(limit));
+        truncated = true;
+    }
+    Ok(Captured { text, truncated })
 }
 
 pub(crate) async fn join_capture(

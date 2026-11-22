@@ -1339,11 +1339,20 @@ Use nextest (including `mise run test`) for this scheduling guarantee; direct
 libtest execution must be serialized with `--test-threads=1`, with no concurrent
 test binaries or independent test runners sharing the host mount namespace.
 
-Linux OCI fixtures distinguish an inner deadline (an untrusted child process
-exit) from the host transport watchdog. The latter must terminate and reap an
-unresponsive runtime; delegated result files use the writable `output/` mount.
-Fixtures resolve input beside the OCI bundle; rootfs mountpoint placeholders
-are not serialized input and must not be discovered by a recursive file search.
+Native OCI Sessions use `spawn --executor container`. `runc` launches the
+workload directly; the host Session owns the staged workspace, cooperative
+network proxy and completion. `--container-pvisor-binary` is accepted for
+compatibility but ignored. This does not change Docker-style `run`, which
+continues to launch a VM. CLI regressions cover direct argv and captured
+streams, nonzero workload exits, and host deadline cleanup of the runtime.
+The native regression uses real `runc`, rootless namespaces, FUSE and a static
+C compiler; it checks PID 1, the local OverlayNet proxy and stage/review/apply
+without obtaining an image or reaching an external service:
+
+```bash
+mise run test -- pvisor-cli -- \
+  -E 'test(=runc_direct_workload_uses_host_overlay_and_proxy)' --run-ignored only
+```
 
 The ignored `minimal_guest_without_dev_repeatedly_reaches_ready_with_captured_stdio`
 Session test needs KVM, a static C compiler and (for GNU builds)

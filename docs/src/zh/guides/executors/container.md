@@ -12,16 +12,15 @@ pvisor spawn --executor container \
 
 `--container-platform linux/amd64` 或 `linux/arm64` 是可选的原生架构断言，不是跨架构执行或下载选择器。与宿主匹配的断言会被接受；不匹配时在启动前拒绝，即使设置了 `--container-rootfs`。host 和 VM 配置会拒绝此选项，不会静默忽略。TOML 使用 `container.platform = "linux-amd64"` 或 `"linux-arm64"`。
 
-注入程序默认是当前运行的 pVisor。需要兼容的 Linux 构建时才指定 `--container-pvisor-binary PATH`；pVisor 不会根据平台断言自动发现或下载另一个程序。rootfs 和二进制须由你准备，并兼容原生架构及 guest ABI。下方示例假设 Linux x86_64。参见 [CLI 参考](../../reference/cli.md)、[配置字段](../../reference/config.md#settings)与[容器场景](../../reference/cases.md)。
+安装默认运行时 `runc`，或显式选择 `crun`。下方示例假设 Linux x86_64。参见 [CLI 参考](../../reference/cli.md)、[配置字段](../../reference/config.md#settings)与[容器场景](../../reference/cases.md)。
 
 ## 工作方式
 
-pVisor 生成标准 OCI bundle，把当前或显式提供的兼容 Linux pVisor 二进制挂进 rootfs，再在容器内走普通的 `pvisor spawn --executor host --spec ...` 路径。Agent 命令放在 RunSpec 中，不暴露在 OCI runner 的 argv 里；容器内的 pVisor 创建自己的 AgentCtl 并返回类型化结果。
+pVisor 在宿主准备工作区和代理，并把任务参数写入 OCI bundle。OCI 运行时直接启动任务。超时、输出、结果和可供审查的暂存改动都由同一个宿主 Session 管理。
 
 ```bash
 pvisor spawn \
   --container-image example/codex-agent:latest \
-  --container-pvisor-binary ./dist/pvisor-linux-amd64 \
   --container-platform linux/amd64 \
   --container-network none \
   --container-mount \

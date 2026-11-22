@@ -7,20 +7,23 @@ use pvisor_journal::api::{Journal, JournalStore};
 use std::os::unix::fs::PermissionsExt;
 
 #[cfg(unix)]
-const FAKE_OCI_RUNTIME: &str = r#"#!/bin/sh
-set -eu
-bundle=""
-while [ "$#" -gt 0 ]; do
-  case "$1" in
-    --bundle) bundle="$2"; shift 2 ;;
-    *) shift ;;
-  esac
-done
-[ -n "$bundle" ] || exit 0
-control=$(dirname "$bundle")
-exec "$PVISOR_TEST_PVISOR" spawn --executor host --stdio capture \
-  --spec "$control/run-spec.json" \
-  --result-file "$control/output/run-result.json"
+const FAKE_OCI_RUNTIME: &str = r#"#!/usr/bin/env python3
+import json
+import os
+from pathlib import Path
+import sys
+
+args = sys.argv[1:]
+if "--bundle" not in args:
+    sys.exit(0)
+bundle = Path(args[args.index("--bundle") + 1])
+pid_file = Path(args[args.index("--pid-file") + 1])
+config = json.loads((bundle / "config.json").read_text())
+process = config["process"]
+assert not any(m["destination"] in {"/opt/pvisor", "/run/pvisor/run-spec.json", "/run/pvisor/output"} for m in config["mounts"])
+pid_file.write_text(str(os.getpid()))
+os.chdir(process["cwd"])
+os.execvpe(process["args"][0], process["args"], dict(entry.split("=", 1) for entry in process["env"]))
 "#;
 
 fn only_run_dir(run_home: &std::path::Path) -> std::path::PathBuf {
@@ -508,59 +511,12 @@ fn record_destination_survives_toml_round_trip() {
 
 #[cfg(unix)]
 #[test]
-fn fake_oci_uses_control_input_instead_of_rootfs_mountpoint() {
-    let temporary = tempfile::tempdir().unwrap();
-    let control = temporary.path().join("control with spaces");
-    let bundle = control.join("oci-bundle");
-    let placeholder = bundle.join("rootfs/run/pvisor/run-spec.json");
-    std::fs::create_dir_all(placeholder.parent().unwrap()).unwrap();
-    std::fs::write(&placeholder, b"").unwrap();
-    std::fs::write(control.join("run-spec.json"), b"real input").unwrap();
-    let runtime = temporary.path().join("fake-oci");
-    std::fs::write(&runtime, FAKE_OCI_RUNTIME).unwrap();
-    std::fs::set_permissions(&runtime, std::fs::Permissions::from_mode(0o755)).unwrap();
-    let pvisor = temporary.path().join("pvisor-argv");
-    std::fs::write(&pvisor, "#!/bin/sh\nprintf '%s\\n' \"$@\"\n").unwrap();
-    std::fs::set_permissions(&pvisor, std::fs::Permissions::from_mode(0o755)).unwrap();
-    let output = Command::new(&runtime)
-        .args(["run", "--bundle"])
-        .arg(&bundle)
-        .arg("test-container")
-        .env("PVISOR_TEST_PVISOR", &pvisor)
-        .output()
-        .unwrap();
-    assert!(output.status.success(), "{:?}", output.stderr);
-    assert_eq!(
-        String::from_utf8(output.stdout).unwrap(),
-        format!(
-            "spawn\n--executor\nhost\n--stdio\ncapture\n--spec\n{}\n--result-file\n{}\n",
-            control.join("run-spec.json").display(),
-            control.join("output/run-result.json").display()
-        )
-    );
-    let management = Command::new(&runtime)
-        .args(["kill", "test-container", "TERM"])
-        .env("PVISOR_TEST_PVISOR", &pvisor)
-        .output()
-        .unwrap();
-    assert!(management.status.success());
-    assert!(
-        management.stdout.is_empty(),
-        "management launched a workload"
-    );
-}
-
-#[cfg(unix)]
-#[test]
-#[cfg_attr(
-    target_os = "macos",
-    ignore = "temporary OCI control mount is not visible to nested pVisor on macOS"
-)]
-fn container_executor_runs_through_an_oci_compatible_control_surface() {
+fn container_executor_runs_workload_without_delegation() {
     let temporary = tempfile::tempdir().expect("create CLI fixture");
     let workspace = temporary.path().join("workspace");
     std::fs::create_dir(&workspace).unwrap();
     let run_home = temporary.path().join("runs");
+    let result = temporary.path().join("result.json");
     let runtime = temporary.path().join("fake-oci");
     std::fs::write(&runtime, FAKE_OCI_RUNTIME).unwrap();
     std::fs::set_permissions(&runtime, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -568,32 +524,39 @@ fn container_executor_runs_through_an_oci_compatible_control_surface() {
     let output = Command::new(env!("CARGO_BIN_EXE_pvisor"))
         .args(["spawn", "--executor", "container", "--container-runtime"])
         .arg(&runtime)
-        .args(["--container-pvisor-binary", env!("CARGO_BIN_EXE_pvisor")])
+        .args(["--container-pvisor-binary", "/does-not-exist"])
+        .args(["--stdio", "capture", "--result-file"])
+        .arg(&result)
         .args(["--rootfs"])
         .arg(&workspace)
         .args([
-            "--container-platform",
-            "linux/amd64",
             "--container-network",
             "none",
             "--",
             "/bin/sh",
             "-c",
-            "test \"$PVISOR_RUNTIME\" = 1 && printf container-ok",
+            "test \"$PVISOR_RUNTIME\" = 1 || exit 1; printf '%s' \"$1\"; printf diagnostic >&2; exit 125",
+            "workload",
+            "container-ok ;$",
         ])
         .current_dir(&workspace)
-        .env("PVISOR_TEST_PVISOR", env!("CARGO_BIN_EXE_pvisor"))
         .env("PVISOR_RUN_HOME", &run_home)
         .output()
         .expect("execute pvisor with fake OCI runtime");
-    assert!(
-        output.status.success(),
+    assert_eq!(
+        output.status.code(),
+        Some(125),
         "pvisor failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
-    // The fake runtime validates the OCI control surface; delegated stdout is
-    // intentionally persisted in the nested Run Bundle rather than forwarded
-    // by this transport fixture.
+    let result: pvisor_core::RunResult =
+        serde_json::from_slice(&std::fs::read(result).unwrap()).unwrap();
+    assert_eq!(result.output.stdout.as_deref(), Some("container-ok ;$"));
+    assert_eq!(result.output.stderr.as_deref(), Some("diagnostic"));
+    assert_eq!(
+        result.failure.unwrap().kind,
+        pvisor_core::RunFailureKind::ProcessExit
+    );
 
     let run_dir = only_run_dir(&run_home);
     let record: serde_json::Value =
@@ -614,10 +577,146 @@ fn container_executor_runs_through_an_oci_compatible_control_surface() {
 
 #[cfg(unix)]
 #[test]
-#[cfg_attr(
-    target_os = "macos",
-    ignore = "temporary OCI control mount is not visible to nested pVisor on macOS"
-)]
+fn container_executor_rejects_runtime_success_without_init() {
+    let temporary = tempfile::tempdir().unwrap();
+    let workspace = temporary.path().join("workspace");
+    std::fs::create_dir(&workspace).unwrap();
+    let run_home = temporary.path().join("runs");
+    let runtime = temporary.path().join("noop-oci");
+    std::fs::write(&runtime, "#!/bin/sh\nexit 0\n").unwrap();
+    std::fs::set_permissions(&runtime, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_pvisor"))
+        .args(["spawn", "--container-runtime"])
+        .arg(runtime)
+        .arg("--container-rootfs")
+        .arg(&workspace)
+        .args(["--", "/bin/true"])
+        .current_dir(&workspace)
+        .env("PVISOR_RUN_HOME", &run_home)
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1), "{:?}", output);
+    let bundle = RunBundle::read(&only_run_dir(&run_home)).unwrap();
+    assert_eq!(bundle.run.exit_code, None);
+    assert_eq!(
+        bundle.run.failure.unwrap().kind,
+        pvisor_core::RunFailureKind::Infrastructure
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+#[ignore = "requires runc, rootless namespaces, FUSE, and a static C compiler"]
+fn runc_direct_workload_uses_host_overlay_and_proxy() {
+    let temporary = tempfile::tempdir().unwrap();
+    let root = temporary.path();
+    let workspace = root.join("workspace");
+    let rootfs = root.join("rootfs");
+    let stage = root.join("stage");
+    let result = root.join("result.json");
+    std::fs::create_dir(&workspace).unwrap();
+    std::fs::create_dir(&rootfs).unwrap();
+    let source = root.join("workload.c");
+    std::fs::write(
+        &source,
+        r#"
+#include <arpa/inet.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+int main(void) {
+    if (getpid() != 1 || access("/opt/pvisor", F_OK) == 0 ||
+        access("/run/pvisor", F_OK) == 0 || getenv("PVISOR_AGENTCTL_TOKEN")) return 10;
+    const char *proxy = getenv("HTTP_PROXY");
+    int port;
+    if (!proxy || sscanf(proxy, "http://127.0.0.1:%d", &port) != 1) return 11;
+    struct sockaddr_in address = {
+        .sin_family = AF_INET, .sin_port = htons(port), .sin_addr.s_addr = htonl(INADDR_LOOPBACK)
+    };
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0 || connect(fd, (void *)&address, sizeof(address))) return 12;
+    FILE *connection = fdopen(fd, "r+");
+    char response[128];
+    if (!connection || fputs("GET http://example.invalid/ HTTP/1.1\r\nHost: example.invalid\r\n"
+        "Connection: close\r\n\r\n", connection) < 0 || fflush(connection) ||
+        !fgets(response, sizeof(response), connection) || !strstr(response, " 403 ")) return 13;
+    fclose(connection);
+    FILE *candidate = fopen("candidate", "w");
+    if (!candidate || fputs("from OCI\n", candidate) < 0 || fclose(candidate)) return 14;
+    puts("direct workload");
+    return 125;
+}
+"#,
+    )
+    .unwrap();
+    let compile = Command::new("cc")
+        .arg("-static")
+        .arg(&source)
+        .arg("-o")
+        .arg(rootfs.join("workload"))
+        .output()
+        .unwrap();
+    assert!(compile.status.success(), "{:?}", compile);
+
+    let cli = || {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_pvisor"));
+        command
+            .current_dir(&workspace)
+            .env("PVISOR_RUN_HOME", root.join("runs"));
+        command
+    };
+    let output = cli()
+        .args([
+            "spawn",
+            "--no-agent-defaults",
+            "--container-runtime",
+            "runc",
+            "--container-rootfs",
+        ])
+        .arg(&rootfs)
+        .args([
+            "--container-network",
+            "host",
+            "--overlaynet",
+            "proxy",
+            "--overlaynet-deny-all",
+        ])
+        .args(["--stage"])
+        .arg(&stage)
+        .args(["--stdio", "capture", "--timeout", "10s", "--result-file"])
+        .arg(&result)
+        .args(["--", "/workload"])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(125), "{:?}", output);
+    let result: pvisor_core::RunResult =
+        serde_json::from_slice(&std::fs::read(result).unwrap()).unwrap();
+    assert_eq!(result.output.stdout.as_deref(), Some("direct workload\n"));
+    assert!(!workspace.join("candidate").exists());
+    let review = cli()
+        .arg("review")
+        .arg(&stage)
+        .arg("--diff")
+        .output()
+        .unwrap();
+    assert!(review.status.success(), "{:?}", review);
+    assert!(String::from_utf8_lossy(&review.stdout).contains("+from OCI"));
+    let apply = cli()
+        .arg("apply")
+        .arg(&stage)
+        .args(["--path", "candidate"])
+        .output()
+        .unwrap();
+    assert!(apply.status.success(), "{:?}", apply);
+    assert_eq!(
+        std::fs::read(workspace.join("candidate")).unwrap(),
+        b"from OCI\n"
+    );
+}
+
+#[cfg(unix)]
+#[test]
 fn container_executor_deadline_stops_the_runtime_client() {
     let temporary = tempfile::tempdir().expect("create CLI fixture");
     let workspace = temporary.path().join("workspace");
@@ -631,20 +730,10 @@ fn container_executor_deadline_stops_the_runtime_client() {
     let output = Command::new(env!("CARGO_BIN_EXE_pvisor"))
         .args(["spawn", "--timeout", "20ms", "--container-runtime"])
         .arg(&runtime)
-        .args(["--container-pvisor-binary", env!("CARGO_BIN_EXE_pvisor")])
         .arg("--container-rootfs")
         .arg(&workspace)
-        .args([
-            "--container-platform",
-            "linux/amd64",
-            "--container-network",
-            "none",
-            "--",
-            "/bin/sleep",
-            "30",
-        ])
+        .args(["--container-network", "none", "--", "/bin/sleep", "30"])
         .current_dir(&workspace)
-        .env("PVISOR_TEST_PVISOR", env!("CARGO_BIN_EXE_pvisor"))
         .env("PVISOR_RUN_HOME", &run_home)
         .output()
         .expect("execute deadline-bound container Run");
@@ -661,8 +750,8 @@ fn container_executor_deadline_stops_the_runtime_client() {
     let failure_kind = bundle.run.failure.as_ref().map(|failure| failure.kind);
     assert_eq!(
         failure_kind,
-        Some(pvisor_core::RunFailureKind::ProcessExit),
-        "nested deadline must remain a host-observed process exit, not imported failure evidence: {:?}",
+        Some(pvisor_core::RunFailureKind::DeadlineExceeded),
+        "the outer owner must classify the timeout: {:?}",
         bundle.run.failure
     );
     assert!(!bundle.safety.host_process);
@@ -685,9 +774,8 @@ fn container_executor_watchdog_stops_an_unresponsive_runtime() {
     let runtime_pid = temporary.path().join("runtime.pid");
     let started = std::time::Instant::now();
     let output = Command::new(env!("CARGO_BIN_EXE_pvisor"))
-        .args(["spawn", "--timeout", "20ms", "--container-runtime"])
+        .args(["spawn", "--timeout", "250ms", "--container-runtime"])
         .arg(&runtime)
-        .args(["--container-pvisor-binary", env!("CARGO_BIN_EXE_pvisor")])
         .arg("--container-rootfs")
         .arg(&workspace)
         .args(["--container-network", "none", "--", "/usr/bin/true"])
