@@ -205,7 +205,7 @@ pub(super) fn review(args: ReviewArgs) -> anyhow::Result<()> {
                 "macOS Seatbelt network policy"
             }
             Some(pvisor_core::IsolationKind::Container) => {
-                "OCI container with injected pVisor"
+                "native OCI container (shared host kernel)"
             }
             Some(pvisor_core::IsolationKind::VirtualMachine) => {
                 "pvisor-vm guest (KVM on Linux, HVF on macOS) over the pVisor root OverlayFS"

@@ -480,7 +480,7 @@ Execution and assertions: [Scrut S-DOC-029](https://github.com/DeepLink-org/pvis
 
 Use these when an OCI runtime should launch directly. F01 is minimal; F02 changes networking; F03 selects host rootfs; F04 combines advanced settings.
 
-These examples use native OCI bundles and runc/crun, not a Docker/Podman daemon. F01–F03 use the default runtime; F04 explicitly chooses runc. Provision an image/rootfs and injected pVisor compatible with the native architecture and guest ABI; a dynamically linked build needs its loader/libraries in the guest. The injected binary defaults to the running pVisor.
+These examples use native OCI bundles and runc/crun without a Docker/Podman daemon. F01–F03 use the fixture-selected runtime; F04 explicitly chooses runc. Provision an image or rootfs compatible with the native architecture. The runtime starts the workload directly.
 
 F04's explicit `--container-platform linux/amd64` assumes Linux x86_64. This option accepts a matching native assertion and rejects cross-architecture values, including with prepared rootfs; host/VM configurations reject it. It is not an emulation, executable auto-discovery or download selector. The existing case checks combined launch, not a platform-rejection matrix. See [container setup](../guides/executors/container.md) and [configuration](config.md#settings).
 
@@ -538,7 +538,7 @@ Preparation: Working OCI runtime; set PVISOR_CASE_CONTAINER_IMAGE for the script
 
 **Semantics**: Container succeeds. read_only=false makes the bind writable despite read-only rootfs; --container-workdir is fallback only when Run lacks cwd. This case checks combined launch, not user identity/read-write behavior separately.
 
-**Rationale**: Select runc and a pVisor build, platform, uid/gid, workdir, read-only rootfs and a host bind at /workspace.
+**Rationale**: Select runc, platform, uid/gid, workdir, read-only rootfs and a host bind at /workspace. The fixture also passes the legacy binary option, which is accepted but ignored.
 
 **Violation example**: Accepted advanced options fail container execution or record another executor.
 

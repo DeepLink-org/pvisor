@@ -96,7 +96,7 @@ workload-aware-memory-offloading = true
 | `gateway` | 可选捕获与路由 | `mode` 默认 `off`；capture 需要编译 Gateway feature |
 | `record.destination` | 可选路径 | `--record-destination`；文件或目录 |
 | `policies.session/workspace/user` | 策略层 | 不同层取最严格约束 |
-| `container` | OCI 参数 | runtime 默认 `crun`、network 默认 `host`；image/rootfs 二选一 |
+| `container` | OCI 参数 | runtime 默认 `runc`、network 默认 `host`；image/rootfs 二选一 |
 | `vm` | VM 参数 | `memory_mib = 2048`、`cpus = 2`；macOS 必须提供 Linux rootfs/image |
 
 类型与默认值来自 `crates/pvisor/src/config.rs`。标为内部解析或 `serde(skip)` 的字段不是配置接口。
@@ -140,13 +140,13 @@ workload-aware-memory-offloading = true
 
 | 表 | 字段及默认值 |
 | --- | --- |
-| `container` | `runtime = "crun"`，`image = ""`，`network = "host"`，`read_only_rootfs = false`，`mounts = []` |
+| `container` | `runtime = "runc"`，`image = ""`，`network = "host"`，`read_only_rootfs = false`，`mounts = []` |
 | `container` 可选字段 | `rootfs`、`pvisor_binary`、`platform`、`workdir`、`user` |
 | `container.mounts` 每项 | `source`、`target`，`read_only = false` |
 | `vm` | `memory_mib = 2048`，`cpus = 2`，`rootfs_immutable = false`，`ram_compression = false`，`cold_ram_compression = false`，`ram_dedup = false` |
 | `vm` 可选字段 | `rootfs`、`prepared_rootfs`、`image`、`image_store`、`library_dir`、`control_socket`、`ram_backing`、`memory_pool`、`node_socket`、`snapshot_filesystem_pool` |
 
-`container.platform` 取 `linux-amd64` 或 `linux-arm64`，是可选的原生宿主架构断言。匹配值会被接受；跨架构值会被拒绝，即使设置了预制 `container.rootfs`。host 和 VM 配置会拒绝已配置的平台。它不启用模拟执行，也不自动发现／下载程序。`container.pvisor_binary` 默认使用当前程序；显式 Linux 二进制和 rootfs 须兼容原生架构及 guest ABI。见[容器准备](../guides/executors/container.md)。`container.network` 取 `host`、`bridge` 或 `none`，但 CNI 支持尚未实现，当前会拒绝 `bridge`。
+`container.platform` 取 `linux-amd64` 或 `linux-arm64`，是可选的原生宿主架构断言。匹配值会被接受；跨架构值会被拒绝，即使设置了预制 `container.rootfs`。host 和 VM 配置会拒绝已配置的平台。它不启用模拟执行。见[容器准备](../guides/executors/container.md)。`container.network` 取 `host`、`bridge` 或 `none`，但 CNI 支持尚未实现，当前会拒绝 `bridge`。
 
 #### VM 控制与内存覆盖 {#vm-control-memory}
 
@@ -315,10 +315,10 @@ backing/control 路径。首次准备复制并完整校验，后续认证小记�
 | `run.filesystem` | `Vec<FilesystemCapability>` | `[]` | 工作区以外的宿主权限；条目字段见下方 |
 | `run.resource_limits` | `ResourceLimits` | `{}` | 请求额度；运行后对照 Bundle 的有效额度 |
 | `run.command` | `Vec<String>` | `[]` | 参数数组；`--` 后命令替换它；不自动经 shell 展开 |
-| `container.runtime` | `PathBuf` | `"crun"` | OCI runtime 程序；`--container-runtime` |
+| `container.runtime` | `PathBuf` | `"runc"` | OCI runtime 程序；`--container-runtime` |
 | `container.image` | `String` | `""` | OCI 镜像引用；`--container-image` |
 | `container.rootfs` | `Option<PathBuf>` | `未设置` | 已有 rootfs，替代镜像；`--container-rootfs` |
-| `container.pvisor_binary` | `Option<PathBuf>` | `未设置` | 注入的 Linux 程序，默认当前程序；`--container-pvisor-binary` |
+| `container.pvisor_binary` | `Option<PathBuf>` | `未设置` | 旧字段，仍可传入但不再生效；`--container-pvisor-binary` |
 | `container.platform` | `Option<ContainerPlatform>` | `未设置` | 原生架构断言：linux-amd64 或 linux-arm64；仅 container；`--container-platform` |
 | `container.network` | `ContainerNetwork` | `"host"` | host、bridge、none；`--container-network` |
 | `container.workdir` | `Option<PathBuf>` | `未设置` | 未挂载 Run cwd 时的容器目录；`--container-workdir` |

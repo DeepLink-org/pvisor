@@ -1001,23 +1001,18 @@ The size limit is checked after execution, so it does not bound peak space used
 while the Agent is running.
 
 `--container-image IMAGE` selects the native OCI container executor
-automatically; `--executor container` makes the choice explicit. The transport
-generates a standard OCI bundle, uses the current or explicitly supplied
-compatible Linux pVisor, mounts it into the rootfs, sets the process
-args, and takes the normal `pvisor spawn --executor host --spec ...` path. The
-Agent command is carried inside the RunSpec rather than exposed in OCI runner
-argv. The injected pVisor creates its own AgentCtl and returns a typed
-RunResult. The final OverlayFS cwd and session Gateway configuration are mounted
-at stable paths.
+automatically; `--executor container` makes the choice explicit. pVisor
+prepares an OCI bundle whose `process.args` runs the workload directly.
+The host Session owns the result and provides the OverlayFS workspace and
+Gateway configuration without running pVisor inside the container.
 `--container-rootfs PATH` supplies an existing rootfs directly; otherwise pVisor
-prepares `--container-image` from its bundled OCI image store. The runtime must
-be `runc` or `crun`; pVisor does not invoke Docker/Podman. User mounts are
+prepares `--container-image` from its bundled OCI image store. The runtime
+defaults to `runc`; `--container-runtime` can select `crun`. User mounts are
 repeatable TOML inline tables, for example:
 
 ```bash
 pvisor spawn \
   --container-image example/codex-agent:latest \
-  --container-pvisor-binary ./dist/pvisor-linux-amd64 \
   --container-platform linux/amd64 \
   --container-network none \
   --container-mount \
@@ -1029,9 +1024,7 @@ The example above assumes Linux x86_64. `--container-platform linux/amd64`
 or `linux/arm64` asserts the native host architecture; a matching value is
 accepted and a cross-architecture value is rejected, even with a prepared
 `--container-rootfs`. Host and VM configurations reject this option. It does
-not select emulation or discover/download an executable. The injected binary
-defaults to the running pVisor; use `--container-pvisor-binary` for an explicitly
-provisioned Linux build compatible with the native architecture and rootfs ABI.
+not select emulation. The legacy `--container-pvisor-binary` is accepted but ignored.
 See [container setup](../guides/executors/container.md) and
 [configuration values](config.md#settings).
 

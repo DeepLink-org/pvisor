@@ -341,7 +341,7 @@ struct RunOverrides {
 #[derive(Debug, Clone, Default, Args, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ContainerOverrides {
-    /// Native OCI runtime executable (`runc` or `crun`).
+    /// Native OCI runtime executable (defaults to `runc`).
     #[arg(long, value_name = "PATH")]
     container_runtime: Option<PathBuf>,
     /// OCI image containing the Agent command. Supplying this selects the container executor.
@@ -350,8 +350,7 @@ struct ContainerOverrides {
     /// Existing OCI rootfs directory (otherwise container image is prepared).
     #[arg(long, value_name = "PATH")]
     container_rootfs: Option<PathBuf>,
-    /// pVisor injected into the container; defaults to the running executable.
-    /// Set it to a statically linked build when the guest ABI differs.
+    /// Deprecated compatibility option; direct OCI execution ignores it.
     #[arg(long, value_name = "PATH")]
     container_pvisor_binary: Option<PathBuf>,
     /// Assert the native OCI platform (`linux/amd64` or `linux/arm64`).

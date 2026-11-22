@@ -422,20 +422,21 @@ remain persisted descriptions, not runtime capability checks.
 Containers use the host architecture. `--container-platform` (configuration:
 `container.platform = "linux-amd64"` or `"linux-arm64"`) optionally asserts that
 native platform; an explicit non-native selection is rejected before execution,
-including with a prepared rootfs or custom injected pVisor. It does not enable
+including with a prepared rootfs. It does not enable
 cross-platform emulation or artifact auto-discovery. A configured platform also
 requires the container executor rather than being ignored by host/VM execution.
 Without the option, image preparation and container execution use the native platform.
-The OCI executor injects the `pvisor` executable and delegates the Session through
-`spawn --executor host --spec ... --result-file ...` inside the container.
-Only the spec file is mounted read-only; a separate output directory is writable.
-OCI bundle/state directories remain private and overlapping rootfs/mount sources
-are rejected. Delegated JSON is bounded to 16 MiB, opened without following a
-symlink or blocking on a FIFO, and checked for Run/inner-Execution consistency.
-It supplies output text only: host-observed runtime exit status decides the
-outcome, and guest-produced controls, metrics, artifacts and AgentCtl snapshots
-are not accepted as host enforcement evidence. Enforce mode still requires
-independently installed executor observations and fails if they are missing.
+
+The native OCI executor puts the resolved workload argv in `process.args` and
+starts it directly with `runc` (or explicitly selected `crun`). The host Session
+owns OverlayFS staging, any OverlayNet/Gateway proxy, stdio, cancellation,
+deadlines and completion. The container receives the mounted workspace view and
+proxy configuration; proxy use in `host` network mode remains cooperative.
+The OCI bundle and runtime state are host-private. No pVisor executable, Session
+control socket, or result handoff directory is mounted. `container.pvisor_binary`
+remains readable for compatibility but is ignored. The runtime's init PID file
+distinguishes launch failure from a workload exit; no workload file is accepted
+as outcome or enforcement evidence.
 
 ## Explicit runtime experiments
 

@@ -199,8 +199,7 @@ pub struct ContainerSettings {
     pub image: String,
     /// Prepared OCI rootfs directory. When omitted, `image` is prepared by pVisor.
     pub rootfs: Option<PathBuf>,
-    /// Target-specific pVisor injected into the container. Defaults to the
-    /// running executable; set it when the guest ABI differs from the host.
+    /// Legacy compatibility field. Direct OCI execution does not use an injected binary.
     pub pvisor_binary: Option<PathBuf>,
     /// Optional native OCI platform assertion. Must match the host architecture;
     /// cross-platform selection/emulation and artifact auto-discovery are unsupported.
@@ -213,16 +212,15 @@ pub struct ContainerSettings {
     pub user: Option<String>,
     /// Mount the image root filesystem read-only.
     pub read_only_rootfs: bool,
-    /// Additional explicit bind mounts. The runtime automatically mounts the
-    /// injected pVisor, delegated control directory, final Run cwd, and capture
-    /// configuration when present.
+    /// Additional explicit bind mounts. The runtime also mounts the resolved
+    /// host Run cwd (including the staged view) and capture configuration when present.
     pub mounts: Vec<ContainerMount>,
 }
 
 impl Default for ContainerSettings {
     fn default() -> Self {
         Self {
-            runtime: PathBuf::from("crun"),
+            runtime: PathBuf::from("runc"),
             image: String::new(),
             rootfs: None,
             pvisor_binary: None,

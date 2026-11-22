@@ -498,10 +498,8 @@ D01 讲视图层组合，D02/D03 讲 host executor，D04–D05 讲拒绝和显�
 需要复用 OCI rootfs、但不想运行 Docker/Podman daemon 时使用原生 OCI container。请按 F01 → F04 逐步增加复杂度；F04 组合高级配置。
 
 这些例子使用原生 OCI bundle，由 pVisor 准备文件系统并调用 runc/crun，
-不依赖 Docker/Podman daemon。F01–F03 使用默认 runtime，F04 显式选择 runc。
-镜像或目录需与本机架构兼容；如果当前 pVisor 是动态链接构建，guest 必须提供
-相应的动态加载器和库，否则应像 F04 一样指定兼容的静态构建。
-默认注入当前 pVisor，不需要在最小命令中显式指定 binary。
+不依赖 Docker/Podman daemon。F01–F03 使用测试环境选定的 runtime，F04 显式选择 runc。
+镜像或目录需与本机架构兼容。运行时直接启动任务。
 
 F04 显式设置 `--container-platform linux/amd64`，假设 Linux x86_64。此选项接受匹配的原生架构断言，拒绝跨架构值，即使提供了预制 rootfs；host/VM 配置会拒绝它。它不是模拟执行、程序自动发现或下载选择器。现有用例检查组合启动，不是平台拒绝矩阵。见[容器准备](../guides/executors/container.md)与[配置](config.md#settings)。
 
@@ -512,7 +510,7 @@ F04 显式设置 `--container-platform linux/amd64`，假设 Linux x86_64。此�
 
 准备：OCI runtime 可运行，并为脚本设置 PVISOR_CASE_CONTAINER_IMAGE。
 
-**语义**：pVisor 准备 OCI bundle、注入自身并执行 `/bin/true`，运行结果记录为 container 且退出码为 0。
+**语义**：pVisor 准备 OCI bundle，运行时直接执行 `/bin/true`，运行结果记录为 container 且退出码为 0。
 
 **理由**：以 OCI 镜像启动最小容器运行。`--container-image` 同时选择容器 executor 和镜像来源。
 
@@ -559,7 +557,7 @@ F04 显式设置 `--container-platform linux/amd64`，假设 Linux x86_64。此�
 
 **语义**：容器成功退出。`read_only=false` 使绑定目录可写，即使 rootfs 只读；`--container-workdir` 在 Run 没有 cwd 时才作为回退。此例仅检查组合启动，未分别检查用户身份和读写行为。
 
-**理由**：显式覆盖高级容器选项：使用 runc 和指定 pVisor 构建，声明平台、uid/gid、工作目录、只读 rootfs，并把宿主目录绑定到 `/workspace`。
+**理由**：显式选择 runc，声明平台、uid/gid、工作目录、只读 rootfs，并把宿主目录绑定到 `/workspace`。用例也传入旧版 binary 选项，该选项仍可接受，但不再生效。
 
 **违反示例**：高级 OCI 参数被接受但容器失败，或被错误记为其他 executor。
 
