@@ -138,12 +138,12 @@ read and EOF probe passed on both kernels. The kernel builder tests passed
 
 Use the [VM probe build recipe](../startup/README.md#linux-and-rust-firmware-stage-diagnostic-kvm).
 Linux uses the GNU runner with `--firmware`; Rust uses an embedded kernel with
-`PVISOR_NATIVE_KERNEL=rust`. Mechanism launches use the same static payload
+`PVISOR_GUEST_KERNEL=rust-native`. Mechanism launches use the same static payload
 and read fixture as the previous experiment. For example, in a fresh prepared
 rootfs containing `/subject`, `/bin/sh` and `/input`:
 
 ```sh
-PVISOR_NATIVE_KERNEL=rust timeout 90 /usr/bin/time -f '%U %S' -o cpu \
+PVISOR_GUEST_KERNEL=rust-native timeout 90 /usr/bin/time -f '%U %S' -o cpu \
   taskset -c 0,1 "$probe" --rootfs "$root" --cpus 1 --memory 512 \
   -- /bin/sh -c 'exec /subject M06 /output /input 3 512 >/result 2>/errors'
 "$payload" --verify M06 "$root/output" "$root/input" 3 512
@@ -164,3 +164,36 @@ Raw records under `benchmark/filesystem/.data/`: `irq-preflight`,
 `native-fs-final-mechanisms` and `native-fs-final-workflows`. Each batch
 retains its order, command, per-VM stdout/stderr, guest phase records,
 CPU and host oracle. Kernel receipts bind source and artifact hashes.
+
+## Rebase verification on main `908aa71c`
+
+Same x86_64 KVM host, frozen payloads and verifier, fresh roots, one rebuilt
+release runner (`2b99b055`) for both firmware selections. Rust kernel SHA-256:
+`49da6339256d4e1ee91f3a672e49af43c9cca3e8cabf62b40198ce64caac8a07`.
+Local records: `benchmark/filesystem/.data/pr183-2b99b055/`.
+These are independent firmware comparisons, not a new prior-Rust A/B.
+
+| Median completed time (three resident rounds per VM) | Rust native | Linux |
+|---|---:|---:|
+| M04 sequential read | 65.6 ms | 50.9 ms |
+| M06 small writes | 380.7 ms | 356.8 ms |
+| M07 large writes | 20.9 ms | 18.7 ms |
+| M08 random overwrites | 93.6 ms | 101.9 ms |
+| M10 per-write fsync | 322.8 ms | 325.3 ms |
+| M06, UID 1000 without effective capabilities | 1095.2 ms | 358.8 ms |
+| M08, same UID | 163.6 ms | 102.3 ms |
+| S01 repository inspection | 3.961 s | 5.122 s |
+| S02 incremental compilation | 1.746 s | 1.051 s |
+| S03 unpack and publish | 14.200 s | 17.685 s |
+
+All 88 filesystem VMs passed the host oracle (five paired blocks per
+mechanism, three per workflow). S03 reproduced the earlier reduction in
+elapsed time; ordinary-user small writes still took about three times as long.
+In five separate startup pairs, console ACK was 33.2 / 43.1 ms (Rust / Linux),
+but spawn to verified shell marker was 95.3 / 69.9 ms. No historical samples
+or failed launches using the obsolete firmware selector enter these medians.
+
+The rebased guest regression probe passed both filesystem modes on Rust.
+On Linux the new main-branch UUID rewind assertion failed before the filesystem
+checks; the pre-rebase probe passed both filesystem modes and the host byte
+oracle. This is not a pass of the rebased standalone probe on Linux.

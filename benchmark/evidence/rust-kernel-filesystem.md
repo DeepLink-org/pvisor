@@ -113,7 +113,7 @@ as `/subject`, and the frozen fixture `read.bin` as `/input/read.bin` into a
 fresh rootfs. Run the release `vm_api_case` probe under a 90 s host deadline:
 
 ```sh
-PVISOR_NATIVE_KERNEL=rust taskset -c 0,1 "$probe" --rootfs "$root" \
+PVISOR_GUEST_KERNEL=rust-native taskset -c 0,1 "$probe" --rootfs "$root" \
   --cpus 1 --memory 512 -- /bin/sh -c \
   'exec /subject "$1" /output /input 3 512 >/result 2>/errors' sh M04
 "$payload" --verify M04 "$root/output" "$root/input" 3 512

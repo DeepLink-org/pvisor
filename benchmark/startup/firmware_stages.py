@@ -88,7 +88,7 @@ def main():
                     stderr=err,
                     env={
                         **os.environ,
-                        "PVISOR_NATIVE_KERNEL": kernel,
+                        "PVISOR_GUEST_KERNEL": "rust-native" if kernel == "rust" else "linux",
                         "PVISOR_STARTUP_PROFILE": "1",
                     },
                 ) as child:
