@@ -1238,6 +1238,14 @@ PVISOR_VM_GUEST_CACHE=1 pvisor spawn --executor vm --safe -- YOUR_COMMAND
 `READINDEX` 返回 `ENOSYS`，guest 在连接上记住拒绝，后续目录不再重试，
 并保留普通 FUSE lookup/readdir 和原有元数据期限，避免永久隐藏宿主新增文件。
 惰性只读 open 独立于此资格，目录镜像被拒绝时仍可使用。
+
+[Rust native kernel](../../pvisor-kernel/README.md#experimental-selection) 只移植正项
+`READINDEX`，对符合条件的挂载默认开启；`PVISOR_VM_FS_RNGK_READINDEX=0` 单独关闭。
+额外协商 virtio-fs bit 24，避免把普通 FUSE 的 bit 41（io_uring）误认为
+pVisor 协议。当前只向物理 lower 全部声明为 `Immutable`、无 DAX 共享区和宿主写回的
+OverlayFS 提供该设备能力。下面的完整目录、负项、`readdir` 和惰性 `OPEN`
+行为仍是 Linux FW 的能力。
+
 已导入且完整的目录上，lookup、getattr 所依赖的
 dentry、readdir，以及普通文件和目录的只读 open，都在 guest 内核内完成。
 单文件首次 lookup/stat 使用原生 FUSE 缓存；同一目录积累一定数量的不同名字后才
@@ -1404,6 +1412,13 @@ descriptor plan 在认领时校验全部输入、输出范围与累计长度；h
 body 与 reply 建立一次借用 consumer，不重新读取 opcode。队列主动
 drain 时保持 guest kick 通知关闭，仅在空队列时 enable/recheck 后休眠；
 控制线程独立检查长操作和 backlog，因此仍可救援正在执行的 owner。
+
+Linux x86_64/KVM 的 Rust native metadata 快路径在单普通队列
+（`PVISOR_VM_FS_WORKERS=1`）、普通非托管、非 DAX 的目录共享上默认开启，
+不适用于 OverlayFS。`PVISOR_VM_FS_INLINE_METADATA=0` 可关闭。协商后，
+空闲队列的 `LOOKUP` / `GETATTR` 通过专用 MMIO 通知由当前宿主 vCPU 线程
+执行。内联完成不发 IRQ；不能认领时由普通队列线程处理，不重新提交请求。
+宿主 metadata I/O 或锁等待会停住发起请求的 vCPU。
 
 OverlayFs 的普通 READ/不变更权限的 WRITE/FLUSH/FSYNC 直接在 handle map 和
 I/O admission 短锁内取得原生 Arc lease，不取得 namespace operation guard。

@@ -103,6 +103,32 @@ require `CAP_NET_ADMIN`; arbitrary route entries and device selection via
 connections or provide real queue and timer statistics.
 Do not treat this as Linux syscall or workload compatibility.
 
+The [inline metadata path](../crates/pvisor-vm/README.md#virtio-fs-并发与冻结契约)
+negotiates device feature bit 23. An idle ordinary queue can use bit 31 in its
+MMIO notification value for `LOOKUP` or `GETATTR`. The guest checks the used
+ring on return and waits for the ordinary IRQ if the worker owns the request.
+It defaults on for eligible single-queue shares on Linux x86_64/KVM.
+Set `PVISOR_VM_FS_INLINE_METADATA=0` to disable it.
+
+Path-based `stat`, `lstat` and `newfstatat` can reuse the last component's
+`LOOKUP` attributes when that walk obtained them for the resolved inode.
+This does not extend TTLs or change directory search checks. `statx` and
+descriptor-only queries keep their existing paths.
+
+On staged OverlayFS with explicitly immutable lowers and a guest-exclusive
+upper, virtio-fs can import positive entries with the Linux firmware's
+`READINDEX` protocol when DAX and host writeback are off.
+Four distinct successful host lookups in a directory
+admit a 16 KiB page. A hit and at least three quarters consumption can admit
+one continuation of up to 512 KiB. Each mount retains at most one such image.
+Already imported entries can revalidate matching live dentries in the same
+directory, credential context and request generation. Guest requests that
+may change names or attributes invalidate that generation. Directory search
+permissions still run through VFS; unimported names, negative lookups and
+userspace enumeration use ordinary FUSE. Imported attributes do not extend
+ordinary inode TTLs. Set `PVISOR_VM_FS_RNGK_READINDEX=0` to disable the
+default-on path. `PVISOR_VM_GUEST_CACHE=0` also disables the protocol.
+
 ## Tests and hardware acceptance
 
 On Linux x86_64/KVM the `vm_api_case` probe with one or two vCPUs runs the guest supervisor
@@ -251,6 +277,36 @@ python3 pvisor-kernel/tests/task_stdio.py --binary /path/to/vm_api_case \
 
 This checks immediate EOF and a multi-page binary input, byte-exact stdout,
 separate stderr, shared-rootfs contents and exit status in fresh two-vCPU VMs.
+
+On Linux x86_64/KVM, validate `newfstatat` against host mutations in the
+default mode and with the inline path disabled:
+
+```sh
+cc -static -O2 pvisor-kernel/tests/stat_visibility.c -o target/native-stat-visibility
+python3 pvisor-kernel/tests/stat_visibility.py --binary target/release/examples/vm_api_case \
+  --guest target/native-stat-visibility
+```
+
+CI runs the same checks and verifies that the default and disabled modes
+use different paths. To reproduce the full check with native-enabled
+`vm_api_case` and `guest_metadata_case`:
+
+```sh
+mise exec -- rustc --edition=2021 --target x86_64-unknown-linux-musl -C linker=rust-lld -O \
+  crates/pvisor-vm/src/probes/guest_metadata_guest.rs -o target/metadata-guest
+python3 pvisor-kernel/tests/fs_metadata.py \
+  --vm-api target/release/examples/vm_api_case --stat-guest target/native-stat-visibility \
+  --metadata-case target/release/examples/guest_metadata_case --metadata-guest target/metadata-guest \
+  --output target/native-fs-metadata --seed 1 --seed 314159 --seed 57596
+```
+
+Use a fresh output directory per run. The staged probe checks paged lookup,
+rename over an existing entry, an open fd across rename, deletion and recreation,
+copy-up, and non-root directory search. Each `--seed` adds a fresh two-vCPU VM
+with two request queues, concurrent stats and seeded namespace changes. It
+checks old descriptors and final file state. The seed controls the operations,
+not thread scheduling.
+These are correctness checks, not timing gates.
 
 ## License
 

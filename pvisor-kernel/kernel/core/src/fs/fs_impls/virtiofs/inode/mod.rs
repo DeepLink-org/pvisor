@@ -17,7 +17,6 @@ use aster_fuse::{
     ReleaseFlags, ReleaseKind, SetattrReq, SetattrValid,
     ops::{
         link::{LinkOperation, LinkReq},
-        lookup::LookupOperation,
         mkdir::{MkdirOperation, MkdirReq},
         mknod::{MknodOperation, MknodReq},
         open::{OpenReq, OpendirOperation},
@@ -189,15 +188,15 @@ impl VirtioFsInode {
         &self,
         entry_reply: &EntryReply,
         request_attr_version: AttrVersion,
-    ) -> Result<()> {
-        self.commit_entry_reply(
+    ) -> Result<Option<Metadata>> {
+        let observed = self.commit_entry_reply(
             entry_reply,
             request_attr_version,
             metadata::StaleAttrAction::Discard,
         )?;
         *self.entry_valid_until.lock() =
             valid_until(entry_reply.entry_valid(), entry_reply.entry_valid_nsec());
-        Ok(())
+        Ok(observed)
     }
 
     fn type_(&self) -> InodeType {
@@ -386,14 +385,15 @@ impl Inode for VirtioFsInode {
     }
 
     fn lookup(&self, name: &str) -> Result<Arc<dyn Inode>> {
-        let fs = self.fs_ref();
-        let parent_nodeid = self.nodeid();
-        let request_attr_version = fs.session().snapshot_attr_version();
-        let lookup_reply = fs
-            .session()
-            .do_fuse_op(parent_nodeid, LookupOperation::new(name))?;
+        self.lookup_observed(name).map(|(inode, _)| inode)
+    }
 
-        Ok(fs.lookup_inode_from_cache(lookup_reply, request_attr_version)?)
+    fn lookup_observed(&self, name: &str) -> Result<(Arc<dyn Inode>, Option<Metadata>)> {
+        let fs = self.fs_ref();
+        let (lookup_reply, request_attr_version) = fs.dir_index().lookup(self.nodeid(), name)?;
+
+        let (inode, observed) = fs.lookup_inode_observed(lookup_reply, request_attr_version)?;
+        Ok((inode, observed))
     }
 
     fn create(
@@ -588,11 +588,16 @@ impl Inode for VirtioFsInode {
     }
 
     fn revalidate_exists(&self, name: &str, child: &dyn Inode) -> bool {
-        let Some(child) = child.downcast_ref::<VirtioFsInode>() else {
-            return false;
-        };
+        self.revalidate_exists_observed(name, child).is_some()
+    }
 
-        child.revalidate_lookup(self.nodeid(), name).is_ok()
+    fn revalidate_exists_observed(
+        &self,
+        name: &str,
+        child: &dyn Inode,
+    ) -> Option<Option<Metadata>> {
+        let child = child.downcast_ref::<VirtioFsInode>()?;
+        child.revalidate_lookup(self.nodeid(), name).ok()
     }
 
     fn revalidate_absent(&self, _name: &str) -> bool {

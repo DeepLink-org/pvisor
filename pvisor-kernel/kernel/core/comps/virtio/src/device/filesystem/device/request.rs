@@ -14,7 +14,10 @@ use aster_fuse::{
     FuseCompleteFn, FuseCompletion, FuseNodeId, FuseUnique, ReplyExpectation, ReplyHeader,
     WriteReply,
 };
-use ostd::mm::io::util::HasVmReaderWriter;
+use ostd::{
+    mm::io::util::HasVmReaderWriter,
+    sync::{LocalIrqDisabled, SpinLock},
+};
 use smallvec::SmallVec;
 
 use super::waiter::{FuseWaiter, ReplyBufs};
@@ -22,6 +25,38 @@ use crate::device::filesystem::pool::FuseRequestBuf;
 
 /// DMA buffers sent to the device as one FUSE request.
 pub(super) type RequestBufs = SmallVec<[FuseRequestBuf; 2]>;
+
+#[derive(Default)]
+pub(super) struct IndexEpoch {
+    generation: u64,
+    in_flight: usize,
+}
+
+impl IndexEpoch {
+    pub(super) fn snapshot(&self) -> Option<u64> {
+        (self.in_flight == 0).then_some(self.generation)
+    }
+}
+
+/// Suppresses indexed lookups while a request can change the view.
+pub(super) struct IndexChange(Arc<SpinLock<IndexEpoch, LocalIrqDisabled>>);
+
+impl IndexChange {
+    pub(super) fn start(epoch: &Arc<SpinLock<IndexEpoch, LocalIrqDisabled>>) -> Self {
+        {
+            let mut state = epoch.lock();
+            state.generation = state.generation.wrapping_add(1);
+            state.in_flight += 1;
+        }
+        Self(epoch.clone())
+    }
+}
+
+impl Drop for IndexChange {
+    fn drop(&mut self) {
+        self.0.lock().in_flight -= 1;
+    }
+}
 
 /// State for one submitted FUSE request while its descriptor is in flight.
 pub(super) struct FuseRequest {
@@ -31,6 +66,7 @@ pub(super) struct FuseRequest {
     request_bufs: RequestBufs,
     waiter: Arc<FuseWaiter>,
     complete_fn: Option<FuseCompleteFn>,
+    index_change: Option<IndexChange>,
 }
 
 impl FuseRequest {
@@ -46,6 +82,7 @@ impl FuseRequest {
         request_bufs: RequestBufs,
         reply_bufs: ReplyBufs,
         complete_fn: Option<FuseCompleteFn>,
+        index_change: Option<IndexChange>,
     ) -> Self {
         Self {
             unique,
@@ -54,6 +91,7 @@ impl FuseRequest {
             request_bufs,
             waiter: Arc::new(FuseWaiter::new(reply_bufs)),
             complete_fn,
+            index_change,
         }
     }
 
@@ -68,6 +106,7 @@ impl FuseRequest {
             complete_fn(completion);
         }
 
+        drop(self.index_change.take());
         self.waiter.wake_completed(completion);
     }
 

@@ -14,7 +14,7 @@ use crate::{
         self,
         file::{InodeMode, InodeType},
         vfs::{
-            inode::{Inode, MknodType, RevalidationPolicy},
+            inode::{Inode, Metadata, MknodType, RevalidationPolicy},
             inode_ext::InodeExt,
         },
     },
@@ -560,15 +560,22 @@ impl DirDentry<'_> {
     /// full path-component semantics should use
     /// [`super::PathResolver::lookup_at_path`].
     pub(in crate::fs) fn lookup_child(&self, name: &str) -> Result<Arc<Dentry>> {
+        self.lookup_child_observed(name).map(|(dentry, _)| dentry)
+    }
+
+    pub(super) fn lookup_child_observed(
+        &self,
+        name: &str,
+    ) -> Result<(Arc<Dentry>, Option<Metadata>)> {
         debug_assert!(!is_dot_or_dotdot(name));
 
         let mut children = self.children.upread();
 
         // Looks up via the dentry cache.
         if let Some(cached_entry) = children.find(name) {
-            if self.revalidate_cached_entry(name, &cached_entry) {
+            if let Some(observed) = self.revalidate_cached_entry_observed(name, &cached_entry) {
                 return match cached_entry {
-                    CachedDentry::Positive { dentry } => Ok(dentry),
+                    CachedDentry::Positive { dentry } => Ok((dentry, observed)),
                     CachedDentry::Negative => {
                         return_errno_with_message!(Errno::ENOENT, "found a negative dentry")
                     }
@@ -582,8 +589,8 @@ impl DirDentry<'_> {
 
         // Looks up via the file system.
 
-        let inode = match self.inode.lookup(name) {
-            Ok(inode) => inode,
+        let (inode, observed) = match self.inode.lookup_observed(name) {
+            Ok(result) => result,
             Err(error) if error.error() == Errno::ENOENT => {
                 children.upgrade().insert_negative(name.to_string());
                 return Err(error);
@@ -597,7 +604,8 @@ impl DirDentry<'_> {
         );
         let mut children = children.upgrade();
 
-        Ok(self.insert_positive_child(&mut children, name, target))
+        let dentry = self.insert_positive_child(&mut children, name, target);
+        Ok((dentry, observed))
     }
 
     /// Creates a `Dentry` by making an inode of the `type_` with the `mode`.
@@ -941,24 +949,32 @@ impl DirDentry<'_> {
     ///
     /// Returns `true` if the cached entry is still valid, or `false` if it should be invalidated.
     fn revalidate_cached_entry(&self, name: &str, cached_entry: &CachedDentry) -> bool {
+        self.revalidate_cached_entry_observed(name, cached_entry)
+            .is_some()
+    }
+
+    fn revalidate_cached_entry_observed(
+        &self,
+        name: &str,
+        cached_entry: &CachedDentry,
+    ) -> Option<Option<Metadata>> {
         let policy = self.revalidation_policy;
-        if policy.is_empty() {
-            return true;
-        }
 
         if policy.contains(RevalidationPolicy::REVALIDATE_EXISTS)
             && let CachedDentry::Positive { dentry } = cached_entry
         {
-            return self.inode.revalidate_exists(name, dentry.inode().as_ref());
+            return self
+                .inode
+                .revalidate_exists_observed(name, dentry.inode().as_ref());
         }
 
         if policy.contains(RevalidationPolicy::REVALIDATE_ABSENT)
             && let CachedDentry::Negative = cached_entry
         {
-            return self.inode.revalidate_absent(name);
+            return self.inode.revalidate_absent(name).then_some(None);
         }
 
-        true
+        Some(None)
     }
 }
 

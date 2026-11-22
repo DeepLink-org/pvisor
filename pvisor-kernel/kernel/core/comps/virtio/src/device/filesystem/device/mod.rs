@@ -16,7 +16,7 @@ use alloc::{string::String, sync::Arc, vec::Vec};
 use core::sync::atomic::{AtomicU64, Ordering};
 
 use aster_fuse::{
-    FuseCompleteFn, FuseError, FuseNodeId, FuseOperation, FuseUnique, ReplyExpectation,
+    FuseCompleteFn, FuseError, FuseNodeId, FuseOpcode, FuseOperation, FuseUnique, ReplyExpectation,
     ReplyHeader, ReqHeader,
 };
 use ostd::{
@@ -27,7 +27,7 @@ use ostd::{
     sync::{LocalIrqDisabled, SpinLock},
 };
 use queue::FsRequestQueue;
-use request::{FuseRequest, RequestBufs};
+use request::{FuseRequest, IndexChange, IndexEpoch, RequestBufs};
 use spin::Once;
 use waiter::{FuseWaiter, ReplyBufs};
 
@@ -40,6 +40,40 @@ static REQUEST_CREDENTIALS: Once<fn() -> (u32, u32, u32)> = Once::new();
 pub fn set_request_credentials(provider: fn() -> (u32, u32, u32)) {
     REQUEST_CREDENTIALS.call_once(|| provider);
 }
+
+fn request_credentials() -> (u32, u32, u32) {
+    REQUEST_CREDENTIALS.get().map_or((0, 0, 0), |get| get())
+}
+
+fn changes_index(opcode: FuseOpcode) -> bool {
+    matches!(
+        opcode,
+        FuseOpcode::Setattr
+            | FuseOpcode::Mknod
+            | FuseOpcode::Mkdir
+            | FuseOpcode::Unlink
+            | FuseOpcode::Rmdir
+            | FuseOpcode::Symlink
+            | FuseOpcode::Rename
+            | FuseOpcode::Rename2
+            | FuseOpcode::Link
+            | FuseOpcode::Create
+            | FuseOpcode::Tmpfile
+            | FuseOpcode::Setxattr
+            | FuseOpcode::Removexattr
+            | FuseOpcode::Open
+            | FuseOpcode::Write
+            | FuseOpcode::Fallocate
+            | FuseOpcode::CopyFileRange
+            // Reads can change atime, even when the namespace is unchanged.
+            | FuseOpcode::Read
+            | FuseOpcode::Readlink
+            | FuseOpcode::Opendir
+            | FuseOpcode::Readdir
+            | FuseOpcode::Readdirplus
+    )
+}
+
 use crate::{
     device::filesystem::{
         pool,
@@ -81,6 +115,7 @@ pub struct FileSystemDevice {
     next_unique: AtomicU64,
     tag: String,
     notify_supported: bool,
+    index_epoch: Option<Arc<SpinLock<IndexEpoch, LocalIrqDisabled>>>,
 }
 
 impl FileSystemDevice {
@@ -90,6 +125,7 @@ impl FileSystemDevice {
         request_queues: Vec<Arc<FsRequestQueue>>,
         tag: String,
         notify_supported: bool,
+        read_index_supported: bool,
     ) -> Self {
         let (to_device_arena_pool, from_device_arena_pool) = pool::dma_arena_pools_singleton();
 
@@ -105,6 +141,8 @@ impl FileSystemDevice {
             next_unique: AtomicU64::new(1),
             tag,
             notify_supported,
+            index_epoch: read_index_supported
+                .then(|| Arc::new(SpinLock::new(IndexEpoch::default()))),
         }
     }
 
@@ -122,11 +160,13 @@ impl FileSystemDevice {
         data_bufs: Option<FuseDataBuf>,
         complete_fn: Option<FuseCompleteFn>,
     ) -> Result<Arc<FuseWaiter>, FuseError> {
+        let inline = complete_fn.is_none()
+            && matches!(operation.opcode(), FuseOpcode::Lookup | FuseOpcode::Getattr);
         let request = self.prepare_request(nodeid, operation, data_bufs, complete_fn)?;
         let waiter = request.waiter().clone();
 
         let queue = self.select_request_queue(request.nodeid());
-        self.submit(queue, request)?;
+        queue.add_request(request, inline)?;
 
         Ok(waiter)
     }
@@ -148,6 +188,7 @@ impl FileSystemDevice {
     ) -> Result<FuseRequest, FuseError> {
         let unique = self.alloc_unique();
         let reply_expectation = operation.reply_expectation();
+        let opcode = operation.opcode();
 
         let data_buf_len = match data_bufs.as_ref() {
             Some(FuseDataBuf::Write(data_bufs)) => data_bufs.iter().map(FuseRequestBuf::len).sum(),
@@ -195,6 +236,10 @@ impl FileSystemDevice {
             request_bufs,
             reply_bufs,
             complete_fn,
+            self.index_epoch
+                .as_ref()
+                .filter(|_| changes_index(opcode))
+                .map(IndexChange::start),
         ))
     }
 
@@ -211,14 +256,6 @@ impl FileSystemDevice {
 
     fn alloc_unique(&self) -> FuseUnique {
         FuseUnique::new(self.next_unique.fetch_add(1, Ordering::Relaxed))
-    }
-
-    fn submit(
-        &self,
-        request_queue: &FsRequestQueue,
-        request: FuseRequest,
-    ) -> Result<(), FuseError> {
-        request_queue.add_request(request)
     }
 
     fn alloc_and_fill_request_buf(
@@ -242,7 +279,7 @@ impl FileSystemDevice {
             .alloc_request_buf(request_buf_len as usize)
             .map_err(FuseError::ResourceAlloc)?;
 
-        let (uid, gid, pid) = REQUEST_CREDENTIALS.get().map_or((0, 0, 0), |get| get());
+        let (uid, gid, pid) = request_credentials();
         let request_header = ReqHeader::new(total_len, operation.opcode() as u32, unique, nodeid)
             .with_credentials(uid, gid, pid);
 

@@ -13,14 +13,15 @@ bitflags::bitflags! {
     /// The virtio-fs feature bits supported by the driver.
     pub(super) struct FileSystemFeatures: u64 {
         const NOTIFICATION = 1 << 0;
+        const PVISOR_INLINE_METADATA = 1 << 23;
+        const PVISOR_READ_INDEX = 1 << 24;
     }
 }
 
 impl FileSystemFeatures {
     /// Returns the virtio-fs feature bits supported by this driver.
     pub(super) fn supported_features() -> Self {
-        // TODO: Notification support is not yet implemented.
-        Self::empty()
+        Self::PVISOR_INLINE_METADATA | Self::PVISOR_READ_INDEX
     }
 }
 
