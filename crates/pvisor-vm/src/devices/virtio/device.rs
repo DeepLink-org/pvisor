@@ -113,6 +113,12 @@ pub enum DeviceSnapshotState {
 /// during activation, transferring ownership. After reset, the transport recreates queues
 /// from queue_config() for the next negotiation cycle.
 pub trait VirtioDevice: AsAny + Send {
+    /// `None` rejects the private notification; `Some(false)` wakes the
+    /// ordinary worker, and `Some(true)` means the request completed inline.
+    fn inline_queue_kick(&self, _queue: usize) -> Option<bool> {
+        None
+    }
+
     /// Pre-freeze channel drain probe; no mutation and no worker shutdown.
     /// Only channel-owning devices need an extra running-state gate.
     fn snapshot_blocker(&self) -> Result<Option<String>, String> {

@@ -12,8 +12,8 @@ use aster_fuse::{
     FUSE_KERNEL_MINOR_VERSION, FUSE_KERNEL_VERSION, FUSE_ROOT_ID, FuseCompleteFn, FuseDirEntry,
     FuseError, FuseFileHandle, FuseNodeId, FuseOperation, MIN_MAX_WRITE,
     ops::{
-        forget::{ForgetOperation, ForgetReq},
-        fsync::{FsyncFlags, FsyncOperation, FsyncdirOperation},
+        forget::{BatchForgetOperation, ForgetOperation, ForgetReq},
+        fsync::{FsyncFlags, FsyncOperation, FsyncdirOperation, SyncFsOperation},
         init::{FuseInitFlags, FuseInitFlags2, InitOperation, InitReq},
         read::{ReadOperation, ReadReq},
         readdir::ReaddirOperation,
@@ -25,7 +25,7 @@ use aster_fuse::{
 use ostd::{info, mm::io::util::HasVmReaderWriter};
 use smallvec::smallvec;
 
-use super::{super::DEVICE_NAME, FileSystemDevice, FuseWaiter};
+use super::{super::DEVICE_NAME, FileSystemDevice, FuseWaiter, request_credentials};
 use crate::device::filesystem::pool::{
     FuseDataBuf, FuseReplyBuf, FuseReplyBufs, FuseRequestBuf, FuseRequestBufs,
 };
@@ -53,12 +53,17 @@ impl FuseSession {
     /// the server.
     pub fn new(device: Arc<FileSystemDevice>) -> Result<Arc<Self>, FuseError> {
         let requested_flags = Self::init_flags();
+        let requested_flags2 = if device.index_epoch.is_some() {
+            FuseInitFlags2::PVISOR_META
+        } else {
+            FuseInitFlags2::empty()
+        };
         let mut operation = InitOperation::new(InitReq::new(
             FUSE_KERNEL_VERSION,
             FUSE_KERNEL_MINOR_VERSION,
             0,
             requested_flags,
-            FuseInitFlags2::empty(),
+            requested_flags2,
         ));
         let waiter = device.submit_fuse_op(FUSE_ROOT_ID, &mut operation, None, None)?;
         let payload_len = waiter.wait().payload_len()?;
@@ -153,13 +158,24 @@ impl FuseSession {
         self.negotiated_flags2
     }
 
+    /// Returns the directory-image generation and request credentials if the
+    /// protocol is negotiated and no invalidating request is in flight.
+    pub fn read_index_scope(&self) -> Option<(u64, (u32, u32, u32))> {
+        if !self.negotiated_flags2.contains(FuseInitFlags2::PVISOR_META) {
+            return None;
+        }
+        let epoch = self.device.index_epoch.as_ref()?.lock().snapshot()?;
+        Some((epoch, request_credentials()))
+    }
+
     /// Returns the maximum write size accepted by the server.
     pub fn max_write(&self) -> u32 {
         self.max_write
     }
 
     fn init_flags() -> FuseInitFlags {
-        FuseInitFlags::HAS_IOCTL_DIR | FuseInitFlags::ASYNC_READ
+        FuseInitFlags::HAS_IOCTL_DIR
+            | FuseInitFlags::ASYNC_READ
             | FuseInitFlags::ATOMIC_O_TRUNC
             | FuseInitFlags::AUTO_INVAL_DATA
             | FuseInitFlags::BIG_WRITES
@@ -299,9 +315,22 @@ impl FuseSession {
         let request = self
             .device
             .prepare_request(nodeid, &mut operation, None, None)?;
-        self.device
-            .submit(self.device.hiprio_queue.as_ref(), request)?;
+        self.device.hiprio_queue.add_request(request, false)?;
 
+        Ok(())
+    }
+
+    /// Releases one reference per listed non-root node from a directory image.
+    /// As with `forget`, successful submission does not wait for a reply.
+    pub fn forget_index_entries(&self, nodeids: &[FuseNodeId]) -> Result<(), FuseError> {
+        // Keep each request small enough for the ordinary request buffer pool.
+        for ids in nodeids.chunks(128) {
+            let mut operation = BatchForgetOperation(ids);
+            let request = self
+                .device
+                .prepare_request(FUSE_ROOT_ID, &mut operation, None, None)?;
+            self.device.hiprio_queue.add_request(request, false)?;
+        }
         Ok(())
     }
 
@@ -337,6 +366,14 @@ impl FuseSession {
         fsync_flags: FsyncFlags,
     ) -> Result<(), FuseError> {
         self.do_fuse_op(nodeid, FsyncdirOperation::new(fh, fsync_flags))
+    }
+
+    /// Requests a connection-wide backing synchronization.
+    ///
+    /// pVisor can implement this opcode even when it advertises an older
+    /// protocol minor. Unsupported servers reply with `ENOSYS`.
+    pub fn syncfs(&self) -> Result<(), FuseError> {
+        self.do_fuse_op(FUSE_ROOT_ID, SyncFsOperation)
     }
 }
 

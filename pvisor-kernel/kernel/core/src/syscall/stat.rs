@@ -70,21 +70,22 @@ pub(super) fn sys_fstatat(
         dirfd, filename, stat_buf_ptr, flags
     );
 
-    let path = {
+    let (path, observed) = {
         let filename = filename.to_string_lossy();
         let fs_path =
             FsPath::from_fd_at(dirfd, &filename, EmptyPathStr::AllowIfFlag(flags.bits()))?;
 
         let fs_ref = ctx.thread_local.borrow_fs();
         let path_resolver = fs_ref.resolver().read();
-        if flags.contains(StatFlags::AT_SYMLINK_NOFOLLOW) {
-            path_resolver.lookup_no_follow(&fs_path)?
-        } else {
-            path_resolver.lookup(&fs_path)?
-        }
+        path_resolver
+            .lookup_with_metadata(&fs_path, !flags.contains(StatFlags::AT_SYMLINK_NOFOLLOW))?
     };
 
-    let stat = Stat::from(path.metadata()?);
+    let metadata = match observed {
+        Some(metadata) => metadata,
+        None => path.metadata()?,
+    };
+    let stat = Stat::from(metadata);
     user_space.write_val(stat_buf_ptr, &stat)?;
     Ok(SyscallReturn::Return(0))
 }

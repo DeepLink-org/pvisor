@@ -130,6 +130,23 @@ fn check_write_cache() {
     }
 }
 
+fn check_keep_cache_copy_up() {
+    let path = "/keep-cache-source";
+    let lower = vec![b'a'; 8192];
+    assert_eq!(fs::read(path).unwrap(), lower);
+    assert_eq!(fs::read(path).unwrap(), lower);
+
+    let writer = fs::OpenOptions::new().write(true).open(path).unwrap();
+    writer.write_all_at(b"new", 4095).unwrap();
+    writer.sync_all().unwrap();
+    drop(writer);
+
+    let mut upper = lower;
+    upper[4095..4098].copy_from_slice(b"new");
+    assert_eq!(fs::read(path).unwrap(), upper);
+    assert_eq!(fs::read(path).unwrap(), upper);
+}
+
 fn check_smp(cpus: usize) {
     assert!((1..=64).contains(&cpus));
     let expected = u64::MAX >> (64 - cpus);
@@ -235,6 +252,7 @@ fn main() {
                 check_write_cache();
                 check_setid_writes();
             }
+            "--check-keep-cache-copy-up" => check_keep_cache_copy_up(),
             "--check-read-fixture" => {
                 let file = fs::File::open("/read-fixture").unwrap();
                 // A preexisting fixture avoids warming the guest cache by writing the data.

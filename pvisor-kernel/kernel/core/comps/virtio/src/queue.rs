@@ -507,6 +507,17 @@ impl VirtQueue {
         }
     }
 
+    /// Attempts the negotiated pVisor MMIO kick with completion on return.
+    pub(crate) fn notify_inline_metadata(&self) -> bool {
+        if !self.notify_config.is_modern() {
+            return false;
+        }
+        self.notify_config
+            .write_once::<u32>(0, self.queue_idx | (1 << 31))
+            .unwrap();
+        true
+    }
+
     /// Disables registered callbacks.
     ///
     /// That is to say, the queue won't generate interrupts after calling this method.

@@ -15,6 +15,7 @@ use super::super::{
     ActivateError, ActivateResult, DeviceQueue, DeviceState, FsError, QueueConfig, VirtioDevice,
     VirtioShmRegion,
 };
+use super::defs::REQ_INDEX;
 use super::overlay::Config as OverlayConfig;
 use super::passthrough;
 use super::virtual_entry::VirtualDirEntry;
@@ -23,6 +24,9 @@ use super::ExportTable;
 use super::{defs, defs::uapi};
 use crate::devices::virtio::passthrough::PermissionSemantics;
 use crate::devices::virtio::InterruptTransport;
+
+const INLINE_METADATA_FEATURE: u64 = 1 << 23;
+const READ_INDEX_FEATURE: u64 = 1 << 24;
 
 #[derive(Copy, Clone)]
 #[repr(C, packed)]
@@ -56,6 +60,7 @@ pub struct Fs {
     read_only: bool,
     virtual_entries: Vec<VirtualDirEntry>,
     worker_thread: Option<JoinHandle<FsWorker>>,
+    inline_dispatch: Option<super::worker::InlineDispatch>,
     parked_worker: Option<FsWorker>,
     freeze_requested: bool,
     restore: Option<super::snapshot::ServerSnapshot>,
@@ -121,6 +126,15 @@ impl Fs {
 
         let allow_idmap = matches!(device_config.semantics, PermissionSemantics::LinuxComplete);
 
+        let inline_dispatch = (cfg!(all(target_os = "linux", target_arch = "x86_64"))
+            && profile.inline_metadata
+            && profile.workers == 1
+            && !device_config.managed
+            && device_config.overlay.is_none()
+            && device_config.shm_size.is_none()
+            && device_config.shared_dir.is_some())
+        .then(super::worker::InlineDispatch::default);
+
         Ok(Fs {
             profile,
             avail_features,
@@ -135,6 +149,7 @@ impl Fs {
             read_only: device_config.read_only,
             virtual_entries: device_config.virtual_entries.clone(),
             worker_thread: None,
+            inline_dispatch,
             parked_worker: None,
             freeze_requested: false,
             restore: None,
@@ -189,6 +204,17 @@ impl Fs {
 }
 
 impl VirtioDevice for Fs {
+    fn inline_queue_kick(&self, queue: usize) -> Option<bool> {
+        if queue != REQ_INDEX
+            || self.acked_features & self.avail_features() & INLINE_METADATA_FEATURE == 0
+        {
+            return None;
+        }
+        self.inline_dispatch
+            .as_ref()
+            .map(|dispatch| dispatch.try_metadata(queue))
+    }
+
     fn freeze(&mut self) -> Result<bool, String> {
         if self.shm_region.is_some() {
             return Err("filesystem DAX/SHM freeze unsupported".into());
@@ -265,7 +291,28 @@ impl VirtioDevice for Fs {
     }
 
     fn avail_features(&self) -> u64 {
+        let inline = self.inline_dispatch.is_some()
+            && self.queue_config.len() == REQ_INDEX + 1
+            && self.shm_region.is_none()
+            && self
+                .passthrough_cfg
+                .as_ref()
+                .is_some_and(|cfg| !cfg.managed);
+        // FUSE bit 41 also means io_uring outside the pVisor protocol.
+        let read_index = self.profile.rngk_readindex
+            && self.profile.guest_cache
+            && !self.profile.host_writeback
+            && self.overlay_cfg.as_ref().is_some_and(|cfg| {
+                !cfg.lower_mutability.is_empty()
+                    && cfg
+                        .lower_mutability
+                        .iter()
+                        .all(|m| *m == pvisor_overlay_core::LayerMutability::Immutable)
+            })
+            && self.shm_region.is_none();
         self.avail_features
+            | if inline { INLINE_METADATA_FEATURE } else { 0 }
+            | if read_index { READ_INDEX_FEATURE } else { 0 }
     }
 
     fn acked_features(&self) -> u64 {
@@ -347,6 +394,7 @@ impl VirtioDevice for Fs {
             error!("virtio_fs: failed to create worker: {}", e);
             ActivateError::BadActivate
         })?;
+        let worker = worker.with_inline_dispatch(self.inline_dispatch.clone());
         if let Some(state) = self.restore.take() {
             worker.restore_state(&state).map_err(|error| {
                 error!("virtio_fs: failed restoring worker: {error}");

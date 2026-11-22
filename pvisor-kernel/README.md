@@ -106,6 +106,32 @@ require `CAP_NET_ADMIN`; arbitrary route entries and device selection via
 connections or provide real queue and timer statistics.
 Do not treat this as Linux syscall or workload compatibility.
 
+The [inline metadata path](../crates/pvisor-vm/README.md#virtio-fs-并发与冻结契约)
+negotiates device feature bit 23. An idle ordinary queue can use bit 31 in its
+MMIO notification value for `LOOKUP` or `GETATTR`. The guest checks the used
+ring on return and waits for the ordinary IRQ if the worker owns the request.
+It defaults on for eligible single-queue shares on Linux x86_64/KVM.
+Set `PVISOR_VM_FS_INLINE_METADATA=0` to disable it.
+
+Path-based `stat`, `lstat` and `newfstatat` can reuse the last component's
+`LOOKUP` attributes when that walk obtained them for the resolved inode.
+This does not extend TTLs or change directory search checks. `statx` and
+descriptor-only queries keep their existing paths.
+
+On staged OverlayFS with explicitly immutable lowers and a guest-exclusive
+upper, virtio-fs can import positive entries with the Linux firmware's
+`READINDEX` protocol when DAX and host writeback are off.
+Four distinct successful host lookups in a directory
+admit a 16 KiB page. A hit and at least three quarters consumption can admit
+one continuation of up to 512 KiB. Each mount retains at most one such image.
+Already imported entries can revalidate matching live dentries in the same
+directory, credential context and request generation. Guest requests that
+may change names or attributes invalidate that generation. Directory search
+permissions still run through VFS; unimported names, negative lookups and
+userspace enumeration use ordinary FUSE. Imported attributes do not extend
+ordinary inode TTLs. Set `PVISOR_VM_FS_RNGK_READINDEX=0` to disable the
+default-on path. `PVISOR_VM_GUEST_CACHE=0` also disables the protocol.
+
 ## Tests and hardware acceptance
 
 On Linux x86_64/KVM `vm_api_case` runs the guest supervisor and a static
@@ -180,6 +206,69 @@ or mapping creates the cache under the same inode lock as writers. From
 then on, buffered writes keep it coherent. This is not writeback caching.
 See the [write-path experiment](../benchmark/evidence/rust-kernel-write-path.md).
 
+When the server returns `FOPEN_KEEP_CACHE`, closing a cached file still
+flushes dirty pages but retains clean pages. Opens without the flag still
+invalidate cached data. To verify copy-up across this boundary, start the
+smoke guest with `7 --check-keep-cache-copy-up` on a staged OverlayFS root
+whose immutable lower contains `/keep-cache-source` (8192 `a` bytes).
+Expect exit 7, an unchanged lower, and an upper with `new` at offset 4095.
+
+For ordinary writes, virtio-fs can reuse the absence of set-ID bits until
+the server's original attribute deadline. Writes expire general attributes
+without extending that deadline. A mode change refreshes or invalidates the
+cached result; an expired result and files with set-ID bits keep the normal
+privilege checks.
+
+`syncfs` sends `FUSE_SYNCFS` and propagates backend errors to the caller and
+the guest supervisor's exit check. A legacy server's `ENOSYS` retains the
+write-through behavior and is not a durable-stage acknowledgement.
+
+The [write-path probe](tests/write_path.rs) runs as UID/GID 1000 without
+effective capabilities. It tests set-ID clearing after `chmod`, then writes
+4 MiB in 1 KiB calls. `shared` writes and publishes on virtio-fs; `local`
+writes on guest tmpfs and exports one new file to virtio-fs in larger chunks.
+The probe reports separate write, local completion and publication times.
+It does not provide an overlay importer or crash recovery for guest RAM.
+
+```sh
+root=$(mktemp -d "$PWD/target/write-path-root.XXXXXX")
+mkdir -m 0777 "$root/output"
+mise exec -- rustc --edition=2021 --target x86_64-unknown-linux-musl \
+  -C linker=rust-lld -O pvisor-kernel/tests/write_path.rs -o "$root/probe"
+PVISOR_GUEST_KERNEL=rust-native timeout 30 /path/to/vm_api_case \
+  --rootfs "$root" --cpus 1 --memory 512 -- /probe shared
+"$root/probe" --verify "$root/output/ready"
+```
+
+Use a new root with `local` for the comparison. Neither arm counts VM
+startup, exit or the separate host byte verification in its phase times.
+
+The [directory probe](tests/readdir.rs) checks short buffers, retry after
+`EINVAL`, resume from a directory cookie, rewind, EOF and exact names across
+several buffer sizes. Rust native virtio-fs sizes `READDIR` from the caller's
+buffer, between one page and 32 KiB, without caching directory entries across
+calls. To run it with a native-enabled `vm_api_case`:
+
+```sh
+root=$(mktemp -d "$PWD/target/readdir-root.XXXXXX")
+mkdir "$root/readdir-fixture"
+python3 - "$root/readdir-fixture" <<'PY'
+from pathlib import Path
+import sys
+
+directory = Path(sys.argv[1])
+for index in range(8192):
+    (directory / f"entry-{index:05}").touch()
+PY
+mise exec -- rustc --edition=2021 --target x86_64-unknown-linux-musl \
+  -C linker=rust-lld -O pvisor-kernel/tests/readdir.rs -o "$root/probe"
+PVISOR_GUEST_KERNEL=rust-native timeout 30 /path/to/vm_api_case \
+  --rootfs "$root" --cpus 1 --memory 512 -- /probe
+```
+
+Expect exit 0 and four `READDIR_OK` records. The reported time covers one
+resident scan and decoding, not VM startup, close or exit.
+
 To verify captured streams on Linux x86_64/KVM, run the same static workload
 with the embedded-kernel probe:
 
@@ -190,6 +279,38 @@ python3 pvisor-kernel/tests/task_stdio.py --binary /path/to/vm_api_case \
 
 This checks immediate EOF and a multi-page binary input, byte-exact stdout,
 separate stderr, shared-rootfs contents and exit status in fresh two-vCPU VMs.
+
+### KVM metadata acceptance
+
+On Linux x86_64/KVM, validate `newfstatat` against host mutations in the
+default mode and with the inline path disabled:
+
+```sh
+cc -static -O2 pvisor-kernel/tests/stat_visibility.c -o target/native-stat-visibility
+python3 pvisor-kernel/tests/stat_visibility.py --binary target/release/examples/vm_api_case \
+  --guest target/native-stat-visibility
+```
+
+CI runs the same checks and verifies that the default and disabled modes
+use different paths. To reproduce the full check with native-enabled
+`vm_api_case` and `guest_metadata_case`:
+
+```sh
+mise exec -- rustc --edition=2021 --target x86_64-unknown-linux-musl -C linker=rust-lld -O \
+  crates/pvisor-vm/src/probes/guest_metadata_guest.rs -o target/metadata-guest
+python3 pvisor-kernel/tests/fs_metadata.py \
+  --vm-api target/release/examples/vm_api_case --stat-guest target/native-stat-visibility \
+  --metadata-case target/release/examples/guest_metadata_case --metadata-guest target/metadata-guest \
+  --output target/native-fs-metadata --seed 1 --seed 314159 --seed 57596
+```
+
+Use a fresh output directory per run. The staged probe checks paged lookup,
+rename over an existing entry, an open fd across rename, deletion and recreation,
+copy-up, and non-root directory search. Each `--seed` adds a fresh two-vCPU VM
+with two request queues, concurrent stats and seeded namespace changes. It
+checks old descriptors and final file state. The seed controls the operations,
+not thread scheduling.
+These are correctness checks, not timing gates.
 
 ### KVM memory acceptance
 

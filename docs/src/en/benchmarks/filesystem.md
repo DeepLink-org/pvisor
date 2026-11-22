@@ -18,6 +18,8 @@ Each measured executor process has a 90-second limit and must exit normally, val
 
 ## Data and analysis {#results}
 
+See the [same-workload comparison of the Rust native guest kernel (RNGK) and pVisor Linux firmware](../lab-notes/filesystem-performance-analysis.md#rngk-filesystem-comparison). Both use the same pVisor VMM.
+
 ### Startup and complete tasks {#complete-task}
 
 | Mode | Ready ms | Repository s | Incremental build s | Publication s |

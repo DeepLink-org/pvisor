@@ -400,6 +400,14 @@ pub(crate) trait Inode: Any + FileOps + Send + Sync {
     /// Returns the inode's permission mode.
     fn mode(&self) -> Result<InodeMode>;
 
+    /// Returns the current permission mode if it has set-ID bits to check on write.
+    fn set_id_mode_for_write(&self) -> Result<Option<InodeMode>> {
+        let mode = self.mode()?;
+        Ok(mode
+            .intersects(InodeMode::S_ISUID | InodeMode::S_ISGID)
+            .then_some(mode))
+    }
+
     /// Sets the inode's permission mode.
     fn set_mode(&self, self_dentry: &Dentry, mode: InodeMode) -> Result<()>;
 
@@ -514,6 +522,11 @@ pub(crate) trait Inode: Any + FileOps + Send + Sync {
         Err(Error::new(Errno::ENOTDIR))
     }
 
+    /// Looks up a child and returns attributes obtained by that lookup, if any.
+    fn lookup_observed(&self, name: &str) -> Result<(Arc<dyn Inode>, Option<Metadata>)> {
+        Ok((self.lookup(name)?, None))
+    }
+
     /// Renames or moves a child entry, optionally replacing an existing inode.
     fn rename(
         &self,
@@ -570,6 +583,15 @@ pub(crate) trait Inode: Any + FileOps + Send + Sync {
     /// Otherwise, the return value is considered garbage.
     fn revalidate_exists(&self, _name: &str, _child: &dyn Inode) -> bool {
         true
+    }
+
+    /// Returns `None` for an invalid child; a valid child may carry observed attributes.
+    fn revalidate_exists_observed(
+        &self,
+        name: &str,
+        child: &dyn Inode,
+    ) -> Option<Option<Metadata>> {
+        self.revalidate_exists(name, child).then_some(None)
     }
 
     /// Checks whether a name is still absent under this directory.

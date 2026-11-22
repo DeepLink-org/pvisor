@@ -139,4 +139,5 @@ pub enum FuseOpcode {
     RemoveMapping = 49,
     SyncFs = 50,
     Tmpfile = 51,
+    ReadIndex = 53,
 }

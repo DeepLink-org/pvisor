@@ -146,8 +146,11 @@ pub struct FsWorker {
     execution: Arc<Execution>,
     dispatch_profile: pvisor_overlay_core::profile::Profile,
     inode_alloc: Arc<InodeAllocator>,
+    inline_dispatch: Option<InlineDispatch>,
     stop_fd: EventFd,
 }
+
+pub(super) use scheduler::InlineDispatch;
 
 /// Shared execution state, never virtqueue indices. The session guard also
 /// protects INIT/DESTROY against a driver issuing overlapping control requests.
@@ -674,6 +677,7 @@ impl FsWorker {
             }),
             dispatch_profile,
             inode_alloc,
+            inline_dispatch: None,
             stop_fd,
         })
     }
@@ -714,6 +718,11 @@ impl FsWorker {
         self.inode_alloc.restore_next(state.next_inode)
     }
 
+    pub(super) fn with_inline_dispatch(mut self, dispatch: Option<InlineDispatch>) -> Self {
+        self.inline_dispatch = dispatch;
+        self
+    }
+
     pub fn run(self) -> thread::JoinHandle<Self> {
         thread::Builder::new()
             .name("fs worker".into())
@@ -729,6 +738,7 @@ impl FsWorker {
             self.interrupt.clone(),
             self.execution.clone(),
             self.dispatch_profile.clone(),
+            self.inline_dispatch.as_ref(),
         );
         self.dispatch_profile.emit_checkpoint();
         self
@@ -920,6 +930,12 @@ mod tests {
         let defaults = FsProfile::parse(|_| None).unwrap();
         assert!(defaults.guest_cache && defaults.root_data_cache);
         assert!(!defaults.host_writeback && !defaults.negative_entry_cache);
+        assert!(defaults.inline_metadata && defaults.rngk_readindex);
+        let disabled = FsProfile::parse(|key| {
+            matches!(key, env::INLINE_METADATA | env::RNGK_READINDEX).then(|| "0".into())
+        })
+        .unwrap();
+        assert!(!disabled.inline_metadata && !disabled.rngk_readindex);
         assert!(!defaults.directory_names_cache);
         assert!(!defaults.prepared_copy_up);
         assert!(!defaults.object_read_barriers);
@@ -940,6 +956,8 @@ mod tests {
         for key in [
             env::CACHE_EXPERIMENT,
             env::GUEST_CACHE,
+            env::INLINE_METADATA,
+            env::RNGK_READINDEX,
             env::HOST_WRITEBACK,
             env::HOST_WRITEBACK_CONFIG,
             env::DIRECTORY_CACHE_CAPACITY,

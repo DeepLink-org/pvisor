@@ -896,8 +896,21 @@ impl BusDevice for MmioTransport {
                     0x38 => self.update_queue_field(|q| q.size = v as u16),
                     0x44 => self.update_queue_field(|q| q.ready = v == 1),
                     0x50 => {
+                        const INLINE_KICK: u32 = 1 << 31;
+                        let queue = if v & INLINE_KICK != 0 {
+                            if !self.check_device_status(device_status::DRIVER_OK, 0) {
+                                return;
+                            }
+                            let queue = (v & !INLINE_KICK) as usize;
+                            match self.locked_device().inline_queue_kick(queue) {
+                                Some(true) | None => return,
+                                Some(false) => queue,
+                            }
+                        } else {
+                            v as usize
+                        };
                         // Queue notification - write to the eventfd for the specified queue.
-                        if let Some(eventfd) = self.queue_evts.get(v as usize) {
+                        if let Some(eventfd) = self.queue_evts.get(queue) {
                             eventfd.write(1).unwrap();
                         } else {
                             warn!("invalid queue index for notification: {v}");
