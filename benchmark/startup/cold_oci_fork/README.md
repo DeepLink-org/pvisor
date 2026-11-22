@@ -4,7 +4,7 @@ The first VM can use the extracted filesystem while the object pool publishes th
 
 ## End-to-end measurements
 
-Each cell is a median of three trials, in seconds. All timestamps come from the same monotonic clock within a trial. The final column measures the complete interval, including the parent's marker write. [Per-trial measurements](end_to_end.csv).
+Each cell is a median of three trials, in seconds. All timestamps come from the same monotonic clock within a trial. The fork interval starts after the parent writes its marker. The final column measures the complete interval, including that write. [Per-trial measurements](end_to_end.csv).
 
 | Execution path | Cold OCI to parent command | Fork request to four verified children | Cold OCI to four verified children |
 | --- | ---: | ---: | ---: |
