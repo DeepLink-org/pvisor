@@ -7,7 +7,7 @@ image retirement are implemented. Passing tests do not constitute human approval
 ## User workflow and boundary
 
 Reuse the existing image catalog and command vocabulary. Build and ordinary
-OCI pull already produce local V2 images. Publish those pinned local images
+OCI pull produce local Image Pack V1 images. Publish those pinned local images
 through a standard image operation with an explicit pVisor destination option:
 
 ```sh
@@ -46,9 +46,9 @@ All push contracts below apply to both spellings; help advertises both.
 | `image push LOCAL --to s3://BUCKET/PREFIX` | Publish the selected local image's fixed revision and dependencies |
 | `image push LOCAL --to file:///DIRECTORY` | Produce the same self-contained bundle for static serving/offline staging |
 | `image push NAME --images-dir DIR --to URI` | Select a prepared sandbox template in the existing daemon catalog explicitly |
-| `image pull LOCAL --from SOURCE` | Import a fixed S3/HTTP(S) V2 publication into the ordinary image catalog |
+| `image pull LOCAL --from SOURCE` | Import a fixed S3/HTTP(S) Image Pack publication into the ordinary image catalog |
 | `image pull NAME --from SOURCE --images-dir DIR` | Import a prepared template into its existing daemon catalog |
-| `image pull NAME --images-dir DIR --refresh` | Explicitly refresh a prepared name through the configured ordered V2 registries |
+| `image pull NAME --images-dir DIR --refresh` | Explicitly refresh a prepared name through the configured ordered image registries |
 | `image ls/inspect ... [--images-dir DIR]` | Query the selected catalog without remote name resolution or content download |
 
 `--images-dir` selects the existing prepared-template catalog rather than the
@@ -65,7 +65,7 @@ configuration. Invalid arguments must not create a destination or launch work.
 
 Successful explicit push writes one JSON object with `source`, `image_handle`,
 `digest` and `platform`. `source` ends in the template/descriptor's 64-character
-lowercase SHA-256 directory; the handle is the immutable `pvisor-v2:` identity.
+lowercase SHA-256 directory; new images use the immutable `pvisor-image-pack:v1:` identity.
 `digest` is the source manifest identity and `platform` is `linux/ARCH`.
 Diagnostics go to stderr. Repeated publication of the same pinned image and
 portable metadata at the same target returns the same source.
@@ -99,7 +99,7 @@ prepared publications without the asset remain importable for daemon runtime;
 full OCI metadata queries then fail explicitly. Ordinary import requires it.
 
 Prepared templates preserve engine/profile flags, entrypoint, cmd, environment,
-E2B resource/version settings and the pinned V2 image. Reject invalid launch
+E2B resource/version settings and the pinned image. Reject invalid launch
 profiles before updating the record. Rebind only host-local paths. `pvisor-daemon prepare-image` and `registry` remain available until a
 separate equivalent migration is specified; this request retires only `image`.
 The image commands access the prepared catalog in-process through the daemon
@@ -110,7 +110,7 @@ No arbitrary template DTO or new top-level template/cache manager is needed.
 
 Both ordinary images and prepared templates share the same immutable export,
 integrity verification, object I/O and commit implementation. Push reads the
-local V2 pool; it does not repull OCI or unpack a second full rootfs. It must
+local pool; it does not repull OCI or unpack a second full rootfs. It must
 retain the existing reachable-pack export checks so removed private contents
 cannot leak through unused pack slots.
 
@@ -125,7 +125,7 @@ not empty bytes, nonexistent guest files or OCI fallback.
 
 Keep AWS credentials out of URLs, portable JSON, logs and implicit guest
 environment. Import/read clients write no remote objects. There is no bucket
-creation, ACL/public-policy mutation, automatic GC, new format version, xattr
+creation, ACL/public-policy mutation, automatic GC, xattr
 expansion or implied WAN performance claim.
 
 Existing V2 shared-pool prefixes, immutable handles and self-contained S3/HTTP

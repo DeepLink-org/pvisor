@@ -2,6 +2,8 @@
 
 V2 is the shared storage format for server, filesystem, S3 and Docker local pools. All filesystem metadata lives in a lazily loaded index; small files are packed by directory, and data objects contain only content and placement tables. Implementation: `crates/pvisor/src/image/cache/portable/`.
 
+New images use [pVisor Image Pack V1](experimental/image-pack/index.md). The following describes the prerelease V2 format; existing V2 images remain readable, but writers no longer create them.
+
 | Item | Current contract |
 | --- | --- |
 | Storage version | `format_version=2`, `pvisor-radix-v2`, `pvisor-v2:` handles |

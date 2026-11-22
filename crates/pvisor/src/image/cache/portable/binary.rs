@@ -13,13 +13,27 @@ pub(super) struct SourceEntry {
 pub(super) struct SourceContent {
     pub size: u64,
     pub chunks: Vec<(String, u32)>,
-    pub packed: Option<super::content::Packed>,
 }
 #[derive(Clone, Debug, Encode, Decode)]
 pub(super) enum Content {
     Empty,
     Packed(super::content::Packed),
     Chunks(FrameRef),
+    PackedFrame(super::aggregate::Packed),
+}
+
+pub(super) enum LocatedChunk {
+    Legacy(Digest, u32),
+    V1(super::aggregate::Chunk),
+}
+
+impl LocatedChunk {
+    pub(super) fn len(&self) -> u32 {
+        match self {
+            Self::Legacy(_, len) => *len,
+            Self::V1(chunk) => chunk.bytes,
+        }
+    }
 }
 #[derive(Clone, Debug, Encode, Decode)]
 struct Attributes {
@@ -106,7 +120,7 @@ impl Record {
         );
         if root {
             ensure!(
-                self.name.is_empty() && self.attrs.kind == 0,
+                self.name.is_empty() && self.attrs.kind == 0 && self.attrs.inode == 1,
                 "invalid root record"
             );
         } else {
@@ -192,6 +206,10 @@ pub(super) enum Body {
         first: u64,
         children: Vec<FrameRef>,
     },
+    BlobChunks {
+        first: u64,
+        chunks: Vec<super::aggregate::Chunk>,
+    },
 }
 pub(super) struct Node {
     body: Body,
@@ -220,6 +238,9 @@ impl Node {
                 }
                 Body::Chunks { chunks, .. } => {
                     chunks.capacity() * std::mem::size_of::<(Digest, u32)>()
+                }
+                Body::BlobChunks { chunks, .. } => {
+                    chunks.capacity() * super::aggregate::Chunk::allocation_bytes()
                 }
                 Body::ChunkBranch { children, .. } => {
                     children.capacity() * std::mem::size_of::<FrameRef>()
@@ -410,6 +431,15 @@ impl LoadedImage {
                 let mut previous: Option<&[u8]> = None;
                 for entry in entries {
                     entry.validate(false)?;
+                    match entry.content.as_ref() {
+                        Some(Content::Packed(_)) => {
+                            ensure!(self.commit.format_version == 2, "V2 pack in Image Pack V1");
+                        }
+                        Some(Content::PackedFrame(_)) => {
+                            ensure!(self.commit.format_version == 1, "Image Pack frame in V2");
+                        }
+                        _ => {}
+                    }
                     ensure!(
                         previous.is_none_or(|p| name_order(p, &entry.name).is_lt()),
                         "unordered or duplicate index names"
@@ -474,14 +504,27 @@ impl LoadedImage {
             }
             Body::Chunks { chunks, .. } => {
                 ensure!(
-                    chunks.len() as u64 == reference.count && !chunks.is_empty(),
+                    self.commit.format_version == 2
+                        && chunks.len() as u64 == reference.count
+                        && !chunks.is_empty(),
                     "invalid chunk leaf"
                 );
                 ensure!(
                     chunks
                         .iter()
-                        .all(|(_, length)| *length > 0 && *length <= MAX_READ),
+                        .all(|(_, length)| (1..=CHUNK_BYTES).contains(length)),
                     "invalid chunk length"
+                );
+            }
+            Body::BlobChunks { chunks, .. } => {
+                ensure!(
+                    self.commit.format_version == 1
+                        && chunks.len() as u64 == reference.count
+                        && (1..=256).contains(&chunks.len())
+                        && chunks
+                            .iter()
+                            .all(|chunk| (1..=CHUNK_BYTES).contains(&chunk.bytes)),
+                    "invalid Image Pack chunk leaf"
                 );
             }
             Body::ChunkBranch { children, .. } => {
@@ -685,7 +728,7 @@ impl LoadedImage {
             next_offset,
         })
     }
-    pub(super) fn chunk(&self, root: &FrameRef, ordinal: u64) -> anyhow::Result<(Digest, u32)> {
+    pub(super) fn chunk(&self, root: &FrameRef, ordinal: u64) -> anyhow::Result<LocatedChunk> {
         ensure!(ordinal < root.count, "file chunk index out of range");
         let mut reference = root.clone();
         let mut first = 0;
@@ -697,7 +740,15 @@ impl LoadedImage {
                     chunks,
                 } => {
                     ensure!(*actual == first, "chunk range mismatch");
-                    return Ok(chunks[(ordinal - first) as usize]);
+                    let (digest, bytes) = chunks[(ordinal - first) as usize];
+                    return Ok(LocatedChunk::Legacy(digest, bytes));
+                }
+                Body::BlobChunks {
+                    first: actual,
+                    chunks,
+                } => {
+                    ensure!(*actual == first, "chunk range mismatch");
+                    return Ok(LocatedChunk::V1(chunks[(ordinal - first) as usize].clone()));
                 }
                 Body::ChunkBranch {
                     first: actual,
@@ -719,10 +770,81 @@ impl LoadedImage {
         }
         bail!("content traversal limit")
     }
-    pub(super) fn packed_contents(
+    pub(super) fn legacy_dependencies(
         &self,
-    ) -> anyhow::Result<BTreeMap<String, super::content::Packed>> {
-        let mut output = BTreeMap::new();
+        cache: &PortableCache,
+    ) -> anyhow::Result<BTreeMap<String, super::content::LegacyObject>> {
+        let mut packs = Vec::new();
+        let mut objects = BTreeMap::new();
+        let mut trees = BTreeMap::new();
+        let mut spans = 0;
+        self.walk_files(|entry| {
+            match entry.content {
+                Some(Content::Packed(packed)) => packs.push(packed),
+                Some(Content::Chunks(root)) => {
+                    let size = entry.record.attrs.size;
+                    if !visit_chunk_tree(&mut trees, &root, size, &mut spans)? {
+                        return Ok(());
+                    }
+                    for ordinal in 0..root.count {
+                        let LocatedChunk::Legacy(digest, length) = self.chunk(&root, ordinal)?
+                        else {
+                            bail!("Image Pack chunk in prerelease V2");
+                        };
+                        check_chunk_len(length, size, ordinal)?;
+                        let key = data_key(&frames::digest_string(&digest))?;
+                        let object = super::content::LegacyObject::Chunk(digest, length);
+                        ensure!(
+                            *objects.entry(key).or_insert(object) == object,
+                            "inconsistent legacy chunk reference"
+                        );
+                    }
+                }
+                _ => {}
+            }
+            Ok(())
+        })?;
+        objects.extend(super::content::validate_public_packs(cache, packs)?);
+        Ok(objects)
+    }
+
+    pub(super) fn reachable_blobs(&self) -> anyhow::Result<super::aggregate::Reachable> {
+        let mut output = super::aggregate::Reachable::default();
+        let mut trees = BTreeMap::new();
+        let mut spans = 0;
+        self.walk_files(|entry| {
+            match entry.content {
+                Some(Content::PackedFrame(packed)) => {
+                    output.packed(
+                        packed,
+                        entry.digest.context("missing file digest")?,
+                        entry.record.attrs.size,
+                    )?;
+                }
+                Some(Content::Chunks(root)) => {
+                    let size = entry.record.attrs.size;
+                    if !visit_chunk_tree(&mut trees, &root, size, &mut spans)? {
+                        return Ok(());
+                    }
+                    for ordinal in 0..root.count {
+                        let LocatedChunk::V1(chunk) = self.chunk(&root, ordinal)? else {
+                            bail!("legacy chunk in Image Pack V1");
+                        };
+                        check_chunk_len(chunk.bytes, size, ordinal)?;
+                        output.chunk(chunk)?;
+                    }
+                }
+                _ => {}
+            }
+            Ok(())
+        })?;
+        Ok(output)
+    }
+
+    fn walk_files(
+        &self,
+        mut visit: impl FnMut(FileEntry) -> anyhow::Result<()>,
+    ) -> anyhow::Result<()> {
         let mut pending = vec![Vec::new()];
         let mut visited = 0;
         while let Some(path) = pending.pop() {
@@ -747,15 +869,7 @@ impl LoadedImage {
                     if matches!(metadata, Response::Metadata { kind, .. } if kind == "directory") {
                         pending.push(child);
                     } else {
-                        let entry = self.entry(&child)?;
-                        if let Some(Content::Packed(packed)) = entry.content {
-                            output.insert(
-                                frames::digest_string(
-                                    &entry.digest.context("missing file digest")?,
-                                ),
-                                packed,
-                            );
-                        }
+                        visit(self.entry(&child)?)?;
                     }
                 }
                 if let Some(next) = next_offset {
@@ -765,7 +879,7 @@ impl LoadedImage {
                 }
             }
         }
-        Ok(output)
+        Ok(())
     }
     #[cfg(test)]
     pub(super) fn cached_page_count(&self) -> usize {
@@ -796,6 +910,39 @@ impl LoadedImage {
             .collect()
     }
 }
+
+fn visit_chunk_tree(
+    seen: &mut BTreeMap<u64, (FrameRef, u64)>,
+    root: &FrameRef,
+    size: u64,
+    spans: &mut u64,
+) -> anyhow::Result<bool> {
+    ensure!(
+        root.count == size.div_ceil(u64::from(CHUNK_BYTES)),
+        "file chunk count mismatch"
+    );
+    if let Some((previous, previous_size)) = seen.get(&root.offset) {
+        ensure!(
+            previous == root && *previous_size == size,
+            "inconsistent shared chunk tree"
+        );
+        return Ok(false);
+    }
+    *spans += root.count;
+    ensure!(*spans <= MAX_SPANS as u64, "image span limit");
+    seen.insert(root.offset, (root.clone(), size));
+    Ok(true)
+}
+
+pub(super) fn check_chunk_len(length: u32, size: u64, ordinal: u64) -> anyhow::Result<()> {
+    let width = u64::from(CHUNK_BYTES);
+    ensure!(
+        u64::from(length) == (size - ordinal * width).min(width),
+        "invalid file chunk length"
+    );
+    Ok(())
+}
+
 pub(in crate::image::cache) fn name_order(a: &[u8], b: &[u8]) -> std::cmp::Ordering {
     route_hash(a).cmp(&route_hash(b)).then_with(|| a.cmp(b))
 }
@@ -925,19 +1072,15 @@ fn overflow(
 }
 fn chunks(
     writer: &mut frames::Writer,
-    values: &[(String, u32)],
+    values: &[super::aggregate::Chunk],
     first: u64,
 ) -> anyhow::Result<FrameRef> {
     let count = values.len() as u64;
-    if values.len() <= 1024 {
-        let values = values
-            .iter()
-            .map(|(digest, length)| Ok((frames::parse_digest(digest)?, *length)))
-            .collect::<anyhow::Result<Vec<_>>>()?;
+    if values.len() <= 256 {
         return writer.push(
-            &Body::Chunks {
+            &Body::BlobChunks {
                 first,
-                chunks: values,
+                chunks: values.to_vec(),
             },
             count,
         );
@@ -952,6 +1095,7 @@ fn chunks(
 pub(super) fn encode(
     entries: &[SourceEntry],
     contents: &BTreeMap<String, SourceContent>,
+    placement: &super::aggregate::Plan,
 ) -> anyhow::Result<BTreeMap<String, Vec<u8>>> {
     ensure!(
         !entries.is_empty() && entries[0].path.is_empty(),
@@ -959,15 +1103,11 @@ pub(super) fn encode(
     );
     let mut writer = frames::Writer::default();
     let mut locations = BTreeMap::new();
-    for (digest, content) in contents {
-        let value = if content.size == 0 {
-            Content::Empty
-        } else if let Some(packed) = &content.packed {
-            Content::Packed(packed.clone())
-        } else {
-            Content::Chunks(chunks(&mut writer, &content.chunks, 0)?)
-        };
-        locations.insert(digest, value);
+    for (digest, file_chunks) in &placement.large {
+        locations.insert(
+            digest,
+            Content::Chunks(chunks(&mut writer, file_chunks, 0)?),
+        );
     }
     let mut directories: BTreeMap<Vec<u8>, Vec<Record>> = BTreeMap::new();
     for entry in entries {
@@ -997,11 +1137,15 @@ pub(super) fn encode(
             name,
             attrs,
             directory,
-            content: entry
-                .content
-                .as_ref()
-                .map(|v| locations.get(v).cloned().context("unknown content digest"))
-                .transpose()?,
+            content: entry.content.as_ref().map(|v| {
+                if contents[v].size == 0 {
+                    Content::Empty
+                } else if let Some(chunked) = locations.get(v) {
+                    chunked.clone()
+                } else {
+                    Content::PackedFrame(placement.small(&entry.path, v).clone())
+                }
+            }),
             digest: entry
                 .content
                 .as_deref()
@@ -1085,6 +1229,7 @@ pub(super) mod malformed_tests {
         let temp = tempfile::tempdir().unwrap();
         let storage = Storage::filesystem(temp.path().into(), false).unwrap();
         let handle = Handle {
+            version: Version::LegacyV2,
             image_key: "a".repeat(64),
             platform: "linux-amd64".into(),
             revision: "b".repeat(64),
@@ -1098,10 +1243,12 @@ pub(super) mod malformed_tests {
             )
             .unwrap();
         let commit = Commit {
+            format: None,
             format_version: 2,
             image_key: handle.image_key.clone(),
             platform: handle.platform.clone(),
             manifest_digest: format!("sha256:{}", "c".repeat(64)),
+            packing: None,
             metadata: BTreeMap::from([(
                 "index.bin".into(),
                 Descriptor {
@@ -1129,6 +1276,176 @@ pub(super) mod malformed_tests {
         .unwrap();
         (temp, image)
     }
+
+    #[rstest::rstest]
+    #[case::reachable_inventory(false)]
+    #[case::unreachable_legacy_object(true)]
+    fn prerelease_v2_chunk_remains_readable_without_a_v2_writer(#[case] unreferenced: bool) {
+        let temp = tempfile::tempdir().unwrap();
+        let storage = Storage::filesystem(temp.path().into(), false).unwrap();
+        let content = vec![17; 65537];
+        let digest = frames::digest(&content);
+        let len = content.len() as u32;
+        let mut blob = frames::Writer::default();
+        blob.push(
+            &super::super::content::Data::Slots {
+                offsets: vec![0, len],
+                bytes: content,
+            },
+            1,
+        )
+        .unwrap();
+        let blob = blob.finish().unwrap();
+        let object_key = data_key(&frames::digest_string(&digest)).unwrap();
+        storage.put(&object_key, blob.clone(), true).unwrap();
+
+        let mut index = frames::Writer::default();
+        let chunk_tree = index
+            .push(
+                &Body::Chunks {
+                    first: 0,
+                    chunks: vec![(digest, len)],
+                },
+                1,
+            )
+            .unwrap();
+        let child = Record {
+            name: b"file".into(),
+            attrs: Attributes {
+                size: u64::from(len),
+                ..attrs(1, 2)
+            },
+            directory: None,
+            content: Some(Content::Chunks(chunk_tree)),
+            digest: Some(digest),
+        };
+        let directory = tree(&mut index, 1, 0, 0, vec![child]).unwrap();
+        let root = Record {
+            name: vec![],
+            attrs: attrs(0, 1),
+            directory: Some(directory),
+            content: None,
+            digest: None,
+        };
+        let canonical = "docker.io/library/legacy:test";
+        let manifest_digest = format!("sha256:{}", "c".repeat(64));
+        let mut inventory = vec![(object_key, blob.len() as u64)];
+        if unreferenced {
+            let extra_key = data_key(&hash(b"not reachable")).unwrap();
+            storage
+                .put(&extra_key, b"not reachable".to_vec(), true)
+                .unwrap();
+            inventory.push((extra_key, 13));
+            inventory.sort_unstable();
+        }
+        let metadata = [
+            (
+                "manifest.json",
+                serde_json::to_vec(&Manifest {
+                    format_version: 2,
+                    reference: canonical.into(),
+                    platform: "linux-amd64".into(),
+                    manifest_digest: manifest_digest.clone(),
+                    config_digest: None,
+                    layer_digests: None,
+                })
+                .unwrap(),
+            ),
+            (
+                "config.json",
+                serde_json::to_vec(&Configuration {
+                    format_version: 2,
+                    architecture: "amd64".into(),
+                    env: BTreeMap::new(),
+                    entrypoint: vec![],
+                    cmd: vec![],
+                    totals: ImageTotals::default(),
+                })
+                .unwrap(),
+            ),
+            ("root.bin", frames::encode(&root).unwrap()),
+            ("index.bin", index.finish().unwrap()),
+            ("objects.bin", frames::encode(&inventory).unwrap()),
+        ];
+        let commit = Commit {
+            format: None,
+            format_version: 2,
+            packing: None,
+            image_key: image_key(canonical),
+            platform: "linux-amd64".into(),
+            manifest_digest,
+            metadata: metadata
+                .iter()
+                .map(|(key, bytes)| {
+                    (
+                        (*key).into(),
+                        Descriptor {
+                            sha256: hash(bytes),
+                            bytes: bytes.len() as u64,
+                        },
+                    )
+                })
+                .collect(),
+        };
+        let bytes = serde_json::to_vec(&commit).unwrap();
+        let handle = Handle {
+            version: Version::LegacyV2,
+            image_key: commit.image_key,
+            platform: commit.platform,
+            revision: hash(&bytes)[7..].into(),
+        };
+        storage
+            .put("format.json", format::LEGACY.to_vec(), true)
+            .unwrap();
+        storage
+            .put(&format!("{}/COMMIT.json", handle.prefix()), bytes, true)
+            .unwrap();
+        for (name, bytes) in metadata {
+            storage
+                .put(&format!("{}/{name}", handle.prefix()), bytes, true)
+                .unwrap();
+        }
+        assert!(Format::for_write(&storage).is_err());
+        let cache = PortableCache::new(storage, None, true);
+        assert_eq!(
+            cache
+                .request(Request::Read {
+                    digest: handle.encode(),
+                    path: b"file".into(),
+                    offset: u64::from(len) - 2,
+                    length: 3,
+                })
+                .unwrap()
+                .1,
+            [17, 17]
+        );
+        let output = tempfile::tempdir().unwrap();
+        let export =
+            super::super::export_pool(temp.path(), &handle.encode(), &output.path().join("bundle"));
+        if unreferenced {
+            assert!(
+                export
+                    .unwrap_err()
+                    .to_string()
+                    .contains("export inventory disagrees")
+            );
+        } else {
+            export.unwrap();
+        }
+    }
+
+    #[test]
+    fn root_requires_the_reserved_inode() {
+        let root = Record {
+            name: vec![],
+            attrs: attrs(0, 2),
+            directory: None,
+            content: None,
+            digest: None,
+        };
+        assert!(root.validate(true).is_err());
+    }
+
     pub(in crate::image::cache::portable) fn cached_foreign_directory_reference_is_rejected() {
         let mut writer = frames::Writer::default();
         let child = Record {

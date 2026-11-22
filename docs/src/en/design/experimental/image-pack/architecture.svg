@@ -1,0 +1,102 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="862" viewBox="0 0 1080 862" role="img" aria-labelledby="title desc">
+  <title id="title">pVisor Image Pack V1 architecture</title>
+  <desc id="desc">Build or pull from OCI and aggregate the directory tree bottom-up into the pool. Publish the pinned revision as-is. Readers select a decoder using the storage marker or verified commit and verify independent frames read by compressed offset. Host FUSE and the VM lower share read semantics; writes go to a separate upper.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+      <path d="M0 0L8 4L0 8Z" fill="#a8cefa"/>
+    </marker>
+    <marker id="write-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+      <path d="M0 0L8 4L0 8Z" fill="#edc288"/>
+    </marker>
+  </defs>
+  <style>
+    text { font-family: system-ui, -apple-system, sans-serif; fill: #e9eef8; }
+    .title { font-size: 30px; font-weight: 700; }
+    .section, .label { font-size: 17px; font-weight: 650; }
+    .section { fill: #a8cefa; letter-spacing: 1px; }
+    .detail { font-size: 14px; fill: #bdcde1; }
+    .panel { fill: #102037; stroke: #29415b; }
+    .card { fill: #142840; stroke: #547796; }
+    .shared { fill: #14373f; stroke: #66aaa9; }
+    .write { fill: #3b302a; stroke: #ad8a61; }
+    .arrow { fill: none; stroke: #a8cefa; stroke-width: 2; marker-end: url(#arrow); }
+    .write-path { stroke: #edc288; marker-end: url(#write-arrow); }
+  </style>
+  <rect width="1080" height="862" rx="18" fill="#0d1b30"/>
+  <text x="36" y="47" class="title">pVisor Image Pack V1</text>
+  <text x="36" y="71" class="detail">One immutable format for local pools, distribution and filesystem reads</text>
+
+  <rect x="20" y="90" width="1040" height="225" rx="12" class="panel"/>
+  <text x="36" y="118" class="section">01 / GENERATE AND PUBLISH</text>
+  <g>
+    <rect x="36" y="134" width="304" height="68" rx="8" class="card"/>
+    <text x="52" y="160" class="label">Build / OCI pull</text>
+    <text x="52" y="183" class="detail">Prepare the full rootfs and OCI config</text>
+    <rect x="388" y="134" width="304" height="68" rx="8" class="card"/>
+    <text x="404" y="160" class="label">V1 encoder</text>
+    <text x="404" y="183" class="detail">Aggregate bottom-up; default 32 MiB</text>
+    <rect x="740" y="134" width="304" height="68" rx="8" class="shared"/>
+    <text x="756" y="160" class="label">Local or shared pool</text>
+    <text x="756" y="183" class="detail">Write deps, write COMMIT, CAS HEAD</text>
+    <rect x="740" y="232" width="304" height="68" rx="8" class="shared"/>
+    <text x="756" y="258" class="label">Bundle · file / S3 / GCS</text>
+    <text x="756" y="281" class="detail">Copy as-is; write image.json last</text>
+    <rect x="388" y="232" width="304" height="68" rx="8" class="card"/>
+    <text x="404" y="258" class="label">image pull --from</text>
+    <text x="404" y="281" class="detail">Verify and pin; fetch no file content</text>
+    <path d="M340 168H384" class="arrow"/>
+    <path d="M692 168H736" class="arrow"/>
+    <path d="M892 202V228" class="arrow"/>
+    <path d="M740 266H696" class="arrow"/>
+    <text x="906" y="222" class="detail">push --to</text>
+  </g>
+
+  <rect x="20" y="329" width="1040" height="352" rx="12" class="panel"/>
+  <text x="36" y="359" class="section">02 / OPEN AND READ ON DEMAND</text>
+  <g>
+    <rect x="36" y="381" width="304" height="68" rx="8" class="card"/>
+    <text x="52" y="407" class="label">Format marker and pinned handle</text>
+    <text x="52" y="430" class="detail">format.json / handle and verified COMMIT</text>
+    <rect x="388" y="381" width="304" height="68" rx="8" class="card"/>
+    <text x="404" y="407" class="label">Version dispatch at open</text>
+    <text x="404" y="430" class="detail">Select V1 or reject unsupported data</text>
+    <rect x="36" y="485" width="304" height="68" rx="8" class="card"/>
+    <text x="52" y="511" class="label">Bounded caches</text>
+    <text x="52" y="534" class="detail">Reuse frames; coalesce cold misses</text>
+    <rect x="388" y="485" width="304" height="68" rx="8" class="card"/>
+    <text x="404" y="511" class="label">V1 reader · pinned revision</text>
+    <text x="404" y="534" class="detail">Locate, verify, decompress within limits</text>
+    <rect x="740" y="485" width="304" height="68" rx="8" class="shared"/>
+    <text x="756" y="511" class="label">Storage and transport adapters</text>
+    <text x="756" y="534" class="detail">File / S3 / GCS / HTTP(S) or socket</text>
+    <rect x="388" y="589" width="304" height="68" rx="8" class="card"/>
+    <text x="404" y="615" class="label">Host FUSE / VM direct lower</text>
+    <text x="404" y="638" class="detail">Open / Stat / List / Read</text>
+    <rect x="740" y="589" width="304" height="68" rx="8" class="write"/>
+    <text x="756" y="615" class="label">Separate writable upper</text>
+    <text x="756" y="638" class="detail">Copy up and write; leave publication intact</text>
+    <path d="M540 300V377" class="arrow"/>
+    <path d="M340 415H384" class="arrow"/>
+    <path d="M540 449V481" class="arrow"/>
+    <path d="M388 519H344" class="arrow"/>
+    <path d="M692 519H736" class="arrow"/>
+    <path d="M540 589V557" class="arrow"/>
+    <path d="M692 623H736" class="arrow write-path"/>
+  </g>
+
+  <rect x="20" y="695" width="1040" height="147" rx="12" class="panel"/>
+  <text x="36" y="725" class="section">03 / SHA-256 CHAIN FOR ONE PINNED REVISION</text>
+  <g>
+    <rect x="36" y="744" width="304" height="76" rx="8" class="card"/>
+    <text x="52" y="772" class="label">Handle → COMMIT.json</text>
+    <text x="52" y="796" class="detail">Format, platform, packing and digests</text>
+    <rect x="388" y="744" width="304" height="76" rx="8" class="card"/>
+    <text x="404" y="772" class="label">root.bin → index.bin</text>
+    <text x="404" y="796" class="detail">Attributes, child frames and content refs</text>
+    <rect x="740" y="744" width="304" height="76" rx="8" class="shared"/>
+    <text x="756" y="772" class="label">Content blob</text>
+    <text x="756" y="796" class="detail">Read by offset; verify footer offline</text>
+    <path d="M340 782H384" class="arrow"/>
+    <path d="M692 782H736" class="arrow"/>
+  </g>
+</svg>

@@ -1,5 +1,6 @@
 //! Shared CLI and executor configuration for server and daemonless caches.
 use super::default_endpoint;
+use super::location::Repository;
 use crate::env::{
     self,
     cache::{IMAGE_STORE_ENV, SERVER_ENV},
@@ -14,7 +15,9 @@ pub enum CacheBackend {
     Server,
     Filesystem,
     S3,
-    /// Public static HTTP/HTTPS V2 repository; all mutations are forbidden.
+    /// Google Cloud Storage.
+    Gcs,
+    /// Public static HTTP/HTTPS repository; all mutations are forbidden.
     Http,
 }
 impl std::str::FromStr for CacheBackend {
@@ -24,9 +27,10 @@ impl std::str::FromStr for CacheBackend {
             "server" => Ok(Self::Server),
             "filesystem" => Ok(Self::Filesystem),
             "s3" => Ok(Self::S3),
+            "gcs" | "gs" => Ok(Self::Gcs),
             "http" | "https" => Ok(Self::Http),
             _ => Err(format!(
-                "invalid cache backend {value:?}; expected server, filesystem, s3, http"
+                "invalid cache backend; expected server, filesystem, s3, gcs or http"
             )),
         }
     }
@@ -43,8 +47,7 @@ pub struct CacheConfig {
 pub(super) enum ResolvedSource {
     Pool(PathBuf),
     Filesystem(PathBuf),
-    S3,
-    Http,
+    Remote,
     Server(super::transport::Endpoint),
 }
 
@@ -54,27 +57,21 @@ impl ResolvedSource {
         read_only: bool,
         token: Option<&str>,
     ) -> anyhow::Result<Self> {
-        for (prefix, pool) in [("pool+file://", true), ("file://", false)] {
-            if let Some(path) = address.strip_prefix(prefix) {
-                ensure!(
-                    std::path::Path::new(path).is_absolute(),
-                    "cache path must be absolute"
-                );
-                return Ok(if pool {
-                    Self::Pool(path.into())
-                } else {
-                    Self::Filesystem(path.into())
-                });
+        if let Some(path) = address.strip_prefix("pool+file://") {
+            ensure!(
+                std::path::Path::new(path).is_absolute(),
+                "cache path must be absolute"
+            );
+            return Ok(Self::Pool(path.into()));
+        }
+        if let Some(repository) = Repository::from_address(address)? {
+            if !read_only {
+                repository.validate_writable()?;
             }
-        }
-        if address.starts_with("s3://") {
-            super::storage::s3_location(address)?;
-            return Ok(Self::S3);
-        }
-        if address.starts_with("http://") || address.starts_with("https://") {
-            ensure!(read_only, "HTTP cache must be read-only");
-            super::http::Http::validate(address)?;
-            return Ok(Self::Http);
+            return Ok(match repository {
+                Repository::File(path) => Self::Filesystem(path.into()),
+                _ => Self::Remote,
+            });
         }
         ensure!(!read_only, "read-only mode requires an object repository");
         let endpoint = super::transport::endpoint(address)?;
@@ -90,7 +87,7 @@ impl ResolvedSource {
     pub(super) fn needs_host_network(&self) -> bool {
         matches!(
             self,
-            Self::S3 | Self::Http | Self::Server(super::transport::Endpoint::Tcp(_))
+            Self::Remote | Self::Server(super::transport::Endpoint::Tcp(_))
         )
     }
 }
@@ -105,25 +102,29 @@ impl CacheConfig {
         read_only: Option<bool>,
         image_store: Option<PathBuf>,
     ) -> anyhow::Result<Self> {
-        let backend = match backend {
-            Some(backend) => backend,
-            None => match env::unicode(BACKEND_ENV)? {
-                Some(value) => value.parse::<CacheBackend>().map_err(anyhow::Error::msg)?,
-                None => CacheBackend::Server,
-            },
+        let configured_backend = backend;
+        let legacy_backend = || match env::unicode(BACKEND_ENV)? {
+            Some(value) => value.parse::<CacheBackend>().map_err(anyhow::Error::msg),
+            None => Ok(CacheBackend::Server),
         };
         let location = match location {
             Some(location) => location,
             None => match env::unicode(LOCATION_ENV)? {
                 Some(value) => value,
-                None if backend == CacheBackend::Server => match env::unicode(SERVER_ENV)? {
-                    Some(value) => value,
-                    None => default_endpoint()?,
+                None => match configured_backend.map(Ok).unwrap_or_else(legacy_backend)? {
+                    CacheBackend::Server => {
+                        env::unicode(SERVER_ENV)?.map_or_else(default_endpoint, Ok)?
+                    }
+                    backend => anyhow::bail!("{LOCATION_ENV} is required for {backend:?}"),
                 },
-                None => {
-                    anyhow::bail!("{LOCATION_ENV} is required for {backend:?}")
-                }
             },
+        };
+        let backend = match Repository::from_address(&location)? {
+            Some(Repository::File(_)) => CacheBackend::Filesystem,
+            Some(Repository::S3(_)) => CacheBackend::S3,
+            Some(Repository::Gcs { .. }) => CacheBackend::Gcs,
+            Some(Repository::Http(_)) => CacheBackend::Http,
+            None => configured_backend.map(Ok).unwrap_or_else(legacy_backend)?,
         };
         let read_only = match read_only {
             Some(read_only) => read_only,
@@ -144,6 +145,12 @@ impl CacheConfig {
         })
     }
     pub fn address(&self) -> anyhow::Result<String> {
+        if let Some(repository) = Repository::from_address(&self.location)? {
+            if !self.read_only {
+                repository.validate_writable()?;
+            }
+            return Ok(self.location.clone());
+        }
         match self.backend {
             CacheBackend::Server => Ok(self.location.clone()),
             CacheBackend::Filesystem => {
@@ -157,18 +164,8 @@ impl CacheConfig {
                 );
                 Ok(format!("file://{path}"))
             }
-            CacheBackend::S3 => {
-                super::storage::s3_location(&self.location)?;
-                Ok(self.location.clone())
-            }
-            CacheBackend::Http => {
-                ensure!(self.read_only, "HTTP repositories are read-only");
-                ensure!(
-                    self.location.starts_with("http://") || self.location.starts_with("https://"),
-                    "HTTP repository requires http:// or https://"
-                );
-                super::http::Http::validate(&self.location)?;
-                Ok(self.location.clone())
+            CacheBackend::S3 | CacheBackend::Gcs | CacheBackend::Http => {
+                anyhow::bail!("cache backend requires a repository URL")
             }
         }
     }
@@ -176,17 +173,34 @@ impl CacheConfig {
 
 /// Cache configuration and implicit storage credentials belong to the host.
 /// Explicit invocation environment is merged by the executor after this step.
-pub(crate) fn scrub_guest_environment(env: &mut std::collections::BTreeMap<String, String>) {
-    let s3 = env.get(BACKEND_ENV).is_some_and(|value| value == "s3")
+pub(crate) fn scrub_guest_environment(
+    env: &mut std::collections::BTreeMap<String, String>,
+    image_lower: bool,
+) {
+    let s3 = image_lower
+        || env.get(BACKEND_ENV).is_some_and(|value| value == "s3")
         || [LOCATION_ENV, SERVER_ENV].iter().any(|key| {
             env.get(*key)
                 .is_some_and(|value| value.starts_with("s3://"))
         });
+    let gcs = image_lower
+        || env
+            .get(BACKEND_ENV)
+            .is_some_and(|value| matches!(value.as_str(), "gcs" | "gs"))
+        || [LOCATION_ENV, SERVER_ENV].iter().any(|key| {
+            env.get(*key)
+                .is_some_and(|value| value.starts_with("gs://"))
+        });
     for key in env::cache::SOURCE_ENV {
         env.remove(key);
     }
+    env.remove(env::cache::BLOB_TARGET_ENV);
     if s3 {
         env.retain(|key, _| !key.starts_with("AWS_"));
+    }
+    env.remove(super::opendal_store::ENDPOINT_ENV);
+    if gcs {
+        env.remove("GOOGLE_APPLICATION_CREDENTIALS");
     }
 }
 
@@ -219,6 +233,7 @@ mod tests {
             ("tcp://127.0.0.1:1234", false, true),
             ("https://mirror.example/root", true, true),
             ("s3://bucket/root", false, true),
+            ("gs://bucket/root", false, true),
         ] {
             let source = ResolvedSource::resolve(address, read_only, Some("token")).unwrap();
             assert_eq!(source.needs_host_network(), network, "{address}");
@@ -258,6 +273,27 @@ mod tests {
         }
         assert_eq!("https".parse::<CacheBackend>().unwrap(), CacheBackend::Http);
     }
+
+    #[rstest::rstest]
+    #[case("file:///tmp/repository", CacheBackend::Filesystem, false)]
+    #[case("s3://bucket/root", CacheBackend::S3, false)]
+    #[case("gs://bucket/root", CacheBackend::Gcs, false)]
+    #[case("https://mirror.example/root", CacheBackend::Http, true)]
+    fn repository_url_selects_backend(
+        #[case] url: &str,
+        #[case] backend: CacheBackend,
+        #[case] read_only: bool,
+    ) {
+        let config = CacheConfig::from_options(
+            Some(CacheBackend::Server),
+            Some(url.into()),
+            Some(read_only),
+            None,
+        )
+        .unwrap();
+        assert_eq!(config.backend, backend);
+        assert_eq!(config.address().unwrap(), url);
+    }
     #[test]
     fn all_s3_selection_forms_scrub_implicit_storage_credentials() {
         for (key, value) in [
@@ -276,14 +312,30 @@ mod tests {
                 ),
                 ("PATH".into(), "/usr/bin".into()),
             ]);
-            scrub_guest_environment(&mut env);
+            scrub_guest_environment(&mut env, false);
             assert_eq!(env, BTreeMap::from([("PATH".into(), "/usr/bin".into())]));
         }
         let mut normal = BTreeMap::from([("AWS_ACCESS_KEY_ID".into(), "agent-key".into())]);
-        scrub_guest_environment(&mut normal);
+        scrub_guest_environment(&mut normal, false);
         assert!(
             normal.contains_key("AWS_ACCESS_KEY_ID"),
             "ordinary explicit AWS workflows are unchanged"
         );
+    }
+
+    #[test]
+    fn pinned_image_bindings_do_not_need_ambient_backend_settings_to_scrub_credentials() {
+        let mut env = BTreeMap::from([
+            ("AWS_ACCESS_KEY_ID".into(), "test-key".into()),
+            ("AWS_SECRET_ACCESS_KEY".into(), "test-secret".into()),
+            ("AWS_SESSION_TOKEN".into(), "test-token".into()),
+            (
+                "GOOGLE_APPLICATION_CREDENTIALS".into(),
+                "/host/credentials".into(),
+            ),
+            ("KEEP".into(), "inherited".into()),
+        ]);
+        scrub_guest_environment(&mut env, true);
+        assert_eq!(env, BTreeMap::from([("KEEP".into(), "inherited".into())]));
     }
 }

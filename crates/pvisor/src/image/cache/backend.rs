@@ -564,7 +564,7 @@ impl RemoteFs {
     }
 
     fn directory_name_order(&self, a: &[u8], b: &[u8]) -> std::cmp::Ordering {
-        if self.digest.starts_with("pvisor-v2:") {
+        if super::portable::immutable_handle(&self.digest) {
             super::portable::name_order(a, b)
         } else {
             a.cmp(b)

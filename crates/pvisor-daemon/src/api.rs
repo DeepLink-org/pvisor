@@ -81,14 +81,14 @@ pub trait PreparedCatalogService: Sized {
     /// local name in `RepoTags`. Missing or invalid names or metadata fail locally.
     fn inspect(&self, name: &str) -> Result<serde_json::Value>;
 
-    /// Publish an existing local template to S3 or an absolute `file://` directory.
+    /// Publish an existing local template to S3, GCS or an absolute `file://` directory.
     /// Returns JSON with `source`, `image_handle`, `digest` and `platform`. The bundle
     /// is immutable. The name index advances after upload if its pre-upload
     /// version still matches or already points to the same publication. Failure
     /// can leave unreferenced objects. The local template is unchanged.
     fn push(&self, name: &str, destination: &str) -> Result<serde_json::Value>;
 
-    /// Import a template from S3 or HTTP(S), or resolve its name through configured
+    /// Import a template from a filesystem, S3, GCS or HTTP(S) URL, or resolve its name through configured
     /// registries when `source` is absent. Only metadata is fetched at import.
     /// Engine profiles and launch settings are validated before commit. Existing
     /// names require `refresh`. Failure preserves their committed records;

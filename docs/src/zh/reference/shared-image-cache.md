@@ -1,6 +1,6 @@
 # 共享镜像缓存与存储后端
 
-用 `pvisor push` 分发本地镜像，用 Rust 缓存客户端查询不可变镜像中的文件。`pvisor-daemon serve --cache` 为 VM 客户端准备 OCI 镜像，并将索引和内容写入本地 V2 池。文件查询使用固定的 `image_handle`，不会访问 OCI registry。
+用 `pvisor push` 分发本地镜像，用 Rust 缓存客户端查询不可变镜像中的文件。`pvisor-daemon serve --cache` 为 VM 客户端准备 OCI 镜像，并将索引和内容写入本地镜像包池。文件查询使用固定的 `image_handle`，不会访问 OCI registry。
 
 ## 本地镜像目录 {#local-image-store}
 
@@ -11,17 +11,16 @@ Docker 兼容命令、未选择远程后端的 spawn 和 cache server 共用一�
 ```text
 <image-store>/
 ├── configs/<config-digest>.json
-├── pool-v2/
+├── image-pack-v1/
 │   ├── format.json
-│   ├── pool-format.json
 │   ├── meta/<image-key>/...
-│   └── data/{packs,sha256}/...
+│   └── data/blobs/...
 ├── staging/.import-*/
 ├── locks/
 └── projections/
 ```
 
-`staging` 中的下载／解包目录在普通成功或失败后删除，进程崩溃可能留下残余。`configs` 保存按摘要校验的原始 OCI 配置；`pool-v2` 是唯一的新本地镜像发布位置。Docker pull 仍查询 registry，但可复用相同 digest 的共享池内容。build 的各个标签也发布到 V2，每个标签独立提交，不提供跨标签事务。`rmi` 只移除容器前端 catalog 引用，不回收共享内容；活动和已停止任务保留固定 revision。
+`staging` 中的下载／解包目录在普通成功或失败后删除，进程崩溃可能留下残余。`configs` 保存按摘要校验的原始 OCI 配置。新本地镜像使用 `image-pack-v1`，已固定的预发布 V2 镜像保留原位置。Docker pull 仍查询 registry，但可复用相同 digest 的共享池内容。build 的各个标签独立提交。`rmi` 只移除 catalog 引用，不回收共享内容；活动和已停止任务保留固定 revision。
 
 Docker Hub 短名和完整名共用一个 canonical catalog 身份，pull/build 替换、create/FROM 查找和 rmi 都按这个身份处理。等价 build 标签只发布一次；不同标签和已有容器保留各自固定的 revision。包含重复 canonical 身份的 catalog 明确报错，需在新存储中重新构建。
 
@@ -31,15 +30,18 @@ Docker Hub 短名和完整名共用一个 canonical catalog 身份，pull/build 
 
 ## 选择后端
 
-服务器、文件系统、S3 与本地 pool 使用[共享镜像缓存 V2](../design/lazy-image-v2.md)：独立镜像元数据、压缩目录 radix 索引与共享内容池。
+文件系统、S3、Google Cloud Storage 和缓存服务写入 [Image Pack V1](../design/experimental/image-pack/index.md)。新池默认 blob 目标为 32 MiB；需要 64 MiB 时，在写入端设置 `PVISOR_IMAGE_BLOB_TARGET_MIB=64` 初始化独立池。已初始化的池保留原策略。
 
-服务器、文件系统和 S3 使用同一套 `prepare/list/stat/read` 接口，VM 也使用相同配置。文件系统和 S3 是直接存储后端，使用它们不需要启动 `pvisor-daemon serve --cache`。
+设置 `PVISOR_CACHE_LOCATION` 时，URL 的 scheme 决定后端，不需要设置 `PVISOR_CACHE_BACKEND`。直接存储后端不需要启动 `pvisor-daemon serve --cache`。未设置仓库 URL 时，使用原有的缓存服务发现规则。
 
-| 后端 | 配置 | 适用场景 |
+| URL | 权限 | 适用场景 |
 |---|---|---|
-| `server`（默认） | `PVISOR_CACHE_SERVER=unix://...` 或 loopback `tcp://...` | 服务同一台机器的 V2 镜像池，或已有集中服务 |
-| `filesystem` | `PVISOR_CACHE_BACKEND=filesystem` 与 `PVISOR_CACHE_LOCATION=/absolute/directory` | 单机多个进程，或共享盘/NFS 上的缓存 |
-| `s3` | `PVISOR_CACHE_BACKEND=s3` 与 `PVISOR_CACHE_LOCATION=s3://BUCKET/PREFIX` | 多机器通过对象存储共享镜像，无需维护缓存服务 |
+| `file:///绝对目录` | 读写 | 本机或共享文件系统上的仓库 |
+| `s3://BUCKET/PREFIX` | 读写 | AWS S3 或兼容服务 |
+| `gs://BUCKET/PREFIX` | 读写 | Google Cloud Storage，通过 Apache OpenDAL |
+| `https://HOST/PREFIX` 或 `http://HOST/PREFIX` | 只读 | 支持精确 Range GET 的静态镜像站 |
+
+`PVISOR_CACHE_SERVER=unix://...` 或 loopback `tcp://...` 选择 pVisor 缓存服务地址，不是仓库地址。旧的 `PVISOR_CACHE_BACKEND=filesystem` 加绝对目录写法仍可读取配置；新配置直接用 `file:///` URL。
 
 嵌入式客户端可设置 `PVISOR_CACHE_READ_ONLY=true` 进入只读模式。只读客户端不能刷新或补齐共享池中的镜像名，仍可维护私有加速缓存。
 
@@ -53,9 +55,11 @@ SOURCE=$(pvisor push alpine:3.20 --to s3://your-bucket/releases | jq -er .source
 pvisor image pull alpine:published --from "$SOURCE"
 ```
 
-用 `--to file:///ABSOLUTE/PATH` 可将同一发布包写到本地目录，供静态 HTTP(S) 镜像站使用。接收端导入描述符、OCI 配置和根元数据，文件内容按需读取。发布使用本地构建或拉取时记录的平台。
+将 `--to` 换为 `file:///ABSOLUTE/PATH` 可写入离线目录，然后在可访问该目录的主机直接用回执的 `file:///` URL 执行 `image pull --from`；不需要启动 HTTP 服务。也可以把同一发布包交给静态 HTTP(S) 镜像站。导入只读取描述符、OCI 配置和根元数据，文件内容按需读取。使用 `file:///` 导入后，目录必须保留，且不应原地修改。
 
 S3 默认通过 HTTPS 使用 SigV4。发布需要 `s3:GetObject` 和 `s3:PutObject`，读取只需 `s3:GetObject`。认证由宿主环境凭据或工作负载角色提供。使用 S3 兼容服务时，配置 `AWS_ENDPOINT` 和区域。
+
+将 `--to` 换为 `gs://BUCKET/PREFIX` 可发布到已有 GCS bucket。OpenDAL 使用宿主 Google Application Default Credentials；需要显式凭据文件时设置 `GOOGLE_APPLICATION_CREDENTIALS`。GCS 用对象 generation 执行条件创建与更新，不把它当成 S3 ETag。URL、镜像描述符和导入回执不放凭据。
 
 ### 共享池布局
 
@@ -79,11 +83,10 @@ s3://your-bucket/pvisor-cache/
 │           ├── plan.json
 │           └── progress.json
 └── data/
-    ├── packs/<first-two-hex>/<next-two-hex>/<encoded-blob-sha256>
-    └── sha256/<first-two-hex>/<next-two-hex>/<plaintext-chunk-sha256>
+    └── blobs/<first-two-hex>/<next-two-hex>/<encoded-blob-sha256>
 ```
 
-≤64 KiB 小文件按目录聚合为不可变压缩 pack，索引记录 blob/frame/slot，偏移保存在数据 frame 的 slot 表；大文件按自身 offset 0 切成至多 1 MiB 的内容块。数据对象不含文件系统元数据，旧 HEAD 中的内容位置可复用于 rename、移动和 chmod。部分重叠的小文件集合不保证跨镜像逐文件物理去重。路径与符号链接保留原始字节，硬链接保持 inode 身份，不新增 xattr。
+写入者按目录自底向上聚合小文件帧，大文件帧按文件偏移独立聚合。索引定位压缩字节范围与 slot。跨 revision 只对完整编码 blob 去重，旧 HEAD 不决定布局。详见[打包规则](../design/experimental/image-pack/index.md#packing)。
 
 ### 存储布局与请求成本
 
@@ -91,7 +94,7 @@ s3://your-bucket/pvisor-cache/
 
 发布先写并校验全部共享内容、镜像元数据与 COMMIT，再 CAS 更新自身平台的 HEAD。同一旧 HEAD 只有一个发布者能提交；冲突明确失败，不盲目覆盖。损坏的已存在不可变对象也拒绝复用，不覆盖其他镜像正在使用的数据。失败会留下尚未引用的版本/对象。上传完成记录保留在 uploads，清理留给离线维护。
 
-打开只获取控制对象、root.bin 与根目录 frame，不完整解析文件列表。lookup/readdir 按需取独立压缩索引 frame，read 获取相关布局与数据 frame。索引 LRU 限制为 16 MiB 解码驻留，内容为 64 MiB／4,096 项；非池读取器可将编码 frame 持久保存到 <user-cache>/pvisor/cache-v2/objects/<location-hash>/。本地池普通读取没有持久 raw 镜像副本。本地缓存损坏后重新获取；远端缺失、损坏和鉴权失败明确报错，不填零、不改走 registry。
+打开只获取控制对象、root.bin 与根目录 frame，不完整解析文件列表。lookup/readdir 按需取独立压缩索引 frame；V1 内容读取只取所需的压缩帧范围。索引 LRU 限制为 16 MiB 解码驻留，内容为 64 MiB／4,096 项；非池读取器可将编码 frame 持久保存到 <user-cache>/pvisor/cache-v2/objects/<location-hash>/。本地池普通读取没有持久 raw 镜像副本。本地缓存损坏后重新获取；远端缺失、损坏和鉴权失败明确报错，不填零、不改走 registry。
 
 读写模式的可变 tag HEAD 在五分钟内复用；--refresh 由发布端显式更新。只读模式始终使用已发布 HEAD，无 registry 查询。每个任务固定返回的 image_handle，旧 revision 保留时仍可读取。IMAGE@sha256:… 是独立引用，需要另行发布其 meta；持有 tag 返回的 image_handle 已能固定那个版本。
 

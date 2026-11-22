@@ -554,16 +554,24 @@ fn s3_publication_http_mirror_and_signed_lazy_reads() {
             .any(|(method, key, _)| method == "GET" && key.contains("/data/")),
         "import may fetch metadata, never complete file contents"
     );
-    assert!(
-        requests[before_read..]
-            .iter()
-            .any(|(method, key, _)| method == "GET" && key.contains("/data/packs/"))
+    let data_reads = requests[before_read..]
+        .iter()
+        .filter(|(method, key, _)| method == "GET" && key.contains("/data/blobs/"))
+        .map(|(_, key, _)| key)
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        data_reads.len(),
+        1,
+        "only the requested small-file blob is read"
     );
     assert!(
-        !requests[before_read..]
-            .iter()
-            .any(|(method, key, _)| method == "GET" && key.contains("/data/sha256/")),
-        "unused large file must remain unfetched"
+        guard
+            .objects
+            .keys()
+            .filter(|key| key.contains("/data/blobs/"))
+            .count()
+            > 1,
+        "fixture must contain additional unread data blobs"
     );
     assert!(
         requests[import_start..]
@@ -621,7 +629,7 @@ fn prepared_image_commands_retain_template_metadata_and_ignore_retired_policy() 
     let imported: PreparedImage = serde_json::from_slice(&installed).unwrap();
     let mut expected = original;
     expected.rootfs = receiver.join("store");
-    expected.pooled_image.cache.location = receiver.join("store/images/pool-v2");
+    expected.pooled_image.cache.location = receiver.join("store/images/image-pack-v1");
     expected.pooled_image.cache.repository = Some(source.into());
     expected.library_dir = None;
     assert_eq!(
@@ -759,7 +767,7 @@ fn chaos_publication_failure_and_lost_ack_reconcile_without_partial_visibility()
         publication["image_handle"]
             .as_str()
             .unwrap()
-            .starts_with("pvisor-v2:")
+            .starts_with("pvisor-image-pack:v1:")
     );
     assert!(!fixture.images.join(".distribution/tiny.json").exists());
     assert!(server.data.lock().unwrap().injected > 0);
@@ -876,7 +884,7 @@ fn chaos_file_content_faults_are_verified_and_recover_for_both_transports() {
         .enumerate()
         {
             let cache = format!("isolated-{round}");
-            server.inject(fault, "data/packs/");
+            server.inject(fault, "data/blobs/");
             let output = fixture.reader(&server, &images, &cache).output().unwrap();
             assert!(!output.status.success(), "{transport} accepted {fault:?}");
             assert!(server.data.lock().unwrap().injected > 0);
@@ -997,7 +1005,7 @@ fn configured_registry_resolves_once_and_fails_over_verified_downloads_in_order(
     .enumerate()
     {
         order.lock().unwrap().clear();
-        mirror.inject(fault, "data/packs/");
+        mirror.inject(fault, "data/blobs/");
         let output = fixture
             .reader(&origin, &images, &format!("ordered-{round}"))
             .output()
@@ -1010,11 +1018,11 @@ fn configured_registry_resolves_once_and_fails_over_verified_downloads_in_order(
         let trace = order.lock().unwrap().clone();
         let first = trace
             .iter()
-            .position(|s| s.starts_with("cdn:GET:") && s.contains("/data/packs/"))
+            .position(|s| s.starts_with("cdn:GET:") && s.contains("/data/blobs/"))
             .unwrap();
         let second = trace
             .iter()
-            .position(|s| s.starts_with("origin:GET:") && s.contains("/data/packs/"))
+            .position(|s| s.starts_with("origin:GET:") && s.contains("/data/blobs/"))
             .unwrap();
         assert!(first < second);
         assert!(
@@ -1022,8 +1030,8 @@ fn configured_registry_resolves_once_and_fails_over_verified_downloads_in_order(
             "file reads must not re-resolve a mutable name"
         );
     }
-    mirror.inject(Fault::Corrupt, "data/packs/");
-    origin.inject(Fault::Corrupt, "data/packs/");
+    mirror.inject(Fault::Corrupt, "data/blobs/");
+    origin.inject(Fault::Corrupt, "data/blobs/");
     let output = fixture
         .reader(&origin, &images, "all-corrupt")
         .output()

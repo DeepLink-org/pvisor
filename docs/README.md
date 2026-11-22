@@ -588,6 +588,28 @@ These requirements remain engineering or policy work. They are separate from
 publication readiness and do not authorize AI to approve semantic claims or
 make maintainer decisions.
 
+### Image Pack release gates
+
+- Run the cache, shared-store, CLI repository and daemon repository tests with
+  `mise run test`; run the complete `mise run cases -- --feature lazy-image --strict`
+  on a Linux amd64 host with matching binaries. A host that cannot run S-LAZY-005
+  does not count as full feature acceptance.
+- Before freezing V1, preserve a complete independently verified fixture and
+  check that desktop and Linux release binaries read it. Exercise prerelease
+  V2 compatibility and rejection of invalid or unreachable objects on export.
+- In isolated real S3 and GCS prefixes, verify the intended identities and IAM,
+  empty-pool bootstrap, prepare, push/import, reads across blob boundaries, two
+  competing publishers, lost acknowledgements, credential expiry or denial, and
+  mirror behavior. Loopback emulators do not establish provider semantics.
+- On supported guest configurations, verify cold reads, `mmap`, copy-up and
+  failure propagation, including that inherited host storage credentials do not
+  reach the guest. Check interrupted local publication on the filesystem used
+  for deployment. Before widening rollout, measure cold-read latency, reader
+  memory, staging headroom and incremental upload volume on the target workload.
+- Roll out with a separate V1 prefix and retain old pools while pinned readers
+  need them. Treat rollout as incomplete until all results and rollback evidence
+  are recorded; passing local tests alone are not release approval.
+
 ### Unadopted documentation proposals
 
 The following ideas are retained for engineering evaluation only. They are not

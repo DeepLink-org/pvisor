@@ -1,5 +1,6 @@
 //! Self-contained immutable V2 publications for object storage and static mirrors.
 use super::{
+    location::Repository,
     portable::MAX_CONTROL,
     storage::{MAX_OBJECT, Storage, StoredObject},
 };
@@ -38,11 +39,9 @@ pub(crate) fn validate_registries(
     let mut roots = std::collections::HashSet::new();
     for registry in registries {
         validate_name(&registry.name)?;
-        super::mirrors::validate_root(&registry.location)?;
-        let canonical = if registry.location.starts_with("s3://") {
-            registry.location.trim_end_matches('/').to_string()
-        } else {
-            super::http::Http::validate(&registry.location)?.to_string()
+        let canonical = match Repository::parse(&registry.location)? {
+            Repository::Http(address) => super::http::Http::validate(address)?.to_string(),
+            _ => registry.location.trim_end_matches('/').to_string(),
         };
         ensure!(
             names.insert(&registry.name) && roots.insert(canonical),
@@ -135,12 +134,7 @@ pub(crate) struct PublicationReference<'a> {
 impl<'a> PublicationReference<'a> {
     pub(crate) fn observe(destination: &'a str, name: &str) -> anyhow::Result<Self> {
         validate_name(name)?;
-        validate_destination(destination)?;
-        let storage = if let Some(path) = destination.strip_prefix("file://") {
-            Storage::filesystem(path.into(), true)?
-        } else {
-            Storage::s3(destination)?
-        };
+        let storage = Repository::parse(destination)?.open(false)?;
         let key = format!("refs/{name}.json");
         let previous = storage.read(&key, None, 4096)?;
         if let Some(previous) = &previous {
@@ -189,7 +183,8 @@ impl<'a> PublicationReference<'a> {
             .compare_and_swap(&self.key, bytes.clone(), expected)
         {
             ensure!(
-                matches_publication()?,
+                (!self.storage.is_local() || super::storage::is_conflict(&error))
+                    && matches_publication()?,
                 "registry reference commit failed: {error:#}"
             );
         }
@@ -198,11 +193,7 @@ impl<'a> PublicationReference<'a> {
 }
 
 pub(crate) fn read_repository_template(location: &str) -> anyhow::Result<Vec<u8>> {
-    let storage = if location.starts_with("s3://") {
-        Storage::s3(location)?
-    } else {
-        Storage::Http(std::sync::Arc::new(super::http::Http::new(location)?))
-    };
+    let storage = Repository::parse(location)?.open(true)?;
     let bytes = storage
         .read("image.json", None, MAX_CONTROL)?
         .context("repository has no complete image publication")?
@@ -281,11 +272,7 @@ pub(crate) fn publish_repository(
     );
     let publication = &super::hash(template)[7..];
     let location = format!("{}/{publication}", destination.trim_end_matches('/'));
-    let target = if let Some(path) = location.strip_prefix("file://") {
-        Storage::filesystem(path.into(), true)?
-    } else {
-        Storage::s3(&location)?
-    };
+    let target = Repository::parse(&location)?.open(false)?;
     upload_tree(source, source, &target)?;
     // Sole visibility point: never expose a template before every dependency
     // has been acknowledged/reconciled. Repeated publication is idempotent.
@@ -294,19 +281,7 @@ pub(crate) fn publish_repository(
 }
 
 pub(crate) fn validate_destination(destination: &str) -> anyhow::Result<()> {
-    if let Some(path) = destination.strip_prefix("file://") {
-        ensure!(
-            Path::new(path).is_absolute()
-                && !path.contains(['?', '#', '%'])
-                && !Path::new(path)
-                    .components()
-                    .any(|part| matches!(part, std::path::Component::ParentDir)),
-            "filesystem publication requires file:///ABSOLUTE/PATH"
-        );
-    } else {
-        super::storage::s3_location(destination)?;
-    }
-    Ok(())
+    Repository::parse(destination)?.validate_writable()
 }
 
 fn upload_tree(root: &Path, directory: &Path, target: &Storage) -> anyhow::Result<()> {

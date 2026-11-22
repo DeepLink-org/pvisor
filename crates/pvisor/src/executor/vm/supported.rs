@@ -1244,7 +1244,25 @@ impl RunExecutor for VmExecutor {
         } else {
             BTreeMap::new()
         };
-        prepare_guest_environment(&mut env, root.as_path(), &invocation.env, &env_unset);
+        let image_lower = root_gate.is_some()
+            || root_overlay
+                .lowers
+                .iter()
+                .chain(workspace.iter().flat_map(|overlay| &overlay.lowers))
+                .chain(std::iter::once(&root))
+                .any(|lower| {
+                    crate::image::cache::direct_image_owner(lower).is_some()
+                        || lower.canonicalize().is_ok_and(|root| {
+                            crate::image::cache::direct_image_owner(&root).is_some()
+                        })
+                });
+        prepare_guest_environment(
+            &mut env,
+            root.as_path(),
+            &invocation.env,
+            &env_unset,
+            image_lower,
+        );
         let mut authority_paths = match host_authority_paths(&spec.metadata, &env) {
             Ok(paths) => paths,
             Err(error) => {
@@ -3386,7 +3404,7 @@ fn assign_warm_root(
     *lower = root.clone();
     launch.guest.argv = request.argv;
     launch.guest.env.clear();
-    prepare_guest_environment(&mut launch.guest.env, &root, &request.env, &[]);
+    prepare_guest_environment(&mut launch.guest.env, &root, &request.env, &[], true);
     strip_agentctl(&mut launch.guest.env);
     if request.env.contains_key("TMPDIR") {
         launch.guest.temporary_filesystem = None;
@@ -3434,8 +3452,9 @@ fn prepare_guest_environment(
     root: &Path,
     explicit: &BTreeMap<String, String>,
     unset: &[String],
+    image_lower: bool,
 ) {
-    crate::image::cache::scrub_guest_environment(env);
+    crate::image::cache::scrub_guest_environment(env, image_lower);
     for name in [
         "DYLD_LIBRARY_PATH",
         "DYLD_FALLBACK_LIBRARY_PATH",
@@ -3661,7 +3680,7 @@ mod tests {
             ("HOME".into(), "/explicit".into()),
         ]);
         let mut env = inherited.clone();
-        prepare_guest_environment(&mut env, Path::new("/image"), &explicit, &[]);
+        prepare_guest_environment(&mut env, Path::new("/image"), &explicit, &[], false);
         assert_eq!(env["AWS_SECRET_ACCESS_KEY"], "explicit-secret");
         assert_eq!(env["LD_LIBRARY_PATH"], "/guest/lib");
         assert_eq!(env["HOME"], "/explicit");
@@ -3672,7 +3691,7 @@ mod tests {
         assert!(!env.contains_key("DYLD_FALLBACK_LIBRARY_PATH"));
         let unset = ["PATH", "HOME", "TMPDIR", "AWS_SECRET_ACCESS_KEY"].map(String::from);
         let mut env = inherited;
-        prepare_guest_environment(&mut env, Path::new("/"), &explicit, &unset);
+        prepare_guest_environment(&mut env, Path::new("/"), &explicit, &unset, false);
         for key in &unset {
             assert!(!env.contains_key(key));
         }

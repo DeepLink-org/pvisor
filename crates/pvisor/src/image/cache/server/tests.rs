@@ -217,7 +217,13 @@ fn server_and_direct_readers_share_revisions_after_source_removal() {
         };
         fs::remove_dir_all(store.root.join("rootfs-v3")).unwrap();
         let direct = CacheClient::new(
-            format!("file://{}", store.root.join("pool-v2").display()),
+            format!(
+                "file://{}",
+                store
+                    .root
+                    .join(crate::image::store::LocalStore::POOL_DIR)
+                    .display()
+            ),
             None,
         )
         .unwrap();

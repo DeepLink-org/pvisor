@@ -4,9 +4,13 @@ use super::*;
 use bincode::{Decode, Encode};
 
 pub(super) const PAGE_BYTES: usize = 64 * 1024;
-pub(super) const MAX_FRAME_RAW: usize = MAX_READ as usize + 128;
+pub(super) const MAX_FRAME_RAW: usize = CHUNK_BYTES as usize + 128;
 pub(super) const MAX_FRAME_ENCODED: usize = MAX_FRAME_RAW + 4096;
 pub(super) type Digest = [u8; 32];
+
+const SEEK_TABLE_MAGIC: u32 = 0x184d_2a5e;
+const SEEKABLE_MAGIC: u32 = 0x8f92_eab1;
+const SEEK_FOOTER_BYTES: usize = 17;
 
 /// Bounded per-key miss owners; the table lock never covers storage or decoding.
 #[derive(Default)]
@@ -67,6 +71,54 @@ pub(super) fn decode<T: Decode<()>>(bytes: &[u8]) -> anyhow::Result<T> {
     Ok(value)
 }
 
+pub(super) fn compress<T: Encode>(value: &T, count: u64) -> anyhow::Result<(FrameRef, Vec<u8>)> {
+    let raw = encode(value)?;
+    ensure!(
+        raw.len() <= MAX_FRAME_RAW,
+        "frame exceeds decoded size limit"
+    );
+    let encoded = zstd::bulk::compress(&raw, 3)?;
+    ensure!(
+        encoded.len() <= MAX_FRAME_ENCODED,
+        "frame exceeds encoded limit"
+    );
+    let reference = FrameRef {
+        offset: 0,
+        encoded: encoded.len() as u32,
+        decoded: raw.len() as u32,
+        digest: digest(&encoded),
+        count,
+    };
+    Ok((reference, encoded))
+}
+
+pub(super) fn seek_table_bytes(frames: usize) -> usize {
+    SEEK_FOOTER_BYTES + frames * 8
+}
+
+/// Return the seek table payload after checking its enclosing frame and footer.
+pub(super) fn seek_table(bytes: &[u8]) -> anyhow::Result<(&[u8], &[[u8; 8]])> {
+    let tail = bytes.last_chunk::<9>().context("missing seekable footer")?;
+    ensure!(
+        tail[4] == 0 && tail[5..] == SEEKABLE_MAGIC.to_le_bytes(),
+        "invalid seekable footer"
+    );
+    let count = u32::from_le_bytes(tail[..4].try_into()?) as usize;
+    ensure!(count <= bytes.len() / 8, "invalid seek table count");
+    let start = bytes
+        .len()
+        .checked_sub(seek_table_bytes(count))
+        .context("seek table exceeds object")?;
+    let (data, table) = bytes.split_at(start);
+    ensure!(
+        table[..4] == SEEK_TABLE_MAGIC.to_le_bytes()
+            && u32::from_le_bytes(table[4..8].try_into()?) as usize == count * 8 + 9,
+        "invalid seek table header"
+    );
+    let (entries, _) = table[8..8 + count * 8].as_chunks::<8>();
+    Ok((data, entries))
+}
+
 #[derive(Default)]
 pub(super) struct Writer {
     pub bytes: Vec<u8>,
@@ -75,33 +127,34 @@ pub(super) struct Writer {
 
 impl Writer {
     pub fn push<T: Encode>(&mut self, value: &T, count: u64) -> anyhow::Result<FrameRef> {
-        let raw = encode(value)?;
+        let (reference, encoded) = compress(value, count)?;
+        self.append(reference, &encoded)
+    }
+
+    pub(super) fn append(
+        &mut self,
+        mut reference: FrameRef,
+        encoded: &[u8],
+    ) -> anyhow::Result<FrameRef> {
         ensure!(
-            raw.len() <= MAX_FRAME_RAW,
-            "frame exceeds decoded size limit"
+            encoded.len() == reference.encoded as usize && digest(encoded) == reference.digest,
+            "staged frame digest mismatch"
         );
-        let encoded = zstd::bulk::compress(&raw, 3)?;
-        ensure!(
-            encoded.len() <= MAX_FRAME_ENCODED,
-            "frame exceeds encoded limit"
-        );
-        let reference = FrameRef {
-            offset: self.bytes.len() as u64,
-            encoded: encoded.len() as u32,
-            decoded: raw.len() as u32,
-            digest: digest(&encoded),
-            count,
-        };
-        self.bytes.extend_from_slice(&encoded);
+        reference.offset = self.bytes.len() as u64;
+        self.bytes.extend_from_slice(encoded);
         self.sizes.push((reference.encoded, reference.decoded));
-        ensure!(self.bytes.len() <= MAX_OBJECT, "frame object exceeds limit");
+        ensure!(
+            self.bytes.len() + seek_table_bytes(self.sizes.len()) <= MAX_OBJECT,
+            "frame object exceeds limit"
+        );
         Ok(reference)
     }
 
     pub fn finish(mut self) -> anyhow::Result<Vec<u8>> {
         // Standard seekable zstd: independent frames and a final skippable
         // seek table. Cryptographic authentication lives in parent references.
-        self.bytes.extend_from_slice(&0x184d_2a5eu32.to_le_bytes());
+        self.bytes
+            .extend_from_slice(&SEEK_TABLE_MAGIC.to_le_bytes());
         self.bytes
             .extend_from_slice(&(self.sizes.len() as u32 * 8 + 9).to_le_bytes());
         for (encoded, decoded) in &self.sizes {
@@ -111,7 +164,7 @@ impl Writer {
         self.bytes
             .extend_from_slice(&(self.sizes.len() as u32).to_le_bytes());
         self.bytes.push(0); // no non-cryptographic per-frame checksum
-        self.bytes.extend_from_slice(&0x8f92_eab1u32.to_le_bytes());
+        self.bytes.extend_from_slice(&SEEKABLE_MAGIC.to_le_bytes());
         ensure!(
             self.bytes.len() <= MAX_OBJECT,
             "seekable object exceeds limit"

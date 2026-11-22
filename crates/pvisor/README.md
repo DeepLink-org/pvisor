@@ -1391,7 +1391,7 @@ atomically on successful pull; existing instances keep their pinned image.
 reject foreign images before publication or VM launch; no CPU emulator is supplied.
 
 Docker pull/build, daemonless Session image preparation and the cache service share
-one local V2 image store under the user data directory, `pvisor/docker/images`.
+one local Image Pack store under the user data directory, `pvisor/docker/images`.
 `PVISOR_IMAGE_STORE` overrides this root for all three entry points. An explicit
 Session/cache image-store option takes precedence. With only `PVISOR_DOCKER_HOME`
 set, the common image root is that directory's `images`, preserving isolated
@@ -1399,13 +1399,13 @@ stores; embedded `Store::open(root)` always keeps images under `root/images`
 and ignores environment defaults. See [local image storage](../../docs/src/en/reference/shared-image-cache.md#local-image-store)
 for platform paths and layout.
 
-The common root owns `pool-v2`, original OCI `configs`, temporary `staging`,
+The common root owns `image-pack-v1`, original OCI `configs`, temporary `staging`,
 reference/platform `locks` and lifetime-owned `projections`. Imports use one
 temporary OCI store and remove downloaded layers/extracted roots on normal
 success/failure. Docker pull still resolves manifest/config, then reuses a
 matching shared pool revision without downloading layers. Local pool tags remain
 available offline until an explicit pull/refresh or another publication replaces
-them. Build tags also publish V2 references usable by Sessions without a registry.
+them. Build tags also publish Image Pack references usable by Sessions without a registry.
 Short and fully qualified Docker Hub aliases use the OCI parser's canonical
 registry/repository/tag identity for catalog lookup, replacement and removal.
 Equivalent build tags publish once; distinct tags remain independent. Catalogs
@@ -1425,9 +1425,9 @@ not bypass the filesystem backend. Ordinary VM reads fetch only needed content
 blocks, with bounded decoded memory caches and no persistent raw block mirror.
 Copy-up may materialize a whole file in the projection before copying into upper;
 normal projection teardown removes it. Old directory records, missing platform
-fields and obsolete storage formats are rejected. Use a fresh store and re-pull
-or rebuild images; no compatibility reader or automatic migration is provided.
-Stop and clean up old containers through the old version before switching stores.
+fields and retired raw/paged V1 storage are rejected. Pinned prerelease radix V2
+images remain readable; new writers use Image Pack V1. Re-pull or rebuild to
+publish in the new format. Existing stores are not converted or deleted.
 
 Remote bindings set `CachedImage.repository` to an immutable S3 or HTTP(S)
 repository. The binding overrides the local pool; remote failures do not
@@ -1454,7 +1454,7 @@ directory. Dependencies precede the hash-named `image.json` visibility point.
 Existing objects must match exactly, including after uncertain write responses;
 publication never overwrites immutable bytes. `Store::read_image_repository`
 fetches the bounded template without downloading image contents. Templates and
-repositories must be trusted by the caller; V2 handles authenticate subsequent
+repositories must be trusted by the caller; pinned handles authenticate subsequent
 metadata/content, not publisher identity. Failed uploads can leave unreachable
 objects and there is no automatic remote GC.
 
@@ -1471,10 +1471,12 @@ retain their existing descriptor schema; `Store::import_image_config` also
 accepts older prepared publications without that optional asset, for runtime
 compatibility. Those older imports cannot supply full OCI metadata to inspect.
 
-Generic clients select `CacheBackend::Http` with a read-only HTTP/HTTPS location
-(`PVISOR_CACHE_BACKEND=http`, `PVISOR_CACHE_LOCATION=https://...`); HTTP defaults
-to read-only, and explicit writable mode is rejected. S3 uses the existing host
-AWS environment, including the selected bucket/prefix and optional endpoint.
+`PVISOR_CACHE_LOCATION` selects direct storage by URL: `file:///`, `s3://`,
+`gs://`, or `https://` / `http://`. HTTP defaults to read-only; writable mode
+is rejected. `image push --to` and `image pull --from` share URL validation, and
+local bundles can be imported directly without a server. S3 uses host AWS
+configuration; GCS uses OpenDAL with host Google credentials and conditional
+writes on object generations.
 No credentials belong in image records or guest environments. Exact bounded
 Range reads, disabled redirects/transformations, TLS verification, finite
 admission/deadlines and bounded retries protect lazy reads. Host `SSL_CERT_FILE`
@@ -1484,9 +1486,8 @@ failure semantics, and the low-pressure loopback chaos/TLS test commands.
 
 `Store::export_image_pool` exports one local pinned revision and its encoded
 dependencies into a new directory. It omits other revisions, tags, credentials
-and projections, and rejects packs with slots unreachable from this revision
-before copying data. This prevents exposing removed files from a private
-predecessor; such images need rebuilding into a fresh pool before publication.
+and projections. Export checks V1 blobs against the reachable index, including
+the seek table and all frame slots, and refuses to publish unreferenced content.
 Treat the exported image, including its config/environment, as public. The
 destination must not exist; failure can leave a partial export.
 
@@ -1499,27 +1500,22 @@ For writable filesystem caches, `CacheClient::prepare_with_blobs` resolves the
 manifest through OCI and reads the config and layers from a supplied, immutable
 SHA-256 directory. Missing or corrupt seed blobs fail preparation.
 
-Pool, filesystem and S3 stores use one V2 physical format. All filesystem
-metadata is inline in independently compressed directory radix frames, routed by
-fixed-seed XXH3-64 with SHA-256 integrity. Oversized directories split recursively
-into 16 buckets. Small files (at most 64 KiB) pack by directory into at most
-1 MiB raw payloads, with independently decoded 16 KiB target data frames. Indexes hold
-blob/frame/slot references; slot offsets live in data frames. File attributes
-never enter content blobs. Previous-HEAD content placements survive rename,
-cross-directory moves and chmod; partially overlapping packs across images do
-not guarantee per-file physical deduplication. Large files retain independently
-addressed 1 MiB chunks, now also seekable Zstd frames. The format uses Zstd level 3
-and standard seekable footers, without the old pool-only envelope/raw fallback.
+Pool, filesystem and S3 writers use Image Pack V1. Independently compressed
+directory indexes refer to an encoded blob and a compressed frame range. Small
+files form frames in basename byte order; directories aggregate frames bottom-up.
+Large files pack consecutive 1 MiB frames separately. Identical blob bytes
+share an SHA-256 key regardless of publication history. Each blob ends in a
+standard Zstd seek table; readers use authenticated offsets from the index.
 
-`pool-format.json` rejects retired physical encodings without modifying them.
-V1 handles/readers/publishers are removed: republish OCI images into an empty V2
-prefix. Old catalog/container records require recreation in the current format.
-Existing files are not automatically deleted. Storage versions are independent of
-the socket protocol, which now accepts only envelope version 2.
+The default pool target is 32 MiB of raw payload. Set the host writer's
+`PVISOR_IMAGE_BLOB_TARGET_MIB=64` to initialize a separate pool at 64 MiB. The
+target is fixed at the first write, and an explicit mismatch is rejected.
+The encoded object itself is capped at 64 MiB including its footer.
+Image Pack V1 storage is independent of socket envelope version 2.
 The index object limit is 64 MiB, controls 1 MiB, with at most 1,000,000 entries
 and 2,000,000 content spans; object limits can be reached first. Publication still
 plans metadata in O(N) memory while staging encoded content on disk and bounding
-upload concurrency. See [the storage design](../../docs/src/en/design/lazy-image-v2.md).
+upload concurrency. See [the storage design](../../docs/src/en/design/experimental/image-pack/index.md).
 
 Fixed V2 direct-image attachments additionally register a stable *logical*
 namespace lease; legacy sources do not. Experimental

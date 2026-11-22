@@ -15,6 +15,7 @@ pub(crate) enum Storage {
     Filesystem(PathBuf),
     Pool(Arc<super::pool::PoolStorage>),
     S3(Arc<S3>),
+    OpenDal(Arc<super::opendal_store::Remote>),
     Http(Arc<super::http::Http>),
     Mirrors(Arc<super::mirrors::Mirrors>),
     Metadata(Arc<MetadataStorage>),
@@ -142,6 +143,7 @@ impl Storage {
         }
         match self {
             Self::Http(http) => http.read_timed(key, range, limit, budget),
+            Self::OpenDal(remote) => remote.read(key, range, limit, Some(budget)),
             Self::S3(s3) => s3.request_timed(
                 key,
                 if range.is_none() && limit != MAX_OBJECT {
@@ -173,7 +175,18 @@ impl Storage {
             "filesystem cache location must be absolute"
         );
         if create {
+            let mut missing = Vec::new();
+            for directory in root.ancestors() {
+                if directory.try_exists()? {
+                    break;
+                }
+                missing.push(directory);
+            }
             fs::create_dir_all(&root)?;
+            for directory in missing {
+                let parent = directory.parent().context("cache root has no parent")?;
+                fs::File::open(parent)?.sync_all()?;
+            }
         }
         let root = root.canonicalize()?;
         Ok(Self::Filesystem(root))
@@ -211,6 +224,14 @@ impl Storage {
     /// Reuse only exact existing bytes. Read back create conflicts or a lost
     /// acknowledgement; immutable repository data is never overwritten.
     pub(super) fn put_verified(&self, key: &str, bytes: Vec<u8>) -> anyhow::Result<()> {
+        if self.is_local() {
+            self.put(key, bytes.clone(), true)?;
+            ensure!(
+                self.matches_bytes(key, &bytes)?,
+                "immutable repository object differs: {key}"
+            );
+            return Ok(());
+        }
         if let Some(existing) = self.read(key, None, bytes.len())? {
             ensure!(
                 existing.bytes == bytes,
@@ -234,6 +255,17 @@ impl Storage {
             }
         }
     }
+    pub(super) fn is_local(&self) -> bool {
+        matches!(self, Self::Pool(_) | Self::Filesystem(_))
+    }
+
+    pub(super) fn matches_bytes(&self, key: &str, expected: &[u8]) -> anyhow::Result<bool> {
+        let Some(found) = self.read(key, None, MAX_OBJECT)? else {
+            return Ok(false);
+        };
+        Ok(found.bytes == expected)
+    }
+
     pub(super) fn get_versioned(&self, key: &str) -> anyhow::Result<Option<StoredObject>> {
         self.read(key, None, MAX_OBJECT)
     }
@@ -262,6 +294,7 @@ impl Storage {
             Self::Mirrors(mirrors) => Ok(Some(mirrors.read(key, range, limit, |_| Ok(()))?)),
             Self::Http(http) => http.read(key, range, limit),
             Self::Metadata(metadata) => metadata.read(key, range, limit),
+            Self::OpenDal(remote) => remote.read(key, range, limit, None),
             Self::S3(s3) => s3.request(
                 key,
                 if range.is_none() && limit != MAX_OBJECT {
@@ -365,6 +398,7 @@ impl Storage {
             Self::S3(s3) => {
                 s3.request(key, Operation::Put(bytes, mode))?;
             }
+            Self::OpenDal(remote) => remote.write(key, bytes, mode)?,
             Self::Filesystem(root) => {
                 let target = confined(root, key, true)?;
                 let parent = target.parent().context("object requires parent")?;
@@ -408,7 +442,7 @@ impl Storage {
                 staging.write_all(&bytes)?;
                 staging.as_file().sync_all()?;
                 staging.persist(&target).map_err(|e| e.error)?;
-                fs::File::open(parent)?.sync_all()?;
+                object_directory_barrier(root, parent, None)?;
             }
         }
         Ok(())
@@ -422,23 +456,25 @@ fn object_directory_barrier(
     parent: &Path,
     directories: Option<&std::sync::Mutex<std::collections::BTreeSet<PathBuf>>>,
 ) -> anyhow::Result<()> {
+    ensure!(parent.starts_with(root), "object escaped pool root");
+    // Persist all newly linkable directory entries before publishing a dependent HEAD.
+    let paths = parent
+        .ancestors()
+        .take_while(|path| path.starts_with(root))
+        .chain(root.parent());
     if let Some(directories) = directories {
-        let mut directories = directories.lock().unwrap();
-        let mut directory = parent;
-        loop {
-            directories.insert(directory.to_owned());
-            if directory == root {
-                break;
-            }
-            directory = directory.parent().context("object escaped pool root")?;
-            ensure!(directory.starts_with(root), "object escaped pool root");
-        }
-        // Persist the root entry too, including concurrent creation by a peer.
-        if let Some(parent) = root.parent() {
-            directories.insert(parent.to_owned());
-        }
+        directories
+            .lock()
+            .unwrap()
+            .extend(paths.map(Path::to_owned));
     } else {
-        fs::File::open(parent)?.sync_all()?;
+        #[cfg(test)]
+        if FAIL_OBJECT_DIRECTORY_SYNC.with(|fail| fail.replace(false)) {
+            return Err(std::io::Error::from_raw_os_error(libc::EIO).into());
+        }
+        for path in paths {
+            fs::File::open(path)?.sync_all()?;
+        }
     }
     Ok(())
 }
@@ -486,7 +522,10 @@ fn write_immutable(
 }
 
 #[cfg(test)]
-thread_local! { pub(super) static FAIL_BATCH_DIRECTORY_SYNC: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
+thread_local! {
+    pub(super) static FAIL_BATCH_DIRECTORY_SYNC: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    pub(super) static FAIL_OBJECT_DIRECTORY_SYNC: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
 
 pub(super) fn flush_object_directories(
     directories: &std::sync::Mutex<std::collections::BTreeSet<PathBuf>>,
