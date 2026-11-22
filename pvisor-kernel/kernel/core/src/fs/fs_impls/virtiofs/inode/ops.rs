@@ -40,8 +40,7 @@ use crate::{
     time::clocks::MonotonicCoarseClock,
 };
 
-/// Use one page for each `FUSE_READDIR` request.
-const FUSE_READDIR_BUF_SIZE: u32 = 4096;
+const MAX_READDIR_BYTES: usize = 32 * 1024;
 
 impl VirtioFsInode {
     /// Reads file data through the page cache.
@@ -449,12 +448,19 @@ impl VirtioFsInode {
         visitor: &mut dyn DirentVisitor,
     ) -> Result<usize> {
         let fs = self.fs_ref();
-        let data_buf = fs
-            .session()
-            .alloc_read_buf(FUSE_READDIR_BUF_SIZE as usize)?;
-        let entries: Vec<FuseDirEntry> = fs.session().readdir(
+        let session = fs.session();
+        let size = visitor
+            .remaining_bytes()
+            .unwrap_or(PAGE_SIZE)
+            .clamp(PAGE_SIZE, MAX_READDIR_BYTES);
+        let (data_buf, size) = match session.alloc_read_buf(size) {
+            Ok(buf) => (buf, size),
+            Err(_) if size > PAGE_SIZE => (session.alloc_read_buf(PAGE_SIZE)?, PAGE_SIZE),
+            Err(err) => return Err(err.into()),
+        };
+        let entries: Vec<FuseDirEntry> = session.readdir(
             self.nodeid(),
-            ReadReq::new(fh, offset as u64, FUSE_READDIR_BUF_SIZE, flags),
+            ReadReq::new(fh, offset as u64, size as u32, flags),
             data_buf,
         )?;
 

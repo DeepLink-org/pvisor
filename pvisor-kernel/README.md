@@ -178,6 +178,69 @@ or mapping creates the cache under the same inode lock as writers. From
 then on, buffered writes keep it coherent. This is not writeback caching.
 See the [write-path experiment](../benchmark/evidence/rust-kernel-write-path.md).
 
+When the server returns `FOPEN_KEEP_CACHE`, closing a cached file still
+flushes dirty pages but retains clean pages. Opens without the flag still
+invalidate cached data. To verify copy-up across this boundary, start the
+smoke guest with `7 --check-keep-cache-copy-up` on a staged OverlayFS root
+whose immutable lower contains `/keep-cache-source` (8192 `a` bytes).
+Expect exit 7, an unchanged lower, and an upper with `new` at offset 4095.
+
+For ordinary writes, virtio-fs can reuse the absence of set-ID bits until
+the server's original attribute deadline. Writes expire general attributes
+without extending that deadline. A mode change refreshes or invalidates the
+cached result; an expired result and files with set-ID bits keep the normal
+privilege checks.
+
+`syncfs` sends `FUSE_SYNCFS` and propagates backend errors to the caller and
+the guest supervisor's exit check. A legacy server's `ENOSYS` retains the
+write-through behavior and is not a durable-stage acknowledgement.
+
+The [write-path probe](tests/write_path.rs) runs as UID/GID 1000 without
+effective capabilities. It tests set-ID clearing after `chmod`, then writes
+4 MiB in 1 KiB calls. `shared` writes and publishes on virtio-fs; `local`
+writes on guest tmpfs and exports one new file to virtio-fs in larger chunks.
+The probe reports separate write, local completion and publication times.
+It does not provide an overlay importer or crash recovery for guest RAM.
+
+```sh
+root=$(mktemp -d "$PWD/target/write-path-root.XXXXXX")
+mkdir -m 0777 "$root/output"
+mise exec -- rustc --edition=2021 --target x86_64-unknown-linux-musl \
+  -C linker=rust-lld -O pvisor-kernel/tests/write_path.rs -o "$root/probe"
+PVISOR_GUEST_KERNEL=rust-native timeout 30 /path/to/vm_api_case \
+  --rootfs "$root" --cpus 1 --memory 512 -- /probe shared
+"$root/probe" --verify "$root/output/ready"
+```
+
+Use a new root with `local` for the comparison. Neither arm counts VM
+startup, exit or the separate host byte verification in its phase times.
+
+The [directory probe](tests/readdir.rs) checks short buffers, retry after
+`EINVAL`, resume from a directory cookie, rewind, EOF and exact names across
+several buffer sizes. Rust native virtio-fs sizes `READDIR` from the caller's
+buffer, between one page and 32 KiB, without caching directory entries across
+calls. To run it with a native-enabled `vm_api_case`:
+
+```sh
+root=$(mktemp -d "$PWD/target/readdir-root.XXXXXX")
+mkdir "$root/readdir-fixture"
+python3 - "$root/readdir-fixture" <<'PY'
+from pathlib import Path
+import sys
+
+directory = Path(sys.argv[1])
+for index in range(8192):
+    (directory / f"entry-{index:05}").touch()
+PY
+mise exec -- rustc --edition=2021 --target x86_64-unknown-linux-musl \
+  -C linker=rust-lld -O pvisor-kernel/tests/readdir.rs -o "$root/probe"
+PVISOR_GUEST_KERNEL=rust-native timeout 30 /path/to/vm_api_case \
+  --rootfs "$root" --cpus 1 --memory 512 -- /probe
+```
+
+Expect exit 0 and four `READDIR_OK` records. The reported time covers one
+resident scan and decoding, not VM startup, close or exit.
+
 To verify captured streams on Linux x86_64/KVM, run the same static workload
 with the embedded-kernel probe:
 

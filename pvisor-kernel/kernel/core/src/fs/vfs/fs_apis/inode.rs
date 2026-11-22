@@ -400,6 +400,14 @@ pub(crate) trait Inode: Any + FileOps + Send + Sync {
     /// Returns the inode's permission mode.
     fn mode(&self) -> Result<InodeMode>;
 
+    /// Returns the current permission mode if it has set-ID bits to check on write.
+    fn set_id_mode_for_write(&self) -> Result<Option<InodeMode>> {
+        let mode = self.mode()?;
+        Ok(mode
+            .intersects(InodeMode::S_ISUID | InodeMode::S_ISGID)
+            .then_some(mode))
+    }
+
     /// Sets the inode's permission mode.
     fn set_mode(&self, self_dentry: &Dentry, mode: InodeMode) -> Result<()>;
 

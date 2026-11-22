@@ -127,3 +127,35 @@ impl FuseOperation for FsyncdirOperation {
         Ok(())
     }
 }
+
+/// Synchronizes the backing filesystem for a FUSE connection.
+pub struct SyncFsOperation;
+
+impl FuseOperation for SyncFsOperation {
+    type Output = ();
+
+    fn opcode(&self) -> FuseOpcode {
+        FuseOpcode::SyncFs
+    }
+
+    fn body_len(&self) -> usize {
+        size_of::<u64>()
+    }
+
+    fn write_body(&mut self, writer: &mut VmWriter<'_, Infallible>) -> FuseResult<()> {
+        writer
+            .write_val(&0u64)
+            .map_err(|_| FuseError::BufferTooSmall)
+    }
+
+    fn reply_expectation(&self) -> ReplyExpectation {
+        ReplyExpectation::HeaderOnly
+    }
+
+    fn parse_reply(
+        _payload_len: usize,
+        _reader: &mut VmReader<'_, Infallible>,
+    ) -> FuseResult<Self::Output> {
+        Ok(())
+    }
+}

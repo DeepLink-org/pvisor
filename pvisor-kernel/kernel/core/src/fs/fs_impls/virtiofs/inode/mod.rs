@@ -52,6 +52,7 @@ use crate::{
     },
     prelude::*,
     process::{Gid, Uid},
+    time::clocks::MonotonicCoarseClock,
     vm::page_cache::{PageCache, Vmo},
 };
 
@@ -137,6 +138,7 @@ impl VirtioFsInode {
                 page_cache: None,
                 metadata,
                 attr_valid_until,
+                no_set_id_until: attr_valid_until,
                 attr_version,
             }),
             entry_valid_until: Mutex::new(entry_valid_until),
@@ -226,6 +228,7 @@ struct InodeInner {
     page_cache: Option<PageCache>,
     metadata: Metadata,
     attr_valid_until: Duration,
+    no_set_id_until: Duration,
     attr_version: AttrVersion,
 }
 
@@ -295,6 +298,19 @@ impl Inode for VirtioFsInode {
 
     fn mode(&self) -> Result<InodeMode> {
         Ok(self.metadata()?.mode)
+    }
+
+    fn set_id_mode_for_write(&self) -> Result<Option<InodeMode>> {
+        let now = MonotonicCoarseClock::get().read_time();
+        let set_id = InodeMode::S_ISUID | InodeMode::S_ISGID;
+        {
+            let inner = self.inner.read();
+            if now < inner.no_set_id_until && !inner.metadata.mode.intersects(set_id) {
+                return Ok(None);
+            }
+        }
+        let mode = self.mode()?;
+        Ok(mode.intersects(set_id).then_some(mode))
     }
 
     fn set_mode(&self, _self_dentry: &Dentry, mode: InodeMode) -> Result<()> {

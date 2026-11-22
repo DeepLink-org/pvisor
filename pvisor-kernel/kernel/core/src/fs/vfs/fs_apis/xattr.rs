@@ -51,10 +51,9 @@ fn clear_set_id_bits(dentry: &Dentry) -> Result<()> {
     }
 
     let inode = dentry.inode().as_ref();
-    let mut mode = inode.mode()?;
-    if !mode.intersects(InodeMode::S_ISUID | InodeMode::S_ISGID) {
+    let Some(mut mode) = inode.set_id_mode_for_write()? else {
         return Ok(());
-    }
+    };
 
     let posix_thread = posix_thread.ok_or(Errno::EPERM)?;
     let original_mode = mode;

@@ -13,7 +13,7 @@ use aster_fuse::{
     FuseError, FuseFileHandle, FuseNodeId, FuseOperation, MIN_MAX_WRITE,
     ops::{
         forget::{ForgetOperation, ForgetReq},
-        fsync::{FsyncFlags, FsyncOperation, FsyncdirOperation},
+        fsync::{FsyncFlags, FsyncOperation, FsyncdirOperation, SyncFsOperation},
         init::{FuseInitFlags, FuseInitFlags2, InitOperation, InitReq},
         read::{ReadOperation, ReadReq},
         readdir::ReaddirOperation,
@@ -337,6 +337,14 @@ impl FuseSession {
         fsync_flags: FsyncFlags,
     ) -> Result<(), FuseError> {
         self.do_fuse_op(nodeid, FsyncdirOperation::new(fh, fsync_flags))
+    }
+
+    /// Requests a connection-wide backing synchronization.
+    ///
+    /// pVisor can implement this opcode even when it advertises an older
+    /// protocol minor. Unsupported servers reply with `ENOSYS`.
+    pub fn syncfs(&self) -> Result<(), FuseError> {
+        self.do_fuse_op(FUSE_ROOT_ID, SyncFsOperation)
     }
 }
 

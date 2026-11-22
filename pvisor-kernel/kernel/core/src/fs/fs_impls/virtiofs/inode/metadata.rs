@@ -84,7 +84,8 @@ impl VirtioFsInode {
     /// Calls this after operations that make the cached attributes potentially
     /// incomplete but do not return a full attribute reply for this inode.
     pub(super) fn expire_attr_cache(&self) {
-        self.inner.write().attr_valid_until = MonotonicCoarseClock::get().read_time();
+        let now = MonotonicCoarseClock::get().read_time();
+        self.inner.write().expire_attr_snapshot(now);
     }
 
     pub(super) fn set_size(&self, size: usize) {
@@ -100,6 +101,7 @@ impl InodeInner {
         self.metadata.nr_sectors_allocated = committed_size.div_ceil(512);
         self.metadata.last_modify_at = now;
         self.metadata.last_meta_change_at = now;
+        // A write cannot add set-ID bits, so their absence keeps its server TTL.
         self.attr_valid_until = MonotonicCoarseClock::get().read_time();
         self.attr_version = attr_version;
     }
@@ -113,7 +115,13 @@ impl InodeInner {
     ) {
         self.metadata = metadata;
         self.attr_valid_until = attr_valid_until;
+        self.no_set_id_until = attr_valid_until;
         self.attr_version = attr_version;
+    }
+
+    fn expire_attr_snapshot(&mut self, now: Duration) {
+        self.attr_valid_until = now;
+        self.no_set_id_until = now;
     }
 
     /// Merges fields changed by a stale successful `SETATTR` reply.
@@ -125,7 +133,7 @@ impl InodeInner {
         attr_version: AttrVersion,
     ) {
         self.merge_setattr_fields(metadata, valid);
-        self.attr_valid_until = now;
+        self.expire_attr_snapshot(now);
         self.attr_version = attr_version;
     }
 
@@ -133,7 +141,7 @@ impl InodeInner {
     fn merge_stale_link(&mut self, metadata: Metadata, now: Duration, attr_version: AttrVersion) {
         self.metadata.nr_hard_links = metadata.nr_hard_links;
         self.metadata.last_meta_change_at = metadata.last_meta_change_at;
-        self.attr_valid_until = now;
+        self.expire_attr_snapshot(now);
         self.attr_version = attr_version;
     }
 

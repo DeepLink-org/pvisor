@@ -188,9 +188,13 @@ impl FileSystem for VirtioFs {
         Some(&self.tag)
     }
 
-    // TODO: Implement `sync` by issuing `fsync` to open files and syncing the device if supported.
     fn sync(&self) -> Result<()> {
-        Ok(())
+        match self.session.syncfs().map_err(Error::from) {
+            // Older servers may not implement a backing barrier. This is not
+            // an acknowledgement of durable host state.
+            Err(err) if err.error() == Errno::ENOSYS => Ok(()),
+            result => result,
+        }
     }
 
     fn root_inode(&self) -> Arc<dyn Inode> {
