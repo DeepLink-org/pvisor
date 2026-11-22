@@ -65,5 +65,3 @@ def locate(root, url):
     path = root / 'blobs/sha256' / digest.split(':')[1]
     assert path.stat().st_size == descriptor['size']
     return path, descriptor['mediaType'], digest
-
-

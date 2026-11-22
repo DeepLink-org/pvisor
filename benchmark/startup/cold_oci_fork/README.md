@@ -28,7 +28,7 @@ These three separate diagnostic trials used a fresh store and default synchroniz
 | Remaining registry, metadata and teardown work | 3.18 | 2.3% |
 | **Complete pull** | **144.08** | **100%** |
 
-Inside the 120.15 s publication interval, tree enumeration took 3.82 s, content preparation and packing took 31.22 s, and parallel object installation with verification took 81.09 s. The latter alone accounted for 56.4% of cold pull time. These intervals are already included in the table.
+Inside the 120.15 s publication interval, tree enumeration took 3.82 s, content preparation and packing took 31.22 s, and parallel object installation with verification took 81.09 s. The latter alone accounted for 56.4% of cold pull time. These intervals are already included in the table. In the CSV, timings are seconds. The layer digest time is `hash + verify`; the latter only finalizes the streamed hash. The `apply` interval contains `tar_copy`, `whiteouts` and `extract_entries`. The `pool` interval contains all `pub_*` subphases.
 
 ## What each optimization changed
 
