@@ -664,22 +664,13 @@ pub(super) fn run(command: DockerCommand) -> anyhow::Result<i32> {
             } else {
                 Some(Signals::forward(store.clone(), started.clone())?)
             };
-            if args.interactive && !args.detach && started.state != "exited" {
-                let mut input = store.connect(&started)?;
-                GuestFrameWrite::write_frame(&mut input, &GuestRequest::Input {})?;
-                ensure!(
-                    matches!(
-                        GuestFrameRead::read_frame::<GuestReply>(&mut input)?,
-                        GuestReply::Ready
-                    ),
-                    "guest stdin unavailable"
-                );
-                input.set_read_timeout(None)?;
-                input.set_write_timeout(None)?;
-                std::thread::spawn(move || {
-                    let _ = send_stdin(&mut input);
-                    let _ = GuestFrameRead::read_frame::<GuestReply>(&mut input);
-                });
+            if args.interactive
+                && !args.detach
+                && started.state != "exited"
+                && let Err(error) = forward_guest_stdin(&store, &started)
+                && !store.has_completed(&started)?
+            {
+                return Err(error);
             }
             if args.detach {
                 println!("{}", instance.id);
@@ -863,6 +854,25 @@ impl Drop for Signals {
             libc::pthread_sigmask(libc::SIG_SETMASK, &self.0, std::ptr::null_mut());
         }
     }
+}
+
+fn forward_guest_stdin(store: &Store, started: &docker::Instance) -> anyhow::Result<()> {
+    let mut input = store.connect(started)?;
+    GuestFrameWrite::write_frame(&mut input, &GuestRequest::Input {})?;
+    ensure!(
+        matches!(
+            GuestFrameRead::read_frame::<GuestReply>(&mut input)?,
+            GuestReply::Ready
+        ),
+        "guest stdin unavailable"
+    );
+    input.set_read_timeout(None)?;
+    input.set_write_timeout(None)?;
+    std::thread::spawn(move || {
+        let _ = send_stdin(&mut input);
+        let _ = GuestFrameRead::read_frame::<GuestReply>(&mut input);
+    });
+    Ok(())
 }
 
 fn send_stdin(stream: &mut std::os::unix::net::UnixStream) -> anyhow::Result<()> {

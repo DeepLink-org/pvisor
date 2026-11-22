@@ -1574,6 +1574,11 @@ impl Store {
         }
         Ok(())
     }
+    /// Reports whether this exact execution has committed its completion.
+    pub fn has_completed(&self, instance: &Instance) -> anyhow::Result<bool> {
+        Ok(self.completion(instance)?.is_some())
+    }
+
     /// Open one current-generation guest control connection.
     pub fn connect(&self, instance: &Instance) -> anyhow::Result<UnixStream> {
         ensure!(self.active(instance)?, "container is not running");
