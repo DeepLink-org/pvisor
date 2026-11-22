@@ -313,6 +313,65 @@ fn validation_and_literal_workload_options_do_not_start_a_session() {
 }
 
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[test]
+fn root_run_rejects_unsupported_options_without_creating_storage() {
+    let fixture = Fixture::new();
+    for (options, expected) in [
+        (&["--stage", "../stage"][..], "--stage"),
+        (&["--rm"], "--rm is unsupported with @root"),
+        (&["-d"], "--detach is unsupported with @root"),
+        (&["--restart=always"], "--restart is unsupported with @root"),
+        (&["-p", "8080:80"], "--publish is unsupported with @root"),
+        (
+            &["--network=host"],
+            "@root --network must be bridge or none",
+        ),
+        (&["--cpus", "0"], "@root --cpus must be 1 through 8"),
+        (&["--cpus", "9"], "@root --cpus must be 1 through 8"),
+        (&["-v", ".:/work"], "only supports --volume PATH:/:stage"),
+        (&["-v", ".:/work:ro"], "only supports --volume PATH:/:stage"),
+        (
+            &["-v", ".:/work:stage"],
+            "only supports --volume PATH:/:stage",
+        ),
+        (
+            &["-v", "../stage:stage"],
+            "only supports --volume PATH:/:stage",
+        ),
+        (&["-v", ":/:stage"], "only supports --volume PATH:/:stage"),
+        (
+            &["-v", "../stage:/:stage", "-v", "../other:/:stage"],
+            "accepts at most one --volume PATH:/:stage",
+        ),
+    ] {
+        let output = fixture.run(
+            fixture
+                .command()
+                .args(["container", "run"])
+                .args(options)
+                .arg("@root"),
+        );
+        assert_eq!(output.status.code(), Some(125), "{options:?}: {output:?}");
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains(expected),
+            "{options:?}: {output:?}"
+        );
+        fixture.assert_inert();
+        assert!(!fixture.path("other").exists());
+    }
+}
+
+#[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+#[test]
+fn root_run_rejects_unsupported_platform_without_opening_container_store() {
+    let fixture = Fixture::new();
+    let output = fixture.run(fixture.command().args(["run", "@root", "/bin/true"]));
+    assert_eq!(output.status.code(), Some(125), "{output:?}");
+    assert!(String::from_utf8_lossy(&output.stderr).contains("@root requires Linux x86_64"));
+    fixture.assert_inert();
+}
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 fn native_fixture() -> Fixture {
     native_fixture_for(Fixture::new())
 }
@@ -339,6 +398,104 @@ fn native_fixture_for(mut fixture: Fixture) -> Fixture {
         fs::copy(firmware, fixture.path("bin/libkrunfw.so.5")).unwrap();
     }
     fixture
+}
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[test]
+#[ignore = "real Linux KVM host-root VM; GNU builds need PVISOR_TEST_LIBRARY_DIR"]
+fn native_root_run_retains_changes_at_volume_path_and_applies_only_selected_project_files() {
+    let fixture = native_fixture();
+    let stage = fixture.path("my changes");
+    let project_file = fixture.path("workspace/result.txt");
+    let outside_file = fixture.path("outside.txt");
+    fs::write(&project_file, b"host\n").unwrap();
+    let run = fixture.run_with_timeout(
+        fixture
+            .command()
+            .args([
+                "run",
+                "-v",
+                "../my changes:/:stage",
+                "@root",
+                "/bin/sh",
+                "-ec",
+                "test \"$(cat result.txt)\" = host; echo guest > result.txt; echo outside > \"$1\"; exit 7",
+                "sh",
+            ])
+            .arg(&outside_file),
+        Duration::from_secs(45),
+    );
+    assert_eq!(run.status.code(), Some(7), "{run:?}");
+    let stderr = String::from_utf8_lossy(&run.stderr);
+    assert!(
+        stderr.contains(&format!("pvisor review '{}' --diff", stage.display())),
+        "{run:?}"
+    );
+    assert!(stage.join("run.json").is_file());
+    assert!(!fixture.path("docker").exists());
+    assert!(!fixture.path("images").exists());
+    assert_eq!(fs::read(&project_file).unwrap(), b"host\n");
+    assert!(!outside_file.exists());
+    let outside_upper = stage
+        .join("upper")
+        .join(outside_file.strip_prefix("/").unwrap());
+    assert_eq!(fs::read(&outside_upper).unwrap(), b"outside\n");
+
+    let review = fixture.run(fixture.command().arg("review").arg(&stage).arg("--diff"));
+    success(&review);
+    assert!(
+        String::from_utf8_lossy(&review.stdout).contains("+guest"),
+        "{review:?}"
+    );
+    let preview = fixture.run(fixture.command().arg("apply").arg(&stage).args([
+        "--path",
+        "result.txt",
+        "--dry-run",
+    ]));
+    success(&preview);
+    assert_eq!(fs::read(&project_file).unwrap(), b"host\n");
+    let apply = fixture.run(
+        fixture
+            .command()
+            .arg("apply")
+            .arg(&stage)
+            .args(["--path", "result.txt"]),
+    );
+    success(&apply);
+    assert_eq!(fs::read(&project_file).unwrap(), b"guest\n");
+    assert!(!outside_file.exists());
+    assert_eq!(fs::read(&outside_upper).unwrap(), b"outside\n");
+
+    success(&fixture.run(fixture.command().arg("drop").arg(&stage)));
+    assert_eq!(fs::read(&project_file).unwrap(), b"guest\n");
+    assert!(!outside_file.exists());
+}
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[test]
+#[ignore = "real Linux KVM host-root VM; GNU builds need PVISOR_TEST_LIBRARY_DIR"]
+fn native_root_run_without_volume_retains_changes_in_default_store() {
+    let fixture = native_fixture();
+    let output = fixture.run_with_timeout(
+        fixture.command().args([
+            "container",
+            "run",
+            "@root",
+            "/bin/sh",
+            "-c",
+            "echo guest > result.txt",
+        ]),
+        Duration::from_secs(45),
+    );
+    success(&output);
+    let review = fixture.run(fixture.command().args(["review", "last", "--diff"]));
+    success(&review);
+    assert!(
+        String::from_utf8_lossy(&review.stdout).contains("+guest"),
+        "{review:?}"
+    );
+    assert!(!fixture.path("workspace/result.txt").exists());
+    success(&fixture.run(fixture.command().args(["drop", "last"])));
 }
 
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]

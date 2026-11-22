@@ -56,6 +56,33 @@ Docker credential helpers and the Docker Engine API are unsupported.
 Unix containers and task Sessions use schema 4 records with separate stores
 and command capabilities. Container review/apply/drop select staged binds.
 
+### Run host-installed tools with `@root` {#run-host-tools}
+
+On Linux x86_64 with KVM, put `@root` where an image name normally goes. It is
+not an OCI image: pVisor does not pull or list it. The VM reads the live host `/`
+as a read-only base and retains writes for review, even after a nonzero exit.
+Run from the project whose files you may want to accept:
+
+```bash
+pvisor run -v ../experiment:/:stage @root /bin/sh -c 'echo changed > example.txt'
+pvisor review ../experiment --diff
+pvisor apply ../experiment --path example.txt --dry-run --diff
+pvisor apply ../experiment --path example.txt
+pvisor drop ../experiment
+```
+
+With `@root`, `-v PATH:/:stage` selects one unused host directory for storing
+changes, not a bind source. Omit it to use the default Session store and the path
+printed at exit. With an ordinary image, [`-v HOST:GUEST:stage`](#container-staged-binds)
+still stages edits to an existing bind source. Ordinary `apply` accepts changes
+only under the project recorded when `@root` was launched.
+
+Guest networking is off unless you pass `--network bridge`. Readable host files,
+including credentials, are still visible. `@root` is a foreground Session: it
+does not appear in container `ps` and rejects `-d`, `--rm`, port forwarding and
+additional mounts. macOS and Windows do not support it. The legacy `pvisor stage`
+command still accepts `--stage PATH` and keeps its `bridge` default.
+
 ### Compose projects (experimental) {#compose}
 
 On Linux x86_64 or Apple Silicon macOS, use `pvisor compose` to start services

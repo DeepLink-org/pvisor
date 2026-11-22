@@ -287,41 +287,47 @@ Records without live control expose disk state only.
 
 ## Staged system experiments (Linux preview)
 
-`stage` creates an ordinary Session in a native VM with the host `/` as a live,
-read-only lower. Unlike `spawn --rootfs host`, it retains the **whole rootfs**
-upper and preimages after exit, not just workspace edits. No image is needed.
-The lower is not a frozen system snapshot; concurrent host changes remain visible.
+On Linux x86_64 with KVM, put `@root` in the image position to run host-installed
+tools without pulling an image. This creates a foreground Session in a VM with
+host `/` as a live, read-only lower. Unlike `spawn --rootfs host`, it retains
+**whole-rootfs changes** after exit, not just workspace edits. Concurrent host
+changes remain visible.
 
 ```bash
-pvisor stage -it                         # shell; omission of COMMAND selects $SHELL or /bin/sh
-pvisor stage --network none --stage ./experiment /bin/sh -c 'echo changed > example.txt'
-pvisor review ./experiment --diff
-pvisor apply ./experiment                # choose project changes in a terminal
-pvisor drop ./experiment
+pvisor run -it -v ../experiment:/:stage @root /bin/sh
+# In the shell: echo changed > example.txt; exit
+pvisor review ../experiment --diff
+pvisor apply ../experiment --path example.txt --dry-run --diff
+pvisor apply ../experiment --path example.txt
+pvisor drop ../experiment
 ```
 
-The interface follows the container CLI's option spelling and argument boundary:
-`-i/--interactive`, `-t/--tty`, repeated `-e/--env` and `--env-file`,
-`-w/--workdir`, `--name`, `--cpus`, `-m/--memory`, and `--network bridge|none`.
-There is no positional image. Options after COMMAND (or `--`) belong literally
-to the workload. `--name` is the Session label, not a new name-based selector;
-use the printed Session ID, stage path, or `last` in the launching workspace.
+With `@root`, `-v PATH:/:stage` selects an unused host directory for the retained
+changes, not a directory to mount. Omit it to use
+`PVISOR_RUN_HOME/SESSION_ID` or `$HOME/.pvisor/runs/SESSION_ID`; the command
+prints the path to review. At most one storage path is accepted. Other mounts
+are unsupported. This differs from an image run's `-v HOST:GUEST:stage`, where
+`HOST` is the bind source and writeback target.
 
-Defaults are 2 vCPUs, 512 MiB RAM, current host working directory, and controlled
-IPv4 TCP/DNS egress (`bridge` uses the Session's existing VM data plane, not membership
-in the Docker container bridge). `none` omits guest networking. A command's stdin
+Supported launch options include `-i/--interactive`, `-t/--tty`, repeated
+`-e/--env` and `--env-file`, `-w/--workdir`, `--name`, `--cpus` (1–8),
+`-m/--memory`, and `--network bridge|none`. Tokens after `@root` belong to the
+workload. `--name` is the Session label; select results by the printed stage
+path, Session ID, or `last` in the launching workspace.
+
+Defaults are 2 vCPUs, 512 MiB RAM, the current working directory and no guest
+network. Explicit `--network bridge` enables controlled IPv4 TCP/DNS egress using
+the Session data plane, not membership in the Docker container bridge. A command's stdin
 is closed unless `-i` is supplied; no COMMAND selects a shell with stdin attached
 and uses a PTY when launched from a terminal. `-t` requires a host terminal and
 allocates a guest PTY, combining stdout/stderr; without `-i`, stdin remains
-`/dev/null` even with `-t`. Without `-t`, explicit commands use separate non-TTY streams. Stage uses the ordinary Session owner, cancellation,
-completion receipt, review, and drop; it does not appear in container `ps`.
-There is no detach, `--rm`, writable bind mount, image selection or host fallback.
+`/dev/null` even with `-t`. Without `-t`, explicit commands use separate non-TTY
+streams. The Session does not appear in container `ps` and does not accept
+container lifecycle options such as `-d`, `--rm` or `--restart=always`.
 Personal Agent defaults are not loaded. Existing workspace/network policy defaults
 still apply. `PVISOR_STAGE=1` identifies the environment to scripts.
 
-`--stage PATH` selects fresh persistent storage; omitted storage is
-`PVISOR_RUN_HOME/SESSION_ID` or `$HOME/.pvisor/runs/SESSION_ID`. Existing Session storage is
-never silently reused. Exit, including a nonzero workload exit, retains reviewable
+Exit, including a nonzero workload exit, retains reviewable
 changes. `drop` discards only pending changes, not already applied paths or external
 side effects. HOME and other readable host files, including credentials, remain
 visible: this is write staging, not a confidentiality boundary. Cache management
@@ -329,8 +335,11 @@ credentials and implicit loader paths retain the VM's existing environment scrub
 explicit `-e` values have Docker precedence. Unset entries remain absent, including
 HOME, PATH and TMPDIR.
 
-Accepted `spawn` and `stage` launches register discovery in the selected default
-Run home even when `--stage` points elsewhere. `last` remains scoped to the
+The legacy `pvisor stage` command stays compatible: it uses `--stage PATH` for
+storage and still defaults to `--network bridge`.
+
+Accepted `spawn`, `stage` and `run @root` launches register discovery in the
+selected default Run home even when storage points elsewhere. `last` remains scoped to the
 launching workspace and works while running and after failure or timeout.
 Registration does not replace a conflicting index. If it fails after launch,
 the CLI cancels/drains the accepted workload and reports the explicit stage
@@ -339,8 +348,8 @@ default-home index is stale or unavailable.
 
 ### Applying project changes
 
-For new `stage` Sessions, ordinary `apply` selects only changes beneath the recorded
-launch-time project, even though the stage retains the whole rootfs. Paths and
+For `run @root` and new `stage` Sessions, ordinary `apply` selects only changes
+beneath the recorded launch-time project, even though the stage retains the whole rootfs. Paths and
 globs are project-relative; outside-project changes remain staged. Non-root
 project apply is supported within this restricted contract:
 
@@ -408,7 +417,7 @@ or terminal interaction. Paths are relative to `/`:
 
 ```bash
 # Initial privileged workflow: create and review as root, in root-controlled storage.
-sudo -H pvisor stage -it --stage /root/pvisor-stages/config-edit
+sudo -H pvisor run -it -v /root/pvisor-stages/config-edit:/:stage @root /bin/sh
 sudo -H pvisor review /root/pvisor-stages/config-edit --diff
 sudo -H pvisor apply /root/pvisor-stages/config-edit --rootfs --path etc/example.conf
 sudo -H pvisor drop /root/pvisor-stages/config-edit
@@ -461,8 +470,9 @@ preserves ordinary main startup. This backing is uncompressed, not the historica
 compressed replay runtime. See the runtime's independent-container contract.
 
 
-`pvisor run` creates a container, optionally with Linux staged binds as described
-below; `spawn` retains its existing Session stage/review/apply semantics.
+`pvisor run IMAGE` creates a container, optionally with Linux staged binds as
+described below. [`pvisor run @root`](#staged-system-experiments-linux-preview)
+uses the separate host-root Session lifecycle; `spawn` is unchanged.
 Unknown command names fail closed. Native tasks use explicit `spawn` or
 `pvisor [SESSION_OPTIONS] -- COMMAND`; options-only file-backed `--config` /
 `--spec` invocations remain supported. Leading options are parsed using spawn's

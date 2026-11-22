@@ -50,7 +50,7 @@ pool calls live in [automatic pool discovery](https://github.com/DeepLink-org/pv
 | Docker-style VM containers and network policy | Implementation and separate contracts | Implementation; each capability needs HVF validation | Experimental WHP profile: image/lifecycle, bridge/none and stdin/PTY |
 | Experimental Compose | Native KVM VMs | Native HVF VMs | Unsupported |
 | Live container CoW branches and managed memory | Linux x86_64/KVM, explicit opt-in | Unsupported | Unsupported |
-| Linux host-root `stage`, `:stage` binds | Linux-specific paths | No Linux host-root; staged-bind equivalence with Linux is unestablished | Unsupported |
+| [`run @root`](cli.md#run-host-tools), `:stage` binds | Linux x86_64/KVM | No host-root; staged-bind equivalence with Linux is unestablished | Unsupported |
 | VM snapshots, restore, cold RAM | APIs/tests with backing/profile restrictions | APIs/tests with HVF/backing restrictions | Unsupported; pause/resume only |
 | Gateway | Depends on executor and configuration | Host execution path exists | Excluded from this CLI |
 

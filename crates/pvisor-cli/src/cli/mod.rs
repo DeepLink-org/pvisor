@@ -104,7 +104,7 @@ fn root_command() -> anyhow::Result<clap::Command> {
     let groups = grouped_commands(&command);
     Ok(command
         .before_help(groups.trim_end().to_owned())
-        .after_help("Examples:\n  pvisor run --rm alpine:3.20 echo hello\n  pvisor spawn --safe -- claude\n  pvisor stage -it -- claude\n  pvisor review last\n  pvisor apply last --path src\n\nUse pvisor -- COMMAND for default Session execution (spawn).\nUse pvisor help COMMAND for command details.")
+        .after_help("Examples:\n  pvisor run --rm alpine:3.20 echo hello\n  pvisor run -it -v ../stage-review:/:stage @root /bin/sh\n  pvisor review ../stage-review --diff\n  pvisor apply ../stage-review --path src --dry-run\n  pvisor spawn --safe --stage ../stage-review -- claude\n\nUse pvisor -- COMMAND for default Session execution (spawn).\nUse pvisor help COMMAND for command details.")
         .help_template("{about}\n\n{usage-heading} {usage}\n\n{before-help}Options:\n{options}{after-help}\n"))
 }
 
@@ -648,7 +648,7 @@ mod feature_parser_tests {
                 .any(|line| line.split_whitespace().next() == Some("stage"))
         );
         let help = root_command().unwrap().render_help().to_string();
-        assert!(help.contains("pvisor stage -it -- claude"));
+        assert!(help.contains("pvisor run -it -v ../stage-review:/:stage @root /bin/sh"));
     }
 
     #[test]

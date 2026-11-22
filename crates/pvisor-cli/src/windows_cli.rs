@@ -1,5 +1,7 @@
 //! Windows frontend for native container VMs.
-use crate::container_args::{PsRow, batch, environment, memory, ps_header, ps_row};
+use crate::container_args::{
+    HOST_ROOT_SELECTOR, PsRow, batch, environment, memory, ps_header, ps_row,
+};
 use crate::windows_terminal::{StdinSource, Terminal};
 use clap::{Parser, Subcommand};
 use pvisor_containers::api::{Containers, Store};
@@ -229,6 +231,12 @@ pub(crate) fn main() -> anyhow::Result<()> {
 }
 
 fn dispatch(command: Command) -> anyhow::Result<i32> {
+    if let Command::Run(args) = &command {
+        anyhow::ensure!(
+            args.invocation[0] != HOST_ROOT_SELECTOR,
+            "@root requires Linux x86_64 host-root VM support (no fallback)"
+        );
+    }
     let store = Store::open(None)?;
     let (mut stdout, mut stderr) = (io::stdout().lock(), io::stderr().lock());
     match command {
@@ -585,6 +593,22 @@ mod tests {
             vec!["pvisor", "rm", "box"],
         ] {
             assert!(Cli::try_parse_from(args).is_ok());
+        }
+    }
+
+    #[test]
+    fn root_selector_is_unsupported_before_container_store_dispatch() {
+        for args in [
+            vec!["pvisor", "run", "@root"],
+            vec!["pvisor", "container", "run", "@root"],
+        ] {
+            let command = Cli::try_parse_from(args).unwrap().command.ungroup();
+            assert!(
+                dispatch(command)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("@root requires Linux x86_64")
+            );
         }
     }
 

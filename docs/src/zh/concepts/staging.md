@@ -12,7 +12,9 @@ OverlayCore 提供受管理的文件视图，文件策略定义只读输入、�
 
 ## 从暂存到接受改动 {#candidate-changes}
 
-文件改动按 **Stage → Review → Apply／Drop** 的流程处理。工作区暂存通过 `--safe` 或 `--stage` 启用。另有 Linux 预览命令 `pvisor stage`，保留 host-root VM stage，并限定 apply 范围，见[CLI 契约](../reference/cli.md#apply-scope)。
+文件改动按 **Stage → Review → Apply／Drop** 的流程处理。用 `spawn` 的 `--safe` 或
+`--stage` 暂存工作区改动。在 Linux 上，[`pvisor run @root`](../reference/cli.md#run-host-tools)
+保留整个 guest 文件系统的改动，普通 `apply` 仍只写回记录的项目范围。
 
 | 操作 | 作用 |
 | --- | --- |
