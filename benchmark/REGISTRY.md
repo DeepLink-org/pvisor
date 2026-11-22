@@ -797,6 +797,8 @@ Design: 负载、对照、控制变量与有效样本判据。
 - **启动优化工程 cohort：** 固定 GNU release 制品、同一动态固件和静态 Ready 负载，对照基线、仅 FD 预扩容、FD＋并行 checkpoint 校验。独立 1 vCPU / 128 MiB cohort（不与 2 vCPU 诊断混合），固定两个宿主 CPU；3 轮预热、30 轮 seeded 随机三条件交替，Ready/Exit 同次记录。采样前冻结二进制、输入、顺序和 observer 源码，使用独立 Run store/stage；校验唯一正确输出、零退出、实际 VM 隔离、空 workspace changeset 与 canary 未变，任一失败使整批无效且保留现场。复算逐次时钟并报告配对差的 bootstrap 区间。源码/制品及全部结果留在 `.data/startup-opt-*/`；不发布为用户启动水位，默认 2 vCPU 的既有 guest 早退另列。
 
 
+- **Cold OCI 工程对照：** [分阶段耗时与原型](startup/cold_oci_fork/README.md)覆盖本地冷 OCI 到父 VM 首条命令、四子 VM 就绪和正式镜像发布，单列目录同步与提前启动的独立 A/B。
+
 ### B-STARTUP-REVISION-ENG：提交版本的启动与收尾对照 {#b-startup-revision-eng}
 
 - **角色：** engineering A/B；结果独立保存在 `benchmark/startup/.data/`，不更新用户启动水位。

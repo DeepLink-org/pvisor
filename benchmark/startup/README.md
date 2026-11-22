@@ -110,3 +110,9 @@ host observation of those bytes (1 ms polling plus scheduling and filesystem
 visibility); this is not a captured-stdio latency test.
 Missing stages, failed shells and timeouts remain in the output; any incomplete
 trial fails the command. `diagnostic.json` and the public Ready table are unchanged.
+
+## Cold OCI first use and live fork
+
+The [cold OCI engineering experiment](cold_oci_fork/README.md) records component
+timings, two independent optimization controls, and a pinned Linux prototype for
+measuring first use and four-child readiness with an empty image store.
