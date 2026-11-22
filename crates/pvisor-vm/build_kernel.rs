@@ -291,8 +291,8 @@ mod tests {
             directory.join("kernel.json"),
             serde_json::to_vec(&serde_json::json!({
                 "format": 1, "kernel": "rust-native", "architecture": "x86_64",
-                "boot_protocol": "linux64", "guest_addr": 0x08000000u64,
-                "entry_addr": 0x08001200u64, "size": bytes.len(), "sha256": digest,
+                "boot_protocol": "linux64", "guest_addr": 0x00200000u64,
+                "entry_addr": 0x00201200u64, "size": bytes.len(), "sha256": digest,
             }))
             .unwrap(),
         )
@@ -333,8 +333,8 @@ mod tests {
             assert_eq!(&*super::kernel_bundle::unpack(&packed).unwrap(), bytes);
         }
         let generated = std::fs::read_to_string(output.join("embedded_native_kernel.rs")).unwrap();
-        assert!(generated.contains("GUEST_ADDR: u64 = 134217728"));
-        assert!(generated.contains("ENTRY_ADDR: u64 = 134222336"));
+        assert!(generated.contains("GUEST_ADDR: u64 = 2097152"));
+        assert!(generated.contains("ENTRY_ADDR: u64 = 2101760"));
         assert!(output.join("embedded_kernel.rs").is_file());
     }
 
@@ -367,8 +367,8 @@ mod startup_profile {{
 mod image {{ include!({:?}); }}
 fn main() {{
     assert_eq!(&**image::KERNEL, vec![0xcd; 8192]);
-    assert_eq!(image::GUEST_ADDR, 0x08000000);
-    assert_eq!(image::ENTRY_ADDR, 0x08001200);
+    assert_eq!(image::GUEST_ADDR, 0x00200000);
+    assert_eq!(image::ENTRY_ADDR, 0x00201200);
 }}
 "#,
                 output.join("embedded_native_kernel.rs"),

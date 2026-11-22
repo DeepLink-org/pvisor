@@ -54,7 +54,7 @@ fn selection_child() {
                 let (guest, entry) = if cfg!(target_arch = "aarch64") {
                     (0x80200000, 0x80200000)
                 } else {
-                    (0x08000000, 0x08001200)
+                    (0x00200000, 0x00201200)
                 };
                 assert_eq!(image.guest_address, guest);
                 assert_eq!(image.entry_address, entry);
@@ -65,21 +65,28 @@ fn selection_child() {
                 ));
             }
             if cfg!(target_arch = "aarch64") {
-                assert_eq!(
-                    VmBuilder::new(2, 256).err().unwrap().kind(),
-                    io::ErrorKind::Unsupported
-                );
+                VmBuilder::new(1, 256).unwrap();
+                for (cpus, memory) in [(2, 256), (1, 255)] {
+                    assert_eq!(
+                        VmBuilder::new(cpus, memory).err().unwrap().kind(),
+                        io::ErrorKind::Unsupported
+                    );
+                }
             } else {
-                VmBuilder::new(2, 256).unwrap();
+                for (cpus, minimum) in [(1, 16), (3, 16), (10, 16), (11, 17), (32, 48), (64, 96)] {
+                    VmBuilder::new(cpus, minimum).unwrap();
+                    assert_eq!(
+                        VmBuilder::new(cpus, minimum - 1).err().unwrap().kind(),
+                        io::ErrorKind::Unsupported
+                    );
+                }
+                for cpus in [0, 65] {
+                    assert_eq!(
+                        VmBuilder::new(cpus, 256).err().unwrap().kind(),
+                        io::ErrorKind::Unsupported
+                    );
+                }
             }
-            assert_eq!(
-                VmBuilder::new(3, 256).err().unwrap().kind(),
-                io::ErrorKind::Unsupported
-            );
-            assert_eq!(
-                VmBuilder::new(1, 128).err().unwrap().kind(),
-                io::ErrorKind::Unsupported
-            );
             let mut vm = VmBuilder::new(1, 256).unwrap();
             assert_eq!(
                 vm.snapshot_profile().unwrap_err().kind(),

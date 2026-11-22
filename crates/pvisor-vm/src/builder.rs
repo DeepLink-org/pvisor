@@ -49,18 +49,8 @@ impl<B: Backend> Builder<B> {
         let mut resources = VmResources::default();
         resources.rust_native_kernel = crate::experimental_kernel::selection()?
             == crate::experimental_kernel::Selection::RustNative;
-        if resources.rust_native_kernel && memory_mib < 256 {
-            return Err(io::Error::new(
-                io::ErrorKind::Unsupported,
-                "experimental Rust native kernel requires at least 256 MiB RAM",
-            ));
-        }
-        let native_cpu_limit = if cfg!(target_arch = "x86_64") { 2 } else { 1 };
-        if resources.rust_native_kernel && !(1..=native_cpu_limit).contains(&cpus) {
-            return Err(io::Error::new(
-                io::ErrorKind::Unsupported,
-                format!("experimental Rust native kernel requires 1..={native_cpu_limit} vCPUs"),
-            ));
+        if resources.rust_native_kernel {
+            crate::experimental_kernel::validate_resources(cpus, memory_mib)?;
         }
         resources
             .set_vm_config(&VmConfig {

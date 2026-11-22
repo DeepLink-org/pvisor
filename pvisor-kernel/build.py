@@ -127,6 +127,9 @@ def build(args: argparse.Namespace) -> Path:
         CARGO_BUILD_JOBS=str(args.jobs),
         OSDK_TARGET_ARCH=architecture,
     )
+    env.pop("OSTD_TASK_STACK_SIZE_IN_PAGES", None)
+    if architecture == "x86_64":
+        env["OSTD_TASK_STACK_SIZE_IN_PAGES"] = "16"
     if args.prepare_toolchain:
         if args.offline:
             raise RuntimeError("--prepare-toolchain requires network access")
