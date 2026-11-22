@@ -114,6 +114,10 @@ impl Project {
         services: &[String],
         settings: &BuildSettings,
     ) -> anyhow::Result<Vec<Image>> {
+        ensure!(
+            self.service_env_files_resolved,
+            "Compose build requires resolved service env files"
+        );
         let _lease = self.lease(store)?;
         let mut images = vec![];
         for service in self.order(services, false)? {

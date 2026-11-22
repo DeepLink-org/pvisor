@@ -98,6 +98,9 @@ enum ComposeCommand {
     },
     /// Stop/remove project containers and their owned default network.
     Down {
+        /// Remove recorded project containers and the owned default network by explicit project name.
+        #[arg(long)]
+        project_only: bool,
         #[arg(short = 't', long)]
         timeout: Option<u64>,
         #[arg(long)]
@@ -114,7 +117,39 @@ struct Services {
 }
 
 pub(super) fn run(args: ComposeArgs) -> anyhow::Result<i32> {
-    let project = Project::load(args.file.as_deref(), args.project_name.as_deref())?;
+    if let ComposeCommand::Down {
+        project_only: true,
+        timeout,
+        volumes,
+        ..
+    } = &args.command
+    {
+        let name = args
+            .project_name
+            .as_deref()
+            .context("--project-only requires an explicit --project-name")?;
+        Project::validate_name(name)?;
+        ensure!(
+            args.file.is_none(),
+            "--project-only cannot be combined with --file"
+        );
+        ensure!(!volumes, "--project-only preserves volumes");
+        Project::down_project_only(&Store::discover()?, name, timeout.map(Duration::from_secs))?;
+        return Ok(0);
+    }
+    let load = match args.command {
+        ComposeCommand::Config { .. }
+        | ComposeCommand::Pull(_)
+        | ComposeCommand::Build { .. }
+        | ComposeCommand::Up { .. } => Project::load,
+        ComposeCommand::Ps { .. }
+        | ComposeCommand::Logs { .. }
+        | ComposeCommand::Exec { .. }
+        | ComposeCommand::Start(_)
+        | ComposeCommand::Stop { .. }
+        | ComposeCommand::Down { .. } => Project::load_for_existing,
+    };
+    let project = load(args.file.as_deref(), args.project_name.as_deref())?;
     // Configuration and selection failures must not initialize Docker storage.
     let selection = match &args.command {
         ComposeCommand::Pull(args) | ComposeCommand::Start(args) => &args.services[..],
@@ -206,6 +241,7 @@ pub(super) fn run(args: ComposeArgs) -> anyhow::Result<i32> {
             timeout,
             remove_orphans,
             volumes,
+            ..
         } => {
             project.down(
                 &store,

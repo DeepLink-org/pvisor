@@ -1393,6 +1393,19 @@ impl Store {
         timeout: Duration,
         requested_signal: Option<&str>,
     ) -> anyhow::Result<()> {
+        self.stop_selected(
+            || self.resolve(selector).map(Some),
+            timeout,
+            requested_signal,
+        )
+    }
+
+    fn stop_selected(
+        &self,
+        select: impl FnOnce() -> anyhow::Result<Option<Instance>>,
+        timeout: Duration,
+        requested_signal: Option<&str>,
+    ) -> anyhow::Result<()> {
         let parsed_signal = requested_signal
             .map(GuestSignal::parse_signal)
             .transpose()?;
@@ -1407,7 +1420,9 @@ impl Store {
         };
         let instance = {
             let _guard = self.lock()?;
-            let instance = self.resolve(selector)?;
+            let Some(instance) = select()? else {
+                return Ok(());
+            };
             if self.active(&instance)? {
                 // Commit suppression under the same catalog lock as restart
                 // admission. A stop during backoff must not launch a successor.
@@ -1481,12 +1496,55 @@ impl Store {
     pub fn remove(&self, selector: &str, volumes: bool) -> anyhow::Result<()> {
         let _guard = self.lock()?;
         let instance = self.resolve(selector)?;
+        self.remove_selected(&instance, volumes)
+    }
+
+    fn find_id(&self, id: &str) -> anyhow::Result<Option<Instance>> {
+        Ok(self.all()?.into_iter().find(|instance| instance.id == id))
+    }
+
+    fn stop_recorded(
+        &self,
+        id: &str,
+        timeout: Duration,
+        signal: Option<&str>,
+    ) -> anyhow::Result<()> {
+        self.stop_selected(|| self.find_id(id), timeout, signal)
+    }
+
+    fn stop_and_remove_recorded(
+        &self,
+        id: &str,
+        timeout: Duration,
+        volumes: bool,
+    ) -> anyhow::Result<()> {
+        self.stop_recorded(id, timeout, None)?;
+        let _guard = self.lock()?;
+        if let Some(instance) = self.find_id(id)? {
+            self.remove_selected(&instance, volumes)?;
+        }
+        Ok(())
+    }
+
+    fn remove_pending_recorded(&self, id: &str, volumes: bool) -> anyhow::Result<()> {
+        let _guard = self.lock()?;
+        if let Some(instance) = self.find_id(id)? {
+            ensure!(
+                instance.state == "created" && !self.active(&instance)?,
+                "pending replacement has unexpected lifecycle; preserve it for inspection"
+            );
+            self.remove_selected(&instance, volumes)?;
+        }
+        Ok(())
+    }
+
+    fn remove_selected(&self, instance: &Instance, volumes: bool) -> anyhow::Result<()> {
         ensure!(
-            !self.active(&instance)? && instance.state != "starting",
+            !self.active(instance)? && instance.state != "starting",
             "cannot remove a running container"
         );
-        let _stages = staging::lock_previous(self, &instance, true)?;
-        self.remove_instance_files(&instance, volumes)
+        let _stages = staging::lock_previous(self, instance, true)?;
+        self.remove_instance_files(instance, volumes)
     }
     // Caller holds the catalog lock and has fenced the workload. A completing
     // owner retains its own lease; public removal independently refuses owners.

@@ -36,18 +36,22 @@ impl Project {
         store: &Store,
         remove_volumes: bool,
     ) -> anyhow::Result<()> {
+        Self::cleanup_pending_named(store, &self.name, remove_volumes)
+    }
+
+    pub(super) fn cleanup_pending_named(
+        store: &Store,
+        name: &str,
+        remove_volumes: bool,
+    ) -> anyhow::Result<()> {
         for instance in store.instances(true)? {
             if instance
                 .compose
                 .as_ref()
-                .is_some_and(|member| member.project == self.name && member.replaces.is_some())
+                .is_some_and(|member| member.project == name && member.replaces.is_some())
             {
-                ensure!(
-                    instance.state == "created" && !store.active(&instance)?,
-                    "pending replacement has unexpected lifecycle; preserve it for inspection"
-                );
                 // Anonymous volumes inherited from the old member remain referenced.
-                store.remove(&instance.id, remove_volumes)?;
+                store.remove_pending_recorded(&instance.id, remove_volumes)?;
             }
         }
         Ok(())

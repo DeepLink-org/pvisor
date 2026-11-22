@@ -844,6 +844,14 @@ Supported service fields:
   environment values or explicitly unset the image variable when absent.
   Empty strings remain empty. `environment` overrides service `env_file`
   entries; `env_file` accepts one path or a list.
+  Operations on existing containers use their saved environment and can
+  run after a service `env_file` is removed. `up` resolves the service
+  environment from the deployment definition.
+
+- Use `pvisor compose -p PROJECT down --project-only` to remove a recorded
+  project after its deployment file is gone. This mode uses the explicit
+  project name and preserves volumes. It removes the project's owned
+  default network subject to the normal attachment check.
 - Short TCP `ports` and existing directory/ordinary-file binds
   `./source:/guest/path[:ro|rw]` or `/absolute/source:/guest/path[:ro|rw]`.
   Bind paths and service env files are relative to the Compose file directory.
