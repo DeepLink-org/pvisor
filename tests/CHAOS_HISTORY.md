@@ -123,3 +123,25 @@ Evidence paths below are relative to those worktree roots.
   acceptance is claimed. The campaign did not approve specifications.
 - Evidence: `target/chaos6h-20261121-002028-3a6cc2/`, with owned temporary
   fixtures under `target/t3a6cc2/`.
+
+## 2026-11-22 — Rust native guest, stopped for host swap-out
+
+- Scope: real Linux x86_64/KVM Docker-compatible CLI with the Rust native
+  payload from `908aa71c` (CI run `44987059819`). Subagents ran one VM at a time
+  with up to two vCPUs and 512 MiB guest RAM under a 150% CPU and 2 GiB host
+  cgroup cap, with no cgroup swap.
+- Results: foreground stdout/stderr, exit status and stdin passed. Detached
+  kill/start retained a writable file. A graceful-stop round also passed TERM
+  delivery, `wait`, stopped-file copy, container identity and logs across a
+  restart. [PR #184](https://github.com/DeepLink-org/pvisor/pull/184) corrects
+  stale captured-stream guidance. No runtime defect was reproduced.
+- Stop: the six-hour request was **not completed**. An earlier attempt stopped
+  on host memory pressure. After a clean preflight, sustained host swap-out
+  stopped the corrected run at 05:41:08 UTC, before the 11:18:25 UTC deadline.
+  The interrupted direct-TERM round, remaining resource matrix and planned
+  loopback HTTP scenario are not passing coverage. No Linux control or ARM/HVF
+  testing ran. Harness errors were retained separately from product evidence.
+- Cleanup: exact owned-container removal and the private-store inventory checks
+  passed; no campaign scope remained.
+- Evidence: `target/chaos-native-20261122/evidence/`, including
+  `s2-20261122-052125-resume3/` for the completed graceful-stop round and safety stop.
