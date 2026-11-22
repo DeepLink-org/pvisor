@@ -1597,9 +1597,10 @@ ownership, resource, output and lifecycle contracts.
 
 `PVISOR_GUEST_KERNEL=rust-native` selects the experimental embedded Rust native payload
 within the same VM configuration path; it does not select another CLI workflow.
-The current kernel lacks named task stdio and therefore rejects ordinary captured
-container/Session execution. It never substitutes Linux or bypasses those
-contracts; see [`pvisor-kernel`](../../pvisor-kernel/README.md).
+Captured task streams use named virtio-serial ports. An unsupported VM configuration
+or a build without the embedded payload fails instead of falling back to Linux.
+See [`pvisor-kernel`](../../pvisor-kernel/README.md#experimental-selection) for the
+supported configurations and workload limits.
 
 Direct rootfs execution is confined to the `pvisor-vm` example `vm_api_case` and
 the hardware test driver. Neither is installed as a product command. Windows
