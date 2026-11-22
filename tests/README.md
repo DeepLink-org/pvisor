@@ -135,7 +135,7 @@ real HVF and macFUSE acceptance needs a capable Mac. See
 The Linux `pvisor` shard runs `test-vm-lifecycle` with both repository-built
 firmwares and retains separate native JUnit reports and task logs. Linux guests
 use an absolute `PVISOR_CASE_VM_FIRMWARE_PATH`. On Linux x86_64/KVM, setting
-`PVISOR_NATIVE_KERNEL=rust` uses the payload embedded at build time from
+`PVISOR_GUEST_KERNEL=rust-native` uses the payload embedded at build time from
 `PVISOR_BUILD_NATIVE_KERNEL_BUNDLE` instead and rejects a firmware path.
 The task runs the current platform's ready/abort targets serially with a two-minute
 per-test watchdog and no retries. Missing firmware, unsupported hosts and an

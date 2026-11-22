@@ -8,7 +8,7 @@ pVisor 的 Rust VM 运行时。VMM、设备、架构支持和虚拟化后端在�
 
 ## 实验性 Rust native kernel
 
-Linux 固件保持默认。`PVISOR_NATIVE_KERNEL=rust` 显式选择
+Linux 固件保持默认。`PVISOR_GUEST_KERNEL=rust-native` 显式选择
 根目录 [`pvisor-kernel`](../../pvisor-kernel/README.md) 的内置裁剪源码构建。
 Linux x86_64/aarch64 和 macOS aarch64 的产品构建同时内嵌 Linux 与 Rust native 两个压缩内核，
 运行时只需设置该选择变量，不读取外置 bundle，也不查找可执行文件旁的内核。
@@ -344,7 +344,7 @@ PVISOR_CASE_VM_FIRMWARE_PATH=/absolute/path/to/libkrunfw.so.5.6.2 \
 Linux x86_64 选择 `ready_before_execution` 与 `ready_abort_kvm`；Apple Silicon
 选择 `ready_before_execution` 与 `ready_abort_hvf`，使用本机可信 `.dylib` 固件。
 Linux 客体固件必须是已有绝对文件路径。Linux x86_64/KVM 也可设置
-`PVISOR_NATIVE_KERNEL=rust` 和 `PVISOR_BUILD_NATIVE_KERNEL_BUNDLE`，使用构建时
+`PVISOR_GUEST_KERNEL=rust-native` 和 `PVISOR_BUILD_NATIVE_KERNEL_BUNDLE`，使用构建时
 内嵌的 Rust 内核，此时不得设置 `PVISOR_CASE_VM_FIRMWARE_PATH`。
 入口只串行执行这些 ignored 硬件用例；无测试、缺固件或 hypervisor 不可用都失败。
 Linux CI 的 pvisor shard 对两种固件分别运行并保留日志。Hosted macOS 不提供真实

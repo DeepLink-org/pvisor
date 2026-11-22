@@ -2,7 +2,7 @@
 
 use std::{ffi::OsStr, io};
 
-pub(crate) const SELECTOR: &str = "PVISOR_NATIVE_KERNEL";
+pub(crate) const SELECTOR: &str = "PVISOR_GUEST_KERNEL";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Selection {
@@ -14,10 +14,10 @@ fn parse(value: Option<&OsStr>) -> io::Result<Selection> {
     match value {
         None => Ok(Selection::Linux),
         Some(value) if value == "linux" => Ok(Selection::Linux),
-        Some(value) if value == "rust" => Ok(Selection::RustNative),
+        Some(value) if value == "rust-native" => Ok(Selection::RustNative),
         _ => Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            format!("{SELECTOR} must be linux or rust"),
+            format!("{SELECTOR} must be linux or rust-native"),
         )),
     }
 }
@@ -82,8 +82,8 @@ mod tests {
     #[rstest::rstest]
     #[case::default(None, Ok(Selection::Linux))]
     #[case::linux(Some("linux"), Ok(Selection::Linux))]
-    #[case::rust_native(Some("rust"), Ok(Selection::RustNative))]
-    #[case::old_value(Some("rust-native"), Err(io::ErrorKind::InvalidInput))]
+    #[case::rust_native(Some("rust-native"), Ok(Selection::RustNative))]
+    #[case::old_value(Some("rust"), Err(io::ErrorKind::InvalidInput))]
     #[case::empty(Some(""), Err(io::ErrorKind::InvalidInput))]
     #[case::typo(Some("native"), Err(io::ErrorKind::InvalidInput))]
     fn selector_is_explicit(

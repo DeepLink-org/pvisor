@@ -518,11 +518,11 @@ class ReleasePackagingTests(unittest.TestCase):
             )
             self.native_kernel.return_value = native
             options = wheel_stage.BuildOptions(target="x86_64-unknown-linux-musl")
-            for selector in (None, "linux", "rust", "invalid"):
+            for selector in (None, "linux", "rust-native", "invalid"):
                 with self.subTest(selector=selector), mock.patch.dict(os.environ):
-                    os.environ.pop("PVISOR_NATIVE_KERNEL", None)
+                    os.environ.pop("PVISOR_GUEST_KERNEL", None)
                     if selector is not None:
-                        os.environ["PVISOR_NATIVE_KERNEL"] = selector
+                        os.environ["PVISOR_GUEST_KERNEL"] = selector
                     resolved = wheel_stage._resolve_firmware(options)
                     self.assertEqual(resolved.path, linux.path)
                     self.assertEqual(resolved.native_bundle, native)

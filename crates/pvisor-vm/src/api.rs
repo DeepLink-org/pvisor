@@ -77,7 +77,7 @@ pub trait RuntimeSupport {
     /// Build-embedded kernel, if present. This does not load host firmware.
     /// The shared bytes are immutable; addresses describe the guest boot layout.
     /// Selects Linux by default, or the embedded Rust native payload when
-    /// `PVISOR_NATIVE_KERNEL=rust`. Returns `None` when that payload
+    /// `PVISOR_GUEST_KERNEL=rust-native`. Returns `None` when that payload
     /// was not embedded, or selection is invalid/unsupported; never returns Linux
     /// for an experimental selection. Native bytes are unpacked once in memory,
     /// without opening firmware files or reading a runtime bundle path.
@@ -150,8 +150,8 @@ pub struct NetworkStream {
 /// configuration usable; init selection precedes root filesystem attachment.
 pub trait VmConfiguration: Sized {
     /// Construct a configuration; equivalent to `from_config` with explicit sizing.
-    /// Captures `PVISOR_NATIVE_KERNEL`; unset or `linux` retains Linux.
-    /// `rust` requires plain Linux x86_64/aarch64 KVM or macOS aarch64 HVF,
+    /// Captures `PVISOR_GUEST_KERNEL`; unset or `linux` retains Linux.
+    /// `rust-native` requires plain Linux x86_64/aarch64 KVM or macOS aarch64 HVF,
     /// and at least 256 MiB. x86 supports one or two vCPUs; ARM requires one
     /// vCPU and GICv3. Workload compatibility
     /// remains experimental, not established by successful construction.

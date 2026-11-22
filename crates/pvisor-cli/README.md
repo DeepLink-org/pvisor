@@ -1595,7 +1595,7 @@ for Agent Sessions on supported platforms. Virtualization is an execution backen
 not a separate public execution command. These workflows retain their existing
 ownership, resource, output and lifecycle contracts.
 
-`PVISOR_NATIVE_KERNEL=rust` selects the experimental embedded Rust native payload
+`PVISOR_GUEST_KERNEL=rust-native` selects the experimental embedded Rust native payload
 within the same VM configuration path; it does not select another CLI workflow.
 The current kernel lacks named task stdio and therefore rejects ordinary captured
 container/Session execution. It never substitutes Linux or bypasses those

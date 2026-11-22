@@ -468,16 +468,16 @@ jobs:
           lifecycle_firmware="$(mise run fw -- build --target x86_64-unknown-linux-musl)"
           junit=target/nextest/vm-lifecycle/junit.xml
           status=0
-          for kernel in linux rust; do
+          for kernel in linux rust-native; do
             evidence="$RUNNER_TEMP/vm-lifecycle/$kernel"
             mkdir -p "$evidence"
             rm -f "$junit"
             (
-              if [[ "$kernel" == rust ]]; then
-                export PVISOR_NATIVE_KERNEL=rust
+              if [[ "$kernel" == rust-native ]]; then
+                export PVISOR_GUEST_KERNEL=rust-native
                 unset PVISOR_CASE_VM_FIRMWARE_PATH
               else
-                unset PVISOR_NATIVE_KERNEL
+                unset PVISOR_GUEST_KERNEL
                 export PVISOR_CASE_VM_FIRMWARE_PATH="$lifecycle_firmware"
               fi
               mise run test-vm-lifecycle
@@ -613,7 +613,7 @@ jobs:
       fail-fast: false
       matrix:
         suite: [bats, go-0, go-1]
-        kernel: [linux, rust]
+        kernel: [linux, rust-native]
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup-build-env
@@ -641,7 +641,7 @@ jobs:
       - name: Run contract shard
         env:
           SUITE: ${{ matrix.suite }}
-          PVISOR_NATIVE_KERNEL: ${{ matrix.kernel }}
+          PVISOR_GUEST_KERNEL: ${{ matrix.kernel }}
           PVISOR_BINARY: ${{ runner.temp }}/podman-runtime/pvisor
           PVISOR_TEST_IMAGE: mirror.gcr.io/library/alpine:3.20
           PVISOR_KRUN_LOG: "1"

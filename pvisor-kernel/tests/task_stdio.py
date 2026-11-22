@@ -34,7 +34,7 @@ def main():
                 input=payload,
                 capture_output=True,
                 timeout=30,
-                env={**os.environ, "PVISOR_NATIVE_KERNEL": "rust"},
+                env={**os.environ, "PVISOR_GUEST_KERNEL": "rust-native"},
             )
             if (
                 result.returncode != 7

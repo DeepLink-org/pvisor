@@ -172,11 +172,11 @@ On Linux x86_64 with KVM, use a `pvisor` build that embeds the Rust guest kernel
 (`mise run build` builds one from this checkout). Select it for a single run:
 
 ```bash
-PVISOR_NATIVE_KERNEL=rust pvisor run --rm --cpus 2 --memory 512m alpine:3.20 echo hello
+PVISOR_GUEST_KERNEL=rust-native pvisor run --rm --cpus 2 --memory 512m alpine:3.20 echo hello
 ```
 
 Expect `hello`. The environment setting applies only to this command. Linux
-remains the default; if you exported the variable, run `unset PVISOR_NATIVE_KERNEL`
+remains the default; if you exported the variable, run `unset PVISOR_GUEST_KERNEL`
 to switch back. The Rust profile on x86_64 supports one or two vCPUs and at least
 256 MiB of guest RAM; snapshot and restore are not supported. See the
 [Rust guest kernel README](pvisor-kernel/README.md#experimental-selection) for details.

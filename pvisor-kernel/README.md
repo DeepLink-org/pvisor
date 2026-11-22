@@ -63,14 +63,14 @@ existing compressed in-executable kernel storage. No separate kernel files
 are installed or needed at runtime.
 
 ```sh
-export PVISOR_NATIVE_KERNEL=rust
+export PVISOR_GUEST_KERNEL=rust-native
 ```
 
 Selection applies to the existing Docker-compatible and Agent VM workflows,
 not a separate public execution command.
 
 Selection never downloads, compiles or reads an external kernel at runtime.
-Unset `PVISOR_NATIVE_KERNEL` to return to Linux. If a standalone Cargo
+Unset `PVISOR_GUEST_KERNEL` to return to Linux. If a standalone Cargo
 build did not embed this payload, selection fails rather than reading a bundle
 or falling back to Linux.
 

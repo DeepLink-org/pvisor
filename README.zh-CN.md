@@ -156,11 +156,11 @@ pVisor 也为 Agent 推理、评测和 RL 后训练提供执行环境。资源�
 从当前源码执行 `mise run build` 即可构建。下面只为这次运行切换固件：
 
 ```bash
-PVISOR_NATIVE_KERNEL=rust pvisor run --rm --cpus 2 --memory 512m alpine:3.20 echo hello
+PVISOR_GUEST_KERNEL=rust-native pvisor run --rm --cpus 2 --memory 512m alpine:3.20 echo hello
 ```
 
 预期输出 `hello`。Linux 固件仍是默认值；如果之前用 `export` 设置了变量，
-执行 `unset PVISOR_NATIVE_KERNEL` 切回 Linux。x86_64 上的 Rust 固件支持
+执行 `unset PVISOR_GUEST_KERNEL` 切回 Linux。x86_64 上的 Rust 固件支持
 1–2 个 vCPU、至少 256 MiB guest 内存，目前不支持快照和恢复。详见
 [Rust guest kernel README](pvisor-kernel/README.md#experimental-selection)。
 
