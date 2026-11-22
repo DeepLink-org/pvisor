@@ -27,6 +27,11 @@ ARM KVM 不为实验内核回退到 GICv2。ARM64 内核已交叉编译，真实
 bundle 元数据、物理地址、长度和 SHA-256 在编译嵌入前验证；摘要检测损坏，
 不证明来源可信，构建者仍须信任本地构建输入。内核在进程内按需解包并共享。
 
+Linux x86_64/KVM 的冷页 pager 可在全新 VM 的 ready 回调中注册。
+注册期间 CPU 继续停在启动屏障，由运行时在回调完成后首次恢复；
+其他暂停状态不能注册。Rust guest 的宿主内存能力按
+[KVM 内存验收](../../pvisor-kernel/README.md#kvm-memory-acceptance) 分项验证。
+
 ## 设备支持范围
 
 产品构建选择默认 `init-blob` 和可选 `net`，使用 KVM/HVF/WHP、

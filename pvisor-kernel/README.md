@@ -172,6 +172,39 @@ python3 pvisor-kernel/tests/task_stdio.py --binary /path/to/vm_api_case \
 This checks immediate EOF and a multi-page binary input, byte-exact stdout,
 separate stderr, shared-rootfs contents and exit status in fresh two-vCPU VMs.
 
+### KVM memory acceptance
+
+Run on Linux x86_64 with KVM, host KSM advice support, and permission to
+read `/proc/<child>/mem` and `/proc/<child>/pagemap` for child runners.
+Use a directory on a disk filesystem for `--backing-dir`; tmpfs cannot
+demonstrate a reduction in file-backed residency.
+
+```sh
+# Set to the bundle directory printed by `mise run kernel -- build`.
+export PVISOR_BUILD_NATIVE_KERNEL_BUNDLE=/absolute/path/to/bundle
+mise exec -- cargo build --locked -p pvisor --example native_memory_case
+mise exec -- rustc --edition=2024 --target x86_64-unknown-linux-musl \
+  -C linker=rust-lld -C opt-level=2 pvisor-kernel/tests/memory_guest.rs \
+  -o target/native-memory-guest
+python3 pvisor-kernel/tests/memory.py --binary target/debug/examples/native_memory_case \
+  --guest target/native-memory-guest --backing-dir target
+```
+
+Repeat with `--firmware /absolute/path/to/libkrunfw.so.5` to run the same
+memory checks on the Linux guest. Use the path printed by `mise run fw -- build`.
+
+The probe checks KSM advice and guest readback without claiming KSM merges or
+changing the host scanner. It measures host residency before and after manual
+file-backed offload, then verifies the same workload's bytes after resume. Two
+separate VMs must map identical workload pages to the same physical-pool file
+slots before one writes. The writer verifies its changes, the other VM verifies
+the original bytes, and both must exit through the guest supervisor.
+
+These are host memory mechanisms. Linux guest-idle automatic offload requires
+an interrupt-safe idle offer and timer deadline from the guest. The native
+kernel does not supply that protocol. Snapshot/restore COW is also unsupported;
+the physical pool tests live sharing, not snapshot-backed cloning.
+
 ## License
 
 This imported source is primarily MPL-2.0, not Apache-2.0. See `LICENSE-MPL`,

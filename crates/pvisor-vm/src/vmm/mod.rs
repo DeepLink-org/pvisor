@@ -228,6 +228,8 @@ pub struct Vmm {
     exit_observers: Vec<Arc<Mutex<dyn VmmExitObserver>>>,
     exit_code: Arc<AtomicI32>,
     paused: bool,
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    initial_resume_pending: bool,
     control_failed: bool,
     #[cfg(any(
         all(target_os = "macos", target_arch = "aarch64"),
@@ -388,6 +390,14 @@ impl Vmm {
 
     pub fn is_paused(&self) -> bool {
         self.paused
+    }
+
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    pub(crate) fn fresh_boot_parked(&self) -> bool {
+        self.paused
+            && self.initial_resume_pending
+            && !self.control_failed
+            && !self.device_memory_gate.is_idle_closed()
     }
 
     /// Pause all vCPUs. Device workers and host I/O remain active.
@@ -608,6 +618,10 @@ impl Vmm {
             }
         }
         self.paused = paused;
+        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+        if !paused {
+            self.initial_resume_pending = false;
+        }
         self.control_failed = false;
         Ok(())
     }
