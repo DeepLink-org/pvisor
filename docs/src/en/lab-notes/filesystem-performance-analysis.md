@@ -81,95 +81,92 @@ The selected frozen source/defaults completed the cross-runtime seven-tool cohor
 
 macOS [responsiveness during copying and journal locks](#host-concurrency) and Linux HOST [immutable-lower caching](#immutable-lower-cache) have separate valid experiments. [Extended kernel caching](#host-cache-evidence) has passing correctness and request-count evidence, with no accepted formal timing. Cold disks, large repositories and concurrent throughput lack matching new measurements. The local engineering evidence CSV retains each table row's cohort, metric, source and full precision.
 
-## Rust native guest kernel (RNGK) filesystem comparison {#rngk-filesystem-comparison}
+## Rust native guest kernel (RNGK) versus Linux firmware {#rngk-filesystem-comparison}
 
-Retaining clean pages for the immutable lower reduced RNGK incremental-build
-median time from 1.145 s to 0.409 s. Docker with a bind mount took 0.055 s in
-the same comparison, leaving a gap of about 7.4×. Sequential reopen reads and
-per-write `fsync` are closer to Docker; path lookups, small writes and large
-working sets still show substantial gaps.
+On the same pVisor VMM, RNGK takes less time in all three measured workflows.
+Unpack and publish has the largest absolute gap (7.896 s versus 11.904 s).
+Linux firmware reaches Ready sooner and takes less time for positive lookups
+and 1 MiB writes.
 
 2026-11-22: Fedora x86_64/KVM, Ryzen 7 9700X, Linux `7.3.3-300.fc45.x86_64`
-and Btrfs. Both RNGK builds come from the engineering comparison in
-[PR #188](https://github.com/DeepLink-org/pvisor/pull/188). The baseline already
-includes directory batching, the small-write metadata optimization and
-`syncfs` forwarding. The candidate also retains clean pages on closing
-`FOPEN_KEEP_CACHE` files. Both use the same VM API runner source, an immutable
-rootfs lower, private upper/work directories, 2 vCPUs and 512 MiB, with
-writeback and DAX off. Docker 29.9.3 uses the local daemon, the same tools and
-inputs on read-only bind mounts, and a writable Btrfs bind mount for output.
-The container is limited to 2 GiB with no swap. Arms use CPUs 0–1; the separate
-publication rerun uses CPUs 4–5 and may overlap the pressure trials. There is
-no common parent cgroup budget. These differences preclude attributing the
-gap to the kernel or virtio-fs alone or adding the results to the
-[nine-runtime table](../benchmarks/filesystem.md#results).
+and Btrfs. One pVisor VM API runner boots either the source-built Linux 6.12.109
+firmware or RNGK from [PR #188](https://github.com/DeepLink-org/pvisor/pull/188).
+Both use the same immutable rootfs lower, private upper/work directories,
+static workloads and toolchain. Both configure 2 vCPUs and 512 MiB RAM, use
+CPUs 0–1, and disable guest writeback, host writeback and DAX. Linux and RNGK
+report 528,260 and 654,964 KiB respectively in `/proc/meminfo`; the same
+configured RAM does not establish the same usable memory. There is no
+dedicated parent cgroup quota.
 
-The three configurations are randomly interleaved in blocks for each workload.
-Each complete cell has three fresh environments with three rounds per
-environment. Completion adds work and final sync across the three rounds
-before taking the median across environments. It excludes Ready, setup and
-exit. Runs must pass each round's checks, exit normally, and pass a separate
-host content check. Incremental compilation was rerun after fixing the runner's
-output cleanup. Unpack and publish was rerun with the registered visible-output
-check, retaining the original upper and its valid overlay markers. Reruns
-were not pooled with earlier attempts, and valid slow samples were kept.
+The [filesystem benchmark](../benchmarks/filesystem.md#results) provides
+12 mechanism, 3 workflow and 4 resource workloads. The two firmware arms
+run in randomized pairs within each workload. Each complete cell has
+three fresh VMs, each running three rounds. Completion sums work and final
+sync across the rounds before taking the median across VMs. It excludes
+preparation, Ready, exit and the independent host checks. Each launch has
+a 90 s deadline. Each round, normal exit, the host output check and the
+lower-content and mode check must pass. Ratios divide medians for the same
+workload. N=3 does not support tail estimates, and this engineering cohort
+does not enter the published nine-runtime table.
 
 ### Ready and complete workflows
 
-| Metric | RNGK baseline | RNGK retaining cache | Docker bind, same comparison |
+| Metric | Linux firmware | RNGK | RNGK / Linux |
 | --- | ---: | ---: | ---: |
-| Positive metadata workload Ready (ms) | 125.97 | 128.30 | 97.17 |
-| Repository inspection (s) | 1.588 | 1.166 | 0.035 |
-| Incremental compilation (s) | 1.145 | 0.409 | 0.055 |
-| Unpack and publish (s) | 8.915 | 8.749 | 1.731 |
+| Positive metadata workload Ready (ms) | 75.69 | 133.94 | 1.77× |
+| Repository inspection (s) | 1.657 | 1.254 | 0.76× |
+| Incremental compilation (s) | 0.523 | 0.389 | 0.74× |
+| Unpack and publish (s) | 11.904 | 7.896 | 0.66× |
 
-Ready measures from host launch of the VM runner or `docker run` until the
-payload's Ready marker arrives, a different boundary from the nine-runtime
-table. In a separate instrumented comparison, FUSE `READ` requests for the
-incremental-build VM lifetime, including the initial build, fell from
-342,787 to 9,623. `OPEN` went from 4,156 to 4,155 and `WRITE` stayed at 2,033.
-Instrumented runs are excluded from timing.
+Ready runs from host launch of the VM runner to the payload's Ready marker.
+RNGK took less task time in every pair for each of the three workflows.
+Incremental-build task time excludes the initial build: including launch,
+the initial build and exit, the VM's median elapsed time was 2.453 s for
+Linux and 3.718 s for RNGK.
 
 ### Mechanism workloads
 
-| Operation (ms) | RNGK baseline | RNGK retaining cache | Docker bind, same comparison |
+| Operation (ms) | Linux firmware | RNGK | RNGK / Linux |
 | --- | ---: | ---: | ---: |
-| Positive metadata | 90.72 | 89.19 | 6.06 |
-| Negative metadata | 205.04 | 208.35 | 2.97 |
-| Directory enumeration | 16.91 | 16.09 | 2.53 |
-| Sequential reopen/read | 36.16 | 35.95 | 29.59 |
-| Fixed random read | 43.33 | 44.84 | 10.94 |
-| 1 KiB write | 417.30 | 447.26 | 25.76 |
-| 1 MiB write | 35.22 | 38.15 | 11.77 |
-| 4 KiB random overwrite | 111.60 | 115.78 | 15.09 |
-| Small files | 685.91 | 668.30 | 290.27 |
-| Per-write `fsync` | 366.67 | 358.53 | 253.52 |
-| Mixed read/write | 227.01 | 233.29 | 19.68 |
-| Create and delete | 457.49 | 445.03 | 153.99 |
+| Positive metadata | 36.36 | 97.18 | 2.67× |
+| Negative metadata | 415.14 | 207.62 | 0.50× |
+| Directory enumeration | 28.82 | 16.35 | 0.57× |
+| Sequential reopen/read | 34.51 | 35.71 | 1.03× |
+| Fixed random read | 42.89 | 42.99 | 1.00× |
+| 1 KiB write | 713.90 | 455.45 | 0.64× |
+| 1 MiB write | 26.89 | 36.24 | 1.35× |
+| 4 KiB random overwrite | 195.18 | 108.34 | 0.56× |
+| Small files | 936.56 | 721.77 | 0.77× |
+| Per-write `fsync` | 370.98 | 342.88 | 0.92× |
+| Mixed read/write | 195.43 | 212.44 | 1.09× |
+| Create and delete | 636.00 | 444.24 | 0.70× |
 
-RNGK took about 1.2× Docker's time for sequential reopen/read and 1.4× for
-per-write `fsync`, versus about 70× for negative lookups and 17× for 1 KiB
-writes sent to the host. The 1 KiB write case was slower in all three RNGK
-pairs (median paired change +39.80 ms, range +12.28 to +49.15 ms); the cause
-is unresolved. The earlier unprivileged small-write probe tested the metadata
-optimization, which is already in this baseline. The two cohorts cannot be pooled.
+Positive and negative lookups favor different firmware builds. Either
+workload alone would misrepresent metadata cost. Both reads have paired
+differences of both signs, with no clear difference in this cohort. Mixed
+read/write completion also hides foreground wait: in the first round, the
+median foreground read took 10.47 ms on Linux and 74.18 ms on RNGK, while
+median round completion took 76.00 ms and 77.09 ms, respectively.
 
 ### Working set and concurrency
 
-| Working set / workers (s) | RNGK baseline | RNGK retaining cache | Docker bind, same comparison |
+| Working set / workers (s) | Linux firmware | RNGK | RNGK / Linux |
 | --- | ---: | ---: | ---: |
-| 128 MiB / 1 | 40.492 | 40.411 | 3.027 |
-| 128 MiB / 4 | 21.827 | 21.684 | 1.645 |
-| 640 MiB / 1 | `ENOMEM` | `ENOMEM` | 3.996 |
-| 640 MiB / 4 | `ENOMEM` | 90 s timeout | 2.382 |
+| 128 MiB / 1 | 47.013 | 38.364 | 0.82× |
+| 128 MiB / 4 | 17.716 | 20.308 | 1.15× |
+| 640 MiB / 1 | 49.273 | `ENOMEM` | — |
+| 640 MiB / 4 | 19.093 | 90 s timeout | — |
 
-The 128 MiB cells show no clear improvement. Each 640 MiB RNGK cell stopped
-after its first failure and has no median; these results do not locate a
-capacity threshold. N=3 is exploratory, with no tail estimates or
-cross-configuration ranking. See [PR #188](https://github.com/DeepLink-org/pvisor/pull/188)
-for the engineering record and paired differences. Local records are under
-`target/native-fs-matrix/`: `revisions/`, `remaining/`, `publication/`, and the
-separate `profile-S02-*` runs.
+Linux firmware passed all 57 launches. RNGK passed 51. Its two 640 MiB
+cells stopped at the first `ENOMEM` and timeout, respectively, leaving two
+unrun launches per cell. Failures and incomplete rounds do not contribute
+to the median. These two working-set sizes do not locate a capacity threshold.
+
+Local artifacts, source receipts, trial logs and independent host
+verification are under `benchmark/filesystem/.data/rngk-linux-fw-20261122/`.
+The earlier before/after RNGK cache comparison remains in
+[PR #188](https://github.com/DeepLink-org/pvisor/pull/188) and is separate
+from this firmware comparison.
 
 ## Documentation workloads: revision and opt-in cache retest {#docs-workload-retest}
 

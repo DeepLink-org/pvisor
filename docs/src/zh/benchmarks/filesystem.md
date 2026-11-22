@@ -18,7 +18,7 @@ pVisor host 在所测仓库巡检和增量编译中接近直接执行；需要 V
 
 ## 实验数据和分析 {#results}
 
-Rust native guest kernel (RNGK) 的数据见[同负载工程对照](../lab-notes/filesystem-performance-analysis.md#rngk-filesystem-comparison)，其中单列优化前后、Docker bind mount 参照和大工作集失败项。
+另见 [Rust native guest kernel (RNGK) 与 pVisor Linux 固件的同负载对照](../lab-notes/filesystem-performance-analysis.md#rngk-filesystem-comparison)，两组使用同一个 pVisor VMM。
 
 ### 启动与完整任务 {#complete-task}
 
