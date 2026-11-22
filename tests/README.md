@@ -178,10 +178,13 @@ task selection discovers the cases. New IDs require no workflow allowlist.
 `ci-feature-matrix` declares capabilities at the feature boundary. A new
 feature is discovered automatically without hardware assumptions; if its cases
 need hardware, add its prerequisite declaration rather than accepting skips.
-Feature Scrut concurrency is capped at three runners, native Cargo at two;
+Feature Scrut concurrency is capped at three runners, with the longer `vm`
+shard placed first in the matrix. Native Cargo concurrency is capped at two;
 Bats and the two Go shards retain their independent 30-minute budgets.
-Each Scrut job downloads the frozen Linux product built by `cli-test`, prepares
-real Host/KVM prerequisites and uploads its own report, log and case resources.
+The `linux-product` job publishes the frozen static artifact independently of
+the Linux CLI tests. The plugin scenarios, Scrut jobs and Bats/Go shards reuse it.
+Each Scrut job prepares real Host/KVM prerequisites and uploads its own report,
+log and case resources.
 The artifact includes `pvisor-replay`, the matching repository-built firmware
 library and its source receipt, as well as the static CLI and daemon.
 Linux VM/SDK cases explicitly use host rootfs `/` and `/usr/bin/python3`;

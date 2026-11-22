@@ -41,7 +41,7 @@ jobs:
 
   feature-cases:
     name: Feature ${{ matrix.feature }} / Scrut / Linux / ${{ github.event.inputs.case_gate || 'normal' }}
-    needs: [feature-inventory, cli-test]
+    needs: [feature-inventory, linux-product]
     runs-on: ubuntu-latest
     timeout-minutes: 45
     strategy:
@@ -528,10 +528,10 @@ jobs:
         if: matrix.shard == 'cli'
         run: mise run test-rust -- pvisor-cli -- -E 'not (binary(=docker_cli) | binary(=docker_p0_cli) | binary(=docker_staged_cli) | binary(=docker_staged_native) | binary(=compose_cli))'
 
-  cli-test:
-    name: Rust Test / Linux / cli
+  linux-product:
+    name: Build Linux x86_64 CLI test artifact
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup-build-env
@@ -540,40 +540,8 @@ jobs:
           static-musl: "true"
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: ci-rust-cli
-      - name: Enable Linux runtime test prerequisites
-        shell: bash
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq --no-install-recommends fuse3 util-linux
-          if sysctl kernel.unprivileged_userns_clone >/dev/null 2>&1; then
-            sudo sysctl -w kernel.unprivileged_userns_clone=1
-          fi
-          if sysctl kernel.apparmor_restrict_unprivileged_userns >/dev/null 2>&1; then
-            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-          fi
-          test -c /dev/fuse
-          unshare --user --map-root-user --mount --net /bin/true
-          sudo chown "$(id -u):$(id -g)" /dev/kvm
-          test -r /dev/kvm && test -w /dev/kvm
-
+          shared-key: ci-linux-product
       - run: mise run smoke
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "24"
-      - name: Run documented Pi, DSH and Codex tasks through the real CLI
-        env:
-          PVISOR_PLUGIN_BINARY: ${{ github.workspace }}/target/debug/pvisor
-          PVISOR_PLUGIN_TEST_OUTPUT_DIR: ${{ runner.temp }}/agent-plugin-cases
-        run: mise run test-agent-plugins-native
-      - uses: actions/upload-artifact@v4
-        if: failure()
-        with:
-          name: agent-plugin-native-cases
-          path: ${{ runner.temp }}/agent-plugin-cases
-          if-no-files-found: ignore
-      # Freeze the static product before Cargo's native tests can replace the
-      # staged binaries. Contract jobs reuse this exact build on separate VMs.
       - name: Archive static CLI for contract jobs
         run: |
           # Retain matching firmware for the native SDK driver, which is built
@@ -601,12 +569,60 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  cli-test:
+    name: Rust Test / Linux / cli
+    needs: linux-product
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-build-env
+        with:
+          static-musl: "true"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ci-rust-cli
+      - name: Enable Linux runtime test prerequisites
+        shell: bash
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends fuse3 util-linux
+          if sysctl kernel.unprivileged_userns_clone >/dev/null 2>&1; then
+            sudo sysctl -w kernel.unprivileged_userns_clone=1
+          fi
+          if sysctl kernel.apparmor_restrict_unprivileged_userns >/dev/null 2>&1; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+          test -c /dev/fuse
+          unshare --user --map-root-user --mount --net /bin/true
+          sudo chown "$(id -u):$(id -g)" /dev/kvm
+          test -r /dev/kvm && test -w /dev/kvm
+      - uses: actions/download-artifact@v4
+        with:
+          name: podman-runtime
+          path: ${{ runner.temp }}/cli-runtime
+      - name: Extract frozen CLI
+        run: tar -xzf "$RUNNER_TEMP/cli-runtime/podman-runtime.tgz" -C "$RUNNER_TEMP/cli-runtime"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - name: Run documented Pi, DSH and Codex tasks through the real CLI
+        env:
+          PVISOR_PLUGIN_BINARY: ${{ runner.temp }}/cli-runtime/pvisor
+          PVISOR_PLUGIN_TEST_OUTPUT_DIR: ${{ runner.temp }}/agent-plugin-cases
+        run: mise run test-agent-plugins-native
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: agent-plugin-native-cases
+          path: ${{ runner.temp }}/agent-plugin-cases
+          if-no-files-found: ignore
       - name: Run CLI tests
         run: mise run test -- pvisor-cli -- -E 'not (binary(=docker_cli) | binary(=docker_p0_cli) | binary(=docker_staged_cli) | binary(=docker_staged_native) | binary(=compose_cli))'
 
   podman-contracts:
     name: Feature docker-cli / ${{ matrix.suite }} / Linux KVM / ${{ matrix.kernel }} guest
-    needs: cli-test
+    needs: linux-product
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
@@ -801,7 +817,7 @@ jobs:
   ci:
     name: CI
     if: always()
-    needs: [agent-plugins, checks, python, firmware, native-components, rust-test, cli-test, podman-contracts, gateway-features, pvisor-isolation-regression, examples, spec-fixtures, windows, feature-inventory, feature-cases, feature-native]
+    needs: [agent-plugins, checks, python, firmware, native-components, rust-test, linux-product, cli-test, podman-contracts, gateway-features, pvisor-isolation-regression, examples, spec-fixtures, windows, feature-inventory, feature-cases, feature-native]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
