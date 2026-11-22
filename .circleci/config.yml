@@ -1,0 +1,223 @@
+version: 2.1
+
+parameters:
+  build-linux:
+    type: boolean
+    default: false
+  test-linux:
+    type: boolean
+    default: false
+  case-gate:
+    type: enum
+    enum: [normal, strict]
+    default: normal
+
+executors:
+  linux:
+    parameters:
+      image:
+        type: string
+        default: ubuntu-2404:2026.11.1
+    machine:
+      image: << parameters.image >>
+    resource_class: large
+    environment:
+      CARGO_TERM_COLOR: always
+      MISE_AUTO_INSTALL: "false"
+      RUST_BACKTRACE: "1"
+      RUNNER_TEMP: /home/circleci/pvisor-ci
+
+commands:
+  prepare:
+    parameters:
+      suite:
+        type: string
+    steps:
+      - run:
+          name: Set up Linux prerequisites and locked tools
+          command: bash .circleci/linux-ci.sh setup << parameters.suite >>
+
+  restore-cargo:
+    steps:
+      - restore_cache:
+          keys:
+            - &cargo-key v1-linux-amd64-cargo-{{ checksum "mise.lock" }}-{{ checksum "Cargo.lock" }}-{{ checksum "pvisor-kernel/Cargo.lock" }}
+
+jobs:
+  linux-product:
+    parameters:
+      publish:
+        type: boolean
+        default: false
+    executor: linux
+    retention:
+      caches: 7d
+    steps:
+      - checkout
+      - restore-cargo
+      - prepare:
+          suite: linux-product
+      - run:
+          name: Build and smoke-test the Linux product
+          command: bash .circleci/linux-ci.sh run linux-product
+          no_output_timeout: 20m
+      - save_cache:
+          key: *cargo-key
+          paths:
+            - ~/.cargo/registry/cache
+            - ~/.cargo/registry/index
+            - ~/.cargo/git/db
+      - unless:
+          condition: << parameters.publish >>
+          steps:
+            - persist_to_workspace:
+                root: /home/circleci/pvisor-workspace
+                paths: [runtime]
+      - when:
+          condition: << parameters.publish >>
+          steps:
+            - run:
+                name: Archive Linux debug binaries with firmware provenance
+                command: |
+                  tar -C "$HOME/pvisor-workspace/runtime" -czf /tmp/pvisor-linux-x86_64-debug.tar.gz \
+                    pvisor pvisor-replay pvisor-daemon libkrunfw.SOURCE
+            - store_artifacts:
+                path: /tmp/pvisor-linux-x86_64-debug.tar.gz
+                destination: pvisor-linux-x86_64-debug.tar.gz
+
+  linux-check:
+    parameters:
+      suite:
+        type: string
+      variant:
+        type: string
+        default: ""
+      image:
+        type: string
+        default: ubuntu-2404:2026.11.1
+      runtime:
+        type: boolean
+        default: false
+      cargo-cache:
+        type: boolean
+        default: true
+      shards:
+        type: integer
+        default: 1
+    executor:
+      name: linux
+      image: << parameters.image >>
+    parallelism: << parameters.shards >>
+    environment:
+      PVISOR_CI_VARIANT: << parameters.variant >>
+      CASE_GATE: << pipeline.parameters.case-gate >>
+    steps:
+      - checkout
+      - when:
+          condition: << parameters.runtime >>
+          steps:
+            - attach_workspace:
+                at: /home/circleci/pvisor-workspace
+      - when:
+          condition: << parameters.cargo-cache >>
+          steps:
+            - restore-cargo
+      - prepare:
+          suite: << parameters.suite >>
+      - run:
+          name: Run << parameters.suite >> << parameters.variant >>
+          command: bash .circleci/linux-ci.sh run << parameters.suite >>
+          no_output_timeout: 20m
+      - store_artifacts:
+          path: /home/circleci/pvisor-ci/evidence
+
+workflows:
+  build-pilot:
+    when: << pipeline.parameters.build-linux >>
+    jobs:
+      - linux-product:
+          publish: true
+
+  linux-trial:
+    when: pipeline.parameters.test-linux or pipeline.git.branch == "ci/circleci-linux-trial"
+    jobs:
+      - linux-product
+      - linux-check:
+          name: feature-inventory
+          suite: feature-inventory
+          cargo-cache: false
+      - linux-check:
+          name: feature-cases
+          suite: feature-cases
+          image: &kvm-image android:2026.10.1
+          shards: 3
+          runtime: true
+          requires: [feature-inventory, linux-product]
+      - linux-check:
+          name: feature-native-<< matrix.variant >>
+          suite: feature-native
+          matrix:
+            parameters:
+              variant: [docker-cli, docker-compose]
+      - linux-check:
+          name: agent-plugins-node-<< matrix.variant >>
+          suite: agent-plugins
+          cargo-cache: false
+          matrix:
+            parameters:
+              variant: ["22.19.0", "24"]
+      - linux-check:
+          name: checks
+          suite: checks
+      - linux-check:
+          name: spec-fixtures
+          suite: spec-fixtures
+      - linux-check:
+          name: python
+          suite: python
+      - linux-check:
+          name: firmware
+          suite: firmware
+          cargo-cache: false
+      - linux-check:
+          name: native-<< matrix.variant >>
+          suite: native-components
+          matrix:
+            parameters:
+              variant: [daemon, shim, shim-vm]
+      - linux-check:
+          name: rust-<< matrix.variant >>
+          suite: rust-test
+          matrix:
+            parameters:
+              variant: [core, gateway]
+      - linux-check:
+          name: rust-pvisor
+          suite: rust-vm
+          image: *kvm-image
+      - linux-check:
+          name: cli-test
+          suite: cli-test
+          image: *kvm-image
+          runtime: true
+          requires: [linux-product]
+      - linux-check:
+          name: podman-<< matrix.variant >>
+          suite: podman-contracts
+          image: *kvm-image
+          cargo-cache: false
+          runtime: true
+          requires: [linux-product]
+          matrix:
+            parameters:
+              variant: [bats-linux, go-0-linux, go-1-linux, bats-rust-native, go-0-rust-native, go-1-rust-native]
+      - linux-check:
+          name: gateway-features
+          suite: gateway-features
+          image: *kvm-image
+      - linux-check:
+          name: pvisor-isolation-regression
+          suite: pvisor-isolation-regression
+      - linux-check:
+          name: examples
+          suite: examples

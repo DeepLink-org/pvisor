@@ -50,6 +50,28 @@ mise run docs-build       # build and check the documentation site
 See [development](https://deeplink-org.github.io/pvisor/community/development/)
 for platform setup (FUSE/macFUSE, KVM/HVF, OCI runtimes).
 
+### CircleCI Linux CI trial
+
+In CircleCI, select **Trigger Pipeline**, choose the branch containing
+[`.circleci/config.yml`](.circleci/config.yml), and set `test-linux=true`.
+Pushes to `ci/circleci-linux-trial` also run the trial; other branches are
+opt-in. Use `build-linux=true` for only the build and its downloadable debug
+archive. Linux Scrut cases use the same inventory as GitHub, with three workers
+and the default `case-gate=normal`. Set `case-gate=strict` for a strict run.
+
+The trial covers the Linux checks in `CI`; macOS, Windows (including its
+firmware build and qualification), releases and nightly builds remain on
+GitHub Actions. CircleCI's Android machine image provides nested virtualization
+for KVM jobs. Missing KVM, FUSE or namespace prerequisites fail the jobs that
+require them. The full trial passes one runtime bundle to downstream jobs
+through a workspace, rather than publishing it as a downloadable artifact.
+
+For a speed comparison, use the same commit and case gate. Compare wall time
+to the last completed Linux check (including queue time), per-job timings and
+credit usage; record the first run and a repeat with the Cargo download cache.
+GitHub CI remains the required gate. Validate config changes with
+`circleci config validate .circleci/config.yml`.
+
 ### Local tool overrides
 
 Put compatible personal tool selections in `mise.local.toml`, which is ignored
