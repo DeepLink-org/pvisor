@@ -22,6 +22,53 @@ fn new_backend_page_cache(backend: &Arc<MockPageCacheBackend>, num_pages: usize)
     PageCache::new_with_backend(num_pages * PAGE_SIZE, Arc::downgrade(&backend_dyn)).unwrap()
 }
 
+#[ktest]
+fn demand_read_stops_runs_at_cached_pages_and_at_the_requested_end() {
+    let backend = MockPageCacheBackend::new(6);
+    let cache = new_backend_page_cache(&backend, 6);
+    for idx in 0..6 {
+        backend.set_persisted_page_bytes(idx, &[idx as u8; PAGE_SIZE]);
+    }
+    let mut byte = [0];
+    cache.read_bytes(2 * PAGE_SIZE, &mut byte).unwrap();
+    let mut bytes = vec![0; 4 * PAGE_SIZE];
+    cache.read_bytes(1, &mut bytes).unwrap();
+    for (offset, byte) in bytes.into_iter().enumerate() {
+        assert_eq!(byte, ((offset + 1) / PAGE_SIZE) as u8);
+    }
+    for idx in 0..6 {
+        assert_eq!(backend.read_count(idx), usize::from(idx < 5));
+    }
+}
+
+#[ktest]
+fn failed_batched_read_retries_only_uninitialized_pages() {
+    let backend = MockPageCacheBackend::new(2);
+    backend.set_persisted_page_bytes(1, &[0x5a; PAGE_SIZE]);
+    backend.set_completion(IoKind::Read, IoCompletion::Deferred);
+    let cache = Arc::new(new_backend_page_cache(&backend, 2));
+    let reader = {
+        let cache = cache.clone();
+        ThreadOptions::new(move || {
+            let mut bytes = vec![0x77; 2 * PAGE_SIZE];
+            assert!(cache.read_bytes(0, &mut bytes).is_err());
+            assert!(bytes.iter().all(|b| *b == 0x77));
+        })
+        .spawn()
+    };
+    backend.wait_for_deferred_bios(IoKind::Read, 2);
+    assert!(backend.complete_next_deferred_bio(IoKind::Read, true));
+    assert!(backend.complete_next_deferred_bio(IoKind::Read, false));
+    reader.join();
+
+    backend.set_completion(IoKind::Read, IoCompletion::Immediate);
+    let mut bytes = vec![0xff; 2 * PAGE_SIZE];
+    cache.read_bytes(0, &mut bytes).unwrap();
+    assert!(bytes[..PAGE_SIZE].iter().all(|b| *b == 0));
+    assert!(bytes[PAGE_SIZE..].iter().all(|b| *b == 0x5a));
+    assert_eq!((backend.read_count(0), backend.read_count(1)), (1, 2));
+}
+
 /// Creates a locked page cache that models the inode-level lock held by
 /// filesystem callers before touching the page cache.
 fn new_locked_backend_page_cache(

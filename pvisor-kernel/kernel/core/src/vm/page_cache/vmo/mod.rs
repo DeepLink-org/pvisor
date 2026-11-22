@@ -789,6 +789,15 @@ impl Vmo {
                 };
             match self.try_operate_on_range_internal(&current_range, &mut operate, commit_mode) {
                 Ok(()) => break 'retry,
+                Err(VmoCommitError::NeedIo { index })
+                    if commit_mode == CommitMode::Read && index + 1 < end_idx =>
+                {
+                    let backend = self.as_backed_vmo().ok_or_else(|| {
+                        Error::with_message(Errno::EIO, "page-cache backend disappeared")
+                    })?;
+                    backend.fill_missing_read_pages(index..end_idx)?;
+                    current_range.start = index * PAGE_SIZE;
+                }
                 Err(err) => {
                     let (idx, page) = self.handle_commit_error(err, commit_mode)?;
                     pages.push((idx, page));
@@ -1032,6 +1041,41 @@ impl<'a> BackedVmo<'a> {
             locked_page.wait_until_finish_writing_back();
         }
 
+        Ok(())
+    }
+
+    /// Fill only adjacent absent pages inside the caller's bounded read batch.
+    fn fill_missing_read_pages(&self, range: Range<usize>) -> Result<()> {
+        let mut pending = Vec::with_capacity(range.len());
+        {
+            let mut pages = self.pages.lock();
+            if range.end > self.size().div_ceil(PAGE_SIZE) {
+                return_errno!(Errno::EINVAL);
+            }
+            let mut cursor = pages.cursor_mut(range.start as u64);
+            for _ in range.clone() {
+                if cursor.load().is_some() {
+                    break;
+                }
+                let page = CachePage::alloc_uninit()?;
+                // Lock before publication; never wait for an existing page under the array lock.
+                pending.push(page.clone().lock());
+                cursor.store(page);
+                cursor.next();
+            }
+        }
+        if pending.is_empty() {
+            return Ok(());
+        }
+        let mut batch = IoBatch::with_capacity(pending.len());
+        let mut iter = pending.into_iter();
+        let submitted = self
+            .backend
+            .read_pages_async(PageRun::new(range.start, &mut iter), &mut batch);
+        drop(iter);
+        let completed = batch.wait_all();
+        submitted?;
+        completed?;
         Ok(())
     }
 

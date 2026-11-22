@@ -27,7 +27,7 @@ use super::{
         open_handle::VirtioFsOpenHandle,
         valid_until,
     },
-    TimeField, VirtioFsInode, WriteOffset,
+    InodeInner, TimeField, VirtioFsInode, WriteOffset,
     metadata::StaleAttrAction,
 };
 use crate::{
@@ -50,19 +50,15 @@ impl VirtioFsInode {
         offset: usize,
         writer: &mut VmWriter,
         fh: FuseFileHandle,
-        flags: u32,
     ) -> Result<usize> {
-        if self.inner.read().page_cache().is_none() {
-            return self.direct_read_at(offset, writer, fh, flags);
-        }
-
-        // FIXME: The virtio-fs session currently always requests `AUTO_INVAL_DATA`,
-        // so cached reads refresh attributes before checking the cached file size.
-        // If this flag becomes optional, reads that stay below EOF should be allowed
-        // to use still-valid cached attributes.
         self.revalidate_attr(Some(fh))?;
 
-        let inner = self.inner.read();
+        let mut inner = self.inner.read();
+        if inner.page_cache().is_none() {
+            drop(inner);
+            self.cache_for_read()?;
+            inner = self.inner.read();
+        }
         let file_size = self.size();
         let start = file_size.min(offset);
         let end = file_size.min(offset.saturating_add(writer.avail()));
@@ -117,11 +113,7 @@ impl VirtioFsInode {
         Ok(copied)
     }
 
-    /// Writes file data through the page cache.
-    ///
-    /// Cached writes use write-through semantics: they copy user bytes into the
-    /// page cache, flush the dirtied range to the server, and commit metadata
-    /// only after writeback succeeds.
+    /// Write through to the server, updating cached pages if a reader or mapping uses them.
     pub(in virtiofs) fn cached_write_at(
         &self,
         write_offset: WriteOffset,
@@ -129,15 +121,15 @@ impl VirtioFsInode {
         fh: FuseFileHandle,
         flags: u32,
     ) -> Result<usize> {
-        if self.inner.read().page_cache().is_none() {
-            return self.direct_write_at(write_offset, reader, fh, flags);
-        }
         let write_len = reader.remain();
         if write_len == 0 {
             return Ok(0);
         }
 
         let mut inner = self.inner.write();
+        if inner.page_cache.is_none() {
+            return self.direct_write_locked(&mut inner, write_offset, reader, fh, flags);
+        }
         let offset = self.resolve_write_offset(write_offset);
         let requested_end = offset
             .checked_add(write_len)
@@ -185,9 +177,19 @@ impl VirtioFsInode {
         fh: FuseFileHandle,
         flags: u32,
     ) -> Result<usize> {
-        let write_len = reader.remain();
-
         let mut inner = self.inner.write();
+        self.direct_write_locked(&mut inner, write_offset, reader, fh, flags)
+    }
+
+    fn direct_write_locked(
+        &self,
+        inner: &mut InodeInner,
+        write_offset: WriteOffset,
+        reader: &mut VmReader,
+        fh: FuseFileHandle,
+        flags: u32,
+    ) -> Result<usize> {
+        let write_len = reader.remain();
         let offset = self.resolve_write_offset(write_offset);
         let write_end = offset
             .checked_add(write_len)
@@ -348,8 +350,7 @@ impl VirtioFsInode {
             self.nodeid(),
             OpenOperation::new(OpenReq::new((access_mode as u32) | status_flags.bits())),
         )?;
-        let cache_policy = if self.inner.read().page_cache().is_some()
-            && !status_flags.contains(StatusFlags::O_DIRECT)
+        let cache_policy = if !status_flags.contains(StatusFlags::O_DIRECT)
             && !open_out
                 .open_flags()
                 .contains(FuseOpenFlags::FOPEN_DIRECT_IO)

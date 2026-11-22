@@ -134,9 +134,7 @@ impl VirtioFsInode {
             lookup_count: LookupCount::initial(),
             size: AtomicUsize::new(metadata.size),
             inner: RwMutex::new(InodeInner {
-                page_cache: metadata.type_.is_regular_file().then(|| {
-                    PageCache::new_with_backend(metadata.size, weak_self.clone() as _).unwrap()
-                }),
+                page_cache: None,
                 metadata,
                 attr_valid_until,
                 attr_version,
@@ -163,6 +161,20 @@ impl VirtioFsInode {
 
     pub(super) fn size(&self) -> usize {
         self.size.load(Ordering::Acquire)
+    }
+
+    pub(super) fn cache_for_read(&self) -> Result<Arc<Vmo>> {
+        if let Some(cache) = self.inner.read().page_cache() {
+            return Ok(cache.as_vmo().clone());
+        }
+        let mut inner = self.inner.write();
+        if inner.page_cache.is_none() {
+            inner.page_cache = Some(PageCache::new_with_backend(
+                self.size(),
+                self.weak_self.clone(),
+            )?);
+        }
+        Ok(inner.page_cache.as_ref().unwrap().as_vmo().clone())
     }
 
     /// Updates a cached inode with a fresh FUSE entry reply.
@@ -334,12 +346,10 @@ impl Inode for VirtioFsInode {
     }
 
     fn page_cache(&self) -> Option<Arc<Vmo>> {
-        self.inner
-            .read()
-            .page_cache
-            .as_ref()
-            .map(PageCache::as_vmo)
-            .cloned()
+        if !self.type_.is_regular_file() {
+            return None;
+        }
+        self.cache_for_read().ok()
     }
 
     fn open(

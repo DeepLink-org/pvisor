@@ -4,10 +4,126 @@ use std::{
     fs,
     io::{Read, Seek, Write},
     os::fd::AsRawFd,
+    os::unix::fs::{FileExt, PermissionsExt},
 };
+
+#[repr(C)]
+struct CapHeader {
+    version: u32,
+    pid: i32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+struct CapData {
+    effective: u32,
+    permitted: u32,
+    inheritable: u32,
+}
 
 unsafe extern "C" {
     fn ioctl(fd: i32, request: i32, ...) -> i32;
+    fn mmap(addr: *mut u8, len: usize, prot: i32, flags: i32, fd: i32, offset: i64) -> *mut u8;
+    fn munmap(addr: *mut u8, len: usize) -> i32;
+    fn capget(header: *mut CapHeader, data: *mut CapData) -> i32;
+    fn capset(header: *const CapHeader, data: *const CapData) -> i32;
+    fn fsetxattr(fd: i32, name: *const i8, value: *const u8, size: usize, flags: i32) -> i32;
+    fn fgetxattr(fd: i32, name: *const i8, value: *mut u8, size: usize) -> isize;
+}
+
+fn check_setid_writes() {
+    // Use guest tmpfs so the host filesystem cannot clear these mode bits for us.
+    let file = fs::File::create_new("/dev/shm/write-contract").unwrap();
+    file.set_permissions(fs::Permissions::from_mode(0o6755))
+        .unwrap();
+    let name = c"security.capability".as_ptr().cast();
+    let mut empty_caps = [0u8; 20];
+    empty_caps[..4].copy_from_slice(&0x0200_0000u32.to_le_bytes());
+    assert_eq!(
+        unsafe {
+            fsetxattr(
+                file.as_raw_fd(),
+                name,
+                empty_caps.as_ptr(),
+                empty_caps.len(),
+                0,
+            )
+        },
+        0
+    );
+    assert!(unsafe { fgetxattr(file.as_raw_fd(), name, std::ptr::null_mut(), 0) } > 0);
+    file.write_all_at(b"x", 0).unwrap();
+    assert_eq!(
+        file.metadata().unwrap().permissions().mode() & 0o7777,
+        0o6755
+    );
+    assert_eq!(
+        unsafe { fgetxattr(file.as_raw_fd(), name, std::ptr::null_mut(), 0) },
+        -1
+    );
+    assert_eq!(std::io::Error::last_os_error().raw_os_error(), Some(61)); // ENODATA
+    let write_mode = |mode| {
+        file.set_permissions(fs::Permissions::from_mode(mode))
+            .unwrap();
+        file.write_all_at(b"x", 0).unwrap();
+        file.metadata().unwrap().permissions().mode() & 0o7777
+    };
+    let mut header = CapHeader {
+        version: 0x2008_0522,
+        pid: 0,
+    };
+    let mut data = [CapData::default(); 2];
+    assert_eq!(unsafe { capget(&mut header, data.as_mut_ptr()) }, 0);
+    const FSETID: u32 = 1 << 4;
+    assert_ne!(data[0].effective & FSETID, 0);
+    data[0].effective &= !FSETID;
+    assert_eq!(unsafe { capset(&header, data.as_ptr()) }, 0);
+    assert_eq!(write_mode(0o6755), 0o755);
+    assert_eq!(write_mode(0o6644), 0o2644);
+}
+
+fn check_write_cache() {
+    for mapped in [false, true] {
+        let path = if mapped { "/mapped" } else { "/buffered" };
+        let writer = fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(path)
+            .unwrap();
+        let reader = fs::File::open(path).unwrap();
+        writer.write_all_at(b"abc", 8192).unwrap();
+        writer.sync_all().unwrap();
+        let mut expected = vec![0; 8195];
+        expected[8192..].copy_from_slice(b"abc");
+        if mapped {
+            // MAP_SHARED, PROT_READ; the writer remains open across the first mapping.
+            let addr = unsafe {
+                mmap(
+                    std::ptr::null_mut(),
+                    expected.len(),
+                    1,
+                    1,
+                    reader.as_raw_fd(),
+                    0,
+                )
+            };
+            assert_ne!(addr as isize, -1);
+            assert_eq!(unsafe { addr.add(8192).read_volatile() }, b'a');
+            writer.write_all_at(b"xyz", 8192).unwrap();
+            assert_eq!(unsafe { addr.add(8192).read_volatile() }, b'x');
+            assert_eq!(unsafe { munmap(addr, expected.len()) }, 0);
+        } else {
+            let mut bytes = vec![0xff; expected.len()];
+            reader.read_exact_at(&mut bytes, 0).unwrap();
+            assert_eq!(bytes, expected);
+            writer.write_all_at(b"xyz", 8192).unwrap();
+        }
+        writer.set_len(8193).unwrap();
+        writer.set_len(8195).unwrap();
+        writer.sync_all().unwrap();
+        expected[8192..].copy_from_slice(b"x\0\0");
+        assert_eq!(fs::read(path).unwrap(), expected);
+    }
 }
 
 fn main() {
@@ -35,6 +151,21 @@ fn main() {
     uuid.read_exact(&mut reread).unwrap();
     assert_eq!(id, reread);
     assert_ne!(id.as_slice(), fs::read(uuid_path).unwrap());
+    if std::env::args().nth(2).as_deref() == Some("--check-write-cache") {
+        check_write_cache();
+        check_setid_writes();
+    }
+    if std::env::args().nth(2).as_deref() == Some("--check-read-fixture") {
+        let file = fs::File::open("/read-fixture").unwrap();
+        // A preexisting 4 MiB fixture avoids warming the guest cache by writing the data.
+        let expected = |offset: usize| (offset / 4096 + offset % 251) as u8;
+        for (offset, count) in [(8192, 1), (17, 256 * 1024), (4 * 1024 * 1024 - 9, 64)] {
+            let mut bytes = vec![0; count];
+            let read = file.read_at(&mut bytes, offset as u64).unwrap();
+            assert_eq!(read, count.min(4 * 1024 * 1024 - offset));
+            assert!((0..read).all(|i| bytes[i] == expected(offset + i)));
+        }
+    }
     fs::write("/pvisor-kernel-smoke", b"shared rootfs\n").unwrap();
     assert_eq!(
         fs::read("/pvisor-kernel-smoke").unwrap(),

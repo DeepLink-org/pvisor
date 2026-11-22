@@ -86,3 +86,27 @@ mise run test -- pvisor-benchmarks -- \
 Fixtures do not establish real KVM, FUSE, Docker, stock-kernel or lab capability.
 Diagnostic protocols remain in [TURBO_OCI.md](TURBO_OCI.md) and
 [STARTUP_EXPERIMENTS.md](STARTUP_EXPERIMENTS.md); they do not fill unprepared entries.
+
+## Linux and Rust firmware stage diagnostic (KVM)
+
+Build one release probe with the Rust kernel embedded. Supply the Linux firmware
+for a GNU build and a trusted, disposable userspace with a working `/bin/sh`:
+
+```sh
+bundle=$(mise run kernel -- build --offline)
+PVISOR_BUILD_NATIVE_KERNEL_BUNDLE="$bundle" mise exec -- cargo build \
+  --release -p pvisor-vm --example vm_api_case
+python3 benchmark/startup/firmware_stages.py --probe target/release/examples/vm_api_case \
+  --linux-firmware /prepared/libkrunfw.so --rootfs /prepared/rootfs \
+  --output benchmark/startup/.data/NEW-firmware
+```
+
+Both arms use 1 vCPU, 256 MiB and a fresh rootfs copy. The host interval starts at
+`vm.runtime_configure` and stops when the guest acknowledges the virtio-MMIO console,
+not when the console driver or shell is ready. It excludes firmware selection
+before VM configuration. The shell must separately write the exact marker into
+the shared rootfs and exit normally. `shell_file_median_ms` measures spawn to
+host observation of those bytes (1 ms polling plus scheduling and filesystem
+visibility); this is not a captured-stdio latency test.
+Missing stages, failed shells and timeouts remain in the output; any incomplete
+trial fails the command. `diagnostic.json` and the public Ready table are unchanged.

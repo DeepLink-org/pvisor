@@ -140,8 +140,9 @@ impl ConsoleControl {
         if event == 1 {
             let _ = self.send(id, 3, 1);
             let _ = self.send(id, 6, 1);
-        } else if id == 0 && event == 6 {
-            self.primary_open.store(value == 1, Ordering::Release);
+        } else if id == 0 && event == 6 && value == 1 {
+            // Input EOF may follow OPEN before start() observes the handshake.
+            self.primary_open.store(true, Ordering::Release);
         } else if id != 0 {
             let port = &self.ports[id as usize - 1];
             if event == 6 {

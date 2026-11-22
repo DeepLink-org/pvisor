@@ -160,6 +160,23 @@ The probe must be built with the native payload embedded for native selection.
 It checks file write/read,
 stdout/stderr emission and rejection of forged supervisor ioctls from a
 non-PID-1 process. The expected authenticated exit code is 7.
+For the buffered-read regression, prepare a 4 MiB `/read-fixture` with
+byte `i` equal to `(i / 4096 + i % 251) % 256` (integer division) and
+append `--check-read-fixture` after `7`. The workload warms one page,
+verifies an unaligned multi-batch read spanning it, and checks the short
+read at EOF. See the [filesystem A/B](../benchmark/evidence/rust-kernel-filesystem.md).
+
+`--check-write-cache` instead tests sparse write-only I/O, a subsequent
+buffered read or shared mapping, and truncate/regrow. After exit, `/mapped`
+and `/buffered` must each contain 8192 zero bytes followed by `78 00 00`
+(hex). The guest also tests set-ID bits and file-capability removal on its
+own tmpfs before and after dropping effective `CAP_FSETID`.
+
+On virtio-fs, a regular file starts without a page cache. Writes use the
+caller's file handle and wait for the server reply; the first buffered read
+or mapping creates the cache under the same inode lock as writers. From
+then on, buffered writes keep it coherent. This is not writeback caching.
+See the [write-path experiment](../benchmark/evidence/rust-kernel-write-path.md).
 
 To verify captured streams on Linux x86_64/KVM, run the same static workload
 with the embedded-kernel probe:

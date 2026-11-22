@@ -752,6 +752,11 @@ impl MmioTransport {
         match !self.device_status & status {
             ACKNOWLEDGE if self.device_status == INIT => {
                 self.device_status = status;
+                if crate::startup_profile::enabled()
+                    && self.locked_device().device_type() == console::TYPE_CONSOLE
+                {
+                    crate::startup_profile::Span::new("vmm.console_ack", "runner").complete(None);
+                }
             }
             DRIVER if self.device_status == ACKNOWLEDGE => {
                 self.device_status = status;
