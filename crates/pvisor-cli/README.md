@@ -1176,7 +1176,10 @@ compressed directory radix index and shared seekable-Zstd content pool. Small
 files pack by directory; large files use independent 1 MiB chunks. VM reads go through the direct lazy
 backend; ordinary reads do not accumulate a second raw disk cache. Full OCI
 archives and extracted rootfs trees are temporary import/build inputs, except
-explicit `--output` exports. Original configurations remain under the image store's `configs`.
+explicit `--output` exports and live cold imports. On Linux x86-64 a cold
+`run` can start from the verified extracted image while a separate process
+publishes it. The container and its live forks keep that lower in the Docker
+home until their removal. An explicit `pull` waits for durable publication. Original configurations remain under the image store's `configs`.
 Directory-based records are supported and are not automatically removed.
 Pool revisions remain pinned in container records across tag replacement/removal.
 Short and fully qualified Docker Hub references address the same catalog tag.

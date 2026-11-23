@@ -754,7 +754,11 @@ pub(super) fn run(command: DockerCommand) -> anyhow::Result<i32> {
             };
             let instance = {
                 let mut display = progress::PullDisplay::new(&config.image);
-                store.create_with_progress(config, &mut |event| display.update(event))?
+                #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+                let create = Store::create_for_run;
+                #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+                let create = Store::create_with_progress;
+                create(&store, config, &mut |event| display.update(event))?
             };
             let output = store.output(&instance)?;
             let started = store.start(&instance.id)?;

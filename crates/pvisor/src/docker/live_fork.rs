@@ -97,7 +97,7 @@ pub(super) struct ForkState {
     machine: MachineSnapshot,
     frozen_root: PathBuf,
     extents: Vec<RamRestoreExtent>,
-    image: RetainedImage,
+    image: ForkLower,
     ram_identity: (u64, u64),
     source_control: PathBuf,
     upper: TreeInventory,
@@ -112,13 +112,37 @@ pub(super) fn load(directory: &Path) -> anyhow::Result<Option<ForkState>> {
     }
 }
 
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+enum ForkLower {
+    Published(RetainedImage),
+    Extracted { root: PathBuf },
+}
+impl ForkLower {
+    fn root(&self) -> &Path {
+        match self {
+            Self::Published(image) => image.root(),
+            Self::Extracted { root } => root,
+        }
+    }
+}
 impl ForkState {
-    pub(super) fn open_image(&self) -> anyhow::Result<ImageRoot> {
-        let owner = self.image.open()?;
-        Ok(ImageRoot {
-            root: owner.root().to_owned(),
-            _owner: Some(owner),
-        })
+    pub(super) fn open_image(&self, store: &Store, image: &Image) -> anyhow::Result<ImageRoot> {
+        match &self.image {
+            ForkLower::Published(image) => {
+                let owner = image.open()?;
+                Ok(ImageRoot {
+                    root: owner.root().to_owned(),
+                    _owner: Some(owner),
+                    _import_lease: None,
+                })
+            }
+            ForkLower::Extracted { root } => {
+                let opened = super::early_image::open(store, image)?;
+                ensure!(opened.rootfs() == root, "fork image root changed");
+                Ok(opened)
+            }
+        }
     }
     pub(super) fn restore(mut self, dir: &Path, control: &Path) -> anyhow::Result<MachineRestore> {
         let ram = inherited_ram(dir)?.context("missing fork RAM")?;
@@ -174,7 +198,7 @@ pub(super) struct Source {
     store_root: PathBuf,
     dir: PathBuf,
     control: PathBuf,
-    retained: RetainedImage,
+    retained: ForkLower,
     image: Option<ImageRoot>,
 }
 impl Source {
@@ -185,11 +209,13 @@ impl Source {
     ) -> anyhow::Result<Self> {
         let control = socket(instance)?;
         let listener = UnixListener::bind(control.with_extension("fork"))?;
-        let retained = image
-            ._owner
-            .as_mut()
-            .context("missing OCI image owner")?
-            .retain_for_branch()?;
+        let retained = match image._owner.as_mut() {
+            Some(owner) => ForkLower::Published(owner.retain_for_branch()?),
+            None if image._import_lease.is_some() => ForkLower::Extracted {
+                root: image.root.clone(),
+            },
+            None => bail!("missing OCI image owner"),
+        };
         let dir = store.directory(&instance.id);
         register_image(&dir, &retained)?;
         Ok(Self {
@@ -298,7 +324,7 @@ fn rebind(
     state: &mut MachineSnapshot,
     old: &Path,
     new: &Path,
-    image: &RetainedImage,
+    image: &ForkLower,
 ) -> anyhow::Result<()> {
     let copies = ["upper", "work"].map(|part| (old.join(part), new.join(part)));
     ensure!(
@@ -308,7 +334,11 @@ fn rebind(
     Ok(())
 }
 
-fn register_image(dir: &Path, image: &RetainedImage) -> anyhow::Result<()> {
+fn register_image(dir: &Path, image: &ForkLower) -> anyhow::Result<()> {
+    let ForkLower::Published(image) = image else {
+        // Extracted images are pinned by the Session's own immutable image binding.
+        return Ok(());
+    };
     let lease = dir.join("fork-images");
     private_directory(&lease)?;
     let file = File::create_new(lease.join(uuid()))?;

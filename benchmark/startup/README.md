@@ -153,9 +153,3 @@ intervals are computed from the raw observations, not Criterion's batch
 averages. The Criterion duration measures the serial pair's summed first-command
 times; the burst is analyzed separately. The result is not a production hit
 rate or a comparison against other runtimes.
-
-## Cold OCI first use and live fork
-
-The [cold OCI engineering experiment](cold_oci_fork/README.md) records component
-timings, two independent optimization controls, and a pinned Linux prototype for
-measuring first use and four-child readiness with an empty image store.

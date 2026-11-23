@@ -10,6 +10,8 @@ mod mirrors;
 mod network;
 mod pool;
 mod portable;
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+pub(crate) use portable::supports_extracted_run;
 pub mod progress;
 mod protocol;
 mod s3_runtime;

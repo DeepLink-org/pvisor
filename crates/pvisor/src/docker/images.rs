@@ -236,6 +236,10 @@ impl Store {
     /// Keep the returned owner until OverlayCore and VM consumers have stopped.
     /// Foreign images may be inspected; VM admission still requires native CPU.
     pub fn open_image(&self, image: &Image) -> anyhow::Result<ImageRoot> {
+        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+        if image.cache.handle.starts_with(super::early_image::PREFIX) {
+            return super::early_image::open(self, image);
+        }
         self.open_cached(&image.cache, &image.digest, &image.platform)
     }
 
@@ -272,6 +276,7 @@ impl Store {
             &scratch,
         )?;
         Ok(ImageRoot {
+            _import_lease: None,
             root: owner.root().into(),
             _owner: Some(owner),
         })

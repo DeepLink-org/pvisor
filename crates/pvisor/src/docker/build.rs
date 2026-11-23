@@ -571,7 +571,11 @@ fn open_build_image(store: &Store, image: &BuildImage) -> anyhow::Result<ImageRo
                 fs::symlink_metadata(&root)?.is_dir(),
                 "build lower is not a directory"
             );
-            Ok(ImageRoot { root, _owner: None })
+            Ok(ImageRoot {
+                root,
+                _owner: None,
+                _import_lease: None,
+            })
         }
     }
 }
