@@ -12,34 +12,11 @@ Each cell is a median of three trials, in seconds. All timestamps come from the 
 | pVisor, per-object directory sync, wait for pull | 142.033 | 0.605 | 142.697 |
 | pVisor, batched directory sync, start from extracted lower | 20.770 | 0.492 | 21.331 |
 
-The optimized path cut parent latency by 121.263 s (85.4%). The 0.113 s difference in four-child latency includes the change in filesystem backing. The six pVisor trials used one instrumented binary. AgentENV ran in a separate three-trial series. Three observations per condition support this host/image comparison only.
+## Prototype changes
 
-## Where cold pull spent time
+Object-pool publication accounted for 120 s of a 144 s cold pull. The prototype batches directory syncs after the object writers finish, retaining file sync and digest verification. This reduced median time to first command from 143 s to 108 s in the sync experiment.
 
-These three separate diagnostic trials used a fresh store and default synchronization. The middle column is the median elapsed time. The right column is the median of each interval divided by its own trial's pull time. Independent medians can differ from a total. [Phase measurements](pull_phases.csv).
-
-| Wall-clock interval | Median seconds | Share of pull |
-| --- | ---: | ---: |
-| Read OCI layer from loopback registry | 3.30 | 2.4% |
-| Stream layer SHA-256 and check digest | 2.75 | 1.9% |
-| Write raw layer to temporary blob | 1.07 | 0.8% |
-| Apply tar layer and materialize rootfs | 12.47 | 8.9% |
-| Publish rootfs to local object pool | 120.15 | 83.4% |
-| Remaining registry, metadata and teardown work | 3.18 | 2.3% |
-| **Complete pull** | **144.08** | **100%** |
-
-Inside the 120.15 s publication interval, tree enumeration took 3.82 s, content preparation and packing took 31.22 s, and parallel object installation with verification took 81.09 s. The latter alone accounted for 56.4% of cold pull time. These intervals are already included in the table. In the CSV, timings are seconds. The layer digest time is `hash + verify`; the latter only finalizes the streamed hash. The `apply` interval contains `tar_copy`, `whiteouts` and `extract_entries`. The `pool` interval contains all `pub_*` subphases.
-
-## What each optimization changed
-
-| Independent A/B experiment | Before → after (median wall seconds) | Mechanism |
-| --- | ---: | --- |
-| Batch directory sync, still wait for pull | 142.53 → 108.49 to first command | Keep file sync and read-back verification. Drain collected directories after the eight object writers join. |
-| Start from extracted rootfs, batching on in both arms | 109.35 → 21.35 to first command | Give the first VM a private upper over the verified lower while the publisher finishes. Image/catalog commit stays behind its durability barrier. |
-
-In the first A/B, all samples installed 25,380 objects. Object-worker wall time fell from 80.61 to 45.99 s. Across eight workers, median cumulative time in per-object directory sync fell from 310.91 to 0 thread-seconds. The batched directory drain took 0.068 s wall time. File sync still accounted for 330.79 thread-seconds with batching enabled. Thread time includes concurrent waits and must be compared within that unit. [Sync A/B](sync_ab.csv).
-
-In the second A/B, median durable catalog publication was 105.86 s serial and 107.37 s overlapped. Early launch largely removed that wait from first use. The individual A/B results come from separate runs and should not be added to predict a speedup. [Early-start A/B](early_ab.csv).
+With batching enabled, the first VM can mount the verified extracted rootfs with a private upper while image publication continues. In the separate early-start experiment this reduced time to first command from 109 s to 21 s. [Original phase and A/B measurements](https://github.com/DeepLink-org/pvisor/tree/ea0116182b2e1d81c743c143592e3ca3ff8d2e90/benchmark/startup/cold_oci_fork).
 
 ## Protocol and correctness
 
