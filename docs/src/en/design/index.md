@@ -2,6 +2,8 @@
 
 A tool running in a pVisor container uses the container's guest kernel. The host manages image content and VM memory, so containers can run separately while reusing read-only content. For local tasks, the host can also retain staged edits for review. On an inference, evaluation, or training node, the same mechanisms manage concurrent tasks and branches. The surrounding system decides where to place a task and whether to retry it.
 
+If you are evaluating a deployment, start with the [integration matrix](../guides/infrastructure/integration.md#entry-points) to compare interfaces and host requirements. Check the [executor boundaries](../security/executor-boundaries.md) before choosing an execution environment.
+
 ## 1. Overall architecture and component responsibilities {#architecture}
 
 ![pVisor technical architecture: runtime and host services, with pvisor-vm expanded into vCPUs, RAM, devices, snapshots and platform backends](assets/pvisor-architecture.svg)
