@@ -1,7 +1,4 @@
-//! Local V2 content pool using the same framed encoding as filesystem/S3.
-//!
-//! This is a separate namespace, identified by pool+file:// and pool-format.json.
-//! V1 pool markers are explicitly rejected without modifying old objects.
+//! Local image pool using the same storage format as filesystem and S3.
 use super::storage::{Storage, StoredObject};
 use super::{CacheClient, Request, Response, backend::RemoteFs, direct::DirectImage};
 use crate::image::oci::{ImageStore, PreparedImage};
@@ -13,7 +10,7 @@ use std::{
     sync::Arc,
 };
 
-const MARKER: &[u8] =
+const LEGACY_MARKER: &[u8] =
     b"{\"version\":2,\"content_encoding\":\"zstd-seekable\",\"index\":\"pvisor-radix-v2\"}";
 
 pub(crate) struct PoolStorage {
@@ -22,17 +19,17 @@ pub(crate) struct PoolStorage {
 impl PoolStorage {
     pub(super) fn open(root: PathBuf, create: bool) -> anyhow::Result<Self> {
         let files = Storage::filesystem(root, create)?;
-        if files.get("pool-format.json")?.is_none() && create {
+        let legacy = files
+            .read("format.json", None, super::portable::MAX_CONTROL)?
+            .map(|object| super::portable::is_legacy_format_marker(&object.bytes))
+            .transpose()?
+            .unwrap_or(false);
+        if let Some(marker) = files.get("pool-format.json")? {
             ensure!(
-                files.get("format.json")?.is_none(),
-                "cannot convert an existing cache into a V2 pool; republish into a new prefix"
+                marker == LEGACY_MARKER && legacy,
+                "unsupported prerelease local pool; republish into an Image Pack pool"
             );
-            files.put("pool-format.json", MARKER.to_vec(), true)?;
         }
-        ensure!(
-            files.get("pool-format.json")?.as_deref() == Some(MARKER),
-            "unsupported local image pool format; V1 is retired, republish into a new V2 pool"
-        );
         Ok(Self { files })
     }
     pub(super) fn read(

@@ -80,12 +80,7 @@ impl PreparedCatalogService for PreparedCatalog {
 
     fn pull(&self, name: &str, source: Option<&str>, refresh: bool) -> anyhow::Result<Image> {
         if let Some(source) = source {
-            ensure!(
-                ["s3://", "http://", "https://"]
-                    .iter()
-                    .any(|scheme| source.starts_with(scheme)),
-                "--from requires an S3 or HTTP(S) publication"
-            );
+            Store::validate_image_source(source)?;
         }
         let _lock = image_lock(&self.images, name)?;
         let images = self.images.canonicalize()?;
@@ -110,7 +105,7 @@ impl PreparedCatalogService for PreparedCatalog {
         crate::runtime::validate_image_profile(&image)?;
         image.rootfs = images.join("store");
         let store = Store::open(image.rootfs.clone())?;
-        image.pooled_image.cache.location = image.rootfs.join("images/pool-v2");
+        image.pooled_image.cache.location = store.image_pool_location();
         image.pooled_image.cache.repository = Some(repositories.remove(0));
         image.pooled_image.cache.mirrors = repositories;
         image.library_dir = None;
@@ -272,7 +267,8 @@ fn write_json(path: &Path, value: &impl Serialize, replace: bool) -> anyhow::Res
 fn portable_template(image: &PreparedImage) -> PreparedImage {
     let mut portable = image.clone();
     portable.rootfs = "/pvisor/store".into();
-    portable.pooled_image.cache.location = "/pvisor/store/images/pool-v2".into();
+    portable.pooled_image.cache.location =
+        Store::portable_image_pool_location(&image.pooled_image.cache.handle);
     portable.pooled_image.cache.repository = None;
     portable.pooled_image.cache.mirrors.clear();
     portable.library_dir = None;

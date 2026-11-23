@@ -19,8 +19,15 @@ fn runner_starts_bridge_before_constructing_any_client_transport() {
         bridge < client,
         "remote transports must not start workers before bridge setup"
     );
-    assert!(handoff[..bridge].contains("client_binding.resolved_source()?"));
+    assert!(handoff[..bridge].contains("client_binding.needs_read_bridge()?"));
     assert!(!handoff[..bridge].contains("CacheClient::"));
+    let binding = include_str!("../client.rs")
+        .split_once("impl ClientBinding {")
+        .unwrap()
+        .1
+        .split_once("pub(super) fn repository(")
+        .unwrap()
+        .0;
     let resolver = include_str!("../config.rs")
         .split_once("impl ResolvedSource {")
         .unwrap()
@@ -32,11 +39,12 @@ fn runner_starts_bridge_before_constructing_any_client_transport() {
         "Storage::",
         "Http::new(",
         "PoolStorage::",
+        ".open(",
         "thread::",
         "Runtime::",
     ] {
         assert!(
-            !resolver.contains(forbidden),
+            !binding.contains(forbidden) && !resolver.contains(forbidden),
             "capability parsing must be thread/I/O free: {forbidden}"
         );
     }
@@ -366,8 +374,10 @@ fn owned_snapshot_export_includes_unvisited_objects_and_survives_source_removal(
     );
 }
 
-#[test]
-fn runner_handoff_reopens_the_backend_and_retires_with_its_owner() {
+#[rstest::rstest]
+#[case::ordinary_runner(false)]
+#[case::warm_runner(true)]
+fn runner_handoff_reopens_the_backend_and_retires_with_its_owner(#[case] warm: bool) {
     let (temp, server, client, digest) = fixture();
     let DirectImage {
         attachment,
@@ -380,7 +390,11 @@ fn runner_handoff_reopens_the_backend_and_retires_with_its_owner() {
     drop(attachment);
     assert!(backend::attributes(&root).unwrap().is_none());
     let roots = [root.clone()];
-    let owner = attach_runner_lowers(roots.iter()).unwrap();
+    let owner = if warm {
+        attach_warm_lower(&root).unwrap()
+    } else {
+        attach_runner_lowers(roots.iter()).unwrap()
+    };
     assert_eq!(
         backend::read_at(&root.join("large"), 0, 16)
             .unwrap()

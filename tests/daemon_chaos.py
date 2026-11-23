@@ -805,9 +805,15 @@ def main():
     # This input is a new manifest, never a rewrite of historical evidence.
     assert manifest.get("native_guest"), "requires a native guest template"
     manifest["rootfs"] = str(args.pool_store.resolve(strict=True))
-    manifest["pooled_image"]["cache"]["location"] = str(
-        (args.pool_store / "images/pool-v2").resolve(strict=True)
-    )
+    cache = manifest["pooled_image"]["cache"]
+    handle = cache["handle"]
+    if handle.startswith("pvisor-image-pack:v1:"):
+        pool = "image-pack-v1"
+    elif handle.startswith("pvisor-v2:"):
+        pool = "pool-v2"
+    else:
+        raise ValueError("prepared manifest does not contain a supported image handle")
+    cache["location"] = str((args.pool_store / "images" / pool).resolve(strict=True))
     manifest["library_dir"] = str(args.binary.resolve().parent)
     images = root / "images"
     images.mkdir()

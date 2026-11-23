@@ -344,9 +344,9 @@ pvisor-daemon serve --memory-pool --state /tmp/pvisor-pool
 pvisor-daemon serve --sandbox --images-dir /srv/pvi --cgroup-root /sys/fs/cgroup/pvd --cache
 ```
 
-`--cache-image-store` selects the local V2 image directory shared with Docker
+`--cache-image-store` selects the local image directory shared with Docker
 and VM Sessions (default: user data `pvisor/docker/images`). Published Docker image
-records require a V2 binding and explicit platform; directory-backed image records
+records require a pinned image binding and explicit platform; directory-backed image records
 are rejected and must be recreated in the current format. `--memory-pool` can run independently
 or alongside cache/sandbox serving. `--state` belongs to sandbox or memory-pool
 serving. Select sandbox serving explicitly
@@ -523,10 +523,15 @@ For an open-source mirror without S3, export a static publication locally:
 ```sh
 pvisor image push python --images-dir .pvisor/images --to file:///srv/pvisor-mirror
 # Synchronize the returned hash-named directory to the mirror, then import
-# its HTTPS root with --from. This is a V2 bundle, not an OCI registry URL.
+# its HTTPS root with --from. This is an Image Pack bundle, not an OCI registry URL.
 ```
 
-Every publication is self-contained: V2 control/index/data objects and a portable
+The same push accepts `gs://BUCKET/PREFIX` with host Google credentials. An
+offline `file:///` publication can be passed directly to `image pull --from`
+without a server. The imported reference needs the source directory to remain
+available and immutable.
+
+Every publication is self-contained: image control/index/data objects and a portable
 `image.json`, plus the original OCI configuration under `configs/SHA256.json`.
 Import verifies its digest before retaining it for local metadata queries.
 Older publications without this asset remain usable by daemon runtime, but
@@ -542,7 +547,7 @@ Import fetches a bounded template, rebinds local host paths, verifies the pinned
 revision/digest and root metadata, and atomically installs a new name. It does
 not fetch image data; replacing an existing name requires `--refresh`. Hash-named sources
 also authenticate the template against the directory name. Runtime reads keep
-the selected publication and V2 handle fixed; no mutable-tag or local-pool fallback is
+the selected publication and immutable handle fixed; no mutable-tag or local-pool fallback is
 performed. Failed imports leave no visible image manifest. Missing/corrupt remote
 dependencies remain I/O failures, never nonexistent guest files. File contents
 are verified before use; failed/corrupt transfers cannot poison verified caches.

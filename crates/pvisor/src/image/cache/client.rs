@@ -132,12 +132,13 @@ impl ClientBinding {
         ResolvedSource::resolve(&self.address, self.read_only, self.token.as_deref())
     }
 
+    pub(super) fn needs_read_bridge(&self) -> anyhow::Result<bool> {
+        // A local primary does not authorize the runner to open its mirrors.
+        Ok(self.resolved_source()?.needs_host_network() || !self.mirrors.is_empty())
+    }
+
     pub(super) fn repository(address: &str, mirrors: &[String]) -> anyhow::Result<Self> {
-        if address.starts_with("s3://") {
-            super::storage::s3_location(address)?;
-        } else {
-            super::http::Http::validate(address)?;
-        }
+        super::location::Repository::parse(address)?;
         if !mirrors.is_empty() {
             let mut locations = vec![address.to_string()];
             locations.extend_from_slice(mirrors);
@@ -233,7 +234,7 @@ impl CacheClient {
         Self::from_config(CacheConfig::from_env()?)
     }
     /// Open ordered, read-only roots of one pinned publication. A single root
-    /// may be S3 or HTTP(S); multiple roots must all end in the same
+    /// may be a filesystem, S3, GCS or HTTP(S) repository URL. Multiple roots must all end in the same
     /// publication SHA-256 and contain no credentials. At most eight roots.
     /// Verification happens per object/frame before failover is accepted; this
     /// does not resolve names or change the caller's pinned image handle.
@@ -249,7 +250,11 @@ impl CacheClient {
         Self::configured(address, token, config.image_store, config.read_only)
     }
     pub fn new(address: String, token: Option<String>) -> anyhow::Result<Self> {
-        Self::configured(address, token, None, false)
+        let read_only = matches!(
+            super::location::Repository::from_address(&address)?,
+            Some(super::location::Repository::Http(_))
+        );
+        Self::configured(address, token, None, read_only)
     }
     fn configured(
         address: String,
@@ -304,13 +309,8 @@ impl CacheClient {
                     local_store,
                     read_only,
                 )),
-                ResolvedSource::Http => CacheTransport::Objects(PortableCache::new(
-                    Storage::Http(std::sync::Arc::new(super::http::Http::new(&address)?)),
-                    None,
-                    true,
-                )),
-                ResolvedSource::S3 => CacheTransport::Objects(PortableCache::new(
-                    Storage::s3(&address)?,
+                ResolvedSource::Remote => CacheTransport::Objects(PortableCache::new(
+                    super::location::Repository::parse(&address)?.open(read_only)?,
                     local_store,
                     read_only,
                 )),

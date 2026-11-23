@@ -45,6 +45,7 @@ pub(crate) mod cache {
     pub const SERVER_ENV: &str = "PVISOR_CACHE_SERVER";
     pub const IMAGE_STORE_ENV: &str = "PVISOR_IMAGE_STORE";
     pub const DOCKER_HOME_ENV: &str = "PVISOR_DOCKER_HOME";
+    pub(crate) const BLOB_TARGET_ENV: &str = "PVISOR_IMAGE_BLOB_TARGET_MIB";
     pub(crate) const REUSE_LAZY_NODES_ENV: &str = "PVISOR_VM_FS_REUSE_LAZY_NODES";
     pub(crate) const STREAM_LAZY_READS_ENV: &str = "PVISOR_VM_FS_STREAM_LAZY_READS";
     pub(crate) const DIRECT_LAZY_COPY_ENV: &str = "PVISOR_VM_FS_DIRECT_LAZY_COPY";

@@ -751,7 +751,8 @@ fn corrupt_content_is_not_served_and_read_only_never_prepares_missing_images() {
     let index = cache
         .load(&Handle::parse(&read_handle(&cache)).unwrap())
         .unwrap();
-    let binary::Content::Packed(packed) = index.entry(b"small").unwrap().content.unwrap() else {
+    let binary::Content::PackedFrame(packed) = index.entry(b"small").unwrap().content.unwrap()
+    else {
         panic!()
     };
     let blob_key = packed.object().0;
@@ -889,7 +890,8 @@ fn local_objects_survive_backend_loss_and_corruption_is_refetched() {
     let index = reader
         .load(&Handle::parse(&read_handle(&reader)).unwrap())
         .unwrap();
-    let binary::Content::Packed(packed) = index.entry(b"small").unwrap().content.unwrap() else {
+    let binary::Content::PackedFrame(packed) = index.entry(b"small").unwrap().content.unwrap()
+    else {
         panic!()
     };
     let remote = tmp.path().join("shared").join(packed.object().0);
@@ -1048,7 +1050,7 @@ fn stale_publishers_cannot_replace_head_and_corrupt_existing_objects_are_not_reu
         .unwrap(),
         head
     );
-    let binary::Content::Packed(packed) = cache
+    let binary::Content::PackedFrame(packed) = cache
         .load(&Handle::parse(&read_handle(&cache)).unwrap())
         .unwrap()
         .entry(b"small")
@@ -1341,14 +1343,14 @@ fn corrupt_remote_pages_fail_and_corrupt_local_pages_are_refetched() {
 }
 
 #[test]
-fn publication_uses_v2_and_rejects_v1_without_mutation() {
+fn publication_uses_image_pack_v1_and_rejects_old_raw_v1_without_mutation() {
     let (tmp, cache, store, image) = fixture();
     let canonical = crate::image::oci::cache_reference("example:test")
         .unwrap()
         .0;
     cache.publish(&store, &image, "amd64", &canonical).unwrap();
     let handle = read_handle(&cache);
-    assert!(handle.starts_with("pvisor-v2:"));
+    assert!(handle.starts_with("pvisor-image-pack:v1:"));
     let parsed = Handle::parse(&handle).unwrap();
     let root = tmp.path().join("shared");
     for key in [
@@ -1361,14 +1363,14 @@ fn publication_uses_v2_and_rejects_v1_without_mutation() {
     ] {
         let record: serde_json::Value =
             serde_json::from_slice(&fs::read(root.join(key)).unwrap()).unwrap();
-        assert_eq!(record["format_version"], 2);
+        assert_eq!(record["format_version"], 1);
     }
     let bytes = fs::read(root.join(parsed.prefix()).join("index.bin")).unwrap();
     assert_eq!(&bytes[bytes.len() - 4..], &0x8f92_eab1u32.to_le_bytes());
     for name in ["files.bin", "contents.bin", "checksums.bin"] {
         assert!(!root.join(parsed.prefix()).join(name).exists());
     }
-    let old = handle.replacen("pvisor-v2:", "pvisor-v1:", 1);
+    let old = handle.replacen("pvisor-image-pack:v1:", "pvisor-v1:", 1);
     assert!(
         cache
             .request(Request::Stat {
@@ -1383,7 +1385,7 @@ fn publication_uses_v2_and_rejects_v1_without_mutation() {
         &fs::read(root.join(head_key(&canonical, &parsed.platform))).unwrap(),
     )
     .unwrap();
-    head["format_version"] = 1.into();
+    head["format_version"] = 9.into();
     assert!(
         decode_head(
             &serde_json::to_vec(&head).unwrap(),
@@ -1549,7 +1551,7 @@ fn removed_packed_layout_is_not_a_readable_cache() {
             })
             .unwrap_err()
             .to_string()
-            .contains("expected immutable pvisor-v2")
+            .contains("unsupported immutable image handle")
     );
 }
 
@@ -1568,7 +1570,7 @@ fn root_reference_from_disk(root: &std::path::Path, handle: &Handle) -> frames::
 }
 
 #[test]
-fn attribute_and_cross_directory_name_changes_reuse_content_blobs() {
+fn attribute_changes_preserve_blobs_and_moves_match_a_fresh_pool() {
     use std::os::unix::fs::PermissionsExt;
     let (tmp, cache, store, mut image) = fixture();
     let canonical = crate::image::oci::cache_reference("example:test")
@@ -1588,13 +1590,8 @@ fn attribute_and_cross_directory_name_changes_reuse_content_blobs() {
     }
     let mut before = BTreeMap::new();
     snapshot(&tmp.path().join("shared/data"), &mut before);
-    fs::rename(
-        image.rootfs.join("small"),
-        image.rootfs.join("directory/renamed"),
-    )
-    .unwrap();
     fs::set_permissions(
-        image.rootfs.join("directory/renamed"),
+        image.rootfs.join("small"),
         fs::Permissions::from_mode(0o600),
     )
     .unwrap();
@@ -1604,14 +1601,29 @@ fn attribute_and_cross_directory_name_changes_reuse_content_blobs() {
     image.rootfs = root;
     image.digest = next;
     cache.publish(&store, &image, "amd64", &canonical).unwrap();
+    let mut after_chmod = BTreeMap::new();
+    snapshot(&tmp.path().join("shared/data"), &mut after_chmod);
+    assert_eq!(before, after_chmod, "file permissions do not enter blobs");
+    fs::rename(
+        image.rootfs.join("small"),
+        image.rootfs.join("directory/renamed"),
+    )
+    .unwrap();
+    let next = format!("sha256:{}", "c".repeat(64));
+    let root = store.root.join("rootfs-v3/sha256").join(&next[7..]);
+    fs::rename(&image.rootfs, &root).unwrap();
+    image.rootfs = root;
+    image.digest = next;
+    cache.publish(&store, &image, "amd64", &canonical).unwrap();
     let new = read_handle(&cache);
     assert_ne!(old, new);
-    let mut after = BTreeMap::new();
-    snapshot(&tmp.path().join("shared/data"), &mut after);
-    assert_eq!(
-        before, after,
-        "renaming and chmod must not fork content blobs"
+    let fresh = PortableCache::new(
+        Storage::filesystem(tmp.path().join("fresh"), true).unwrap(),
+        None,
+        false,
     );
+    fresh.publish(&store, &image, "amd64", &canonical).unwrap();
+    assert_eq!(read_handle(&fresh), new, "old HEAD must not change layout");
     for (handle, path, mode) in [
         (old, b"small".to_vec(), 0o644),
         (new, b"directory/renamed".to_vec(), 0o600),
@@ -1647,7 +1659,7 @@ fn explicitly_republishing_rebuilds_missing_packs_with_the_same_revision() {
         .0;
     cache.publish(&store, &image, "amd64", &canonical).unwrap();
     let old = read_handle(&cache);
-    let binary::Content::Packed(packed) = cache
+    let binary::Content::PackedFrame(packed) = cache
         .load(&Handle::parse(&old).unwrap())
         .unwrap()
         .entry(b"small")
@@ -1663,6 +1675,120 @@ fn explicitly_republishing_rebuilds_missing_packs_with_the_same_revision() {
     cache.publish(&store, &image, "amd64", &canonical).unwrap();
     assert_eq!(read_handle(&cache), old);
     assert_eq!(fs::read(path).unwrap(), bytes);
+}
+
+#[test]
+fn sealed_sibling_blob_does_not_change_when_parent_tail_changes() {
+    let (_tmp, cache, store, mut image) = fixture();
+    cache
+        .storage
+        .put(
+            "format.json",
+            Format::V1(Packing::DEFAULT).encode().unwrap(),
+            true,
+        )
+        .unwrap();
+    let mut bytes = vec![0; 64 * 1024];
+    for index in 0u32..512 {
+        bytes[..4].copy_from_slice(&index.to_le_bytes());
+        fs::write(image.rootfs.join(format!("directory/{index:04}")), &bytes).unwrap();
+    }
+    let canonical = crate::image::oci::cache_reference("example:test")
+        .unwrap()
+        .0;
+    let object = |handle: &str, path: &[u8]| {
+        let image = cache.load(&Handle::parse(handle).unwrap()).unwrap();
+        let Some(binary::Content::PackedFrame(slot)) = image.entry(path).unwrap().content else {
+            panic!("expected a packed small file");
+        };
+        slot.object().0
+    };
+    cache.publish(&store, &image, "amd64", &canonical).unwrap();
+    let before = read_handle(&cache);
+    let sealed = object(&before, b"directory/0000");
+    assert_eq!(sealed, object(&before, b"directory/0511"));
+    assert_ne!(sealed, object(&before, b"small"));
+
+    fs::write(image.rootfs.join("small"), b"changed tail").unwrap();
+    let next = format!("sha256:{}", "b".repeat(64));
+    let root = store.root.join("rootfs-v3/sha256").join(&next[7..]);
+    fs::rename(&image.rootfs, &root).unwrap();
+    image.rootfs = root;
+    image.digest = next;
+    cache.publish(&store, &image, "amd64", &canonical).unwrap();
+    let after = read_handle(&cache);
+    assert_eq!(sealed, object(&after, b"directory/0000"));
+    assert_eq!(sealed, object(&after, b"directory/0511"));
+    assert_ne!(object(&before, b"small"), object(&after, b"small"));
+}
+
+#[rstest::rstest]
+#[case::default_pool(32, &[32, 2])]
+#[case::larger_pool(64, &[34])]
+fn large_file_blobs_keep_independent_frames(
+    #[case] target_mib: u32,
+    #[case] expected_frame_counts: &[usize],
+) {
+    let (tmp, cache, store, image) = fixture();
+    let format = Format::V1(
+        serde_json::from_value(serde_json::json!({
+            "blob_target_bytes": target_mib * 1024 * 1024,
+        }))
+        .unwrap(),
+    );
+    cache
+        .storage
+        .put("format.json", format.encode().unwrap(), true)
+        .unwrap();
+    let path = image.rootfs.join("large");
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .truncate(true)
+        .open(&path)
+        .unwrap();
+    use std::io::Write as _;
+    for byte in 0..34 {
+        file.write_all(&vec![byte; MAX_READ as usize]).unwrap();
+    }
+    drop(file);
+    let canonical = crate::image::oci::cache_reference("example:test")
+        .unwrap()
+        .0;
+    cache.publish(&store, &image, "amd64", &canonical).unwrap();
+    let handle = read_handle(&cache);
+    let image = cache.load(&Handle::parse(&handle).unwrap()).unwrap();
+    assert_eq!(Format::from_commit(&image.commit).unwrap(), format);
+    let mut counts = image
+        .reachable_blobs()
+        .unwrap()
+        .inventory()
+        .map(|(key, _)| {
+            let bytes = fs::read(tmp.path().join("shared").join(key)).unwrap();
+            frames::seek_table(&bytes).unwrap().1.len()
+        })
+        .filter(|&n| n > 1)
+        .collect::<Vec<_>>();
+    counts.sort_unstable_by(|a, b| b.cmp(a));
+    assert_eq!(counts, expected_frame_counts);
+    for boundary in [1, 32] {
+        assert_eq!(
+            cache
+                .request(Request::Read {
+                    digest: handle.clone(),
+                    path: b"large".into(),
+                    offset: boundary * u64::from(MAX_READ) - 2,
+                    length: 4,
+                })
+                .unwrap()
+                .1,
+            [
+                boundary as u8 - 1,
+                boundary as u8 - 1,
+                boundary as u8,
+                boundary as u8
+            ]
+        );
+    }
 }
 
 #[test]
@@ -1687,7 +1813,7 @@ fn packed_slots_and_large_file_threshold_preserve_random_ranges() {
             .content
             .unwrap();
         assert_eq!(
-            matches!(content, binary::Content::Packed(_)),
+            matches!(content, binary::Content::PackedFrame(_)),
             length <= 65536
         );
         for offset in [0, length / 2, length - 1, length, length + 1] {

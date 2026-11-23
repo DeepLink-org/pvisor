@@ -1,6 +1,6 @@
 # Lazy image command specifications
 
-This feature specifies publication of local V2 images through
+This feature specifies publication of local Image Pack V1 images through
 `pvisor push IMAGE --to URI` (equivalently `pvisor image push`), lazy import
 through explicit image pull options, and retirement of `pvisor-daemon image`.
 Read [spec.md](spec.md) for

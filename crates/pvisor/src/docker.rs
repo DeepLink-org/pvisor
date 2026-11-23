@@ -200,29 +200,28 @@ pub struct CachedImage {
     /// Absolute local pool directory, shared by images in this Docker store.
     /// For remote bindings this is a reserved local pool path, never a read fallback.
     pub location: PathBuf,
-    /// Published V2 revision, or an instance-private verified import during cold run.
+    /// Immutable published revision, or an instance-private verified cold import.
     pub handle: String,
-    /// Optional immutable V2 repository root: S3 or HTTP(S). Credentials belong
-    /// to the host environment. HTTP is read-only and uses exact Range responses.
-    /// Remote failures never fall back to local content.
+    /// Optional immutable repository URL: file, S3, GCS or HTTP(S).
+    /// Credentials belong to the host. Repository failures never fall back to the local pool.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub repository: Option<String>,
     /// Ordered fallback roots for the same hash-named publication as `repository`.
-    /// Empty for local/single-source images. At most seven distinct S3/HTTP(S)
+    /// Empty for single-source images. At most seven distinct repository
     /// fallbacks are allowed. Every immutable object/frame is verified before
     /// accepting a source; failover never resolves a different tag or revision.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub mirrors: Vec<String>,
 }
 
-/// One explicitly trusted V2 registry, in caller-defined priority order.
-/// Authentication remains in host AWS configuration, never these records.
+/// One explicitly trusted repository, in caller-defined priority order.
+/// Authentication remains in the host configuration, never these records.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ImageRegistry {
     /// Unique safe local name, 1..=128 ASCII alphanumeric/`-_.`, not leading `.`.
     pub name: String,
-    /// S3 or HTTP/HTTPS root containing `refs/` and immutable publication roots.
+    /// Repository URL containing `refs/` and immutable publication roots.
     pub location: String,
     /// Whether this registry may resolve mutable image names. Defaults to true.
     /// False means download-only: supply verified bytes, never choose a version.

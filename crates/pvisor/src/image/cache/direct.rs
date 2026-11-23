@@ -552,8 +552,8 @@ impl DirectImage {
             .join(DESCRIPTOR);
         let binding: Binding = serde_json::from_reader(std::fs::File::open(&descriptor)?)?;
         ensure!(
-            binding.version == 1 && binding.handle.starts_with("pvisor-v2:"),
-            "branch retention requires an authenticated V2 image"
+            binding.version == 1 && super::portable::immutable_handle(&binding.handle),
+            "branch retention requires an authenticated immutable image"
         );
         let m = fs::symlink_metadata(&root)?;
         let retained = RetainedImage {
@@ -576,9 +576,7 @@ impl DirectImage {
 
 type SnapshotOwner = Arc<Mutex<Option<RetainedImage>>>;
 fn attach(root: &Path, source: RemoteFs) -> anyhow::Result<(BackendAttachment, SnapshotOwner)> {
-    // Only authenticated V2 revisions grant logical namespace stability.
-    // Legacy/test sources retain their original live projection contract.
-    let stable_namespace = source.digest.starts_with("pvisor-v2:");
+    let stable_namespace = super::portable::immutable_handle(&source.digest);
     let reuse_resolved_nodes = experiment_setting(
         REUSE_LAZY_NODES_ENV,
         env::os(REUSE_LAZY_NODES_ENV).as_deref(),
@@ -684,19 +682,18 @@ fn attach_lowers<'a>(
         let binding: Binding = serde_json::from_reader(file)?;
         ensure!(binding.version == 1, "unsupported direct image binding");
         let mut client_binding = binding.client;
-        // Capability parsing must not construct an HTTP/S3 transport: those
-        // start workers, but Linux namespace setup requires a single thread.
-        let source = client_binding.resolved_source()?;
+        // Linux namespace setup must precede opening network I/O workers.
+        let needs_read_bridge = client_binding.needs_read_bridge()?;
         if brokered {
             ensure!(
-                matches!(
-                    source,
-                    super::config::ResolvedSource::Server(super::transport::Endpoint::Unix(_))
-                ),
+                !needs_read_bridge
+                    && matches!(
+                        client_binding.resolved_source()?,
+                        super::config::ResolvedSource::Server(super::transport::Endpoint::Unix(_))
+                    ),
                 "warm root requires a private image broker"
             );
-        }
-        if cfg!(target_os = "linux") && source.needs_host_network() {
+        } else if cfg!(target_os = "linux") && needs_read_bridge {
             let (access, local_binding) =
                 super::network::NetworkAccess::start(parent, client_binding, &binding.handle)?;
             owners._network.push(access);

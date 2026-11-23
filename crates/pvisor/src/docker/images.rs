@@ -6,18 +6,24 @@ use crate::image::{
 };
 
 impl Store {
-    /// Validate an explicit S3 or absolute file publication destination without I/O.
+    /// Validate an explicit S3, GCS or absolute file publication destination without I/O.
     /// Credentials, query strings, fragments and writable HTTP destinations are rejected.
     ///
     /// ```
     /// use pvisor::docker::Store;
     /// assert!(Store::validate_image_destination("s3://images/releases").is_ok());
+    /// assert!(Store::validate_image_destination("gs://images/releases").is_ok());
     /// assert!(Store::validate_image_destination("file:///tmp/releases").is_ok());
     /// assert!(Store::validate_image_destination("https://example.com/images").is_err());
     /// assert!(Store::validate_image_destination("file://relative").is_err());
     /// ```
     pub fn validate_image_destination(destination: &str) -> anyhow::Result<()> {
         cache::validate_destination(destination)
+    }
+
+    /// Validate a credential-free filesystem, S3, GCS or HTTP(S) publication URL without I/O.
+    pub fn validate_image_source(source: &str) -> anyhow::Result<()> {
+        cache::validate_repository_source(source)
     }
 
     /// Publish a snapshot of an existing local tag or unambiguous image ID.
@@ -33,7 +39,7 @@ impl Store {
         Self::validate_image_destination(destination)?;
         let image = self.local_image(selector)?.context("No such local image")?;
         let mut portable = image.clone();
-        portable.cache.location = "/pvisor/store/images/pool-v2".into();
+        portable.cache.location = Self::portable_image_pool_location(&image.cache.handle);
         portable.cache.repository = None;
         portable.cache.mirrors.clear();
         let source =
@@ -45,7 +51,7 @@ impl Store {
     }
 
     /// Import an ordinary image from a fixed S3/HTTP(S) publication, fetching only
-    /// its descriptor, OCI configuration and V2 root metadata. Host paths are
+    /// its descriptor, OCI configuration and pinned root metadata. Host paths are
     /// rebound to this store. A digest-qualified name must match the published
     /// manifest. Existing names require `refresh`; failures leave
     /// the catalog unchanged, though verified metadata may remain cached.
@@ -57,6 +63,7 @@ impl Store {
         source: &str,
         refresh: bool,
     ) -> anyhow::Result<Image> {
+        Self::validate_image_source(source)?;
         let (key, pinned) = crate::image::oci::cache_reference(reference)?;
         let _pull = self.image_pull_lock(reference, "repository")?;
         {
@@ -180,7 +187,7 @@ impl Store {
         cache::publish_repository(&pool, destination, template)
     }
 
-    /// Fetch a bounded portable `image.json` from an S3 or HTTP(S) repository.
+    /// Fetch a bounded portable `image.json` from a repository URL.
     /// This does not fetch image contents or install a record.
     /// The caller must trust the selected publisher, deserialize/validate its
     /// launch contract, and pin its handle before VM access. Hash-named roots
@@ -189,7 +196,7 @@ impl Store {
         cache::read_repository_template(location)
     }
 
-    /// Export a local pinned V2 image into a new directory for explicit public
+    /// Export a local pinned image into a new directory for explicit public
     /// distribution. Copies only original OCI configuration, revision metadata
     /// and its dependency inventory,
     /// not other revisions, catalog tags, credentials or writable projections.
@@ -254,6 +261,22 @@ impl Store {
             .context("missing image projection")?
             .bind_runner_to_image()?;
         Ok(image)
+    }
+
+    /// Return the neutral image pool path used in portable launch descriptors.
+    /// This path is never opened on import; the receiving catalog rebinds it.
+    pub fn portable_image_pool_location(handle: &str) -> PathBuf {
+        let pool = if cache::legacy_handle(handle) {
+            "pool-v2"
+        } else {
+            crate::image::store::LocalStore::POOL_DIR
+        };
+        Path::new("/pvisor/store/images").join(pool)
+    }
+
+    /// Return this store's local image pool path without creating it.
+    pub fn image_pool_location(&self) -> PathBuf {
+        self.images.pool()
     }
 
     pub(super) fn open_cached(
@@ -450,11 +473,11 @@ mod tests {
                 .get("rootfs")
                 .is_none()
         );
-        let objects = files(&store.root.join("images/pool-v2/data"));
+        let objects = files(&store.image_pool_location().join("data"));
         assert_eq!(
             objects.len(),
-            2,
-            "path and config changes reuse the two unique chunks"
+            1,
+            "path and config changes reuse the blob containing both frames"
         );
         assert!(
             objects

@@ -15,6 +15,8 @@ PVISOR_RUN_HOME="$HOME/.pvisor/runs" pvisor spawn --safe \
 | --- | --- |
 | `PVISOR_RUN_HOME` | 默认 Run 存储根目录；未设置用 `~/.pvisor/runs`，无 HOME 时用系统临时目录 |
 | `PVISOR_IMAGE_STORE` | 统一的本地镜像目录；显式 Session/cache image-store 参数优先，见[路径优先级](shared-image-cache.md#local-image-store) |
+| `PVISOR_IMAGE_BLOB_TARGET_MIB` | 宿主写入端的镜像包池目标：`32`（新池默认）或 `64`，见[池策略](../design/experimental/image-pack/index.md#packing) |
+| `PVISOR_GCS_ENDPOINT` | OpenDAL 的 GCS API 宿主端点覆盖；非 loopback 必须用 HTTPS。仓库仍通过 `gs://BUCKET/PREFIX` 指定 |
 | `PVISOR_CACHE_SERVER` | 共享镜像缓存端点；`off` 使用本地 V2 池，未设置时探测按用户的 Unix socket，缺失则使用本地池 |
 | `PVISOR_CACHE_TOKEN` | TCP 缓存端点的共享密钥；不要通过 `--pass-env` 交给 Agent |
 | `PVISOR_BIN` | 已废弃的 Python 启动器覆盖；安装的原生脚本不读取它。直接调用二进制路径或通过 `PATH` 选择 |

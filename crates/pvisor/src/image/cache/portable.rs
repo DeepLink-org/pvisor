@@ -10,8 +10,10 @@ use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
+mod aggregate;
 mod binary;
 mod content;
+mod format;
 mod frames;
 #[cfg(test)]
 mod measurement;
@@ -32,9 +34,33 @@ pub(super) fn root_offset_for_test(bytes: &[u8]) -> usize {
 }
 const MAX_ENTRIES: usize = 1_000_000;
 const MAX_SPANS: usize = 2_000_000;
+const CHUNK_BYTES: u32 = 1024 * 1024;
 pub(super) const MAX_CONTROL: usize = 1024 * 1024;
 const BINARY_NAMES: [&str; 2] = ["index.bin", "objects.bin"];
-pub(super) const FORMAT: &[u8] = br#"{"format_version":2,"hash_algorithm":"sha256","encoding":"zstd-seekable","chunk_bytes":1048576,"metadata_encoding":"pvisor-radix-v2","metadata_frame_bytes":65536,"route_hash":"xxh3-64","route_seed":"707669736f727632","route_radix_bits":4}"#;
+use format::{Format, Version};
+
+fn metadata_limit(name: &str) -> usize {
+    if BINARY_NAMES.contains(&name) {
+        MAX_OBJECT
+    } else {
+        MAX_CONTROL
+    }
+}
+
+pub(super) fn immutable_handle(value: &str) -> bool {
+    Handle::parse(value).is_ok()
+}
+
+pub(crate) fn legacy_handle(value: &str) -> bool {
+    Handle::parse(value).is_ok_and(|handle| handle.version == Version::LegacyV2)
+}
+
+#[cfg(test)]
+use format::Packing;
+
+pub(super) fn is_legacy_format_marker(bytes: &[u8]) -> anyhow::Result<bool> {
+    Ok(Format::decode(bytes)? == Format::LegacyV2)
+}
 /// Exact immutable metadata basenames accepted by services and pinned proxies.
 pub(super) fn metadata_object_name(name: &str) -> bool {
     matches!(
@@ -60,7 +86,11 @@ pub(crate) fn export_pool(
     let cache = PortableCache::new(storage.clone(), None, true);
     let handle = Handle::parse(handle)?;
     let loaded = cache.load(&handle)?;
-    content::validate_public_packs(&cache, loaded.packed_contents()?)?;
+    let format = Format::from_commit(&loaded.commit)?;
+    let (reachable, legacy) = match format {
+        Format::V1(_) => (Some(loaded.reachable_blobs()?), None),
+        Format::LegacyV2 => (None, Some(loaded.legacy_dependencies(&cache)?)),
+    };
     let prefix = handle.prefix();
     let commit_bytes = cache.immutable(
         &format!("{prefix}/COMMIT.json"),
@@ -71,7 +101,7 @@ pub(crate) fn export_pool(
     let commit: Commit = serde_json::from_slice(&commit_bytes)?;
     ensure!(!destination.exists(), "export destination already exists");
     let target = Storage::filesystem(destination.into(), true)?;
-    target.put("format.json", FORMAT.to_vec(), true)?;
+    target.put("format.json", format.encode()?, true)?;
     target.put(&format!("{prefix}/COMMIT.json"), commit_bytes, true)?;
     for (name, descriptor) in &commit.metadata {
         let key = format!("{prefix}/{name}");
@@ -86,11 +116,22 @@ pub(crate) fn export_pool(
                 used == bytes.len() && objects.len() <= MAX_SPANS,
                 "invalid object inventory"
             );
-            for (object, length) in objects {
+            if let Some(reachable) = &reachable {
                 ensure!(
-                    object.starts_with("data/packs/") || object.starts_with("data/sha256/"),
-                    "invalid content dependency"
+                    objects
+                        .iter()
+                        .map(|(key, length)| (key.as_str(), *length))
+                        .eq(reachable.inventory()),
+                    "export inventory disagrees with reachable blobs"
                 );
+            }
+            if let Some(legacy) = &legacy {
+                ensure!(
+                    objects.iter().map(|(key, _)| key).eq(legacy.keys()),
+                    "export inventory disagrees with reachable legacy objects"
+                );
+            }
+            for (object, length) in objects {
                 let data = storage
                     .get(&object)?
                     .context("missing content dependency")?;
@@ -98,6 +139,12 @@ pub(crate) fn export_pool(
                     data.len() as u64 == length,
                     "content dependency length mismatch"
                 );
+                if let Some(reachable) = &reachable {
+                    reachable.verify(&object, &data)?;
+                }
+                if let Some(legacy) = &legacy {
+                    legacy[&object].verify(&data)?;
+                }
                 target.put(&object, data, true)?;
             }
         }
@@ -188,10 +235,14 @@ struct Head {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Commit {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    format: Option<String>,
     format_version: u32,
     image_key: String,
     platform: String,
     manifest_digest: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    packing: Option<format::Packing>,
     metadata: BTreeMap<String, Descriptor>,
 }
 #[derive(Clone, Serialize, Deserialize)]
@@ -216,29 +267,43 @@ struct Configuration {
 }
 #[derive(Clone, Debug)]
 struct Handle {
+    version: Version,
     image_key: String,
     platform: String,
     revision: String,
 }
 impl Handle {
     fn parse(value: &str) -> anyhow::Result<Self> {
-        let parts: Vec<_> = value.split(':').collect();
-        ensure!(
-            parts.len() == 4 && parts[0] == "pvisor-v2",
-            "expected immutable pvisor-v2 image handle; V1 is retired, republish into a new V2 prefix"
-        );
-        check_hex(parts[1])?;
-        check_hex(parts[3])?;
-        platform_architecture(parts[2])?;
+        let (version, body) = if let Some(body) = value.strip_prefix("pvisor-image-pack:v1:") {
+            (Version::ImagePackV1, body)
+        } else if let Some(body) = value.strip_prefix("pvisor-v2:") {
+            (Version::LegacyV2, body)
+        } else {
+            bail!("unsupported immutable image handle; old raw/paged V1 is retired");
+        };
+        let (image_key, rest) = body
+            .split_once(':')
+            .context("missing image handle platform")?;
+        let (platform, revision) = rest
+            .split_once(':')
+            .context("missing image handle revision")?;
+        check_hex(image_key)?;
+        check_hex(revision)?;
+        platform_architecture(platform)?;
         Ok(Self {
-            image_key: parts[1].into(),
-            platform: parts[2].into(),
-            revision: parts[3].into(),
+            version,
+            image_key: image_key.into(),
+            platform: platform.into(),
+            revision: revision.into(),
         })
     }
     fn encode(&self) -> String {
+        let prefix = match self.version {
+            Version::ImagePackV1 => "pvisor-image-pack:v1",
+            Version::LegacyV2 => "pvisor-v2",
+        };
         format!(
-            "pvisor-v2:{}:{}:{}",
+            "{prefix}:{}:{}:{}",
             self.image_key, self.platform, self.revision
         )
     }
@@ -278,6 +343,7 @@ impl PortableCache {
 
     fn prepared_head(&self, head: Head) -> anyhow::Result<Response> {
         let handle = Handle {
+            version: Version::from_record(head.format_version)?,
             image_key: head.image_key,
             platform: head.platform,
             revision: head.revision[7..].into(),
@@ -330,8 +396,8 @@ impl PortableCache {
                 Ok((self.load(&handle)?.prepared(), Vec::new()))
             }
             Request::Ping => {
-                if let Some(bytes) = self.storage.get("format.json")? {
-                    ensure!(bytes == FORMAT, "unsupported cache format");
+                if let Some(object) = self.storage.read("format.json", None, MAX_CONTROL)? {
+                    Format::decode(&object.bytes)?;
                 }
                 Ok((Response::Ready, Vec::new()))
             }
@@ -395,24 +461,39 @@ impl PortableCache {
                                 end,
                             )?;
                         }
+                        binary::Content::PackedFrame(packed) => {
+                            body = self.read_v1_packed(
+                                &packed,
+                                &entry.digest.context("file lacks digest")?,
+                                *size,
+                                offset,
+                                end,
+                            )?;
+                        }
                         binary::Content::Chunks(root) => {
+                            let chunk_bytes = u64::from(CHUNK_BYTES);
                             ensure!(
-                                root.count == size.div_ceil(MAX_READ as u64),
+                                root.count == size.div_ceil(chunk_bytes),
                                 "file chunk count mismatch"
                             );
-                            for ordinal in offset / MAX_READ as u64..=(end - 1) / MAX_READ as u64 {
-                                let (digest, len) = image.chunk(&root, ordinal)?;
-                                let position = ordinal * MAX_READ as u64;
-                                ensure!(
-                                    len as u64 == (*size - position).min(MAX_READ as u64),
-                                    "invalid file chunk length"
-                                );
-                                body.extend(self.read_chunk(
-                                    &digest,
-                                    len,
-                                    offset.saturating_sub(position) as usize,
-                                    (end.min(position + len as u64) - position) as usize,
-                                )?);
+                            for ordinal in offset / chunk_bytes..=(end - 1) / chunk_bytes {
+                                let chunk = image.chunk(&root, ordinal)?;
+                                let len = chunk.len();
+                                let position = ordinal * chunk_bytes;
+                                binary::check_chunk_len(len, *size, ordinal)?;
+                                let start = offset.saturating_sub(position);
+                                let stop = end.min(position + len as u64) - position;
+                                body.extend(match chunk {
+                                    binary::LocatedChunk::Legacy(digest, len) => self.read_chunk(
+                                        &digest,
+                                        len,
+                                        start as usize,
+                                        stop as usize,
+                                    )?,
+                                    binary::LocatedChunk::V1(chunk) => {
+                                        self.read_v1_chunk(&chunk, start, stop)?
+                                    }
+                                });
                             }
                         }
                     }
@@ -536,6 +617,7 @@ impl PortableCache {
             !self.read_only,
             "image absent from read-only cache; use a publisher"
         );
+        Format::for_write(&self.storage)?;
         let import_store = match &local {
             Some(store) => store.clone(),
             None => crate::image::store::LocalStore::discover(self.local_store.clone())?,
@@ -551,11 +633,13 @@ impl PortableCache {
         self.publish_observed(&store, &prepared, architecture, &canonical, observed)
     }
     fn observe(&self, canonical: &str, platform: &str) -> anyhow::Result<Option<StoredObject>> {
-        let object = self.storage.get_versioned(&head_key(canonical, platform))?;
+        let object = self
+            .storage
+            .read(&head_key(canonical, platform), None, MAX_CONTROL)?;
         if let Some(object) = &object {
             decode_head(&object.bytes, &image_key(canonical), platform)?;
             ensure!(
-                object.version.e_tag.is_some(),
+                object.version.e_tag.is_some() || object.version.version.is_some(),
                 "HEAD backend lacks a CAS token"
             );
         }
@@ -566,22 +650,34 @@ impl PortableCache {
         if let Some(image) = self.images.lock().unwrap().get(&key).cloned() {
             return Ok(image);
         }
+        let image = self.read_revision(handle)?;
+        let marker = Format::from_commit(&image.commit)?.encode()?;
         self.immutable(
             "format.json",
-            &hash(FORMAT),
-            Some(FORMAT.len() as u64),
+            &hash(&marker),
+            Some(marker.len() as u64),
             MAX_CONTROL,
         )?;
-        self.load_revision(handle)
+        self.images.lock().unwrap().put(key, image.clone());
+        Ok(image)
     }
 
     // Socket readers have no access to global format.json. The pinned COMMIT,
     // root descriptor and frame references authenticate the supported schema.
     fn load_revision(&self, handle: &Handle) -> anyhow::Result<Arc<LoadedImage>> {
+        if !matches!(self.storage, Storage::Metadata(_)) {
+            return self.load(handle);
+        }
         let key = handle.encode();
         if let Some(image) = self.images.lock().unwrap().get(&key).cloned() {
             return Ok(image);
         }
+        let image = self.read_revision(handle)?;
+        self.images.lock().unwrap().put(key, image.clone());
+        Ok(image)
+    }
+
+    fn read_revision(&self, handle: &Handle) -> anyhow::Result<Arc<LoadedImage>> {
         let prefix = handle.prefix();
         let bytes = self.immutable(
             &format!("{prefix}/COMMIT.json"),
@@ -591,11 +687,12 @@ impl PortableCache {
         )?;
         let commit: Commit = serde_json::from_slice(&bytes)?;
         ensure!(
-            commit.format_version == 2
+            commit.format_version == handle.version.record()
                 && commit.image_key == handle.image_key
                 && commit.platform == handle.platform,
             "COMMIT identity mismatch"
         );
+        Format::from_commit(&commit)?;
         crate::image::oci::digest_hex(&commit.manifest_digest)?;
         let expected = [
             "manifest.json",
@@ -613,13 +710,8 @@ impl PortableCache {
         );
         for (name, desc) in &commit.metadata {
             crate::image::oci::digest_hex(&desc.sha256)?;
-            let limit = if name.ends_with(".json") || name == "root.bin" {
-                MAX_CONTROL
-            } else {
-                MAX_OBJECT
-            };
             ensure!(
-                desc.bytes > 0 && desc.bytes <= limit as u64,
+                desc.bytes > 0 && desc.bytes <= metadata_limit(name) as u64,
                 "metadata exceeds size limit"
             );
         }
@@ -639,7 +731,7 @@ impl PortableCache {
         let root = get("root.bin")?;
         let manifest: Manifest = serde_json::from_slice(&manifest_bytes)?;
         ensure!(
-            manifest.format_version == 2
+            manifest.format_version == handle.version.record()
                 && image_key(&manifest.reference) == handle.image_key
                 && manifest.platform == handle.platform
                 && manifest.manifest_digest == commit.manifest_digest,
@@ -647,20 +739,18 @@ impl PortableCache {
         );
         let config: Configuration = serde_json::from_slice(&config_bytes)?;
         ensure!(
-            config.format_version == 2
+            config.format_version == handle.version.record()
                 && config.architecture == platform_architecture(&handle.platform)?,
             "configuration platform mismatch"
         );
-        let image = Arc::new(LoadedImage::new(
+        Ok(Arc::new(LoadedImage::new(
             self.storage.clone(),
             self.local_objects.clone(),
             handle.clone(),
             commit,
             config,
             &root,
-        )?);
-        self.images.lock().unwrap().put(key, image.clone());
-        Ok(image)
+        )?))
     }
     fn immutable(
         &self,
@@ -776,7 +866,7 @@ fn decode_head(bytes: &[u8], key: &str, platform: &str) -> anyhow::Result<Head> 
     ensure!(bytes.len() <= MAX_CONTROL, "HEAD exceeds size limit");
     let head: Head = serde_json::from_slice(bytes)?;
     ensure!(
-        head.format_version == 2
+        matches!(head.format_version, 1 | 2)
             && head.image_key == key
             && head.platform == platform
             && head.generation > 0,

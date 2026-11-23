@@ -3,7 +3,7 @@ use pvisor_overlay_core::{OverlayCore, backend};
 use std::{collections::BTreeMap, fs};
 
 #[test]
-fn public_export_rejects_private_predecessor_slots() {
+fn public_export_never_copies_private_predecessor_slots() {
     let tmp = tempfile::tempdir().unwrap();
     let source = ImageStore::new(Some(tmp.path().join("source"))).unwrap();
     let pool = tmp.path().join("pool");
@@ -29,19 +29,34 @@ fn public_export_rejects_private_predecessor_slots() {
     }
     let (handle, image) = current.unwrap();
     let destination = tmp.path().join("export");
-    let error = super::super::portable::export_pool(&pool, &handle, &destination).unwrap_err();
-    assert!(
-        error.to_string().contains("content from another revision"),
-        "{error:#}"
-    );
-    assert!(
-        !destination.exists(),
-        "reject before copying any private bytes"
-    );
+    super::super::portable::export_pool(&pool, &handle, &destination).unwrap();
+    let mut data = vec![destination.join("data")];
+    let mut objects = 0;
+    while let Some(path) = data.pop() {
+        if path.is_dir() {
+            data.extend(
+                fs::read_dir(path)
+                    .unwrap()
+                    .map(|entry| entry.unwrap().path()),
+            );
+        } else {
+            let payload = zstd::stream::decode_all(fs::read(path).unwrap().as_slice()).unwrap();
+            assert!(payload.ends_with(b"public content"));
+            assert!(
+                !payload
+                    .windows(b"private predecessor".len())
+                    .any(|w| w == b"private predecessor")
+            );
+            objects += 1;
+        }
+    }
+    assert_eq!(objects, 1);
     let fresh = tmp.path().join("fresh");
-    let handle =
+    let fresh_handle =
         publish_local_image(&fresh, &source, &image, "example:visibility", "amd64").unwrap();
-    super::super::portable::export_pool(&fresh, &handle, &destination).unwrap();
+    assert_eq!(handle, fresh_handle);
+    super::super::portable::export_pool(&fresh, &fresh_handle, &tmp.path().join("fresh-export"))
+        .unwrap();
 }
 
 #[test]
@@ -450,8 +465,8 @@ fn images_share_content_survive_source_removal_and_copy_up_without_raw_mirror() 
     }
     assert_eq!(
         objects(&location.join("data")).len(),
-        2,
-        "two revisions share the same two content objects"
+        1,
+        "two revisions share one blob with both frames"
     );
 }
 

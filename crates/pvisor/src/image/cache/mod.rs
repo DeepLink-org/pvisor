@@ -6,8 +6,10 @@ mod client;
 mod config;
 mod direct;
 mod http;
+mod location;
 mod mirrors;
 mod network;
+mod opendal_store;
 mod pool;
 mod portable;
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
@@ -51,9 +53,10 @@ pub(crate) use direct::{
     RetainedImage, RunnerLowers, attach_runner_lowers, attach_warm_lower,
     private_owner as direct_image_owner,
 };
+pub(crate) use mirrors::validate_root as validate_repository_source;
 pub(crate) use network::run_internal_if_requested as run_image_access_internal;
 pub(crate) use pool::{open_local_image, publish_local_image, published_local_image};
-pub(crate) use portable::export_pool;
+pub(crate) use portable::{export_pool, legacy_handle};
 pub(crate) use repository::{
     PublicationReference, resolve_repository, validate_name as validate_registry_name,
     validate_registries,

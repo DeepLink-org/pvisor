@@ -30,7 +30,7 @@ $ python3 "$TESTDIR/../fixture.py" use S-LAZY-003 --timeout 60 <<'CASE'
 > from urllib.parse import urlsplit
 > first, second = [json.load(open(p)) for p in ('published.json', 'repeated.json')]
 > for key in ('source', 'image_handle', 'digest', 'platform'): assert first[key] == second[key], key
-> assert first['image_handle'].startswith('pvisor-v2:')
+> assert re.fullmatch(r'pvisor-image-pack:v1:[0-9a-f]{64}:linux-(amd64|arm64-v8):[0-9a-f]{64}', first['image_handle'])
 > assert re.fullmatch('sha256:[0-9a-f]{64}', first['digest'])
 > assert first['platform'] in ('linux/amd64', 'linux/arm64')
 > source = urlsplit(first['source'])
@@ -40,6 +40,10 @@ $ python3 "$TESTDIR/../fixture.py" use S-LAZY-003 --timeout 60 <<'CASE'
 > before, after = [json.load(open(p))[0] for p in ('before.json', 'after.json')]
 > for key in ('Id', 'Config', 'Architecture', 'Os', 'RepoTags'): assert before[key] == after[key], key
 > PY
+> source=$(journey_json published.json /source)
+> pvisor image pull lazy:offline --from "$source" > offline.stdout
+> pvisor image inspect lazy:offline > offline.json
+> json_expect offline.json /0/Pvisor/Source "\"$source\""
 > test -z "$(pvisor ps -aq)"
 > test -z "$(find "$PVISOR_RUN_HOME" -mindepth 1 -print)"
 > assert_absent "$PVISOR_DAEMON_HOME"
