@@ -911,6 +911,96 @@ fn pool_service(
 }
 
 #[cfg(target_os = "linux")]
+#[test]
+fn physical_pool_survives_accept_fd_exhaustion() {
+    let state = tempfile::tempdir().unwrap();
+    let directory = state.path().join("memory-pool");
+    fs::create_dir(&directory).unwrap();
+    fs::set_permissions(&directory, fs::Permissions::from_mode(0o700)).unwrap();
+    fs::write(
+        directory.join("config.json"),
+        serde_json::to_vec(&PoolConfig::default()).unwrap(),
+    )
+    .unwrap();
+    let log = state.path().join("pool.stderr");
+    let mut child = OwnedChild(
+        Command::new(env!("CARGO_BIN_EXE_pvisor-daemon"))
+            .args(["memory-pool", "--directory"])
+            .arg(&directory)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(fs::File::create(&log).unwrap())
+            .spawn()
+            .unwrap(),
+    );
+    let socket = directory.join("pool.sock");
+    let connect = || PoolClient::new(UnixStream::connect(&socket)?, Duration::from_secs(2));
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut live = loop {
+        if let Ok(client) = connect() {
+            break client;
+        }
+        assert!(child.0.try_wait().unwrap().is_none());
+        assert!(Instant::now() < deadline, "pool did not start");
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    live.enable_shared_mapping().unwrap();
+    let data = [0x72; 4096];
+    let pinned = live.put(&data).unwrap();
+
+    let pid = child.0.id() as libc::pid_t;
+    let mut saved = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+    // The pool is our unreaped child. Lower only its soft limit and keep its
+    // existing descriptors, including the authenticated client above, open.
+    assert_eq!(
+        unsafe { libc::prlimit(pid, libc::RLIMIT_NOFILE, std::ptr::null(), &mut saved) },
+        0,
+    );
+    let exhausted = libc::rlimit {
+        rlim_cur: 3,
+        rlim_max: saved.rlim_max,
+    };
+    assert_eq!(
+        unsafe { libc::prlimit(pid, libc::RLIMIT_NOFILE, &exhausted, std::ptr::null_mut()) },
+        0,
+    );
+    let queued = UnixStream::connect(&socket).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        assert!(
+            child.0.try_wait().unwrap().is_none(),
+            "pool died under accept pressure: {}",
+            fs::read_to_string(&log).unwrap(),
+        );
+        if fs::read_to_string(&log)
+            .unwrap()
+            .contains("memory-pool accept deferred")
+        {
+            break;
+        }
+        assert!(Instant::now() < deadline, "accept fault not observed");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(live.stats().unwrap().session_references, 1);
+    let mut output = [0; 4096];
+    live.restore(&pinned, &mut output).unwrap();
+    assert_eq!(output, data);
+
+    assert_eq!(
+        unsafe { libc::prlimit(pid, libc::RLIMIT_NOFILE, &saved, std::ptr::null_mut()) },
+        0,
+    );
+    drop(queued);
+    let mut replacement = connect().unwrap();
+    assert_eq!(replacement.stats().unwrap().objects, 1);
+    live.release(pinned).unwrap();
+    assert_eq!(replacement.stats().unwrap().objects, 0);
+}
+
+#[cfg(target_os = "linux")]
 fn compressed_pool() -> (
     tempfile::TempDir,
     OwnedChild,

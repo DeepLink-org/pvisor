@@ -30,6 +30,23 @@ use std::{
     time::{Duration, Instant},
 };
 
+const ADMISSION_RETRY: Duration = Duration::from_millis(50);
+
+fn accept_resource_exhausted(error: &std::io::Error) -> bool {
+    matches!(
+        error.raw_os_error(),
+        Some(libc::EMFILE | libc::ENFILE | libc::ENOBUFS | libc::ENOMEM)
+    )
+}
+
+struct ConnectionSlot(Arc<AtomicUsize>);
+
+impl Drop for ConnectionSlot {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
 impl Default for PoolConfig {
     fn default() -> Self {
         Self {
@@ -219,8 +236,31 @@ impl MemoryPoolService for PoolConfig {
             "{}",
             serde_json::json!({"ready": true, "socket": socket, "daemon_owned": true, "mode": config.mode})
         );
-        for stream in listener.incoming() {
-            let stream = stream?;
+        let mut accept_deferred = false;
+        loop {
+            let stream = match listener.accept() {
+                Ok((stream, _)) => {
+                    accept_deferred = false;
+                    stream
+                }
+                Err(error) if accept_resource_exhausted(&error) => {
+                    if !accept_deferred {
+                        eprintln!("memory-pool accept deferred: {error}");
+                        accept_deferred = true;
+                    }
+                    std::thread::sleep(ADMISSION_RETRY);
+                    continue;
+                }
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::Interrupted | std::io::ErrorKind::ConnectionAborted
+                    ) =>
+                {
+                    continue;
+                }
+                Err(error) => return Err(error.into()),
+            };
             if pvisor::host_transport::authorize_host_peer_sync(&stream).is_err() {
                 continue;
             }
@@ -237,9 +277,10 @@ impl MemoryPoolService for PoolConfig {
             let compressed = compressed.clone();
             #[cfg(target_os = "linux")]
             let sealed = sealed.clone();
-            let count = connections.clone();
+            let slot = ConnectionSlot(connections.clone());
             let refs = config.max_references;
-            std::thread::spawn(move || {
+            if let Err(error) = std::thread::Builder::new().spawn(move || {
+                let _slot = slot;
                 #[cfg(target_os = "linux")]
                 let result = match owner {
                     Some(owner) => serve_shared(stream, owner, refs),
@@ -253,9 +294,10 @@ impl MemoryPoolService for PoolConfig {
                 if let Err(error) = result {
                     eprintln!("memory-pool session: {error}");
                 }
-                count.fetch_sub(1, Ordering::AcqRel);
-            });
+            }) {
+                eprintln!("memory-pool session admission deferred: {error}");
+                std::thread::sleep(ADMISSION_RETRY);
+            }
         }
-        Ok(())
     }
 }
