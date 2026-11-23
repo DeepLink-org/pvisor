@@ -16,7 +16,7 @@
         <h1>PolicyVisor</h1>
         <div class="pc-home-intro">{{ page.content }}</div>
         <div class="pc-home-actions">
-          <a class="pc-home-btn primary" href="start/installation/"><span>{% if zh %}安装并开始{% else %}Get started{% endif %}</span><span aria-hidden="true">→</span></a>
+          <a class="pc-home-btn primary" href="start/first-run/#agent-style"><span>{% if zh %}试用文件暂存{% else %}Try staged edits{% endif %}</span><span aria-hidden="true">→</span></a>
           <a class="pc-home-btn" href="#staged-task-demo">{% if zh %}查看文件审查示例{% else %}See how staged review works{% endif %}<span aria-hidden="true">↓</span></a>
         </div>
         <pre class="pc-home-install"><code>pip install pvisor-sandbox</code></pre>
@@ -47,7 +47,7 @@ pvisor review last --diff
 pvisor apply last --path src</code></pre>
           <p class="pc-home-terminal-note">{% if zh %}Agent 自主尝试 → 你审查改动 → 只接收选中的文件{% else %}Agent experiments → You review → Accept selected files{% endif %}</p>
         </div>
-        <p class="pc-home-requirement">{% if zh %}运行前先配置 Agent 认证与平台暂存支持。{% else %}Configure agent authentication and platform staging support before running.{% endif %} <a href="guides/agents/claude-code/#repair-task">{% if zh %}完整任务教程{% else %}Complete task tutorial{% endif %}</a></p>
+        <p class="pc-home-requirement"><a href="start/first-run/#agent-style">{% if zh %}先试离线文件暂存{% else %}Try the offline staging demo{% endif %}</a>{% if zh %}，无需模型账号。运行上面的命令需要配置 Claude Code 认证与平台暂存支持。{% else %} (no model account required). The commands above need Claude Code authentication and platform staging support.{% endif %} <a href="guides/agents/claude-code/#repair-task">{% if zh %}完整任务教程{% else %}Complete task tutorial{% endif %}</a></p>
         </div>
         <div class="pc-home-docker-example" id="pc-home-docker-example">
           <div class="pc-home-terminal" data-ui>

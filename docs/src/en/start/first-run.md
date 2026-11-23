@@ -14,14 +14,14 @@ description: Run an offline command, inspect staged files, selectively apply cha
 
 # Run a container and review an agent task {#local-workflow}
 
-After [installation](installation.md), choose what to verify first: that a container can start, or when an agent's files reach your project. The examples are independent and neither needs a model account.
+Choose what to verify first. The examples are independent and neither needs a model account.
 
+- [Review staged edits offline](#agent-style): create two files with your local shell, review both, and write only one back to your project.
 - [Container commands](#docker-style): pull an image, start a separate VM, execute commands, then stop and remove the container.
-- [Agent tasks](#agent-style): create two files with an offline command, review and accept one, then discard the remaining change.
 
 ## Container commands {#docker-style}
 
-Use your local terminal. Linux x86_64 needs read/write access to `/dev/kvm`; Apple Silicon macOS needs a release package with the Hypervisor entitlement. Complete [VM platform setup](installation.md#docker-prerequisites). No Docker Daemon or model account is needed, and this example mounts no host directory.
+In a local terminal, [install the CLI](installation.md#install-cli) and complete [VM platform setup](installation.md#docker-prerequisites). Linux x86_64 needs read/write access to `/dev/kvm`; Apple Silicon macOS needs a release package with the Hypervisor entitlement. No Docker Daemon or model account is needed, and this example mounts no host directory.
 
 ### 1. Prepare an image {#docker-image}
 
@@ -75,13 +75,13 @@ To run several services together, try [experimental Compose](../reference/cli.md
 
 ## Agent tasks {#agent-style}
 
-Use your local shell to create two candidate files and hand only the greeting back to the original directory. No model account, VM image, or running Daemon is needed. Run the steps in order in the same terminal and directory.
+Use your local shell to create two candidate files and hand only the greeting back to the original directory. You are done when `hello.txt` is in the original directory and `scratch.txt` has been discarded. No model account, VM image, or running Daemon is needed. Run the steps in order in the same terminal and directory.
 
 ### Before you start {#before-you-start}
 
-Complete [installation and platform setup](installation.md). Linux x86_64 needs FUSE and user namespaces; Apple Silicon macOS needs macFUSE 5.4.0+ with FSKit enabled.
+If `pvisor` is not installed or Host staging is not set up, follow the [Host staging prerequisites](installation.md#local-prerequisites) and return here. Linux x86_64 needs FUSE and user namespaces; Apple Silicon macOS needs macFUSE 5.4.0+ with FSKit enabled. Skip the VM prerequisites for this demo.
 
-If already installed, activate the virtual environment used for installation and check the CLI:
+If you installed the CLI with pip, activate the virtual environment you used. With the dedicated environment in the installation guide, run:
 
 ```bash
 source ~/.venvs/pvisor/bin/activate
@@ -215,7 +215,6 @@ File staging controls acceptance of file changes. `drop` does not undo accepted 
 
 ## Next steps {#next-steps}
 
-- [Repair tests with Claude Code](../guides/agents/claude-code.md#repair-task): use a reproducible small project, task prompt, and acceptance checks for a real agent handoff.
-- [Local workflows](../guides/index.md): use this process in an existing project, validate candidate changes, and handle conflicts.
-- [VM tool execution](infrastructure.md): execute tests in a Linux VM from a caller script and read structured feedback.
-- [CLI reference](../reference/cli.md): look up flags, Session selection, and storage rules.
+After the offline demo, [connect the agent or script you already use](../guides/agents/index.md). Try one small task in your own project: review the diff, then apply the files you want or discard the stage. Use the [review and apply guide](../guides/review-apply.md) if you need to handle conflicts.
+
+If you started with containers, try the [VM tool execution example](infrastructure.md) to collect structured results in a caller script. Look up flags, Session selection, and storage rules in the [CLI reference](../reference/cli.md).

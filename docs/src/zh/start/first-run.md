@@ -14,14 +14,14 @@ description: 逐步运行离线命令、检查暂存文件、选择性合入并�
 
 # 运行容器与审查 Agent 任务 {#local-workflow}
 
-完成[安装](installation.md)后，可以先验证容器能否启动，也可以先验证 Agent 的文件何时写回项目。两个示例彼此独立，都不需要模型账号。
+先选要验证的任务。两个示例彼此独立，都不需要模型账号。
 
+- [离线审查暂存改动](#agent-style)：用本机 Shell 生成两个文件，审查后只写回一个。
 - [容器命令](#docker-style)：拉取镜像、启动独立 VM、执行命令，再停止并删除容器。
-- [Agent 任务](#agent-style)：用离线命令创建两个文件，审查并只接收一个，再清理剩余改动。
 
 ## 容器命令 {#docker-style}
 
-使用本机终端。Linux x86_64 需要可读写的 `/dev/kvm`；Apple Silicon macOS 需要具备 Hypervisor entitlement 的发布包。按[VM 平台准备](installation.md#docker-prerequisites)完成检查，无需 Docker Daemon 或模型账号。这里不挂载宿主目录。
+在本机终端[安装 CLI](installation.md#install-cli)，并完成 [VM 平台准备](installation.md#docker-prerequisites)。Linux x86_64 需要可读写的 `/dev/kvm`；Apple Silicon macOS 需要具备 Hypervisor entitlement 的发布包。无需 Docker Daemon 或模型账号，这里也不挂载宿主目录。
 
 ### 1. 准备镜像 {#docker-image}
 
@@ -75,13 +75,13 @@ pvisor ps -a
 
 ## Agent 任务 {#agent-style}
 
-用本机 Shell 创建两个候选文件，只把问候文件交回原目录。不需要模型账号、VM 镜像或运行中的 Daemon。以下步骤在同一个终端、同一个目录依次执行。
+用本机 Shell 创建两个候选文件。最终原目录只留下 `hello.txt`，`scratch.txt` 被丢弃。不需要模型账号、VM 镜像或运行中的 Daemon。以下步骤在同一个终端、同一个目录依次执行。
 
 ### 开始前 {#before-you-start}
 
-先完成[安装与平台准备](installation.md)。Linux x86_64 需要 FUSE 和 user namespace；Apple Silicon macOS 需要启用 FSKit 的 macFUSE 5.4.0+。
+如果还没安装 `pvisor` 或没配置 Host 暂存，先完成 [Host 暂存准备](installation.md#local-prerequisites)，再回到这里。Linux x86_64 需要 FUSE 和 user namespace；Apple Silicon macOS 需要启用 FSKit 的 macFUSE 5.4.0+。本演示不需要准备 VM。
 
-如果已完成安装，激活安装时的虚拟环境并检查 CLI：
+如果用 pip 安装，先激活安装时使用的虚拟环境。使用安装指南中的专用环境时，运行：
 
 ```bash
 source ~/.venvs/pvisor/bin/activate
@@ -215,7 +215,6 @@ test ! -e scratch.txt && echo 'scratch.txt: absent'
 
 ## 下一步 {#next-steps}
 
-- [用 Claude Code 修复测试](../guides/agents/claude-code.md#repair-task)：使用可复现的小项目、任务提示和验收步骤，完成真实 Agent 成果交接。
-- [本地工作流](../guides/index.md)：把这套操作用于已有项目，验证候选改动并处理冲突。
-- [VM 工具执行](infrastructure.md)：从调用脚本执行 Linux VM 中的测试并读取结构化反馈。
-- [CLI 参考](../reference/cli.md)：查询参数、Session 定位与存储规则。
+离线演示跑通后，[接入你已经在用的 Agent 或脚本](../guides/agents/index.md)。在自己的项目里试一个小任务：先检查 diff，再写回选中的文件或丢弃提案。遇到冲突时，参照[审查与应用指南](../guides/review-apply.md)。
+
+如果先试了容器，可以继续做 [VM 工具执行示例](infrastructure.md)，用调用脚本收集结构化结果。命令参数、Session 定位和存储规则见 [CLI 参考](../reference/cli.md)。

@@ -4,9 +4,12 @@ description: 安装 pVisor，并为容器示例准备 VM 支持，或为本机 A
 
 # 安装指南
 
-安装 CLI 后，按所选示例准备平台，再按[快速上手](first-run.md)运行示例并检查结果、清理环境。
+先选要试用的任务，再准备环境：
 
-发布包支持 Linux x86_64 和 Apple Silicon macOS。Python 安装需要 3.10+，无需 Rust 工具链或 Docker Daemon。运行容器需要虚拟化与镜像下载；离线 Host Session 演示使用本机 Shell，无需 VM 镜像或模型账号。
+- **审查暂存改动**：[安装 CLI](#install-cli)并准备 [Host 文件暂存](#local-prerequisites)。离线演示使用本机 Shell，无需 VM 镜像或模型账号。
+- **运行容器**：[安装 CLI](#install-cli)并准备 [VM 支持](#docker-prerequisites)。首次运行会下载镜像。
+
+发布包支持 Linux x86_64 和 Apple Silicon macOS。Python 安装需要 3.10+，无需 Rust 工具链或 Docker Daemon。
 
 Windows x86_64 可从源码构建实验性的 WHP 容器 CLI。固件与宿主机前置条件见 [Windows profile](../reference/platforms.md#windows-startup)。
 
@@ -36,16 +39,11 @@ python -m pip install pvisor-sandbox
 
 ## 2. 准备平台环境 {#prepare-environment}
 
-按所选示例准备环境。容器使用 VM，不需要安装 Host 暂存所用的 FUSE。
-
-| 路径 | 需要准备 |
-| --- | --- |
-| 容器命令 | [VM 支持](#docker-prerequisites)，以及镜像仓库访问与缓存空间。 |
-| Agent 任务离线演示 | [Host 文件暂存](#local-prerequisites)，以及本机 Shell。 |
+只需完成所选任务对应的一节。运行容器的示例不需要 Host 文件暂存。
 
 ### 容器命令：VM 支持 {#docker-prerequisites}
 
-Linux x86_64 上检查架构与当前账号的 KVM 权限：
+运行下方的 VM 预检前，先[安装 CLI](#install-cli)。Linux x86_64 上检查架构与当前账号的 KVM 权限：
 
 ```bash
 uname -m
@@ -68,7 +66,7 @@ pvisor vm-check --json
 
 ### Agent 任务：Host 文件暂存 {#local-prerequisites}
 
-`--safe` 需要能挂载暂存文件视图。请只完成与你的平台对应的一组步骤。
+`--safe` 需要能挂载暂存文件视图。如果还没有[安装 CLI](#install-cli)，先完成安装。然后按自己的平台准备环境，再[继续离线暂存演示](first-run.md#before-you-start)。
 
 #### Linux x86_64 {#linux-setup}
 
@@ -148,10 +146,9 @@ pvisor spawn --help
 
 ## 4. 完成首次任务 {#next-steps}
 
-- 已准备 VM：[容器命令](first-run.md#docker-style)，从镜像到运行、exec、停止与删除。
-- 已准备 Host 暂存：[Agent 任务](first-run.md#agent-style)，从离线命令到审查、接收和清理。
-
-完成暂存演示后，用 [Claude Code 修复任务](../guides/agents/claude-code.md#repair-task)体验真实 Agent 的成果交接。需要从 Python 调用方收集 VM 工具反馈时，再使用[执行基础设施示例](infrastructure.md)。
+- 已准备 Host 暂存：[离线审查两个候选文件，只保留一个](first-run.md#agent-style)。
+- 已准备 VM：[运行并清理容器](first-run.md#docker-style)。
+- 从 Python 调用 VM：[执行一次工具调用并收集结果](infrastructure.md)。
 
 <a id="other-installation-methods"></a>
 
