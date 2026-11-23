@@ -17,10 +17,12 @@ sections. Describe interface-specific controls and lifecycle contracts separatel
 Approval-free operation requires evidence for each agent and configuration. Publish verified agent versions, launch settings, remaining prompts
 and unsupported cases before claiming approval-free operation for a configuration.
 Never invent a bypass flag, agent certification, benchmark, or release capability.
-Current Linux preview interfaces include `pvisor stage` and container `:stage`
-binds. Keep their host-read visibility, recorded-project apply scope, explicit
-system-writeback restrictions and platform limits. `--stage PATH` selects storage;
-it is distinct from the `stage` command. The CLI reference owns these contracts.
+Use `pvisor run @root` for the Linux host-root preview and `-v PATH:/:stage`
+to select its storage. Distinguish that storage path from the existing host
+source in an image-based `-v HOST:GUEST:stage` bind. `--stage PATH` still selects
+storage for `spawn` and the legacy `stage` command. Keep the corresponding
+host-read visibility, apply scope, writeback restrictions, and platform limits.
+The CLI reference owns these contracts.
 
 Use `pvisor-sandbox` for the Python distribution and `pvisor_sandbox` for the wheel
 filename prefix. Keep `pvisor` for the Python import package and CLI. Use current

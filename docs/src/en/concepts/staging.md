@@ -12,7 +12,10 @@ Staging isolates candidate changes; it does not replace access control. See [Fil
 
 ## From staging to accepting changes {#candidate-changes}
 
-File changes follow **Stage → Review → Apply / Drop**. Workspace staging is enabled with `--safe` or `--stage`. The separate Linux-preview `pvisor stage` command retains a host-root VM stage with its own apply scope; see the [CLI contract](../reference/cli.md#apply-scope).
+File changes follow **Stage → Review → Apply / Drop**. Use `--safe` or `--stage`
+with `spawn` to stage workspace changes. On Linux, [`pvisor run @root`](../reference/cli.md#run-host-tools)
+retains changes across the guest filesystem; ordinary `apply` still writes back
+only within the recorded project.
 
 | Operation | Purpose |
 | --- | --- |

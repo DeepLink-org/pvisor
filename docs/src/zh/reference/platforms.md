@@ -45,7 +45,7 @@ Linux payload，不需要安装宿主 `pvisor-guest.exe`。`whp_smoke.exe` 和 `
 | Docker 风格 VM 容器及网络策略 | 有实现和独立契约 | 有实现，各能力需 HVF 验证 | 实验性 WHP profile：镜像/生命周期、bridge/none 和 stdin/PTY |
 | 实验性 Compose | 原生 KVM VM | 原生 HVF VM | 不支持 |
 | 活体容器 CoW 分叉与受管内存 | Linux x86_64/KVM，显式启用 | 不支持 | 不支持 |
-| Linux host-root `stage`、`:stage` bind | Linux 专用路径 | 不支持 Linux host-root；staged bind 不推定与 Linux 等价 | 不支持 |
+| [`run @root`](cli.md#run-host-tools)、`:stage` 绑定挂载 | Linux x86_64/KVM | 不支持宿主根目录；暂存绑定挂载不推定与 Linux 等价 | 不支持 |
 | VM 快照、恢复、冷 RAM | 有 API 和测试，受 backing/profile 限制 | 有 API 和测试，受 HVF/backing 限制 | Unsupported；仅有暂停/继续 |
 | Gateway | 按所选执行器和配置启用 | 有宿主执行路径 | 此次 CLI 不包含 |
 
