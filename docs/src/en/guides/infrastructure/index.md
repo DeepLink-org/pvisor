@@ -1,14 +1,13 @@
 # Agent execution infrastructure
 
-pVisor runs tools on an execution node and returns exit status, files, and execution records to an inference service, evaluator, or trainer. Start with one sample on one machine. Check that the caller can retrieve a successful result and distinguish an environment that failed to start from a task that produced a wrong answer. Then use the same workload to evaluate concurrency and state reuse.
+pVisor runs tools on an execution node and returns exit status, files, and execution records to an inference service, evaluator, or trainer.
 
-Use the [execution infrastructure quick start](../../start/infrastructure.md) to run a SWE tool-call excerpt and learn how to submit tasks and collect feedback through a CLI adapter.
+- **Choose an interface:** compare CLI, embedded Runtime, daemon API, and containerd shim in the [integration matrix](integration.md#entry-points).
+- **Try a tool call:** use the [VM quick start](../../start/infrastructure.md) to run one task through the CLI and check the result and failure status before testing concurrency or state reuse.
 
 ## What needs to survive between tool calls? {#agent-native}
 
 An agent edits a source file, waits for the next model response, then runs a test. The test needs the edited file. If it also relies on a running service, saving files alone is not enough. A VM can retain its memory throughout the wait even when its CPU is idle. Choose whether to keep the environment running, save the workspace, or offload the VM on a supported configuration based on what the next call needs.
-
-Before choosing the CLI, embedded Runtime, daemon API, or containerd shim, check the [integration matrix](integration.md) for the state that interface can preserve and the results it can return.
 
 ## Responsibilities across a task {#lifecycle}
 

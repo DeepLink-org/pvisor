@@ -8,7 +8,7 @@
 
 [English](README.md) · [简体中文](README.zh-CN.md)
 
-[Get started](https://deeplink-org.github.io/pvisor/start/installation/) · [Documentation](https://deeplink-org.github.io/pvisor/) · [Examples](examples/pvisor/README.md) · [中文文档](https://deeplink-org.github.io/pvisor/zh/)
+[Try staged edits](https://deeplink-org.github.io/pvisor/start/first-run/#agent-style) · [Install](https://deeplink-org.github.io/pvisor/start/installation/) · [Documentation](https://deeplink-org.github.io/pvisor/) · [Examples](examples/pvisor/README.md) · [中文文档](https://deeplink-org.github.io/pvisor/zh/)
 
 [![CI](https://github.com/DeepLink-org/pvisor/actions/workflows/ci.yml/badge.svg)](https://github.com/DeepLink-org/pvisor/actions/workflows/ci.yml)
 [![Documentation](https://img.shields.io/badge/docs-latest-blue)](https://deeplink-org.github.io/pvisor/)
@@ -25,6 +25,11 @@ pVisor supports a subset of Docker CLI commands and adds commands to review and 
 On Linux, mount a project with `:stage` to keep file changes out of your working tree. After the container exits, use `review` to see the diff, `apply` to keep selected paths, and `drop` to discard the rest.
 
 ## Getting started
+
+Choose what to try:
+
+- [Review staged edits](https://deeplink-org.github.io/pvisor/start/first-run/#agent-style): use a local shell to create two candidate files and keep one. No model account or VM image is needed.
+- [Run a container](https://deeplink-org.github.io/pvisor/start/first-run/#docker-style): start a separate Linux VM from an image and run a command.
 
 ### 1. Install the CLI
 
@@ -94,10 +99,10 @@ No model account or VM image is needed for this Host example.
 
 ### 3. Complete a task with your agent
 
-The [Claude Code tutorial](https://deeplink-org.github.io/pvisor/guides/agents/claude-code/#repair-task)
-walks through fixing failing tests in a small Python project. It includes the
-task prompt and credential setup, then shows how to check staged files, accept
-them, and retest in your project. You need Python, Claude Code, and model access.
+After the staged-edit demo, [connect the agent or script you already use](https://deeplink-org.github.io/pvisor/guides/agents/).
+Start with a small task in your own project, review the diff, then apply the
+files you want or discard the stage. For a practice project, follow the
+[Claude Code repair tutorial](https://deeplink-org.github.io/pvisor/guides/agents/claude-code/#repair-task).
 
 > Developer preview: approval-free agent operation still needs validation
 > for cloud models and approval behavior. The agent guide lists the recorded

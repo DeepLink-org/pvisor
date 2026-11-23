@@ -8,7 +8,7 @@
 
 [English](README.md) · [简体中文](README.zh-CN.md)
 
-[快速开始](https://deeplink-org.github.io/pvisor/zh/start/installation/) · [文档](https://deeplink-org.github.io/pvisor/zh/) · [示例](examples/pvisor/README.md) · [英文文档](https://deeplink-org.github.io/pvisor/)
+[试用文件暂存](https://deeplink-org.github.io/pvisor/zh/start/first-run/#agent-style) · [安装](https://deeplink-org.github.io/pvisor/zh/start/installation/) · [文档](https://deeplink-org.github.io/pvisor/zh/) · [示例](examples/pvisor/README.md) · [英文文档](https://deeplink-org.github.io/pvisor/)
 
 [![CI](https://github.com/DeepLink-org/pvisor/actions/workflows/ci.yml/badge.svg)](https://github.com/DeepLink-org/pvisor/actions/workflows/ci.yml)
 [![文档](https://img.shields.io/badge/docs-latest-blue)](https://deeplink-org.github.io/pvisor/zh/)
@@ -25,6 +25,11 @@ pVisor 兼容一组常用 Docker CLI 命令，并提供审查和接收 Agent 改
 在 Linux 上，用 `:stage` 挂载项目，Agent 的文件改动就不会直接写回工作区。容器退出后，用 `review` 查看差异、`apply` 接收选中的路径、`drop` 丢弃其余改动。
 
 ## 快速开始
+
+先选要试用的任务：
+
+- [审查暂存改动](https://deeplink-org.github.io/pvisor/zh/start/first-run/#agent-style)：用本机 Shell 生成两个候选文件，只保留一个。不需要模型账号或 VM 镜像。
+- [运行容器](https://deeplink-org.github.io/pvisor/zh/start/first-run/#docker-style)：从镜像启动独立 Linux VM 并运行命令。
 
 ### 1. 安装 CLI
 
@@ -89,9 +94,9 @@ cat hello.txt
 
 ### 3. 用 Agent 完成一个任务
 
-[Claude Code 教程](https://deeplink-org.github.io/pvisor/zh/guides/agents/claude-code/#repair-task)
-从一个测试失败的小型 Python 项目开始，给出任务提示和凭据配置，再带你检查暂存文件、
-接收修改并在原项目复测。需要 Python、Claude Code 和模型访问权限。
+跑通暂存演示后，[接入你已经在用的 Agent 或脚本](https://deeplink-org.github.io/pvisor/zh/guides/agents/)。
+先在自己的项目里试一个小任务，检查 diff，再写回选中的文件或丢弃提案。
+如果想先用练习项目，跟着 [Claude Code 修复任务教程](https://deeplink-org.github.io/pvisor/zh/guides/agents/claude-code/#repair-task)做一遍。
 
 > 开发者预览：Agent 免审批运行仍需验证云模型和审批行为，
 > 已有的受控客户端测试见 Agent 指南。pVisor 不会自动关闭 Agent 或 IDE 的审批。

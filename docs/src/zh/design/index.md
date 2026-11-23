@@ -2,6 +2,8 @@
 
 一个工具在 pVisor 容器里运行时，进程使用自己的 guest 内核，镜像内容和 VM 内存由宿主管理。这样的分工让多个容器既能隔离执行，又能复用只读内容。对本地任务，宿主还可以保留暂存的文件改动供审查；对推理、评测或训练任务，同一套机制在执行节点上管理并发任务与分支。在哪个节点运行、失败后是否重试，由上层系统决定。
 
+评估部署时，先看[接入方式与能力矩阵](../guides/infrastructure/integration.md#entry-points)，比较接口与宿主机要求；选择运行环境前，再核对[执行器边界](../security/executor-boundaries.md)。
+
 ## 1. 整体架构与模块分工 {#architecture}
 
 ![pVisor 技术架构：运行时与宿主服务，以及 pvisor-vm 内的 vCPU、RAM、设备、快照和平台后端](assets/pvisor-architecture.svg)
