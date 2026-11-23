@@ -605,17 +605,20 @@ impl Runtime for NativeRuntime {
         validate_spec(spec)?;
         let _lease = self.operations.lock(&spec.id).await?;
         let directory = self.directory(&spec.id)?;
-        ensure!(
-            !directory.try_exists()?,
-            "sandbox ID was already used; never relaunch/reuse it"
-        );
+        match fs::symlink_metadata(&directory) {
+            Ok(_) => bail!("sandbox ID was already used; never relaunch/reuse it"),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+        // The ID is unused under its lock; template errors cannot leave a VM behind.
         let image: PreparedImage =
-            read_json(&self.config.images_dir.join(format!("{}.json", spec.image)))?;
-        validate_image(&image, &self.config.state_dir)?;
-        ensure!(
-            image.e2b == spec.e2b,
-            "prepared image service profile changed"
-        );
+            read_json(&self.config.images_dir.join(format!("{}.json", spec.image)))
+                .map_err(|_| CreateError::new("cannot read prepared image manifest", false))?;
+        validate_image(&image, &self.config.state_dir)
+            .map_err(|_| CreateError::new("invalid prepared image", false))?;
+        if image.e2b != spec.e2b {
+            return Err(CreateError::new("prepared image service profile changed", false).into());
+        }
         let generation = uuid::Uuid::new_v4().to_string();
         let group_path = self
             .config
@@ -4322,6 +4325,33 @@ mod tests {
             );
         }
     }
+
+    #[tokio::test]
+    async fn template_lookup_failure_confirms_absence_only_for_unused_id() {
+        for path in ["absent", "directory", "dangling-symlink"] {
+            let temp = tempfile::tempdir().unwrap();
+            let (identity, directory) = identity_fixture(temp.path());
+            let runtime = runtime_fixture(&identity, &directory);
+            if path != "directory" {
+                fs::remove_dir(&directory).unwrap();
+            }
+            if path == "dangling-symlink" {
+                std::os::unix::fs::symlink(temp.path().join("absent"), &directory).unwrap();
+            }
+            let used = path != "absent";
+            let error = runtime.create(&identity.spec).await.unwrap_err();
+            assert_eq!(fs::symlink_metadata(&directory).is_ok(), used);
+            assert!(!identity.cgroup.exists());
+            assert_eq!(
+                error
+                    .downcast_ref::<CreateError>()
+                    .is_none_or(|error| error.requires_reconciliation),
+                used,
+                "{path}"
+            );
+        }
+    }
+
     #[test]
     fn records_are_private_immutable_and_symlink_safe() {
         let temp = tempfile::tempdir().unwrap();

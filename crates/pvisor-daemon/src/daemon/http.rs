@@ -27,7 +27,7 @@ use std::{collections::BTreeMap, sync::Arc, time::Duration};
 use axum::http::Uri;
 use axum::{
     Extension, Json, Router,
-    body::{Body, to_bytes},
+    body::{Body, HttpBody, to_bytes},
     extract::{
         DefaultBodyLimit, MatchedPath, Path, RawQuery, Request, State,
         rejection::{JsonRejection, PathRejection},
@@ -54,6 +54,9 @@ pub(super) struct ControlBodies {
 
 impl ControlBodies {
     pub(super) async fn read(&self, body: Body) -> Result<axum::body::Bytes, ApiError> {
+        if body.is_end_stream() {
+            return Ok(axum::body::Bytes::new());
+        }
         let _permit = self.slots.try_acquire().map_err(|_| {
             ApiError::new(
                 429,
@@ -925,7 +928,9 @@ mod tests {
         let mut read = Box::pin(bodies.read(pending_body()));
         assert!(futures_util::poll!(&mut read).is_pending());
         assert_eq!(bodies.slots.available_permits(), 0);
-        assert_eq!(bodies.read(Body::empty()).await.unwrap_err().status, 429);
+        assert_eq!(bodies.read(Body::from("{}")).await.unwrap_err().status, 429);
+        assert!(bodies.read(Body::empty()).await.unwrap().is_empty());
+        assert_eq!(bodies.slots.available_permits(), 0);
         drop(read);
         assert_eq!(bodies.slots.available_permits(), 1);
         assert_eq!(

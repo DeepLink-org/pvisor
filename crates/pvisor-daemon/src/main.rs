@@ -377,7 +377,7 @@ async fn run(command: Command) -> anyhow::Result<()> {
             } else {
                 None
             };
-            let maintenance = sandbox_service
+            let mut maintenance = sandbox_service
                 .as_ref()
                 .map(|(daemon, _)| daemon.start_maintenance());
             let warm_owner = sandbox_service.as_ref().map(|(daemon, _)| daemon.clone());
@@ -408,6 +408,7 @@ async fn run(command: Command) -> anyhow::Result<()> {
             let (result, api_finished) = tokio::select! {
                 _ = &mut stop => (Ok(()), false),
                 result = &mut api => (result.and_then(|_| Err(anyhow::anyhow!("sandbox service exited unexpectedly"))), true),
+                result = wait_maintenance(&mut maintenance) => (result, false),
                 result = cache_component::wait(&mut cache) => (result, false),
                 result = wait_pool(standalone_pool) => (result, false),
             };
@@ -422,6 +423,7 @@ async fn run(command: Command) -> anyhow::Result<()> {
             };
             if let Some(task) = maintenance {
                 task.abort();
+                let _ = task.await;
             }
             let warm_stopped = if let Some(daemon) = warm_owner {
                 tokio::time::timeout(std::time::Duration::from_secs(35), daemon.stop_warm_pool())
@@ -443,6 +445,18 @@ async fn run(command: Command) -> anyhow::Result<()> {
         }
     }
     Ok(())
+}
+
+async fn wait_maintenance(task: &mut Option<tokio::task::JoinHandle<()>>) -> anyhow::Result<()> {
+    let Some(running) = task.as_mut() else {
+        return std::future::pending().await;
+    };
+    let result = running.await;
+    *task = None;
+    match result {
+        Ok(()) => anyhow::bail!("sandbox maintenance exited unexpectedly"),
+        Err(error) => anyhow::bail!("sandbox maintenance failed: {error}"),
+    }
 }
 
 fn warm_profile(value: &str) -> Result<api::WarmPoolProfile, String> {
@@ -524,6 +538,20 @@ fn shutdown() -> std::io::Result<impl std::future::Future<Output = ()>> {
 mod tests {
     use super::*;
     use pvisor_daemon::api::PoolMode;
+
+    #[tokio::test]
+    async fn maintenance_completion_is_a_service_failure() {
+        let mut maintenance = Some(tokio::spawn(async {}));
+        let error = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            wait_maintenance(&mut maintenance),
+        )
+        .await
+        .unwrap()
+        .unwrap_err();
+        assert_eq!(error.to_string(), "sandbox maintenance exited unexpectedly");
+        assert!(maintenance.is_none());
+    }
 
     #[test]
     fn warm_pool_accepts_repeatable_resource_classes_only_for_sandboxes() {
