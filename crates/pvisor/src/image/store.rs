@@ -71,8 +71,10 @@ impl LocalStore {
         Ok(Self { root })
     }
 
+    pub(crate) const POOL_DIR: &str = "image-pack-v1";
+
     pub(crate) fn pool(&self) -> PathBuf {
-        self.root.join("pool-v2")
+        self.root.join(Self::POOL_DIR)
     }
     pub(crate) fn writable_pool(&self) -> anyhow::Result<PathBuf> {
         let path = self.pool();

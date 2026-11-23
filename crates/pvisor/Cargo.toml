@@ -28,6 +28,7 @@ globset.workspace = true
 libc.workspace = true
 lru = "0.12.5"
 object_store = { version = "=0.13.2", default-features = false, features = ["aws", "tls-webpki-roots"] }
+opendal = { version = "=0.59.5", default-features = false, features = ["services-gcs"] }
 pvisor-core.workspace = true
 pvisor-journal.workspace = true
 pvisor-gateway = { workspace = true, default-features = false, optional = true }
@@ -44,11 +45,12 @@ thiserror.workspace = true
 toml.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["io-util", "macros", "process", "rt-multi-thread", "signal", "sync", "time", "net"] }
+tokio-stream.workspace = true
 tokio-util = { workspace = true, features = ["rt"] }
 tracing.workspace = true
 uuid = { workspace = true, features = ["v4"] }
 zstd.workspace = true
-reqwest = { workspace = true, features = ["blocking", "json", "rustls-tls"] }
+reqwest = { workspace = true, features = ["blocking", "json", "rustls-tls", "stream"] }
 
 [target.'cfg(not(all(target_os = "macos", target_arch = "x86_64")))'.dependencies]
 pvisor-vm = { workspace = true, features = ["net"] }
@@ -60,7 +62,6 @@ clap = { workspace = true, features = ["derive"] }
 proptest.workspace = true
 rstest.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
-tokio-stream.workspace = true
 
 
 [target.'cfg(target_os = "macos")'.dependencies]

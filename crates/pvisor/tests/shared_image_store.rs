@@ -83,10 +83,10 @@ fn exercise(root: &Path) {
         2,
         "canonical spellings share one catalog entry"
     );
-    assert_eq!(first.cache.location, image_root.join("pool-v2"));
+    assert_eq!(first.cache.location, image_root.join("image-pack-v1"));
     // Local build aliases remain usable offline after the remote tag TTL.
-    let pool_platform = first.cache.handle.split(':').nth(2).unwrap();
-    for entry in fs::read_dir(image_root.join("pool-v2/meta")).unwrap() {
+    let pool_platform = first.cache.handle.rsplit(':').nth(1).unwrap();
+    for entry in fs::read_dir(first.cache.location.join("meta")).unwrap() {
         let head = entry
             .unwrap()
             .path()
@@ -163,7 +163,7 @@ fn exercise(root: &Path) {
     assert!(!image_root.join("rootfs-v3").exists());
     assert!(!image_root.join("blobs").exists());
     if image_root != root.join("docker/images") {
-        assert!(!root.join("docker/images/pool-v2").exists());
+        assert!(!root.join("docker/images/image-pack-v1").exists());
     }
 
     // Published records have one V2 shape; old directory records are rejected.
@@ -184,7 +184,7 @@ fn exercise(root: &Path) {
     fs::write(catalog_path, catalog).unwrap();
 
     // Corruption is an error, rather than a reason to resolve a mutable registry tag.
-    fs::write(image_root.join("pool-v2/format.json"), b"corrupt").unwrap();
+    fs::write(first.cache.location.join("format.json"), b"corrupt").unwrap();
     assert!(pvisor::cache::prepare_vm_image("shared:alias", None).is_err());
     drop((owner, updated_owner, retained));
     assert!(!first_projection.exists());

@@ -1,5 +1,8 @@
 //! Ordered, lazy-initialized mirrors of one immutable publication.
-use super::storage::{Storage, StoredObject};
+use super::{
+    location::Repository,
+    storage::{Storage, StoredObject},
+};
 use anyhow::{Context, ensure};
 use std::{
     ops::Range,
@@ -42,26 +45,11 @@ pub(crate) fn validate(locations: &[String]) -> anyhow::Result<()> {
 }
 
 pub(crate) fn validate_root(location: &str) -> anyhow::Result<()> {
-    if location.starts_with("s3://") {
-        super::storage::s3_location(location)?;
-    } else {
-        ensure!(
-            location.starts_with("http://") || location.starts_with("https://"),
-            "registries require s3://, http:// or https://"
-        );
-        super::http::Http::validate(location)?;
-    }
-    Ok(())
+    Repository::parse(location).map(|_| ())
 }
 
 pub(crate) fn open(location: &str) -> anyhow::Result<Storage> {
-    if location.starts_with("s3://") {
-        Storage::s3(location)
-    } else {
-        Ok(Storage::Http(std::sync::Arc::new(super::http::Http::new(
-            location,
-        )?)))
-    }
+    Repository::parse(location)?.open(true)
 }
 
 impl Mirrors {
@@ -137,6 +125,20 @@ mod tests {
             format!("s3://images/{hash}"),
         ];
         validate(&roots).unwrap();
+        let local = format!("file:///tmp/cache/{hash}");
+        let cloud = format!("gs://images/{hash}");
+        assert!(
+            !super::super::client::ClientBinding::repository(&local, &[])
+                .unwrap()
+                .needs_read_bridge()
+                .unwrap()
+        );
+        assert!(
+            super::super::client::ClientBinding::repository(&local, &[cloud])
+                .unwrap()
+                .needs_read_bridge()
+                .unwrap()
+        );
         let mut inherited = Mirrors::new(&roots).unwrap();
         inherited.pid = std::process::id().wrapping_add(1);
         assert!(

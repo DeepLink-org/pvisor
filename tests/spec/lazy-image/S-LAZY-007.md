@@ -58,7 +58,7 @@ $ python3 "$TESTDIR/../fixture.py" use S-LAZY-007 --timeout 180 <<'CASE'
 > json_expect reopened.json /image_handle "\"$handle\""
 > "$PVISOR_CASE_CACHE_PROBE" read-file "$handle" small-099 > small
 > lazy_start_repository "$shared"
-> PVISOR_CACHE_BACKEND=http PVISOR_CACHE_LOCATION="$LAZY_REPOSITORY" PVISOR_CACHE_READ_ONLY=true "$PVISOR_CASE_CACHE_PROBE" read-file "$handle" large > large
+> env -u PVISOR_CACHE_BACKEND -u PVISOR_CACHE_READ_ONLY PVISOR_CACHE_LOCATION="$LAZY_REPOSITORY" "$PVISOR_CASE_CACHE_PROBE" read-file "$handle" large > large
 > python3 - "$CASE_ROOT/requests.jsonl" <<'PY'
 > import json, sys
 > from pathlib import Path
@@ -70,12 +70,14 @@ $ python3 "$TESTDIR/../fixture.py" use S-LAZY-007 --timeout 180 <<'CASE'
 > expect_refused lazy_cache_prepare absent:fixture
 > assert_unchanged shared "$shared"
 > assert_absent "$PVISOR_IMAGE_STORE"
-> python3 - "$shared" <<'PY'
-> import hashlib, sys
+> python3 - "$shared" "$CASE_ROOT/requests.jsonl" <<'PY'
+> import hashlib, json, sys
 > from pathlib import Path
-> digest = hashlib.sha256(bytes([42]) * 1024 * 1024).hexdigest()
-> path = Path(sys.argv[1]) / 'data/sha256' / digest[:2] / digest[2:4] / digest
-> assert path.is_file()
+> requests = [json.loads(line) for line in Path(sys.argv[2]).read_text().splitlines()]
+> blobs = {request['path'] for request in requests if request['path'].startswith('/data/blobs/')}
+> assert len(blobs) == 1
+> path = Path(sys.argv[1]) / blobs.pop().lstrip('/')
+> assert hashlib.sha256(path.read_bytes()).hexdigest() == path.name
 > path.write_bytes(b'corrupt remote object')
 > PY
 > snapshot corrupt "$shared"

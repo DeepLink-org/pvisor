@@ -2,6 +2,8 @@
 
 V2 是服务器、文件系统、S3 与 Docker 本地池共同使用的存储格式。所有文件系统元数据进入可惰性加载的索引；小文件按目录聚合，数据对象只保存内容与定位表。实现入口为 `crates/pvisor/src/image/cache/portable/`。
 
+新镜像使用 [pVisor Image Pack V1](experimental/image-pack/index.md)。以下记录预发布 V2 的格式；当前 reader 可读取已有 V2，但 writer 不再生成它。
+
 | 项目 | 当前合同 |
 | --- | --- |
 | 存储版本 | `format_version=2`、`pvisor-radix-v2`、`pvisor-v2:` 句柄 |

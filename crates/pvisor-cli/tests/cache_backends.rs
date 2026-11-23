@@ -385,11 +385,25 @@ fn s3_pool_is_readable_without_registry_or_daemon_after_preparation() {
     let prepared: serde_json::Value = serde_json::from_slice(&prepared).unwrap();
     assert_eq!(prepared["digest"], digest);
     let objects = s3.objects.lock().unwrap();
-    let blobs = objects.keys().filter(|key| key.contains("/data/")).count();
+    let mut frame_counts = objects
+        .iter()
+        .filter(|(key, _)| key.contains("/data/blobs/"))
+        .map(|(_, blob)| {
+            let footer = &blob[blob.len() - 9..];
+            assert_eq!(&footer[5..], &0x8f92_eab1u32.to_le_bytes());
+            u32::from_le_bytes(footer[..4].try_into().unwrap())
+        })
+        .collect::<Vec<_>>();
+    frame_counts.sort_unstable();
     drop(objects);
+    assert_eq!(
+        frame_counts.len(),
+        2,
+        "small files and the large file have separate blobs"
+    );
     assert!(
-        blobs == 3,
-        "one small-file pack plus two distinct chunks of the large file"
+        frame_counts.contains(&3),
+        "one blob holds the large file's three independently decoded frames"
     );
     clean_imports(&source);
     registry.stop();
@@ -421,7 +435,7 @@ fn s3_pool_is_readable_without_registry_or_daemon_after_preparation() {
     assert_eq!(contents, vec![42; 2 * 1024 * 1024 + 13]);
     assert!(
         s3.gets.load(Ordering::Relaxed) - before_gets <= 12,
-        "small control objects and required metadata pages plus two distinct data chunks"
+        "small controls, required metadata pages and bounded frame ranges"
     );
     assert_eq!(
         s3.puts.load(Ordering::Relaxed),
@@ -449,18 +463,24 @@ fn s3_pool_is_readable_without_registry_or_daemon_after_preparation() {
         read_file(handle, "alias"),
     );
     assert!(!alias.status.success());
-    let blob = s3
-        .objects
-        .lock()
-        .unwrap()
-        .keys()
-        .find(|key| key.ends_with(&digest_bytes(&vec![42u8; 1024 * 1024])))
-        .unwrap()
-        .clone();
-    s3.objects
-        .lock()
-        .unwrap()
-        .insert(blob, b"corrupted".to_vec());
+    {
+        let mut objects = s3.objects.lock().unwrap();
+        let (key, blob) = objects
+            .iter_mut()
+            .find(|(key, blob)| {
+                if !key.contains("/data/blobs/") {
+                    return false;
+                }
+                let frames =
+                    u32::from_le_bytes(blob[blob.len() - 9..blob.len() - 5].try_into().unwrap())
+                        as usize;
+                let first = blob.len() - 9 - frames * 8;
+                u32::from_le_bytes(blob[first + 4..first + 8].try_into().unwrap()) > 1024 * 1024
+            })
+            .expect("published blob with an independently encoded 1 MiB payload");
+        assert!(key.ends_with(&digest_bytes(blob)));
+        blob[0] ^= 1;
+    }
     let corrupt = cache_client(
         &tmp.path().join("cold-reader"),
         "s3",
@@ -519,7 +539,7 @@ fn refreshing_s3_cache_rebuilds_missing_objects_and_conditionally_updates_its_ow
     };
     let first = publish_revision();
     let original = s3.objects.lock().unwrap().clone();
-    for part in ["/meta/", "/revisions/", "/data/sha256/", "/uploads/"] {
+    for part in ["/meta/", "/revisions/", "/data/blobs/", "/uploads/"] {
         assert!(
             original.keys().any(|key| key.contains(part)),
             "missing {part}"
@@ -527,7 +547,7 @@ fn refreshing_s3_cache_rebuilds_missing_objects_and_conditionally_updates_its_ow
     }
     let missing_blob = original
         .keys()
-        .find(|key| key.contains("/data/sha256/"))
+        .find(|key| key.contains("/data/blobs/"))
         .unwrap();
     s3.objects.lock().unwrap().remove(missing_blob);
     let second = publish_revision();

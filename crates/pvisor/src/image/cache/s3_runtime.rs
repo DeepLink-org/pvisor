@@ -1,9 +1,9 @@
-//! One bounded host I/O loop per process. Clients retain their own ObjectStore
-//! (credentials, endpoint, retry policy) and namespace; only execution is pooled.
+//! One bounded host I/O loop per process, shared by remote object stores.
 use super::storage::{Operation, StoredObject, s3_operation};
 use anyhow::{Context, ensure};
 use object_store::ObjectStore;
 use std::sync::{Arc, Condvar, Mutex, OnceLock, Weak, mpsc};
+use std::{future::Future, pin::Pin};
 
 const MAX_REQUESTS: usize = 32;
 static SHARED: OnceLock<Mutex<Weak<Runtime>>> = OnceLock::new();
@@ -40,10 +40,10 @@ impl Drop for Permit {
         }
     }
 }
+type RequestFuture = Pin<Box<dyn Future<Output = anyhow::Result<Option<StoredObject>>> + Send>>;
+
 struct Task {
-    store: Arc<dyn ObjectStore>,
-    key: String,
-    operation: Operation,
+    operation: RequestFuture,
     reply: mpsc::SyncSender<anyhow::Result<Option<StoredObject>>>,
     _permit: Permit,
     deadline: std::time::Instant,
@@ -96,7 +96,7 @@ impl Runtime {
                             Some(task) => { operations.spawn(async move {
                                 let result = tokio::time::timeout_at(
                                     tokio::time::Instant::from_std(task.deadline),
-                                    s3_operation(task.store.as_ref(), &task.key, task.operation),
+                                    task.operation,
                                 ).await.map_err(|_| anyhow::anyhow!("S3 image operation timed out"))
                                     .and_then(|result| result);
                                 let _ = task.reply.send(result);
@@ -146,6 +146,16 @@ impl Runtime {
         operation: Operation,
         budget: std::time::Duration,
     ) -> anyhow::Result<Option<StoredObject>> {
+        self.run(budget, async move {
+            s3_operation(store.as_ref(), &key, operation).await
+        })
+    }
+
+    pub(super) fn run(
+        &self,
+        budget: std::time::Duration,
+        operation: impl Future<Output = anyhow::Result<Option<StoredObject>>> + Send + 'static,
+    ) -> anyhow::Result<Option<StoredObject>> {
         let deadline = std::time::Instant::now() + budget;
         ensure!(
             self.pid == std::process::id(),
@@ -165,9 +175,7 @@ impl Runtime {
             .as_ref()
             .context("S3 cache worker stopped")?
             .send(Task {
-                store,
-                key,
-                operation,
+                operation: Box::pin(operation),
                 reply,
                 _permit: permit,
                 deadline,

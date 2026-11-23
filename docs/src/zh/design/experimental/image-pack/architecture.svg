@@ -1,0 +1,102 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="862" viewBox="0 0 1080 862" role="img" aria-labelledby="title desc">
+  <title id="title">pVisor Image Pack V1 架构</title>
+  <desc id="desc">构建或 OCI 拉取后按目录树自底向上聚合入池；固定 revision 原样发布。读取端根据存储标记或已验证的提交选择解码器，按压缩偏移读取和校验独立帧。Host FUSE 与 VM lower 使用同一读取语义，写入独立 upper。</desc>
+  <defs>
+    <marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+      <path d="M0 0L8 4L0 8Z" fill="#a8cefa"/>
+    </marker>
+    <marker id="write-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+      <path d="M0 0L8 4L0 8Z" fill="#edc288"/>
+    </marker>
+  </defs>
+  <style>
+    text { font-family: system-ui, -apple-system, "PingFang SC", sans-serif; fill: #e9eef8; }
+    .title { font-size: 30px; font-weight: 700; }
+    .section, .label { font-size: 17px; font-weight: 650; }
+    .section { fill: #a8cefa; letter-spacing: 1px; }
+    .detail { font-size: 14px; fill: #bdcde1; }
+    .panel { fill: #102037; stroke: #29415b; }
+    .card { fill: #142840; stroke: #547796; }
+    .shared { fill: #14373f; stroke: #66aaa9; }
+    .write { fill: #3b302a; stroke: #ad8a61; }
+    .arrow { fill: none; stroke: #a8cefa; stroke-width: 2; marker-end: url(#arrow); }
+    .write-path { stroke: #edc288; marker-end: url(#write-arrow); }
+  </style>
+  <rect width="1080" height="862" rx="18" fill="#0d1b30"/>
+  <text x="36" y="47" class="title">pVisor Image Pack V1</text>
+  <text x="36" y="71" class="detail">一个不可变格式，覆盖本地镜像池、远程分发和文件系统读取</text>
+
+  <rect x="20" y="90" width="1040" height="225" rx="12" class="panel"/>
+  <text x="36" y="118" class="section">01 / 生成与发布</text>
+  <g>
+    <rect x="36" y="134" width="304" height="68" rx="8" class="card"/>
+    <text x="52" y="160" class="label">构建 / OCI 拉取</text>
+    <text x="52" y="183" class="detail">准备完整 rootfs 和 OCI 配置</text>
+    <rect x="388" y="134" width="304" height="68" rx="8" class="card"/>
+    <text x="404" y="160" class="label">V1 编码器</text>
+    <text x="404" y="183" class="detail">自底向上聚合；默认 32 MiB</text>
+    <rect x="740" y="134" width="304" height="68" rx="8" class="shared"/>
+    <text x="756" y="160" class="label">本地池 / 共享池</text>
+    <text x="756" y="183" class="detail">写依赖和 COMMIT，再 CAS 更新 HEAD</text>
+    <rect x="740" y="232" width="304" height="68" rx="8" class="shared"/>
+    <text x="756" y="258" class="label">独立分发包 · file / S3 / GCS</text>
+    <text x="756" y="281" class="detail">原样导出；最后写 image.json</text>
+    <rect x="388" y="232" width="304" height="68" rx="8" class="card"/>
+    <text x="404" y="258" class="label">image pull --from</text>
+    <text x="404" y="281" class="detail">验证后绑定固定句柄，不下载文件内容</text>
+    <path d="M340 168H384" class="arrow"/>
+    <path d="M692 168H736" class="arrow"/>
+    <path d="M892 202V228" class="arrow"/>
+    <path d="M740 266H696" class="arrow"/>
+    <text x="906" y="222" class="detail">push --to</text>
+  </g>
+
+  <rect x="20" y="329" width="1040" height="352" rx="12" class="panel"/>
+  <text x="36" y="359" class="section">02 / 打开与按需读取</text>
+  <g>
+    <rect x="36" y="381" width="304" height="68" rx="8" class="card"/>
+    <text x="52" y="407" class="label">格式标记与固定句柄</text>
+    <text x="52" y="430" class="detail">format.json / 句柄与经校验的 COMMIT</text>
+    <rect x="388" y="381" width="304" height="68" rx="8" class="card"/>
+    <text x="404" y="407" class="label">版本分派 · 一次打开选定</text>
+    <text x="404" y="430" class="detail">V1 → V1 reader；未知或不匹配则拒绝</text>
+    <rect x="36" y="485" width="304" height="68" rx="8" class="card"/>
+    <text x="52" y="511" class="label">有界缓存</text>
+    <text x="52" y="534" class="detail">复用索引和内容；同 key 的冷 miss 合并</text>
+    <rect x="388" y="485" width="304" height="68" rx="8" class="card"/>
+    <text x="404" y="511" class="label">V1 reader · 固定 revision</text>
+    <text x="404" y="534" class="detail">按索引定位，限长校验、解压后交付</text>
+    <rect x="740" y="485" width="304" height="68" rx="8" class="shared"/>
+    <text x="756" y="511" class="label">存储与传输适配器</text>
+    <text x="756" y="534" class="detail">file / S3 / GCS / HTTP(S)；或 socket</text>
+    <rect x="388" y="589" width="304" height="68" rx="8" class="card"/>
+    <text x="404" y="615" class="label">Host FUSE / VM direct lower</text>
+    <text x="404" y="638" class="detail">Open / Stat / List / Read</text>
+    <rect x="740" y="589" width="304" height="68" rx="8" class="write"/>
+    <text x="756" y="615" class="label">独立可写层 · upper</text>
+    <text x="756" y="638" class="detail">copy-up 后写入；不修改已发布内容</text>
+    <path d="M540 300V377" class="arrow"/>
+    <path d="M340 415H384" class="arrow"/>
+    <path d="M540 449V481" class="arrow"/>
+    <path d="M388 519H344" class="arrow"/>
+    <path d="M692 519H736" class="arrow"/>
+    <path d="M540 589V557" class="arrow"/>
+    <path d="M692 623H736" class="arrow write-path"/>
+  </g>
+
+  <rect x="20" y="695" width="1040" height="147" rx="12" class="panel"/>
+  <text x="36" y="725" class="section">03 / 固定 revision 的 SHA-256 校验链</text>
+  <g>
+    <rect x="36" y="744" width="304" height="76" rx="8" class="card"/>
+    <text x="52" y="772" class="label">句柄 → COMMIT.json</text>
+    <text x="52" y="796" class="detail">绑定格式、平台、打包参数和元数据摘要</text>
+    <rect x="388" y="744" width="304" height="76" rx="8" class="card"/>
+    <text x="404" y="772" class="label">root.bin → index.bin</text>
+    <text x="404" y="796" class="detail">目录属性、子 frame 和文件内容引用</text>
+    <rect x="740" y="744" width="304" height="76" rx="8" class="shared"/>
+    <text x="756" y="772" class="label">内容 blob</text>
+    <text x="756" y="796" class="detail">按压缩偏移定位帧；尾表用于校验</text>
+    <path d="M340 782H384" class="arrow"/>
+    <path d="M692 782H736" class="arrow"/>
+  </g>
+</svg>

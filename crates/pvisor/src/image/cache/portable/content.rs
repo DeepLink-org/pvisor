@@ -1,19 +1,16 @@
 //! Immutable content-only blobs. Small-file offsets belong to authenticated
 //! data frames; file names, ownership, timestamps and links never enter blobs.
-use super::binary::{SourceContent, SourceEntry};
 use super::frames::{self, Digest, FrameRef};
 use super::*;
 use bincode::{Decode, Encode};
 use std::collections::BTreeSet;
 
-const SMALL_FILE_BYTES: u64 = 64 * 1024;
-const DATA_FRAME_BYTES: usize = 16 * 1024;
+pub(super) const SMALL_FILE_BYTES: u64 = 64 * 1024;
+pub(super) const DATA_FRAME_BYTES: usize = 16 * 1024;
 // The packing target is not a hard file-size limit: one 64 KiB file must
 // remain readable, including its slot-table/codec overhead.
-const MAX_PACK_FRAME_RAW: usize = SMALL_FILE_BYTES as usize + 8192;
-const PACK_BYTES: usize = 1024 * 1024;
-
-#[derive(Clone, Debug, Encode, Decode)]
+pub(super) const MAX_PACK_FRAME_RAW: usize = SMALL_FILE_BYTES as usize + 8192;
+#[derive(Clone, Debug, PartialEq, Eq, Encode, Decode)]
 pub(super) struct Blob {
     digest: Digest,
     bytes: u64,
@@ -25,32 +22,49 @@ pub(super) struct Packed {
     pub frame: u32,
     pub slot: u32,
 }
-impl Packed {
-    pub(super) fn object(&self) -> (String, u64) {
-        (pack_key(&self.blob), self.blob.bytes)
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum LegacyObject {
+    Pack(Digest, u64),
+    Chunk(Digest, u32),
+}
+
+impl LegacyObject {
+    pub(super) fn verify(self, bytes: &[u8]) -> anyhow::Result<()> {
+        match self {
+            Self::Pack(digest, length) => ensure!(
+                bytes.len() as u64 == length && frames::digest(bytes) == digest,
+                "legacy pack object digest or length mismatch"
+            ),
+            Self::Chunk(digest, length) => {
+                decode_chunk(bytes, &digest, length)?;
+            }
+        }
+        Ok(())
     }
 }
 
 /// A publication must not reveal slots retained from a different revision.
 pub(super) fn validate_public_packs(
     cache: &PortableCache,
-    contents: BTreeMap<String, Packed>,
-) -> anyhow::Result<()> {
+    contents: Vec<Packed>,
+) -> anyhow::Result<BTreeMap<String, LegacyObject>> {
     let mut packs = BTreeMap::<String, (Blob, BTreeSet<(u32, u32)>)>::new();
-    for packed in contents.into_values() {
+    for packed in contents {
         let entry = packs
             .entry(pack_key(&packed.blob))
             .or_insert_with(|| (packed.blob.clone(), BTreeSet::new()));
+        ensure!(entry.0 == packed.blob, "inconsistent legacy pack reference");
         entry.1.insert((packed.frame, packed.slot));
     }
-    for (blob, slots) in packs.into_values() {
-        let layout = cache.data_frame(&blob, &blob.layout)?;
+    for (blob, slots) in packs.values() {
+        let layout = cache.data_frame(blob, &blob.layout)?;
         let Data::Directory(children) = &layout.value else {
             bail!("invalid pack layout");
         };
         let mut count = 0;
         for (frame, reference) in children.iter().enumerate() {
-            let data = cache.data_frame(&blob, reference)?;
+            let data = cache.data_frame(blob, reference)?;
             let Data::Slots { offsets, .. } = &data.value else {
                 bail!("invalid pack slot frame");
             };
@@ -64,15 +78,18 @@ pub(super) fn validate_public_packs(
         }
         ensure!(count == slots.len(), "invalid public pack references");
     }
-    Ok(())
+    Ok(packs
+        .into_iter()
+        .map(|(key, (blob, _))| (key, LegacyObject::Pack(blob.digest, blob.bytes)))
+        .collect())
 }
 #[derive(Encode, Decode)]
-enum Data {
+pub(super) enum Data {
     Slots { offsets: Vec<u32>, bytes: Vec<u8> },
     Directory(Vec<FrameRef>),
 }
 pub(super) struct Cached {
-    value: Data,
+    pub(super) value: Data,
     reference: Option<FrameRef>,
 }
 pub(super) struct DataCache {
@@ -127,6 +144,7 @@ pub(super) fn pack_key(blob: &Blob) -> String {
     format!("data/packs/{}/{}/{hex}", &hex[..2], &hex[2..4])
 }
 
+#[cfg(test)]
 fn pack(staging: &std::path::Path, digests: &[String]) -> anyhow::Result<(Vec<u8>, Vec<Packed>)> {
     let mut writer = frames::Writer::default();
     let mut references = Vec::new();
@@ -179,19 +197,6 @@ fn pack(staging: &std::path::Path, digests: &[String]) -> anyhow::Result<(Vec<u8
     ))
 }
 
-pub(super) fn encode_chunk(bytes: Vec<u8>) -> anyhow::Result<Vec<u8>> {
-    let mut writer = frames::Writer::default();
-    let length = bytes.len() as u32;
-    writer.push(
-        &Data::Slots {
-            offsets: vec![0, length],
-            bytes,
-        },
-        1,
-    )?;
-    writer.finish()
-}
-
 impl PortableCache {
     fn admit_data(&self, key: String, value: Cached) -> Arc<Cached> {
         let mut cache = self.blobs.lock().unwrap();
@@ -200,16 +205,27 @@ impl PortableCache {
         value
     }
     fn data_frame(&self, blob: &Blob, reference: &FrameRef) -> anyhow::Result<Arc<Cached>> {
+        self.load_data_frame(
+            &pack_key(blob),
+            blob.bytes,
+            reference,
+            frames::MAX_FRAME_RAW,
+        )
+    }
+
+    pub(super) fn load_data_frame(
+        &self,
+        object: &str,
+        object_bytes: u64,
+        reference: &FrameRef,
+        limit: usize,
+    ) -> anyhow::Result<Arc<Cached>> {
         ensure!(
-            blob.bytes <= MAX_OBJECT as u64,
+            object_bytes <= MAX_OBJECT as u64,
             "content blob exceeds limit"
         );
-        frames::validate(reference, blob.bytes, frames::MAX_FRAME_RAW)?;
-        let key = format!(
-            "{}:{}",
-            frames::digest_string(&blob.digest),
-            reference.offset
-        );
+        frames::validate(reference, object_bytes, limit)?;
+        let key = format!("{object}:{}", reference.offset);
         if let Some(value) = self.blobs.lock().unwrap().get(&key).cloned() {
             ensure!(
                 value.reference.as_ref() == Some(reference),
@@ -243,7 +259,7 @@ impl PortableCache {
             bytes
         } else {
             let bytes = self.storage.verified(
-                &pack_key(blob),
+                object,
                 Some(reference.offset..reference.offset + reference.encoded as u64),
                 reference.encoded as usize,
                 |bytes| {
@@ -371,108 +387,8 @@ impl PortableCache {
         );
         Ok(bytes[offset..end].to_vec())
     }
-    pub(super) fn plan_packs(
-        &self,
-        entries: &[SourceEntry],
-        contents: &mut BTreeMap<String, SourceContent>,
-        staging: &std::path::Path,
-        previous: BTreeMap<String, Packed>,
-    ) -> anyhow::Result<BTreeMap<String, PathBuf>> {
-        let mut grouped: BTreeMap<Vec<u8>, BTreeSet<String>> = BTreeMap::new();
-        let mut verified = BTreeMap::new();
-        let mut assigned = BTreeSet::new();
-        for entry in entries {
-            let Some(digest) = &entry.content else {
-                continue;
-            };
-            let content = contents.get_mut(digest).context("unknown source content")?;
-            if content.size == 0
-                || content.size > SMALL_FILE_BYTES
-                || !assigned.insert(digest.clone())
-            {
-                continue;
-            }
-            if let Some(packed) = previous.get(digest) {
-                let available = if let Some(available) = verified.get(&packed.blob.digest) {
-                    *available
-                } else {
-                    let available =
-                        if let Some(bytes) = self.storage.get(&pack_key(&packed.blob))? {
-                            ensure!(
-                                bytes.len() as u64 == packed.blob.bytes
-                                    && frames::digest(&bytes) == packed.blob.digest,
-                                "reused data blob digest mismatch"
-                            );
-                            true
-                        } else {
-                            false
-                        };
-                    verified.insert(packed.blob.digest, available);
-                    available
-                };
-                if available {
-                    self.read_packed(
-                        packed,
-                        &frames::parse_digest(digest)?,
-                        content.size,
-                        0,
-                        content.size,
-                    )?;
-                    content.packed = Some(packed.clone());
-                    continue;
-                }
-            }
-            let parent = entry
-                .path
-                .iter()
-                .rposition(|b| *b == b'/')
-                .map_or(&[][..], |i| &entry.path[..i]);
-            grouped
-                .entry(parent.to_vec())
-                .or_default()
-                .insert(digest.clone());
-        }
-
-        let mut output = BTreeMap::new();
-        for digests in grouped.into_values() {
-            let mut group = Vec::new();
-            let mut bytes = 0;
-            for digest in digests {
-                let size = contents[&digest].size as usize;
-                if bytes + size > PACK_BYTES || group.len() >= 4096 {
-                    finish_pack(&mut output, contents, staging, &group)?;
-                    group.clear();
-                    bytes = 0;
-                }
-                bytes += size;
-                group.push(digest);
-            }
-            if !group.is_empty() {
-                finish_pack(&mut output, contents, staging, &group)?;
-            }
-        }
-        Ok(output)
-    }
 }
-fn finish_pack(
-    output: &mut BTreeMap<String, PathBuf>,
-    contents: &mut BTreeMap<String, SourceContent>,
-    staging: &std::path::Path,
-    digests: &[String],
-) -> anyhow::Result<()> {
-    let (bytes, positions) = pack(staging, digests)?;
-    let key = pack_key(&positions[0].blob);
-    for (digest, location) in digests.iter().zip(positions) {
-        contents.get_mut(digest).unwrap().packed = Some(location);
-    }
-    let directory = staging.join("packed");
-    std::fs::create_dir_all(&directory)?;
-    let path = directory.join(crate::util::encode_hex(&frames::digest(&bytes)));
-    std::fs::write(&path, bytes)?;
-    output.insert(key, path);
-    Ok(())
-}
-fn validate_slots(count: u64, offsets: &[u32], bytes: &[u8]) -> anyhow::Result<()> {
+pub(super) fn validate_slots(count: u64, offsets: &[u32], bytes: &[u8]) -> anyhow::Result<()> {
     ensure!(
         offsets.len() as u64 == count + 1
             && offsets.first() == Some(&0)

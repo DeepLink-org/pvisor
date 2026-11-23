@@ -296,7 +296,7 @@ impl Native {
                 .unwrap()
                 .pull(reference.to_str().unwrap())
                 .unwrap();
-            assert!(image.cache.handle.starts_with("pvisor-v2:"));
+            assert!(image.cache.handle.starts_with("pvisor-image-pack:v1:"));
             image
         } else {
             let rootfs = PathBuf::from(std::env::var_os("PVISOR_DOCKER_TEST_ROOTFS").expect(
@@ -999,7 +999,7 @@ fn docker_build_cli_exports_scratch_image_and_keeps_tags_on_error() {
             .unwrap(),
         b"hello"
     );
-    assert!(image.cache.handle.starts_with("pvisor-v2:"));
+    assert!(image.cache.handle.starts_with("pvisor-image-pack:v1:"));
     assert!(serde_json::to_value(image).unwrap().get("rootfs").is_none());
     assert!(archive.is_file());
     fs::write(

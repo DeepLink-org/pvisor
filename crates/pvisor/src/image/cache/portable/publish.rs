@@ -47,11 +47,22 @@ impl PortableCache {
     fn put_verified(&self, key: &str, bytes: Vec<u8>) -> anyhow::Result<()> {
         let digest = hash(&bytes);
         let len = bytes.len();
-        self.storage.put(key, bytes, true)?;
-        let stored = self
-            .storage
-            .get(key)?
-            .context("published object is missing")?;
+        // Local creation also drains directory durability barriers when the
+        // object already exists, including after a concurrent publisher wins.
+        let existing = if self.storage.is_local() {
+            None
+        } else {
+            self.storage.get(key)?
+        };
+        let stored = match existing {
+            Some(stored) => stored,
+            None => {
+                self.storage.put(key, bytes, true)?;
+                self.storage
+                    .get(key)?
+                    .context("published object is missing")?
+            }
+        };
         ensure!(
             stored.len() == len && hash(&stored) == digest,
             "immutable cache object digest mismatch; repair requires administrative action"
@@ -67,6 +78,8 @@ impl PortableCache {
         observed: Option<StoredObject>,
     ) -> anyhow::Result<(Response, Vec<u8>)> {
         ensure!(!self.read_only, "cannot publish to a read-only cache");
+        let packing = Format::for_write(&self.storage)?;
+        let version = Version::ImagePackV1;
         let worker_limit =
             publication_workers(std::env::var_os("PVISOR_IMAGE_PUBLISH_WORKERS").as_deref())?;
         let platform = platform(architecture)?;
@@ -77,6 +90,10 @@ impl PortableCache {
             .map(|o| decode_head(&o.bytes, &key, platform))
             .transpose()?
             .map_or(Ok(1), |h| {
+                ensure!(
+                    h.format_version == version.record(),
+                    "cannot write a prerelease HEAD"
+                );
                 h.generation
                     .checked_add(1)
                     .context("HEAD generation overflow")
@@ -84,17 +101,6 @@ impl PortableCache {
         // Stage file-independent chunks on disk so the source is read once and
         // publication never races re-reading a changed source file.
         let staging = tempfile::tempdir_in(&store.root)?;
-        let previous = if let Some(object) = &observed {
-            let head = decode_head(&object.bytes, &key, platform)?;
-            self.load(&Handle {
-                image_key: key.clone(),
-                platform: platform.into(),
-                revision: head.revision[7..].into(),
-            })?
-            .packed_contents()?
-        } else {
-            BTreeMap::new()
-        };
         let mut entries = Vec::new();
         let mut pending = vec![Vec::new()];
         while let Some(path) = pending.pop() {
@@ -184,7 +190,7 @@ impl PortableCache {
                 let mut remaining = *size;
                 let mut chunks = Vec::new();
                 while remaining > 0 {
-                    let len = remaining.min(MAX_READ as u64) as usize;
+                    let len = remaining.min(u64::from(CHUNK_BYTES)) as usize;
                     let mut bytes = vec![0; len];
                     file.read_exact(&mut bytes)
                         .context("source changed during publication")?;
@@ -254,7 +260,6 @@ impl PortableCache {
                         SourceContent {
                             size: *size,
                             chunks,
-                            packed: None,
                         },
                     );
                 }
@@ -265,39 +270,19 @@ impl PortableCache {
             }
             entry.content = content_digest;
         }
-        let mut uploads = self.plan_packs(&entries, &mut contents, staging.path(), previous)?;
-        let mut inventory = BTreeMap::<String, u64>::new();
-        for content in contents.values() {
-            if let Some(packed) = &content.packed {
-                let (key, length) = packed.object();
-                inventory.insert(key, length);
-            } else {
-                for (digest, _) in &content.chunks {
-                    let key = data_key(digest)?;
-                    if !inventory.contains_key(&key) {
-                        let encoded = content::encode_chunk(std::fs::read(
-                            staging.path().join(&digest[7..]),
-                        )?)?;
-                        inventory.insert(key.clone(), encoded.len() as u64);
-                        let directory = staging.path().join("encoded-chunks");
-                        std::fs::create_dir_all(&directory)?;
-                        let path = directory.join(&digest[7..]);
-                        std::fs::write(&path, encoded)?;
-                        uploads.insert(key, path);
-                    }
-                }
-            }
-        }
-        let mut metadata = binary::encode(&entries, &contents)?;
+        let plan = aggregate::plan(&entries, &contents, staging.path(), packing)?;
+        let mut metadata = binary::encode(&entries, &contents, &plan)?;
+        let largest = plan.objects.values().copied().max().unwrap_or(1) as usize;
+        let worker_limit = worker_limit.min(MAX_OBJECT / largest);
         metadata.insert(
             "objects.bin".into(),
-            frames::encode(&inventory.into_iter().collect::<Vec<_>>())?,
+            frames::encode(&plan.objects.into_iter().collect::<Vec<_>>())?,
         );
         let (config_digest, layer_digests) = provenance(store, &image.digest)?;
         metadata.insert(
             "manifest.json".into(),
             serde_json::to_vec(&Manifest {
-                format_version: 2,
+                format_version: version.record(),
                 reference: canonical.into(),
                 platform: platform.into(),
                 manifest_digest: image.digest.clone(),
@@ -306,7 +291,7 @@ impl PortableCache {
             })?,
         );
         let configuration = Configuration {
-            format_version: 2,
+            format_version: version.record(),
             architecture: architecture.into(),
             env: image.env.clone(),
             entrypoint: image.entrypoint.clone(),
@@ -314,6 +299,12 @@ impl PortableCache {
             totals,
         };
         metadata.insert("config.json".into(), serde_json::to_vec(&configuration)?);
+        for (name, bytes) in &metadata {
+            ensure!(
+                !bytes.is_empty() && bytes.len() <= metadata_limit(name),
+                "image metadata exceeds size limit: {name}"
+            );
+        }
         let descriptors = metadata
             .iter()
             .map(|(name, bytes)| {
@@ -327,49 +318,47 @@ impl PortableCache {
             })
             .collect();
         let commit = Commit {
-            format_version: 2,
+            format: Some(format::family()),
+            format_version: version.record(),
             image_key: key.clone(),
             platform: platform.into(),
             manifest_digest: image.digest.clone(),
+            packing: Some(packing),
             metadata: descriptors,
         };
         let commit_bytes = serde_json::to_vec(&commit)?;
         ensure!(
-            commit_bytes.len() <= MAX_CONTROL
-                && metadata
-                    .iter()
-                    .filter(|(name, _)| name.ends_with(".json"))
-                    .all(|(_, b)| b.len() <= MAX_CONTROL),
-            "control metadata exceeds limit"
+            commit_bytes.len() <= MAX_CONTROL,
+            "image COMMIT exceeds size limit"
         );
         let revision = hash(&commit_bytes);
         let handle = Handle {
+            version,
             image_key: key.clone(),
             platform: platform.into(),
             revision: revision[7..].into(),
         };
         let upload = uuid::Uuid::new_v4().to_string();
         let upload_prefix = format!("meta/{key}/platforms/{platform}/uploads/{upload}");
-        self.put_verified("format.json", FORMAT.to_vec())?;
+        self.put_verified("format.json", Format::V1(packing).encode()?)?;
         self.put_verified(
             &format!("meta/{key}/identity.json"),
             serde_json::to_vec(&Identity {
-                format_version: 2,
+                format_version: version.record(),
                 image_key: key,
                 reference: canonical.into(),
             })?,
         )?;
         self.put_verified(&format!("{upload_prefix}/plan.json"),serde_json::to_vec(&serde_json::json!({
-            "format_version":2,"platform":platform,"revision":revision,"manifest_digest":image.digest,
+            "format_version":version.record(),"platform":platform,"revision":revision,"manifest_digest":image.digest,
             "expected_head":observed.as_ref().map(|o|&o.version.e_tag)
         }))?)?;
-        // Bound upload workers; all staged data is immutable and source bytes
-        // have already been verified. Reused packs are referenced, never rewritten.
+        // Bound concurrent uploads of verified immutable objects.
         let batch_directories = matches!(&self.storage, Storage::Pool(_))
             && std::env::var_os("PVISOR_IMAGE_BATCH_DIRECTORY_SYNC").as_deref()
                 == Some(OsStr::new("1"));
         let directories = std::sync::Mutex::new(std::collections::BTreeSet::new());
-        let uploads = uploads.into_iter().collect::<Vec<_>>();
+        let uploads = plan.uploads.into_iter().collect::<Vec<_>>();
         let publication_started = batch_directories.then(std::time::Instant::now);
         std::thread::scope(|scope| {
             let workers = (0..uploads.len().min(worker_limit))
@@ -426,7 +415,7 @@ impl PortableCache {
         self.put_verified(&format!("{}/COMMIT.json", handle.prefix()), commit_bytes)?;
         let loaded = self.load(&handle)?;
         let head = Head {
-            format_version: 2,
+            format_version: version.record(),
             image_key: handle.image_key.clone(),
             platform: platform.into(),
             revision,
@@ -444,7 +433,7 @@ impl PortableCache {
             // SDK retries can turn a lost successful PUT response into a
             // precondition failure. The unique publication ID proves whether
             // this execution committed, even when its revision matches a rival.
-            if self.storage.get(&key)?.as_ref() != Some(&bytes) {
+            if self.storage.is_local() || !self.storage.matches_bytes(&key, &bytes)? {
                 return Err(error.context(
                     "HEAD commit outcome unresolved; re-observe source and HEAD before retrying",
                 ));
@@ -503,6 +492,21 @@ fn provenance(
 #[cfg(test)]
 mod worker_tests {
     use super::*;
+
+    #[test]
+    fn reusing_local_object_rechecks_its_durability_barrier() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage = Storage::filesystem(dir.path().into(), false).unwrap();
+        let key = "data/blobs/object";
+        let bytes = b"verified".to_vec();
+        storage.put_verified(key, bytes.clone()).unwrap();
+        let cache = PortableCache::new(storage.clone(), None, false);
+        super::super::super::storage::FAIL_OBJECT_DIRECTORY_SYNC.with(|flag| flag.set(true));
+        assert!(cache.put_verified(key, bytes.clone()).is_err());
+        assert!(storage.matches_bytes(key, &bytes).unwrap());
+        cache.put_verified(key, bytes).unwrap();
+    }
+
     #[test]
     fn publication_worker_limit_is_bounded_and_defaults_to_eight() {
         assert_eq!(publication_workers(None).unwrap(), 8);

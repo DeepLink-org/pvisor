@@ -1,6 +1,6 @@
 # Shared image cache and storage backends
 
-Use `pvisor push` to distribute a local image, and use the Rust cache client to inspect immutable image contents. `pvisor-daemon serve --cache` prepares OCI images for VM clients and stores their indexes and content in the local V2 pool. File queries select a pinned `image_handle` and do not contact an OCI registry.
+Use `pvisor push` to distribute a local image, and use the Rust cache client to inspect immutable image contents. `pvisor-daemon serve --cache` prepares OCI images for VM clients and stores their indexes and content in the local Image Pack pool. File queries select a pinned `image_handle` and do not contact an OCI registry.
 
 ## Local image directory {#local-image-store}
 
@@ -11,17 +11,16 @@ An explicit Session/cache image-store option takes precedence, followed by `PVIS
 ```text
 <image-store>/
 ├── configs/<config-digest>.json
-├── pool-v2/
+├── image-pack-v1/
 │   ├── format.json
-│   ├── pool-format.json
 │   ├── meta/<image-key>/...
-│   └── data/{packs,sha256}/...
+│   └── data/blobs/...
 ├── staging/.import-*/
 ├── locks/
 └── projections/
 ```
 
-Download/extraction directories under `staging` are removed on normal success or failure; process crashes can leave residual directories. `configs` retains digest-checked original OCI configuration. All new local image publication uses `pool-v2`. Docker pull still resolves the registry, but reuses matching shared-pool digests. Build tags also publish V2 references, committing each tag independently without a multi-tag transaction. `rmi` removes container frontend catalog references without reclaiming shared content; active and stopped tasks retain fixed revisions.
+Download/extraction directories under `staging` are removed on normal success or failure; process crashes can leave residual directories. `configs` retains digest-checked original OCI configuration. New local images use `image-pack-v1`; pinned prerelease V2 images retain their old locations. Docker pull still resolves the registry, but reuses matching shared-pool digests. Build commits each tag independently. `rmi` removes catalog references without reclaiming shared content; active and stopped tasks retain fixed revisions.
 
 Short and fully qualified Docker Hub aliases share one canonical catalog identity, including pull/build replacement, create/FROM lookup and rmi. Equivalent build tags publish once. Distinct tags and existing containers retain their pinned revisions. Catalogs containing duplicate canonical identities fail explicitly; rebuild those catalogs in a fresh store.
 
@@ -31,15 +30,18 @@ Image records bind the selected platform and the content-pool revision.
 
 ## Choose a backend
 
-Server, filesystem, S3 and local pools use [shared image cache V2](../design/lazy-image-v2.md): independent image metadata, compressed directory radix indexes and shared content pools.
+Filesystem, S3, Google Cloud Storage and cache servers write [Image Pack V1](../design/experimental/image-pack/index.md). New pools default to a 32 MiB blob target; to initialize a separate pool at 64 MiB, set `PVISOR_IMAGE_BLOB_TARGET_MIB=64` on the writer. Existing pools keep their initialized policy.
 
-Server, filesystem, and S3 caches share the same prepare/list/stat/read interface and VM configuration. Filesystem and S3 are direct storage backends and require no cache serve process.
+For `PVISOR_CACHE_LOCATION`, the URL scheme selects the backend; `PVISOR_CACHE_BACKEND` is unnecessary. Direct storage backends do not require `pvisor-daemon serve --cache`. Without a repository URL, existing cache server discovery applies.
 
-| Backend | Configuration | Use case |
+| URL | Access | Use case |
 |---|---|---|
-| `server` (default) | PVISOR_CACHE_SERVER=unix://... or loopback tcp://... | Serve the host's V2 image pool or an existing central service |
-| `filesystem` | PVISOR_CACHE_BACKEND=filesystem and PVISOR_CACHE_LOCATION=/absolute/directory | Multiple local processes or a shared disk/NFS cache |
-| `s3` | PVISOR_CACHE_BACKEND=s3 and PVISOR_CACHE_LOCATION=s3://BUCKET/PREFIX | Share images across machines through object storage without a cache service |
+| `file:///ABSOLUTE/DIRECTORY` | Read and write | Local or shared filesystem repository |
+| `s3://BUCKET/PREFIX` | Read and write | AWS S3 or an S3-compatible service |
+| `gs://BUCKET/PREFIX` | Read and write | Google Cloud Storage through Apache OpenDAL |
+| `https://HOST/PREFIX` or `http://HOST/PREFIX` | Read only | Static mirror with exact Range GET |
+
+`PVISOR_CACHE_SERVER=unix://...` or loopback `tcp://...` selects a pVisor cache service, not a repository. The legacy `PVISOR_CACHE_BACKEND=filesystem` with a bare absolute path still works; prefer a `file:///` URL for new configurations.
 
 Set `PVISOR_CACHE_READ_ONLY=true` to make an embedded client read-only. A read-only client cannot refresh or populate a missing shared-pool name, and may still keep a private acceleration cache.
 
@@ -53,9 +55,11 @@ SOURCE=$(pvisor push alpine:3.20 --to s3://your-bucket/releases | jq -er .source
 pvisor image pull alpine:published --from "$SOURCE"
 ```
 
-Use `--to file:///ABSOLUTE/PATH` to stage the same bundle for a static HTTP(S) mirror. The receiver imports the descriptor, OCI configuration and root metadata. File contents are read on demand. Push uses the platform recorded by the local build or pull.
+Use `--to file:///ABSOLUTE/PATH` to write an offline bundle. On a host that can access the directory, pass the returned `file:///` URL directly to `image pull --from`; no HTTP server is needed. The same bundle can be served by a static HTTP(S) mirror. Import reads the descriptor, OCI configuration and root metadata; file contents are read on demand. After importing a `file:///` publication, keep the directory available and immutable.
 
 S3 uses SigV4 over HTTPS. Publishers need `s3:GetObject` and `s3:PutObject`; readers need `s3:GetObject`. Host environment credentials or workload roles supply authentication. For an S3-compatible service, set `AWS_ENDPOINT` and the region.
+
+Use `--to gs://BUCKET/PREFIX` to publish to an existing GCS bucket. OpenDAL uses host Google Application Default Credentials; set `GOOGLE_APPLICATION_CREDENTIALS` when using an explicit credential file. GCS conditions creates and updates on object generations. Keep credentials out of URLs, image descriptors and receipts.
 
 ### Shared-pool layout
 
@@ -79,11 +83,10 @@ s3://your-bucket/pvisor-cache/
 │           ├── plan.json
 │           └── progress.json
 └── data/
-    ├── packs/<first-two-hex>/<next-two-hex>/<encoded-blob-sha256>
-    └── sha256/<first-two-hex>/<next-two-hex>/<plaintext-chunk-sha256>
+    └── blobs/<first-two-hex>/<next-two-hex>/<encoded-blob-sha256>
 ```
 
-Small files ≤64 KiB are packed by directory into immutable compressed blobs. Indexes hold blob/frame/slot references; slot tables in data frames hold offsets. Large files split independently from offset 0 into content chunks of at most 1 MiB. Data objects contain no filesystem metadata; placements from the previous HEAD can survive rename, moves and chmod. Partially overlapping small-file sets do not guarantee physical per-file deduplication across images. Paths/symlinks retain raw bytes, hardlinks retain inode identity, and arbitrary xattrs are not added.
+The writer groups small-file frames bottom-up by directory and packs large-file frames in file-offset order. Indexes point to compressed byte ranges and slots. Only complete encoded blobs deduplicate across revisions; previous HEAD does not affect placement. See the [packing rules](../design/experimental/image-pack/index.md#packing).
 
 ### Layout and request costs
 
@@ -91,7 +94,7 @@ Individual binary metadata objects are capped at 64 MiB and control objects at 1
 
 Publishing writes and verifies shared content, per-image metadata, and COMMIT before CAS-updating its own platform HEAD. Only one publisher can commit against a given old HEAD; conflicts fail explicitly rather than blindly overwriting. Corrupt existing immutable objects cannot be reused or overwritten while other images may reference them. Failures can leave unreferenced revisions/objects. Upload completion records remain in uploads for offline maintenance.
 
-Open fetches controls, root.bin and the root-directory frame without parsing the full file list. Lookup/readdir load independent compressed index frames; reads fetch relevant layout/data frames. The index LRU has a 16 MiB decoded residency limit and content a 64 MiB/4,096-entry limit. Non-pool readers may persist encoded frames under <user-cache>/pvisor/cache-v2/objects/<location-hash>/. Ordinary local-pool reads create no persistent raw image mirror. Corrupt local caches are refetched; remote absence, corruption and authentication failures fail explicitly, without zero filling or registry fallback.
+Open fetches controls, root.bin and the root-directory frame without parsing the full file list. Lookup/readdir load independent compressed index frames; V1 content reads fetch only the required compressed frame ranges. The index LRU has a 16 MiB decoded residency limit and content a 64 MiB/4,096-entry limit. Non-pool readers may persist encoded frames under <user-cache>/pvisor/cache-v2/objects/<location-hash>/. Ordinary local-pool reads create no persistent raw image mirror. Corrupt local caches are refetched; remote absence, corruption and authentication failures fail explicitly, without zero filling or registry fallback.
 
 Writable mode reuses mutable-tag HEADs for five minutes; publishers update with --refresh. Read-only mode always uses published HEADs without registry queries. Tasks pin returned image_handles, and older revisions remain readable while retained. IMAGE@sha256:… is an independent reference whose meta must be published separately; a tag's returned image_handle already pins that version.
 

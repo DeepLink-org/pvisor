@@ -649,15 +649,18 @@ Push requires an explicit destination; ordinary OCI registry push is not
 implemented. It snapshots an existing local revision, retains its platform and
 never pulls a missing source. Ambient cache settings cannot select the target.
 The JSON receipt contains `source`, `image_handle`, `digest` and `platform`.
-Import reads the descriptor, original OCI config and V2 root metadata, leaving
-file contents remote. It preserves labels, health checks and build defaults;
+The URL scheme selects the backend: push accepts `file:///`, `s3://` and
+`gs://`; import also accepts HTTP(S). A `file:///` receipt can be imported
+directly, without a server. Import reads the descriptor, original OCI config
+and pinned root metadata, leaving file contents at the source. It preserves
+labels, health checks and build defaults;
 existing names require `--refresh`, and a failed refresh leaves the prior
 catalog record intact. Inspect retains its Docker array and adds
 `Pvisor.Source/ImageHandle/Digest/Platform` for remote bindings.
 
 `--images-dir DIR` explicitly selects the daemon's prepared-template catalog.
 Push, pull, ls and inspect access that catalog from the `pvisor` process.
-Pull without `--from` resolves the catalog's configured V2 registries; ordinary
+Pull without `--from` resolves the catalog's configured image registries; ordinary
 pulls use OCI. Queries never resolve missing names. For file-level diagnostics
 use the Rust cache client. See the [lazy-image specification](../../tests/spec/lazy-image/spec.md)
 and [daemon migration](../pvisor-daemon/README.md#s3-and-httphttps-lazy-image-repositories).
@@ -1171,9 +1174,9 @@ tests. It must be private to the current user and cannot be a bind-mount source
 or ancestor. Images share the [local image store](../../docs/src/en/reference/shared-image-cache.md#local-image-store)
 with spawn and the cache server; `PVISOR_IMAGE_STORE` selects it. Without that
 override, an explicit Docker home keeps images in its own `images` directory.
-New pulls and builds use that image store's `pool-v2`: the cache's
-compressed directory radix index and shared seekable-Zstd content pool. Small
-files pack by directory; large files use independent 1 MiB chunks. VM reads go through the direct lazy
+New pulls and builds use that image store's `image-pack-v1`: compressed directory
+indexes and shared seekable-Zstd blobs. Small-file frames aggregate bottom-up;
+large files group independent 1 MiB frames in blobs. VM reads go through the direct lazy
 backend; ordinary reads do not accumulate a second raw disk cache. Full OCI
 archives and extracted rootfs trees are temporary import/build inputs, except
 explicit `--output` exports. Original configurations remain under the image store's `configs`.
@@ -1188,9 +1191,9 @@ directory is retained. `SSL_CERT_FILE` can supply a host registry CA bundle.
 Socket clients and the VM bridge require protocol V2; unsupported peers fail
 without automatic downgrade, even when connection reuse is disabled.
 
-Storage requires V2 handles and pool encodings. To replace unsupported handles,
-re-pull the image and recreate the containers pinned to those handles; source data
-is never automatically deleted. Filesystem, S3 and pool use the same V2 physical format.
+Storage writes Image Pack V1 and still reads pinned prerelease V2 handles. To
+replace unsupported raw/paged handles, re-pull the image and recreate pinned
+containers. Source data is never automatically deleted.
 Arbitrary xattrs are rejected because the current pool format cannot preserve
 them. Cold random reads may decode up to a 1 MiB chunk; mmap uses ordinary guest
 page caching, with no new DAX path or measured performance claim. See the

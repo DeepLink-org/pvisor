@@ -171,6 +171,7 @@ nav = [
       { "EXP-001 (observation prototype): vCPU idle observation and automatic RAM offload" = "design/experimental/vcpu-idle-offload/index.md" },
       { "EXP-002 (design stage): Guest kernel filesystem cache" = "design/experimental/guest-stage-cache/index.md" },
       { "EXP-003 (restricted PoC): Agent asynchronous I/O and completion queues" = "design/experimental/agent-io-completion/index.md" },
+      { "EXP-004: pVisor Image Pack V1" = "design/experimental/image-pack/index.md" },
     ] },
     { "Research directions" = [
       { "Research directions" = "design/research/index.md" },
