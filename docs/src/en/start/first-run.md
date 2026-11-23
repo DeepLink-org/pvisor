@@ -14,6 +14,8 @@ description: Run an offline command, inspect staged files, selectively apply cha
 
 # Run a container and review an agent task {#local-workflow}
 
+New to pVisor on Apple Silicon? [Run your first container](container-quickstart.md) before trying this walkthrough.
+
 After [installation](installation.md), choose what to verify first: that a container can start, or when an agent's files reach your project. The examples are independent and neither needs a model account.
 
 - [Container commands](#docker-style): pull an image, start a separate VM, execute commands, then stop and remove the container.

@@ -51,7 +51,26 @@ class CiWorkflowTests(unittest.TestCase):
         self.assertEqual(shared["wheels"]["uses"], "./.github/workflows/wheel.yml")
         self.assertEqual(dependencies(shared["wheels"]), set())
         self.assertEqual(dependencies(shared["acceptance"]), {"wheels"})
-        self.assertEqual(dependencies(shared["verify"]), {"quality", "wheels", "acceptance"})
+        self.assertEqual(dependencies(shared["prepare-native"]), {"wheels"})
+        self.assertEqual(dependencies(shared["installer"]), {"prepare-native"})
+        self.assertEqual(dependencies(shared["verify"]), {"quality", "acceptance", "installer"})
+        self.assertEqual(shared["verify"]["name"], "Verify release artifact set")
+        self.assertEqual(
+            {row["platform"] for row in shared["installer"]["strategy"]["matrix"]["include"]},
+            {"linux-x86_64", "macos-arm64"},
+        )
+        uploads = {
+            step["with"]["name"]
+            for step in shared["prepare-native"]["steps"]
+            if step.get("uses", "").startswith("actions/upload-artifact@")
+        }
+        inputs = {
+            step["with"]["name"]
+            for step in shared["installer"]["steps"]
+            if step.get("uses", "").startswith("actions/download-artifact@")
+        }
+        self.assertEqual(uploads, {"${{ inputs.artifact_prefix }}-native"})
+        self.assertEqual(inputs, uploads)
         for channel, publisher in [("nightly", "publish"), ("release", "github-release")]:
             with self.subTest(channel=channel):
                 jobs = yaml.safe_load((workflows / f"{channel}.yml").read_text())["jobs"]

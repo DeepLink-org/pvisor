@@ -29,8 +29,8 @@ Issues = "https://github.com/DeepLink-org/pvisor/issues"
 [tool.uv.dependency-groups]
 dev = { requires-python = ">=3.12" }
 
-[tool.setuptools.packages.find]
-include = ["pvisor*"]
+[tool.setuptools]
+packages = ["pvisor"]
 
 [build-system]
 requires = ["setuptools>=77", "pyelftools==0.33"]

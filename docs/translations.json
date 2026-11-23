@@ -24,7 +24,7 @@
   "community/examples.md": "f69db364d33173aa7008e39ad4018f8faaedfc26f9807819a4c81649f02cbb63",
   "community/governance.md": "37ab05085e43d6f7718fbbb6428cffec99846ed8cc62e69fd524f3eac3113147",
   "community/index.md": "659938dc1e06ff19ac88cb3ea5b84e794a90b0a80c0e01946ac3161bc09ab701",
-  "community/releasing.md": "b38f39067841e03c08fa0e69e99f33a9caed701ac8b730c6a7fe698e96333d86",
+  "community/releasing.md": "335155f636b42f9e7e35d070e1dd4b45b14a88f20f132c746f76f3ce5bc06c44",
   "community/roadmap.md": "2810a8d0fee18fef199de7ab6b804777213553be2ca17635bc27fb11fc06fb6b",
   "community/testing.md": "1cfb832a81c16c9bc6ffd7a7149b8f775806771e56561826a1545ee9432e5981",
   "concepts/capabilities-and-evidence.md": "843d2a3e17a00d9525b4b7bb9298a7f38c4800d2d4a381ea0222843a6c22fd81",
@@ -130,9 +130,10 @@
   "security/index.md": "19e3046a76804bd13475b525a120ce282b398a00dfb2adaa1ae3ca83dffc06bd",
   "security/known-limitations.md": "2205993844411031b7b28cad82856adc854ffb14542cd0edded006c72b66e133",
   "security/threat-model.md": "cc5658c6d7ef3ece723f66c816826743e742c36ec7559edc5e0166eb2f148196",
-  "start/first-run.md": "f23806edbed412cf2071ff540ba2378fc4d19178cac9bb5b9d164b6aed6b1579",
+  "start/container-quickstart.md": "572438e8da33689b6d57ab2603eefd502ed0661d545aca33af0e383b8932cd50",
+  "start/first-run.md": "8f8ae389c59c28b944f56b515eee11700b2633b03f3a0f9b61fc0cfe9eaa4152",
   "start/infrastructure.md": "ebe6b603a55b9847724a354004facd7ec1026212d49f461c54060828f2d1e06f",
-  "start/installation.md": "6998fb0d2635740d269b5eb3e875e5fd16ec3b71a737f57791009bb4bebd68d1",
+  "start/installation.md": "2df2ad49ff7112316d36279943bdaff2b51cc189fe6afce27b25131e8b282cd3",
   "why/comparisons.md": "1a922a2c1f5fa1ff62e31230eb593d5bbfc101c1dcab5701995dab1cc166a352",
   "why/index.md": "4ed1ff47dc05e730414db6c6106a9e0a648828210321e603a9e3fa9468ecf74f"
 }

@@ -137,6 +137,10 @@ macOS VM 验收仍需独立的硬件验证记录。
 的验收记录、源码提交和待发布 wheel 的 SHA-256。Windows WHP CI 验收源码构建的
 profile，目前没有稳定版 Windows 安装包。
 
+两个渠道发布前均在 Linux x86_64 和 macOS arm64 验收 Shell 安装脚本。
+验收使用 CI 的候选归档和 `SHA256SUMS`，而不是 GitHub Releases 上的旧版本；
+通过 `sh` 标准输入安装，再检查已安装的版本、两个配套命令，以及输出 `hello` 的 Host 任务。
+
 构建 runner 还通过 Homebrew 式软链接布局测试原生归档，包括 host 执行和 companion
 定位。归档原样复制已签名的 macOS 程序；guest 内核已内嵌，来源记录保留在可执行文件旁。稳定发布的
 Homebrew 任务在 macOS 下载并安装已发布的归档，移除 runner 的 Cellar 组写和其他用户写权限，
@@ -169,15 +173,16 @@ Nightly 版本追加 `+g<run-number>.<commit>`，仅更新 GitHub 的 `nightly` 
 
 ## 分发演进 {#distribution-plan}
 
-发布流程已从校验过的 wheel 派生原生下载包和 Homebrew 配方。
-可选版本的独立安装器、结构化发行清单及其他包管理渠道仍属提案。
+发布流程从校验过的 wheel 派生原生下载包和 Homebrew 配方。
+[Shell 安装脚本](../start/installation.md#shell-installer)直接使用原生包，不重新构建。
+结构化发行清单及其他包管理渠道仍属提案。
 
 ### 渠道定位
 
 | 渠道 | 面向用户 | 当前状态与方向 |
 | --- | --- | --- |
 | PyPI | Python 环境中的 CLI 用户 | 已有 wheel 流程；补充独立工具环境的安装、升级验收 |
-| GitHub Release | CI、服务器与离线安装 | 已有 wheel、原生归档、固件源码及 SHA-256 清单；可选版本的安装器仍属提案 |
+| GitHub Release | CI、服务器与离线安装 | 已有 wheel、原生归档、固件源码及 SHA-256 清单；Shell 安装支持选择稳定版本及独立的滚动 Nightly |
 | Homebrew | Apple Silicon macOS 与 Linux x86_64 用户 | 生成配方并测试 macOS 安装；自动更新自有 tap 需要上述仓库变量与 token |
 | npm | Node 工具链中的 CLI 用户 | 按需求增加原生程序安装入口；与 TypeScript SDK 分开交付 |
 | crates.io / Cargo | Rust 嵌入与源码构建用户 | 后续评估；先处理内部 path 依赖、构建资源和公开 API 的发布边界 |

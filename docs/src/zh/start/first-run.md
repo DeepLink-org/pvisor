@@ -14,6 +14,8 @@ description: 逐步运行离线命令、检查暂存文件、选择性合入并�
 
 # 运行容器与审查 Agent 任务 {#local-workflow}
 
+在 Apple Silicon 上第一次用 pVisor？先[运行第一个容器](container-quickstart.md)，再继续本页的演练。
+
 完成[安装](installation.md)后，可以先验证容器能否启动，也可以先验证 Agent 的文件何时写回项目。两个示例彼此独立，都不需要模型账号。
 
 - [容器命令](#docker-style)：拉取镜像、启动独立 VM、执行命令，再停止并删除容器。

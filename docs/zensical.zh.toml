@@ -16,6 +16,7 @@ extra_javascript = ["assets/javascripts/alternate.js"]
 nav = [
   { "首页" = "index.md" },
   { "快速开始" = [
+    { "运行第一个容器" = "start/container-quickstart.md" },
     { "安装" = "start/installation.md" },
     { "运行并审查" = "start/first-run.md" },
     { "在 VM 中运行工具" = "start/infrastructure.md" },
