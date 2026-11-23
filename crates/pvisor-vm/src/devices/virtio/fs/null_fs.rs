@@ -1,7 +1,7 @@
 // A minimal filesystem that serves an empty root directory.
 //
 // Used with AugmentFs to provide a virtual-only filesystem (e.g. for
-// booting from a block device where the virtiofs root only needs init.krun).
+// booting from a block device where the virtiofs root only needs init.pvisor).
 
 use std::ffi::CStr;
 use std::io;
@@ -91,13 +91,12 @@ mod tests {
 
     fn injected_init() -> AugmentFs<NullFs> {
         use super::super::virtual_entry::{VirtualDirEntry, VirtualEntry, VirtualEntryContent};
-        use std::ffi::CString;
 
         AugmentFs::new(
             NullFs,
             &InodeAllocator::new(),
             vec![VirtualDirEntry {
-                name: CString::new("init.krun").unwrap(),
+                name: c"init.pvisor".to_owned(),
                 entry: VirtualEntry {
                     mode: 0o755,
                     one_shot: true,
@@ -114,12 +113,12 @@ mod tests {
         let fs = injected_init();
         let listed = fs.synthetic_entries(fuse::ROOT_ID);
         assert_eq!(listed.len(), 1);
-        assert_eq!(listed[0].0, b"init.krun");
+        assert_eq!(listed[0].0, b"init.pvisor");
         assert_eq!(listed[0].1.attr.st_size, 4);
         let ctx = root_context();
-        let found = fs.lookup(ctx, fuse::ROOT_ID, c"init.krun").unwrap();
+        let found = fs.lookup(ctx, fuse::ROOT_ID, c"init.pvisor").unwrap();
         assert_eq!(found.inode, listed[0].1.inode);
-        match fs.lookup(ctx, fuse::ROOT_ID, c"init.krun") {
+        match fs.lookup(ctx, fuse::ROOT_ID, c"init.pvisor") {
             Err(error) => assert_eq!(error.raw_os_error(), Some(libc::ENOENT)),
             Ok(_) => panic!("one-shot name still resolves"),
         }
@@ -143,7 +142,7 @@ mod tests {
         };
         assert!(names.is_empty());
         assert!(inodes.is_empty());
-        assert!(fs.lookup(ctx, fuse::ROOT_ID, c"init.krun").is_err());
+        assert!(fs.lookup(ctx, fuse::ROOT_ID, c"init.pvisor").is_err());
     }
 
     #[test]
@@ -155,12 +154,8 @@ mod tests {
                 .map(|_| {
                     scope.spawn(|| {
                         barrier.wait();
-                        fs.lookup(
-                            root_context(),
-                            fuse::ROOT_ID,
-                            c"init.krun",
-                        )
-                        .is_ok()
+                        fs.lookup(root_context(), fuse::ROOT_ID, c"init.pvisor")
+                            .is_ok()
                     })
                 })
                 .collect();

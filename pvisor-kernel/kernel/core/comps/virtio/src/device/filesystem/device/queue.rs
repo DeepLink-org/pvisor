@@ -36,6 +36,7 @@ pub(super) struct FsRequestQueue {
     inner: SpinLock<FsRequestQueueInner, LocalIrqDisabled>,
     wait_queue: WaitQueue,
     taskless: Once<Arc<Taskless>>,
+    inline_metadata: bool,
 }
 
 struct FsRequestQueueInner {
@@ -51,7 +52,7 @@ struct CompletedFuseRequest {
 
 impl FsRequestQueue {
     /// Creates a request queue backed by a virtqueue.
-    pub(super) fn new(queue: VirtQueue) -> Arc<Self> {
+    pub(super) fn new(queue: VirtQueue, inline_metadata: bool) -> Arc<Self> {
         Arc::new(Self {
             inner: SpinLock::new(FsRequestQueueInner {
                 queue,
@@ -60,6 +61,7 @@ impl FsRequestQueue {
             }),
             wait_queue: WaitQueue::new(),
             taskless: Once::new(),
+            inline_metadata,
         })
     }
 
@@ -85,18 +87,19 @@ impl FsRequestQueue {
     }
 
     /// Submits a FUSE request to the virtqueue.
-    pub(super) fn add_request(&self, request: FuseRequest) -> Result<(), FuseError> {
+    pub(super) fn add_request(&self, request: FuseRequest, inline: bool) -> Result<(), FuseError> {
         let num_dma_bufs = request.num_dma_bufs();
         debug_assert!(num_dma_bufs <= MAX_DMA_BUFS_PER_REQUEST);
 
         let mut request = Some(request);
 
-        self.wait_queue.wait_until(|| {
+        let completed = self.wait_queue.wait_until(|| {
             let mut inner = self.inner.lock();
             if num_dma_bufs > inner.queue.available_desc() {
                 return None;
             }
 
+            let inline = inline && self.inline_metadata && inner.in_flight_requests.is_empty();
             let request = request.take().unwrap();
             let token = {
                 let request_bufs = request
@@ -118,13 +121,28 @@ impl FsRequestQueue {
             };
             inner.in_flight_requests.put_at(token as usize, request);
 
+            if inline && inner.queue.notify_inline_metadata() {
+                let completed = inner.queue.pop_used().ok().map(|(used, len)| {
+                    debug_assert_eq!(used, token);
+                    let request = inner.in_flight_requests.remove(used as usize).unwrap();
+                    CompletedFuseRequest {
+                        request,
+                        reply_len: len as usize,
+                    }
+                });
+                return Some(completed);
+            }
             if inner.queue.should_notify() {
                 inner.queue.notify();
             }
 
-            Some(())
+            Some(None)
         });
 
+        if let Some(completed) = completed {
+            self.wait_queue.wake_all();
+            completed.request.finish_reply(completed.reply_len);
+        }
         Ok(())
     }
 

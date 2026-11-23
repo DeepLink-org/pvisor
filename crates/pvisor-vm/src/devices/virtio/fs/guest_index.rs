@@ -3,7 +3,7 @@
 // One `READINDEX` reply is a `ReadIndexOut` header followed by FUSE
 // `fuse_direntplus` records. The guest asks for up to 1 MiB. Importing a
 // page is a `readdirplus` preceded by the filesystem's synthetic names
-// (injected files such as `init.krun`, which ordinary readdir hides). Each
+// (injected files such as `init.pvisor`, which ordinary readdir hides). Each
 // positive backing entry increases the host lookup count by one, and the
 // guest accounts for that count when it instantiates the inode. A later page
 // must not be treated as proof that a missing name does not exist; only the
@@ -837,8 +837,8 @@ mod tests {
     #[test]
     fn synthetic_names_lead_the_page_and_survive_a_short_read() {
         let fs = FakeFs {
-            names: vec![b"real", b"init.krun"],
-            synthetics: vec![b".pvisor-guest.json", b"init.krun"],
+            names: vec![b"real", b"init.pvisor"],
+            synthetics: vec![b".pvisor-guest.json", b"init.pvisor"],
             opened: AtomicUsize::new(0),
             closed: AtomicUsize::new(0),
             fail_release: Mutex::new(false),
@@ -850,7 +850,7 @@ mod tests {
             record_names(&page.records).unwrap(),
             vec![
                 b".pvisor-guest.json".to_vec(),
-                b"init.krun".to_vec(),
+                b"init.pvisor".to_vec(),
                 b"real".to_vec()
             ]
         );
@@ -873,7 +873,7 @@ mod tests {
         assert!(rest.complete);
         assert_eq!(
             record_names(&rest.records).unwrap(),
-            vec![b"init.krun".to_vec(), b"real".to_vec()]
+            vec![b"init.pvisor".to_vec(), b"real".to_vec()]
         );
     }
 
@@ -895,7 +895,7 @@ mod tests {
                 ..Default::default()
             },
             &InodeAllocator::new(),
-            [".pvisor-guest.json", "init.krun"]
+            [".pvisor-guest.json", "init.pvisor"]
                 .map(|name| VirtualDirEntry {
                     name: CString::new(name).unwrap(),
                     entry: VirtualEntry {
@@ -914,7 +914,7 @@ mod tests {
             record_names(&page.records).unwrap(),
             [
                 b".pvisor-guest.json".to_vec(),
-                b"init.krun".to_vec(),
+                b"init.pvisor".to_vec(),
                 b"real".to_vec(),
                 b"next".to_vec()
             ]
@@ -929,7 +929,7 @@ mod tests {
         .unwrap();
         assert!(!partial.complete);
         let mut start = 0;
-        for name in [c".pvisor-guest.json", c"init.krun"] {
+        for name in [c".pvisor-guest.json", c"init.pvisor"] {
             let entry =
                 EntryOut::read_bytes(&page.records[start..start + size_of::<EntryOut>()]).unwrap();
             assert_eq!(

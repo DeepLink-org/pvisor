@@ -6,6 +6,14 @@ use crate::{fs::file::InodeType, prelude::*};
 
 /// A visitor for dir entries.
 pub trait DirentVisitor {
+    /// Returns the remaining byte capacity, if bounded.
+    ///
+    /// Filesystems may size batches using this hint. The visitor still decides
+    /// whether it can accept each entry.
+    fn remaining_bytes(&self) -> Option<usize> {
+        None
+    }
+
     /// Visit a dir entry.
     ///
     /// If the visitor succeeds in visiting the given inode, an `Ok(())` is returned;

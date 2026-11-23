@@ -240,6 +240,9 @@ bitflags! {
         const OVER_IO_URING           = 1 << 9;
         /// Supports request timeouts.
         const REQUEST_TIMEOUT         = 1 << 10;
+        /// pVisor directory images; aliases `OVER_IO_URING` on the wire.
+        /// Use only with the matching pVisor virtio-fs device capability.
+        const PVISOR_META              = 1 << 9;
     }
 }
 

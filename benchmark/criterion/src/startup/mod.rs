@@ -10,6 +10,7 @@ mod images;
 mod observer;
 mod prepared;
 mod subjects;
+mod warm_pool;
 
 use anyhow::{Context, Result, bail};
 use criterion::{Criterion, SamplingMode};
@@ -36,6 +37,9 @@ pub fn register(criterion: &mut Criterion) {
 fn register_checked(criterion: &mut Criterion) -> Result<()> {
     let entry = env::var("PVISOR_BENCH_ENTRY").unwrap_or_else(|_| "startup/timing.json".into());
     let name = entry.strip_prefix("startup/").unwrap_or(&entry);
+    if name == "daemon_warm_pool.json" {
+        return warm_pool::register(criterion);
+    }
     if matches!(
         name,
         "image_compare.json" | "image_lazy_compare.json" | "stage_lazy_compare.json"

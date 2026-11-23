@@ -2,13 +2,21 @@
 use anyhow::ensure;
 use std::{collections::BTreeMap, io::Write, path::PathBuf};
 
+pub(crate) const HOST_ROOT_SELECTOR: &str = "@root";
+
 pub(crate) fn batch(
     values: &[String],
     mut action: impl FnMut(&str) -> anyhow::Result<()>,
 ) -> anyhow::Result<i32> {
+    batch_results(values.iter().map(|value| action(value)))
+}
+
+pub(crate) fn batch_results(
+    results: impl IntoIterator<Item = anyhow::Result<()>>,
+) -> anyhow::Result<i32> {
     let mut code = 0;
-    for value in values {
-        if let Err(error) = action(value) {
+    for result in results {
+        if let Err(error) = result {
             eprintln!("Error: {error:#}");
             code = 1;
         }

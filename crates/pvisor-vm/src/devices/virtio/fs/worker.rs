@@ -7,28 +7,28 @@ use std::io;
 use std::os::fd::AsRawFd;
 use std::os::unix::ffi::OsStrExt;
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, OnceLock, RwLock};
 use std::thread;
 #[cfg(test)]
 use std::time::Instant;
 
 use crate::utils::epoll::{ControlOperation, Epoll, EpollEvent, EventSet};
 use crate::utils::eventfd::{EventFd, EFD_NONBLOCK};
-use vm_memory::GuestMemoryMmap;
+use vm_memory::{ByteValued, GuestMemoryMmap};
 
 use super::super::Queue;
 use super::augment_fs::AugmentFs;
 use super::defs::{HPQ_INDEX, REQ_INDEX};
 use super::descriptor_utils::{OwnedDescriptorChain, Reader, Writer};
 use super::fuse::{InHeader, Opcode};
-use super::fuse::{OpenIn, ReadIn};
+use super::fuse::{InitInCompat, OpenIn, OutHeader, ReadIn};
 use super::inode_alloc::InodeAllocator;
 use super::null_fs::NullFs;
 use super::overlay::{Config as OverlayConfig, OverlayFs};
 use super::passthrough::{self, PassthroughFs};
 use super::read_only::PassthroughFsRo;
-use super::server::Server;
-use super::virtual_entry::VirtualDirEntry;
+use super::server::{reply_error, Server};
+use super::virtual_entry::{VirtualDirEntry, VirtualEntry, VirtualEntryContent};
 use crate::devices::virtio::{InterruptTransport, VirtioShmRegion};
 use crate::env::fs::FsProfile;
 #[cfg(test)]
@@ -39,6 +39,7 @@ use crate::env::fs::{
     object_read_barriers_enabled, prepared_copy_up_enabled, readonly_flush_elision_enabled,
     root_data_cache_enabled,
 };
+use crate::vmm::vmm_config::fs::{DeferredOverlay, OverlaySource};
 
 mod scheduler;
 
@@ -47,11 +48,85 @@ enum HostReadRequest {
     Open(OpenIn),
 }
 
+type OverlayServer = Server<AugmentFs<OverlayFs>>;
+
+struct DeferredServer {
+    source: DeferredOverlay,
+    profile: Arc<FsProfile>,
+    dispatch_profile: pvisor_overlay_core::profile::Profile,
+    inode_alloc: Arc<InodeAllocator>,
+    resolved: OnceLock<Result<Box<OverlayServer>, i32>>,
+}
+
+impl DeferredServer {
+    fn initialize(&self) -> Result<&OverlayServer, i32> {
+        self.resolved
+            .get_or_init(|| {
+                self.prepare().map_err(|error| {
+                    error!("virtio-fs deferred root failed: {error}");
+                    libc::EIO
+                })
+            })
+            .as_deref()
+            .map_err(|&errno| errno)
+    }
+
+    fn prepare(&self) -> io::Result<Box<OverlayServer>> {
+        let prepare = self
+            .source
+            .lock()
+            .unwrap()
+            .take()
+            .ok_or_else(|| io::Error::other("deferred root already consumed"))?;
+        let (config, bytes) = prepare()?;
+        let launch = VirtualDirEntry {
+            name: std::ffi::CString::new(pvisor_guest::api::CONFIG_PATH.trim_start_matches('/'))
+                .expect("launch filename literal"),
+            entry: VirtualEntry {
+                mode: 0o400,
+                one_shot: true,
+                content: VirtualEntryContent::File { data: bytes.into() },
+            },
+        };
+        let mut server = overlay_server(
+            config,
+            &self.inode_alloc,
+            &self.profile,
+            true,
+            false,
+            false,
+            vec![launch],
+        )?;
+        server.configure_profile_scope(pvisor_guest::api::DEFERRED_ROOT_TAG);
+        server.set_dispatch_profile(self.dispatch_profile.clone());
+        Ok(server)
+    }
+
+    fn server(&self) -> Result<&OverlayServer, i32> {
+        self.resolved
+            .get()
+            .ok_or(libc::EIO)?
+            .as_deref()
+            .map_err(|&errno| errno)
+    }
+}
+
+fn owned_error(header: InHeader, errno: i32) -> Vec<u8> {
+    OutHeader {
+        len: std::mem::size_of::<OutHeader>() as u32,
+        error: -errno,
+        unique: header.unique,
+    }
+    .as_slice()
+    .to_vec()
+}
+
 enum FsServer {
     ReadWrite(Server<AugmentFs<PassthroughFs>>),
     ReadOnly(Server<AugmentFs<PassthroughFsRo>>),
     Null(Server<AugmentFs<NullFs>>),
-    Overlay(Box<Server<AugmentFs<OverlayFs>>>),
+    Overlay(Box<OverlayServer>),
+    Deferred(Box<DeferredServer>),
 }
 
 impl FsServer {
@@ -61,6 +136,7 @@ impl FsServer {
             Self::ReadOnly(server) => server.configure_profile_scope(scope),
             Self::Null(server) => server.configure_profile_scope(scope),
             Self::Overlay(server) => server.configure_profile_scope(scope),
+            Self::Deferred(_) => {}
         }
     }
 
@@ -70,6 +146,7 @@ impl FsServer {
             Self::ReadOnly(server) => server.dispatch_profile(),
             Self::Null(server) => server.dispatch_profile(),
             Self::Overlay(server) => server.dispatch_profile(),
+            Self::Deferred(server) => server.dispatch_profile.clone(),
         }
     }
 
@@ -79,6 +156,10 @@ impl FsServer {
             Self::ReadOnly(s) => s.owned_open(header, arg),
             Self::Null(s) => s.owned_open(header, arg),
             Self::Overlay(s) => s.owned_open(header, arg),
+            Self::Deferred(s) => s.server().map_or_else(
+                |errno| owned_error(header, errno),
+                |server| server.owned_open(header, arg),
+            ),
         }
     }
     fn owned_read(&self, header: InHeader, arg: ReadIn) -> Vec<u8> {
@@ -87,6 +168,10 @@ impl FsServer {
             Self::ReadOnly(s) => s.owned_read(header, arg),
             Self::Null(s) => s.owned_read(header, arg),
             Self::Overlay(s) => s.owned_read(header, arg),
+            Self::Deferred(s) => s.server().map_or_else(
+                |errno| owned_error(header, errno),
+                |server| server.owned_read(header, arg),
+            ),
         }
     }
     fn handle_message(
@@ -135,6 +220,35 @@ impl FsServer {
                 #[cfg(target_os = "macos")]
                 map_sender,
             ),
+            FsServer::Deferred(s) => {
+                let opcode = r.0.opcode;
+                let server = if opcode == Opcode::Init as u32 {
+                    match r.1.clone().read_obj::<InitInCompat>() {
+                        Ok(_) => s.initialize(),
+                        Err(_) => Err(libc::EINVAL),
+                    }
+                } else {
+                    s.server()
+                };
+                match server {
+                    Ok(server) => server.handle_message(
+                        r,
+                        w,
+                        allow_idmap,
+                        shm_region,
+                        exit_code,
+                        #[cfg(target_os = "macos")]
+                        map_sender,
+                    ),
+                    Err(_)
+                        if opcode == Opcode::Forget as u32
+                            || opcode == Opcode::BatchForget as u32 =>
+                    {
+                        Ok(0)
+                    }
+                    Err(errno) => reply_error(io::Error::from_raw_os_error(errno), r.0.unique, w),
+                }
+            }
         }
     }
 }
@@ -146,8 +260,11 @@ pub struct FsWorker {
     execution: Arc<Execution>,
     dispatch_profile: pvisor_overlay_core::profile::Profile,
     inode_alloc: Arc<InodeAllocator>,
+    inline_dispatch: Option<InlineDispatch>,
     stop_fd: EventFd,
 }
+
+pub(super) use scheduler::InlineDispatch;
 
 /// Shared execution state, never virtqueue indices. The session guard also
 /// protects INIT/DESTROY against a driver issuing overlapping control requests.
@@ -513,6 +630,56 @@ fn object_read_barriers_setting_defaults_off_and_is_strict() {
     assert!(object_read_barriers_enabled(Some(OsStr::new("true"))).is_err());
 }
 
+fn overlay_server(
+    config: OverlayConfig,
+    inode_alloc: &Arc<InodeAllocator>,
+    profile: &FsProfile,
+    root: bool,
+    restoring: bool,
+    shared_memory: bool,
+    virtual_entries: Vec<VirtualDirEntry>,
+) -> io::Result<Box<OverlayServer>> {
+    let mut inner = OverlayFs::build_with_profile(config, inode_alloc.clone(), restoring, profile)?;
+    inner.configure_host_writeback_options(
+        profile.host_writeback,
+        shared_memory,
+        profile.host_writeback_config.options()?,
+    )?;
+    inner.configure_object_read_barriers(profile.object_read_barriers);
+    inner.configure_immutable_data_cache(profile.root_data_cache && root);
+    inner.configure_directory_cache_capacity(profile.directory_cache_capacity)?;
+    inner.configure_directory_names_cache(profile.directory_names_cache);
+    inner.configure_prepared_copy_up(profile.prepared_copy_up);
+    inner.configure_logical_directory_cache(profile.logical_directory_cache, restoring)?;
+    inner.configure_logical_data_cache(profile.logical_data_cache);
+    inner.configure_exclusive_upper_absence_cache(profile.exclusive_upper_absence_cache)?;
+    inner.configure_readonly_flush_elision(
+        profile.readonly_flush_elision,
+        profile.guest_cache,
+        shared_memory,
+    )?;
+    inner.configure_lower_data_cache(
+        profile.lower_data_cache || profile.logical_data_cache,
+        profile.guest_cache,
+        shared_memory,
+    )?;
+    inner.configure_negative_entry_cache(
+        profile.negative_entry_cache,
+        profile.guest_cache,
+        shared_memory,
+        virtual_entries
+            .iter()
+            .map(|entry| {
+                std::path::PathBuf::from(std::ffi::OsStr::from_bytes(entry.name.to_bytes()))
+            })
+            .collect(),
+    )?;
+    Ok(Box::new(Server::new(
+        AugmentFs::new(inner, inode_alloc, virtual_entries),
+        profile.guest_cache,
+    )))
+}
+
 pub(super) struct FsWorkerConfig {
     pub profile: Arc<FsProfile>,
     pub fs_tag: String,
@@ -523,7 +690,7 @@ pub(super) struct FsWorkerConfig {
     pub allow_idmap: bool,
     pub shm_region: Option<VirtioShmRegion>,
     pub passthrough_cfg: Option<passthrough::Config>,
-    pub overlay_cfg: Option<OverlayConfig>,
+    pub overlay_cfg: Option<OverlaySource>,
     pub read_only: bool,
     pub virtual_entries: Vec<VirtualDirEntry>,
     pub stop_fd: EventFd,
@@ -554,65 +721,31 @@ impl FsWorker {
             #[cfg(target_os = "macos")]
             map_sender,
         } = config;
-        let root_data_cache = profile.root_data_cache && fs_tag == "/dev/root";
         let guest_cache = profile.guest_cache;
-        let host_writeback = profile.host_writeback;
-        let host_writeback_config = &profile.host_writeback_config;
-        let directory_cache_capacity = profile.directory_cache_capacity;
-        let exclusive_upper_absence_cache = profile.exclusive_upper_absence_cache;
-        let readonly_flush_elision = profile.readonly_flush_elision;
-        let lower_data_cache = profile.lower_data_cache;
-        let negative_entry_cache = profile.negative_entry_cache;
-        let directory_names_cache = profile.directory_names_cache;
-        let prepared_copy_up = profile.prepared_copy_up;
-        let logical_directory_cache = profile.logical_directory_cache;
-        let object_read_barriers = profile.object_read_barriers;
-        let logical_data_cache = profile.logical_data_cache;
         let inode_alloc = Arc::new(InodeAllocator::new());
         let mut server = match (overlay_cfg, passthrough_cfg) {
-            (Some(cfg), _) => {
-                let mut inner =
-                    OverlayFs::build_with_profile(cfg, inode_alloc.clone(), restoring, &profile)?;
-                inner.configure_host_writeback_options(
-                    host_writeback,
-                    shm_region.is_some(),
-                    host_writeback_config.options()?,
-                )?;
-                inner.configure_object_read_barriers(object_read_barriers);
-                inner.configure_immutable_data_cache(root_data_cache);
-                inner.configure_directory_cache_capacity(directory_cache_capacity)?;
-                inner.configure_directory_names_cache(directory_names_cache);
-                inner.configure_prepared_copy_up(prepared_copy_up);
-                inner.configure_logical_directory_cache(logical_directory_cache, restoring)?;
-                inner.configure_logical_data_cache(logical_data_cache);
-                inner.configure_exclusive_upper_absence_cache(exclusive_upper_absence_cache)?;
-                inner.configure_readonly_flush_elision(
-                    readonly_flush_elision,
-                    guest_cache,
-                    shm_region.is_some(),
-                )?;
-                inner.configure_lower_data_cache(
-                    lower_data_cache || logical_data_cache,
-                    guest_cache,
-                    shm_region.is_some(),
-                )?;
-                inner.configure_negative_entry_cache(
-                    negative_entry_cache,
-                    guest_cache,
-                    shm_region.is_some(),
-                    virtual_entries
-                        .iter()
-                        .map(|entry| {
-                            std::path::PathBuf::from(std::ffi::OsStr::from_bytes(
-                                entry.name.to_bytes(),
-                            ))
-                        })
-                        .collect(),
-                )?;
-                FsServer::Overlay(Box::new(Server::new(
-                    AugmentFs::new(inner, &inode_alloc, virtual_entries),
-                    guest_cache,
-                )))
+            (Some(OverlaySource::Config(cfg)), _) => FsServer::Overlay(overlay_server(
+                *cfg,
+                &inode_alloc,
+                &profile,
+                fs_tag == "/dev/root",
+                restoring,
+                shm_region.is_some(),
+                virtual_entries,
+            )?),
+            (Some(OverlaySource::Deferred(source)), None) => {
+                FsServer::Deferred(Box::new(DeferredServer {
+                    source,
+                    profile: profile.clone(),
+                    dispatch_profile: pvisor_overlay_core::profile::Profile::from_env(
+                        "virtio-fs-dispatch",
+                    ),
+                    inode_alloc: inode_alloc.clone(),
+                    resolved: OnceLock::new(),
+                }))
+            }
+            (Some(OverlaySource::Deferred(_)), Some(_)) => {
+                return Err(io::Error::other("deferred root conflicts with passthrough"));
             }
             (None, Some(mut cfg)) if read_only => {
                 // A shared-memory window on a read-only attachment is created
@@ -674,6 +807,7 @@ impl FsWorker {
             }),
             dispatch_profile,
             inode_alloc,
+            inline_dispatch: None,
             stop_fd,
         })
     }
@@ -690,6 +824,10 @@ impl FsWorker {
             FsServer::ReadOnly(s) => s.capture_state(next),
             FsServer::Null(s) => s.capture_state(next),
             FsServer::Overlay(s) => s.capture_state(next),
+            FsServer::Deferred(_) => Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "deferred root snapshot",
+            )),
         }?;
         Ok((
             self.queues.iter().map(Queue::capture_state).collect(),
@@ -710,8 +848,17 @@ impl FsWorker {
             FsServer::ReadOnly(s) => s.restore_state(state),
             FsServer::Null(s) => s.restore_state(state),
             FsServer::Overlay(s) => s.restore_state(state),
+            FsServer::Deferred(_) => Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "deferred root restore",
+            )),
         }?;
         self.inode_alloc.restore_next(state.next_inode)
+    }
+
+    pub(super) fn with_inline_dispatch(mut self, dispatch: Option<InlineDispatch>) -> Self {
+        self.inline_dispatch = dispatch;
+        self
     }
 
     pub fn run(self) -> thread::JoinHandle<Self> {
@@ -729,6 +876,7 @@ impl FsWorker {
             self.interrupt.clone(),
             self.execution.clone(),
             self.dispatch_profile.clone(),
+            self.inline_dispatch.as_ref(),
         );
         self.dispatch_profile.emit_checkpoint();
         self
@@ -920,6 +1068,12 @@ mod tests {
         let defaults = FsProfile::parse(|_| None).unwrap();
         assert!(defaults.guest_cache && defaults.root_data_cache);
         assert!(!defaults.host_writeback && !defaults.negative_entry_cache);
+        assert!(defaults.inline_metadata && defaults.rngk_readindex);
+        let disabled = FsProfile::parse(|key| {
+            matches!(key, env::INLINE_METADATA | env::RNGK_READINDEX).then(|| "0".into())
+        })
+        .unwrap();
+        assert!(!disabled.inline_metadata && !disabled.rngk_readindex);
         assert!(!defaults.directory_names_cache);
         assert!(!defaults.prepared_copy_up);
         assert!(!defaults.object_read_barriers);
@@ -940,6 +1094,8 @@ mod tests {
         for key in [
             env::CACHE_EXPERIMENT,
             env::GUEST_CACHE,
+            env::INLINE_METADATA,
+            env::RNGK_READINDEX,
             env::HOST_WRITEBACK,
             env::HOST_WRITEBACK_CONFIG,
             env::DIRECTORY_CACHE_CAPACITY,

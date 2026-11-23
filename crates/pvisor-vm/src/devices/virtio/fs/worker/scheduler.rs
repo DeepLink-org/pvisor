@@ -1,8 +1,8 @@
 //! Queue-local execution with stealing directly from a blocked owner's ring.
 //! Only descriptor admission and used-ring publication hold the ring mutex.
 use super::*;
-use std::sync::Mutex;
 use std::sync::atomic::AtomicU64;
+use std::sync::{Mutex, Weak};
 use std::time::{Duration, Instant};
 
 const STEAL_DELAY: Duration = Duration::from_millis(2);
@@ -62,6 +62,21 @@ struct Runtime {
     profile: pvisor_overlay_core::profile::Profile,
 }
 
+#[derive(Clone, Default)]
+pub(in crate::devices::virtio::fs) struct InlineDispatch(Arc<Mutex<Weak<Runtime>>>);
+
+impl InlineDispatch {
+    pub(in crate::devices::virtio::fs) fn try_metadata(&self, queue: usize) -> bool {
+        // Keep teardown from reclaiming the queues until this call publishes.
+        let Ok(registration) = self.0.try_lock() else {
+            return false;
+        };
+        registration
+            .upgrade()
+            .is_some_and(|runtime| runtime.try_metadata(queue))
+    }
+}
+
 impl Runtime {
     fn wake_thieves(&self, victim: usize) {
         for (index, lane) in self.lanes.iter().enumerate().skip(REQ_INDEX) {
@@ -98,7 +113,10 @@ impl Runtime {
             lane.ring.try_lock().ok()?
         };
         // A guest may initialize fewer request queues than advertised.
-        if !ring.ready || self.stopped.load(Ordering::Acquire) {
+        if !ring.ready
+            || self.stopped.load(Ordering::Acquire)
+            || (owner == victim && lane.busy.load(Ordering::Acquire))
+        {
             return None;
         }
         if owner != victim && !self.long_running(lane) {
@@ -192,6 +210,58 @@ impl Runtime {
         }
     }
 
+    fn try_metadata(&self, queue: usize) -> bool {
+        if queue != REQ_INDEX || self.lanes.len() != REQ_INDEX + 1 {
+            return false;
+        }
+        let lane = &self.lanes[queue];
+        let Ok(mut ring) = lane.ring.try_lock() else {
+            return false;
+        };
+        if !ring.ready || self.stopped.load(Ordering::Acquire) || lane.busy.load(Ordering::Acquire)
+        {
+            return false;
+        }
+        let mem = &self.execution.mem;
+        if ring.len(mem) != 1 {
+            return false;
+        }
+        let Some(head) = ring.pop(mem) else {
+            return false;
+        };
+        let index = head.index;
+        let Ok((buffers, header)) = OwnedDescriptorChain::new(head).and_then(|buffers| {
+            let header = buffers.read_prefix::<InHeader>(mem)?;
+            Ok((buffers, header))
+        }) else {
+            ring.undo_pop();
+            return false;
+        };
+        if !matches!(header.opcode, x if x == Opcode::Lookup as u32 || x == Opcode::Getattr as u32)
+        {
+            ring.undo_pop();
+            return false;
+        }
+        lane.busy.store(true, Ordering::Release);
+        drop(ring);
+        let request = Request {
+            queue,
+            index,
+            header,
+            buffers,
+            #[cfg(test)]
+            profile_timestamp: None,
+        };
+        self.profile.add("vcpu_inline_metadata", 1);
+        let len = self.execution.handle(&request);
+        self.publish_used(request, len, false);
+        lane.busy.store(false, Ordering::Release);
+        if !lane.ring.lock().unwrap().is_empty(mem) {
+            lane.wake.signal();
+        }
+        true
+    }
+
     fn next(&self, owner: usize, cursor: &mut usize) -> Option<Request> {
         if let Some(request) = self.take(owner, owner) {
             return Some(request);
@@ -269,10 +339,14 @@ impl Runtime {
     }
 
     fn publish(&self, request: Request, len: usize) {
+        self.publish_used(request, len, true);
+    }
+
+    fn publish_used(&self, request: Request, len: usize, notify: bool) {
         let mut ring = self.lanes[request.queue].ring.lock().unwrap();
         ring.add_used(&self.execution.mem, request.index, len as u32)
             .unwrap();
-        if ring.needs_notification(&self.execution.mem).unwrap() {
+        if notify && ring.needs_notification(&self.execution.mem).unwrap() {
             self.interrupt.signal_used_queue();
         }
         // The request owns its RAM lease through used-ring publication.
@@ -288,6 +362,7 @@ pub(super) fn serve(
     interrupt: InterruptTransport,
     execution: Arc<Execution>,
     profile: pvisor_overlay_core::profile::Profile,
+    inline_dispatch: Option<&InlineDispatch>,
 ) -> Vec<Queue> {
     assert!(queues.len() > REQ_INDEX && queues.len() == events.len());
     let runtime = Arc::new(Runtime {
@@ -307,6 +382,9 @@ pub(super) fn serve(
         interrupt,
         profile,
     });
+    if let Some(dispatch) = inline_dispatch {
+        *dispatch.0.lock().unwrap() = Arc::downgrade(&runtime);
+    }
     let epoll = Epoll::new().unwrap();
     epoll
         .ctl(
@@ -393,6 +471,9 @@ pub(super) fn serve(
     for thread in threads {
         thread.join().unwrap_or_else(|_| std::process::abort());
     }
+    if let Some(dispatch) = inline_dispatch {
+        *dispatch.0.lock().unwrap() = Weak::new();
+    }
     // Every accepted request has executed and published before queue ownership
     // returns to the frozen device. Pending guest descriptors stay in the ring.
     let runtime = Arc::try_unwrap(runtime)
@@ -462,6 +543,53 @@ mod tests {
             interrupt: worker.interrupt,
             profile: worker.dispatch_profile,
         }
+    }
+
+    #[rstest::rstest]
+    #[case::lookup(Opcode::Lookup, true)]
+    #[case::getattr(Opcode::Getattr, true)]
+    #[case::read(Opcode::Read, false)]
+    #[case::write(Opcode::Write, false)]
+    fn inline_metadata_claims_only_metadata(#[case] opcode: Opcode, #[case] inline: bool) {
+        let mem = GuestMemoryMmap::from_ranges(&[(GuestAddress(0), 0x10000)]).unwrap();
+        let high = VirtQueue::new(GuestAddress(0), &mem, 8);
+        let first = VirtQueue::new(GuestAddress(0x400), &mem, 8);
+        fill(&first, &mem, 0x4000, &[opcode]);
+        let runtime = runtime(mem.clone(), vec![high.create_queue(), first.create_queue()]);
+
+        assert!(!runtime.try_metadata(HPQ_INDEX));
+        assert_eq!(runtime.try_metadata(REQ_INDEX), inline);
+        assert_eq!(first.used.idx.get(), u16::from(inline));
+        if inline {
+            assert!(!runtime.try_metadata(REQ_INDEX));
+        } else {
+            let request = runtime.take(REQ_INDEX, REQ_INDEX).unwrap();
+            assert_eq!(request.index, 0);
+            assert_eq!(request.header.opcode, opcode as u32);
+        }
+    }
+
+    #[rstest::rstest]
+    #[case::busy(true, 1)]
+    #[case::backlog(false, 2)]
+    fn inline_metadata_leaves_pending_work_unclaimed(#[case] busy: bool, #[case] count: usize) {
+        let mem = GuestMemoryMmap::from_ranges(&[(GuestAddress(0), 0x10000)]).unwrap();
+        let high = VirtQueue::new(GuestAddress(0), &mem, 8);
+        let first = VirtQueue::new(GuestAddress(0x400), &mem, 8);
+        fill(&first, &mem, 0x4000, &[Opcode::Getattr; 2][..count]);
+        let runtime = runtime(mem.clone(), vec![high.create_queue(), first.create_queue()]);
+        let lane = &runtime.lanes[REQ_INDEX];
+
+        lane.busy.store(busy, Ordering::Release);
+        assert!(!runtime.try_metadata(REQ_INDEX));
+        assert_eq!(first.used.idx.get(), 0);
+        lane.busy.store(false, Ordering::Release);
+        let request = runtime.take(REQ_INDEX, REQ_INDEX).unwrap();
+        assert_eq!(request.index, 0);
+        assert_eq!(
+            lane.ring.lock().unwrap().len(&runtime.execution.mem),
+            count as u16 - 1
+        );
     }
 
     #[test]

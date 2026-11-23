@@ -32,6 +32,11 @@ fn guest_path_starts_with(path: &Path, prefix: &Path) -> bool {
 impl GuestValidation for GuestConfig {
     fn validate(&self) -> io::Result<()> {
         let invalid = |message| io::Error::new(io::ErrorKind::InvalidInput, message);
+        if self.control_ready && !self.control {
+            return Err(invalid(
+                "control readiness notification requires the vsock command adapter",
+            ));
+        }
         if self.argv.first().is_none_or(|program| program.is_empty()) {
             return Err(invalid("guest argv needs a program"));
         }

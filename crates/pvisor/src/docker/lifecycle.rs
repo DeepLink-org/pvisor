@@ -175,14 +175,17 @@ pub(super) fn supervise(store: &Store, instance: &mut Instance) -> anyhow::Resul
 
 impl Store {
     pub(super) fn completion(&self, instance: &Instance) -> anyhow::Result<Option<Completion>> {
-        let exact = self
-            .root
-            .join("results")
-            .join(format!("{}-{}.json", instance.id, instance.generation));
-        let current = self
-            .root
-            .join("results")
-            .join(format!("{}.json", instance.id));
+        self.completion_for(&instance.id, &instance.generation)
+    }
+
+    pub(super) fn completion_for(
+        &self,
+        id: &str,
+        generation: &str,
+    ) -> anyhow::Result<Option<Completion>> {
+        let results = self.root.join("results");
+        let exact = results.join(format!("{id}-{generation}.json"));
+        let current = results.join(format!("{id}.json"));
         let file = match File::open(exact).or_else(|error| {
             if error.kind() == io::ErrorKind::NotFound {
                 File::open(current)
@@ -195,7 +198,7 @@ impl Store {
             Err(error) => return Err(error.into()),
         };
         let completion: Completion = serde_json::from_reader(file)?;
-        Ok((completion.generation == instance.generation).then_some(completion))
+        Ok((completion.generation == generation).then_some(completion))
     }
 
     pub(super) fn generation_active(&self, instance: &Instance) -> anyhow::Result<bool> {
@@ -229,7 +232,31 @@ impl Store {
     /// Missing completion after owner death reports an error, never a guessed
     /// success. Receipts remain private in the store until explicitly cleaned.
     pub fn wait(&self, selector: &str) -> anyhow::Result<i32> {
-        let instance = self.resolve(selector)?;
+        self.wait_for(self.resolve(selector)?)
+    }
+
+    /// Select generations together and observe their exit codes in argument order.
+    /// A selector or observation error occupies its position in the iterator.
+    /// The selected receipts remain available after a restart or automatic removal.
+    pub fn wait_each(
+        &self,
+        selectors: &[String],
+    ) -> anyhow::Result<impl Iterator<Item = anyhow::Result<i32>>> {
+        let snapshot = self.instances(true)?;
+        let selected: Vec<_> = selectors
+            .iter()
+            .map(|selector| {
+                Self::find_in(&snapshot, selector)?
+                    .cloned()
+                    .with_context(|| format!("No such container: {selector}"))
+            })
+            .collect();
+        Ok(selected
+            .into_iter()
+            .map(|instance| self.wait_for(instance?)))
+    }
+
+    fn wait_for(&self, instance: Instance) -> anyhow::Result<i32> {
         if instance.state == "created" && instance.generation.is_empty() {
             return Ok(0);
         }
@@ -292,6 +319,9 @@ mod tests {
         store.save(&instance).unwrap();
         let first = instance.clone();
         let output = store.output(&instance).unwrap();
+        let directory = store.directory(&instance.id);
+        fs::write(directory.join("stdout.log"), b"first stdout").unwrap();
+        fs::write(directory.join("stderr.log"), b"first stderr").unwrap();
         finish_instance(&store, &mut instance, 7, None).unwrap();
         instance.generation = uuid();
         instance.state = "running".into();
@@ -299,12 +329,26 @@ mod tests {
         let lease = acquire_lease(&store.directory(&instance.id).join("owner.lock")).unwrap();
         assert!(!store.generation_active(&first).unwrap());
         assert!(store.generation_active(&instance).unwrap());
+        fs::write(
+            directory.join("stdout.log"),
+            b"first stdoutsucceeding stdout",
+        )
+        .unwrap();
+        fs::write(
+            directory.join("stderr.log"),
+            b"first stderrsucceeding stderr",
+        )
+        .unwrap();
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
         assert_eq!(
             output
-                .follow(&first.generation, &mut Vec::new(), &mut Vec::new())
+                .follow(&first.generation, &mut stdout, &mut stderr)
                 .unwrap(),
             7
         );
+        assert_eq!(stdout, b"first stdout");
+        assert_eq!(stderr, b"first stderr");
         finish_instance(&store, &mut instance, 0, None).unwrap();
         assert_eq!(store.completion(&first).unwrap().unwrap().code, 7);
         drop(lease);

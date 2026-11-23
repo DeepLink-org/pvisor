@@ -9,6 +9,8 @@ pub(crate) mod fs {
     use crate::devices::virtio::fs::write_buffer::WriteBufferOptions;
 
     pub(crate) const WORKERS: &str = "PVISOR_VM_FS_WORKERS";
+    pub(crate) const INLINE_METADATA: &str = "PVISOR_VM_FS_INLINE_METADATA";
+    pub(crate) const RNGK_READINDEX: &str = "PVISOR_VM_FS_RNGK_READINDEX";
     pub(crate) const CACHE_EXPERIMENT: &str = "PVISOR_VM_CACHE_EXPERIMENT";
     pub(crate) const GUEST_CACHE: &str = "PVISOR_VM_GUEST_CACHE";
     pub(crate) const HOST_WRITEBACK: &str = "PVISOR_VM_FS_HOST_WRITEBACK";
@@ -33,6 +35,8 @@ pub(crate) mod fs {
     /// until overlay construction; other backends do not consume that setting.
     pub(crate) struct FsProfile {
         pub(crate) workers: usize,
+        pub(crate) inline_metadata: bool,
+        pub(crate) rngk_readindex: bool,
         pub(crate) root_data_cache: bool,
         pub(crate) guest_cache: bool,
         pub(crate) host_writeback: bool,
@@ -76,6 +80,8 @@ pub(crate) mod fs {
                 .transpose()?;
             Ok(Self {
                 workers,
+                inline_metadata: boolean(get(INLINE_METADATA).as_deref(), INLINE_METADATA, true)?,
+                rngk_readindex: boolean(get(RNGK_READINDEX).as_deref(), RNGK_READINDEX, true)?,
                 root_data_cache: root_data_cache_enabled("/dev/root", cache_setting.as_deref())?,
                 guest_cache: guest_cache_enabled(get(GUEST_CACHE).as_deref())?,
                 host_writeback: host_writeback_enabled(get(HOST_WRITEBACK).as_deref())?,

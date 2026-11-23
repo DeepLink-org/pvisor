@@ -300,9 +300,33 @@ impl Store {
             Err(e) if force && e.to_string() == "network not found" => return Ok(()),
             Err(e) => return Err(e),
         };
+        self.remove_network_locked(networks, &network)
+    }
+
+    pub(super) fn remove_project_network(&self, project: &str) -> anyhow::Result<()> {
+        let _guard = self.lock()?;
+        let networks = self.network_catalog()?;
+        let name = format!("{project}_default");
+        if let Some(network) = networks
+            .iter()
+            .find(|network| {
+                network.name == name && network.compose_project.as_deref() == Some(project)
+            })
+            .cloned()
+        {
+            self.remove_network_locked(networks, &network)?;
+        }
+        Ok(())
+    }
+
+    fn remove_network_locked(
+        &self,
+        networks: Vec<Network>,
+        network: &Network,
+    ) -> anyhow::Result<()> {
         ensure!(!network.builtin, "built-in networks cannot be removed");
         ensure!(
-            !self.all()?.iter().any(|i| attached(i, &network)),
+            !self.all()?.iter().any(|i| attached(i, network)),
             "network has attached containers"
         );
         self.save_networks(

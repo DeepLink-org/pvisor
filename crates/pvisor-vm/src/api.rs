@@ -112,6 +112,11 @@ pub struct KernelImage {
     pub entry_address: u64,
 }
 
+/// Guest path selected by the kernel for PID 1. With `init-blob`, the VM injects
+/// its built-in supervisor here on `/dev/root`. Callers supplying their own init
+/// must provide it at this path instead.
+pub const GUEST_INIT_PATH: &str = "/init.pvisor";
+
 /// Command consumed by a caller-supplied init that understands KRUN_INIT,
 /// KRUN_WORKDIR and kernel-provided arguments/environment. It does not configure
 /// the built-in Rust supervisor: use its launch JSON for normal pVisor workloads.
@@ -239,7 +244,8 @@ pub trait VmConfiguration: Sized {
         disable_proactive_compaction: bool,
         offload_minimum: Duration,
     ) -> io::Result<()>;
-    /// Disable built-in init before attaching /dev/root. A root already attached
+    /// Disable built-in init before attaching `/dev/root`. For a fresh boot the
+    /// caller must supply init at [`GUEST_INIT_PATH`]. A root already attached
     /// returns InvalidInput without changing the previous init selection.
     fn disable_implicit_init(&mut self) -> io::Result<()>;
     /// Configure a custom init's command; requires implicit init to be disabled.
@@ -348,6 +354,36 @@ pub trait VmConfiguration: Sized {
     /// Attach a writable merged overlay. `shm_size` must be zero; DAX for this
     /// merged view is Unsupported. Failure preserves previous attachments.
     fn overlay(&mut self, tag: &str, overlay: OverlayConfig, shm_size: usize) -> io::Result<()>;
+    /// Boot with the built-in PID 1 and no overlay layers attached. PID 1 mounts
+    /// a second virtio-fs device as the workload root before reading launch JSON.
+    /// The first FUSE INIT for that mount calls `prepare` once on a filesystem
+    /// worker. The callback may wait for a request; it must use a bounded wait
+    /// and must not depend on that guest making progress before it returns.
+    /// A failed callback or invalid root fails the mount; there is no retry or
+    /// fallback, and the owning runner remains responsible for teardown.
+    ///
+    /// Supported on fresh Linux x86-64/KVM with built-in init and Linux firmware.
+    /// Not compatible with snapshot/restore, guest-idle handoff, or a separate
+    /// `/dev/root` or `pvisor-rootfs` attachment. This profile owns both
+    /// filesystem tags, including their virtual entries. Rejection preserves the
+    /// builder and drops the callback without running it. Configuration does not
+    /// open any image data or require access to KVM.
+    ///
+    /// ```
+    /// use pvisor_vm::api::{VmBuilder, VmConfiguration};
+    /// use std::io;
+    ///
+    /// let mut vm = VmBuilder::new(1, 128)?;
+    /// match vm.deferred_root(|| panic!("configuration must not run the callback")) {
+    ///     Ok(()) => assert!(vm.deferred_root(|| unreachable!()).is_err()),
+    ///     Err(e) => assert_eq!(e.kind(), io::ErrorKind::Unsupported),
+    /// }
+    /// # Ok::<(), io::Error>(())
+    /// ```
+    fn deferred_root(
+        &mut self,
+        prepare: impl FnOnce() -> io::Result<DeferredRoot> + Send + 'static,
+    ) -> io::Result<()>;
     /// Add owned immutable bytes to an existing filesystem tag; a leading slash
     /// is optional. Virtual parent directories must already exist; empty/dot/parent/
     /// NUL components and duplicate names are rejected. Mode uses guest permission
@@ -1072,6 +1108,16 @@ pub struct OverlayConfig {
     pub access_policy: pvisor_core::overlay::FileAccessPolicy,
     /// Host/guest ownership, permissions and xattr translation model.
     pub semantics: PermissionSemantics,
+}
+
+/// Workload root and launch input for a single deferred-root VM.
+pub struct DeferredRoot {
+    /// Writable overlay with LinuxComplete semantics. All normal overlay path,
+    /// stability and ownership requirements apply until runner teardown.
+    pub overlay: OverlayConfig,
+    /// Validated and serialized as a one-shot guest launch file (at most 1 MiB).
+    /// A block-device root is incompatible with this profile.
+    pub guest: pvisor_guest::api::GuestConfig,
 }
 
 /// Opaque backend state, preserving the existing serialized machine-state format.

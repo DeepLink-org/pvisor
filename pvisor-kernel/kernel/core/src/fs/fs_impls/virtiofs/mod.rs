@@ -3,6 +3,7 @@
 //! Virtio-fs filesystem support backed by FUSE requests.
 
 mod dir;
+mod dir_index;
 mod file;
 mod fs;
 mod inode;

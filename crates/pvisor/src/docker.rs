@@ -430,13 +430,22 @@ struct Completion {
     code: i32,
     #[serde(default)]
     error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    log_end: Option<LogEnd>,
+}
+
+#[derive(Clone, Copy, Serialize, Deserialize)]
+struct LogEnd {
+    stdout: u64,
+    stderr: u64,
 }
 
 /// Open log descriptors surviving automatic container removal.
 pub struct Output {
     stdout: File,
     stderr: File,
-    result: PathBuf,
+    store: Store,
+    id: String,
     directory: PathBuf,
     auto_remove: bool,
 }
@@ -453,39 +462,43 @@ impl Output {
         stderr: &mut impl Write,
     ) -> anyhow::Result<i32> {
         let mut completed = None;
-        let generation_result = self.result.with_file_name(format!(
-            "{}-{generation}.json",
-            self.result
-                .file_stem()
-                .context("invalid result path")?
-                .to_string_lossy()
-        ));
         loop {
-            io::copy(&mut self.stdout, stdout)?;
-            io::copy(&mut self.stderr, stderr)?;
-            stdout.flush()?;
-            stderr.flush()?;
-            // Owners commit completion before releasing their leases. Observe
-            // liveness first, then the receipt, so a concurrent orderly exit
-            // cannot be reported as the fallback status 137.
+            // Sample lengths before checking the generation. A successor publishes
+            // its own generation before appending to the shared logs.
             let active = lease_active(&self.directory.join("owner.lock"))?
                 || lease_active(&self.directory.join("vm.lock"))?;
-            if let Ok(file) = File::open(&generation_result).or_else(|error| {
-                if error.kind() == io::ErrorKind::NotFound {
-                    File::open(&self.result)
+            let limit = if let Some((_, _, limit)) = completed {
+                limit
+            } else {
+                let available = self.available()?;
+                let current = self.selected(generation);
+                if let Some(receipt) = self.store.completion_for(&self.id, generation)? {
+                    let limit = if let Some(end) = receipt.log_end {
+                        end
+                    } else {
+                        let end = self.available()?;
+                        ensure!(
+                            self.selected(generation)?,
+                            "container completion does not record its log boundary"
+                        );
+                        end
+                    };
+                    completed = Some((receipt.code, Instant::now(), limit));
+                    limit
+                } else if current? {
+                    available
                 } else {
-                    Err(error)
+                    ensure!(
+                        !active,
+                        "container execution changed without a completion receipt"
+                    );
+                    return Ok(137);
                 }
-            }) {
-                let result: Completion = serde_json::from_reader(file)?;
-                if result.generation == generation {
-                    completed.get_or_insert((result.code, Instant::now()));
-                }
-            }
-            if let Some((code, observed)) = completed {
+            };
+            Self::drain(&mut self.stdout, limit.stdout, stdout)?;
+            Self::drain(&mut self.stderr, limit.stderr, stderr)?;
+            if let Some((code, observed, _)) = completed {
                 if !self.auto_remove || !self.directory.try_exists()? {
-                    io::copy(&mut self.stdout, stdout)?;
-                    io::copy(&mut self.stderr, stderr)?;
                     return Ok(code);
                 }
                 ensure!(
@@ -493,12 +506,37 @@ impl Output {
                     "container completed but automatic removal did not finish; inspect the retained record"
                 );
             } else if !active {
-                io::copy(&mut self.stdout, stdout)?;
-                io::copy(&mut self.stderr, stderr)?;
                 return Ok(137);
             }
             std::thread::sleep(Duration::from_millis(20));
         }
+    }
+
+    fn available(&self) -> io::Result<LogEnd> {
+        Ok(LogEnd {
+            stdout: self.stdout.metadata()?.len(),
+            stderr: self.stderr.metadata()?.len(),
+        })
+    }
+
+    fn selected(&self, generation: &str) -> anyhow::Result<bool> {
+        Ok(self
+            .store
+            .read_session::<CachedImage>(&self.id)?
+            .is_some_and(|session| session.active_execution() == generation))
+    }
+
+    fn drain(file: &mut File, end: u64, output: &mut impl Write) -> anyhow::Result<()> {
+        let remaining = end
+            .checked_sub(file.stream_position()?)
+            .context("container log boundary precedes the read offset")?;
+        let copied = io::copy(&mut file.take(remaining), output)?;
+        ensure!(
+            copied == remaining,
+            "container log ends before its recorded boundary"
+        );
+        output.flush()?;
+        Ok(())
     }
 }
 
@@ -877,19 +915,26 @@ impl Store {
     /// Exact names/IDs precede prefixes. Ambiguity, corrupt records and unsupported
     /// schemas remain errors; callers must not fall back to another backend then.
     pub fn find(&self, selector: &str) -> anyhow::Result<Option<Instance>> {
-        let instances = self.all()?;
+        Ok(Self::find_in(&self.all()?, selector)?.cloned())
+    }
+
+    fn find_in<'a>(
+        instances: &'a [Instance],
+        selector: &str,
+    ) -> anyhow::Result<Option<&'a Instance>> {
         if let Some(exact) = instances
             .iter()
-            .find(|i| i.name == selector || i.id == selector)
+            .find(|i| i.id == selector)
+            .or_else(|| instances.iter().find(|i| i.name == selector))
         {
-            return Ok(Some(exact.clone()));
+            return Ok(Some(exact));
         }
-        let found: Vec<_> = instances
-            .into_iter()
-            .filter(|i| !selector.is_empty() && i.id.starts_with(selector))
-            .collect();
-        ensure!(found.len() <= 1, "ambiguous container: {selector}");
-        Ok(found.into_iter().next())
+        let mut found = instances
+            .iter()
+            .filter(|i| !selector.is_empty() && i.id.starts_with(selector));
+        let first = found.next();
+        ensure!(found.next().is_none(), "ambiguous container: {selector}");
+        Ok(first)
     }
     /// Create a stopped instance. A missing image is pulled before publication.
     pub fn create(&self, config: Create) -> anyhow::Result<Instance> {
@@ -1338,27 +1383,41 @@ impl Store {
             // Completion is committed before exited state or automatic removal.
             // Capture state first so a fast completion between the observations
             // cannot be mistaken for a launch failure or a missing container.
-            let current = self.resolve(&instance.id);
-            if ready.is_file() {
-                return Ok(current.unwrap_or(instance));
-            }
-            if let Ok(result) = File::open(
-                self.root
-                    .join("results")
-                    .join(format!("{}.json", instance.id)),
-            ) {
-                let result: Completion = serde_json::from_reader(result)?;
-                if result.generation == instance.generation {
-                    if let Some(error) = result.error {
-                        bail!("container failed to start: {error}");
-                    }
-                    let mut completed = current.unwrap_or(instance);
-                    completed.state = "exited".into();
-                    completed.exit_code = Some(result.code);
-                    return Ok(completed);
+            let current = self.load_instance::<CachedImage>(&instance.id);
+            let ready_observed = ready.is_file();
+            let active = match &current {
+                Ok(Some(observed)) if observed.generation == instance.generation => {
+                    self.generation_active(&instance)
                 }
+                _ => Ok(false),
+            };
+            if let Some(result) = self.completion(&instance)? {
+                if !ready_observed && let Some(error) = result.error {
+                    bail!("container failed to start: {error}");
+                }
+                let mut completed = current
+                    .ok()
+                    .flatten()
+                    .filter(|observed| observed.generation == instance.generation)
+                    .unwrap_or(instance);
+                completed.state = "exited".into();
+                completed.exit_code = Some(result.code);
+                return Ok(completed);
             }
-            let current = current?;
+            let current = current?.context("container disappeared during startup")?;
+            ensure!(
+                current.generation == instance.generation,
+                "container startup was superseded without a completion receipt"
+            );
+            let startup_expired = current.state == "starting"
+                && crate::unix_now_ms().saturating_sub(current.started_ms) > 30_000;
+            ensure!(
+                active? || (!ready_observed && current.state != "running" && !startup_expired),
+                "container owner exited without a completion receipt"
+            );
+            if ready_observed {
+                return Ok(current);
+            }
             if current.state == "exited" {
                 bail!(
                     "container failed to start: {}",
@@ -1393,6 +1452,19 @@ impl Store {
         timeout: Duration,
         requested_signal: Option<&str>,
     ) -> anyhow::Result<()> {
+        self.stop_selected(
+            || self.resolve(selector).map(Some),
+            timeout,
+            requested_signal,
+        )
+    }
+
+    fn stop_selected(
+        &self,
+        select: impl FnOnce() -> anyhow::Result<Option<Instance>>,
+        timeout: Duration,
+        requested_signal: Option<&str>,
+    ) -> anyhow::Result<()> {
         let parsed_signal = requested_signal
             .map(GuestSignal::parse_signal)
             .transpose()?;
@@ -1407,7 +1479,9 @@ impl Store {
         };
         let instance = {
             let _guard = self.lock()?;
-            let instance = self.resolve(selector)?;
+            let Some(instance) = select()? else {
+                return Ok(());
+            };
             if self.active(&instance)? {
                 // Commit suppression under the same catalog lock as restart
                 // admission. A stop during backoff must not launch a successor.
@@ -1481,12 +1555,55 @@ impl Store {
     pub fn remove(&self, selector: &str, volumes: bool) -> anyhow::Result<()> {
         let _guard = self.lock()?;
         let instance = self.resolve(selector)?;
+        self.remove_selected(&instance, volumes)
+    }
+
+    fn find_id(&self, id: &str) -> anyhow::Result<Option<Instance>> {
+        Ok(self.all()?.into_iter().find(|instance| instance.id == id))
+    }
+
+    fn stop_recorded(
+        &self,
+        id: &str,
+        timeout: Duration,
+        signal: Option<&str>,
+    ) -> anyhow::Result<()> {
+        self.stop_selected(|| self.find_id(id), timeout, signal)
+    }
+
+    fn stop_and_remove_recorded(
+        &self,
+        id: &str,
+        timeout: Duration,
+        volumes: bool,
+    ) -> anyhow::Result<()> {
+        self.stop_recorded(id, timeout, None)?;
+        let _guard = self.lock()?;
+        if let Some(instance) = self.find_id(id)? {
+            self.remove_selected(&instance, volumes)?;
+        }
+        Ok(())
+    }
+
+    fn remove_pending_recorded(&self, id: &str, volumes: bool) -> anyhow::Result<()> {
+        let _guard = self.lock()?;
+        if let Some(instance) = self.find_id(id)? {
+            ensure!(
+                instance.state == "created" && !self.active(&instance)?,
+                "pending replacement has unexpected lifecycle; preserve it for inspection"
+            );
+            self.remove_selected(&instance, volumes)?;
+        }
+        Ok(())
+    }
+
+    fn remove_selected(&self, instance: &Instance, volumes: bool) -> anyhow::Result<()> {
         ensure!(
-            !self.active(&instance)? && instance.state != "starting",
+            !self.active(instance)? && instance.state != "starting",
             "cannot remove a running container"
         );
-        let _stages = staging::lock_previous(self, &instance, true)?;
-        self.remove_instance_files(&instance, volumes)
+        let _stages = staging::lock_previous(self, instance, true)?;
+        self.remove_instance_files(instance, volumes)
     }
     // Caller holds the catalog lock and has fenced the workload. A completing
     // owner retains its own lease; public removal independently refuses owners.
@@ -1515,6 +1632,11 @@ impl Store {
         }
         Ok(())
     }
+    /// Reports whether this exact execution has committed its completion.
+    pub fn has_completed(&self, instance: &Instance) -> anyhow::Result<bool> {
+        Ok(self.completion(instance)?.is_some())
+    }
+
     /// Open one current-generation guest control connection.
     pub fn connect(&self, instance: &Instance) -> anyhow::Result<UnixStream> {
         ensure!(self.active(instance)?, "container is not running");
@@ -1532,27 +1654,27 @@ impl Store {
         }
         Ok(reply)
     }
-    /// Open output before starting a container, retaining descriptors through
-    /// automatic removal. The completion receipt is outside guest-visible trees.
+    /// Open output at the current log ends before starting a container, retaining
+    /// descriptors through automatic removal.
     pub fn output(&self, instance: &Instance) -> anyhow::Result<Output> {
         let open = |name| -> anyhow::Result<File> {
-            Ok(OpenOptions::new()
+            let mut file = OpenOptions::new()
                 .read(true)
                 .write(true)
                 .create(true)
                 .truncate(false)
                 .mode(0o600)
-                .open(self.directory(&instance.id).join(name))?)
+                .open(self.directory(&instance.id).join(name))?;
+            file.seek(SeekFrom::End(0))?;
+            Ok(file)
         };
         Ok(Output {
             stdout: open("stdout.log")?,
             stderr: open("stderr.log")?,
             directory: self.directory(&instance.id),
             auto_remove: instance.config.auto_remove,
-            result: self
-                .root
-                .join("results")
-                .join(format!("{}.json", instance.id)),
+            store: self.clone(),
+            id: instance.id.clone(),
         })
     }
     /// Stream the current or previous launch's stdout/stderr. The caller owns
@@ -2119,10 +2241,20 @@ fn finish_instance(
     code: i32,
     error: Option<String>,
 ) -> anyhow::Result<()> {
+    let directory = store.directory(&instance.id);
+    let log_len = |name| match fs::metadata(directory.join(name)) {
+        Ok(metadata) => Some(metadata.len()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Some(0),
+        Err(_) => None,
+    };
+    let log_end = log_len("stdout.log")
+        .zip(log_len("stderr.log"))
+        .map(|(stdout, stderr)| LogEnd { stdout, stderr });
     let completion = Completion {
         generation: instance.generation.clone(),
         code,
         error,
+        log_end,
     };
     // Keep per-generation receipts so waiters cannot lose an exit when a
     // restart quickly overwrites the current-generation projection.
@@ -3447,6 +3579,7 @@ mod tests {
                 generation: instance.generation.clone(),
                 code: 0,
                 error: None,
+                log_end: None,
             },
         )
         .unwrap();
@@ -3542,6 +3675,7 @@ mod tests {
                 generation: instance.generation.clone(),
                 code: 0,
                 error: None,
+                log_end: None,
             },
         )
         .unwrap();
@@ -3959,6 +4093,129 @@ mod tests {
         assert!(!store.create(config).unwrap().env.contains_key("IMAGE_ENV"));
     }
     #[test]
+    fn docker_start_requires_the_original_receipt_for_a_superseded_generation() {
+        let (_temporary, store, _) = fixture();
+        let mut instance = store.create(request()).unwrap();
+        instance.generation = uuid();
+        instance.state = "starting".into();
+        store.save(&instance).unwrap();
+        let admitted = instance.clone();
+        fs::write(
+            store
+                .directory(&instance.id)
+                .join(format!("ready-{}", instance.generation)),
+            b"ready",
+        )
+        .unwrap();
+        finish_instance(&store, &mut instance, 7, None).unwrap();
+        let receipt = store
+            .root
+            .join("results")
+            .join(format!("{}-{}.json", admitted.id, admitted.generation));
+        let hidden = receipt.with_extension("hidden");
+        fs::rename(&receipt, &hidden).unwrap();
+        instance.generation = uuid();
+        finish_instance(&store, &mut instance, 0, None).unwrap();
+
+        let assert_superseded = || {
+            let error = store.wait_for_start(admitted.clone()).unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("superseded without a completion receipt")
+            );
+        };
+        assert_superseded();
+        let successor_receipt =
+            receipt.with_file_name(format!("{}-{}.json", instance.id, instance.generation));
+        fs::copy(successor_receipt, &receipt).unwrap();
+        assert_superseded();
+        fs::rename(&hidden, &receipt).unwrap();
+
+        let result = store.wait_for_start(admitted.clone()).unwrap();
+        assert_eq!(result.generation, admitted.generation);
+        assert_eq!(result.exit_code, Some(7));
+        let current = store.resolve(&instance.id).unwrap();
+        assert_eq!(current.generation, instance.generation);
+        assert_eq!(current.exit_code, Some(0));
+        fs::write(store.directory(&instance.id).join("session.json"), b"{").unwrap();
+        let result = store.wait_for_start(admitted).unwrap();
+        assert_eq!(result.exit_code, Some(7));
+    }
+
+    #[test]
+    fn docker_start_requires_a_receipt_if_the_ready_owner_disappears() {
+        let (_temporary, store, _) = fixture();
+        let mut admitted = store.create(request()).unwrap();
+        admitted.generation = uuid();
+        admitted.state = "running".into();
+        store.save(&admitted).unwrap();
+        fs::write(
+            store
+                .directory(&admitted.id)
+                .join(format!("ready-{}", admitted.generation)),
+            b"ready",
+        )
+        .unwrap();
+
+        let error = store.wait_for_start(admitted).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("owner exited without a completion receipt")
+        );
+    }
+
+    #[test]
+    fn docker_wait_selects_aliases_before_a_container_is_removed() {
+        let (_temporary, store, _) = fixture();
+        let mut config = request();
+        config.name = Some("first".into());
+        let mut first = store.create(config).unwrap();
+        let mut config = request();
+        config.name = Some("second".into());
+        let mut second = store.create(config).unwrap();
+        for instance in [&mut first, &mut second] {
+            instance.generation = uuid();
+            instance.state = "starting".into();
+            store.save(instance).unwrap();
+        }
+        let mut config = request();
+        config.name = Some(second.id.clone());
+        let mut decoy = store.create(config).unwrap();
+        decoy.created_ms = second.created_ms + 1;
+        decoy.generation = uuid();
+        finish_instance(&store, &mut decoy, 31, None).unwrap();
+        let selectors = [
+            first.name.clone(),
+            "missing".into(),
+            second.name.clone(),
+            second.id[..12].to_owned(),
+            second.id.clone(),
+            second.name.clone(),
+        ];
+        let results = store.wait_each(&selectors).unwrap();
+        finish_instance(&store, &mut first, 7, None).unwrap();
+        finish_instance(&store, &mut second, 17, None).unwrap();
+        fs::remove_dir_all(store.directory(&second.id)).unwrap();
+
+        let mut results = results.into_iter();
+        assert_eq!(results.next().unwrap().unwrap(), 7);
+        assert!(
+            results
+                .next()
+                .unwrap()
+                .unwrap_err()
+                .to_string()
+                .contains("missing")
+        );
+        assert_eq!(
+            results.collect::<anyhow::Result<Vec<_>>>().unwrap(),
+            [17, 17, 17, 17]
+        );
+    }
+
+    #[test]
     fn docker_start_joins_starting_generation_and_reports_its_failure() {
         let (_temporary, store, _) = fixture();
         let mut instance = store.create(request()).unwrap();
@@ -3976,6 +4233,7 @@ mod tests {
                 generation: instance.generation.clone(),
                 code: 125,
                 error: Some("original launch failed".into()),
+                log_end: None,
             },
         )
         .unwrap();
@@ -4003,6 +4261,7 @@ mod tests {
                 generation: instance.generation.clone(),
                 code: 17,
                 error: None,
+                log_end: None,
             },
         )
         .unwrap();
@@ -4093,19 +4352,27 @@ mod tests {
     #[test]
     fn docker_stale_generation_cannot_consume_an_old_completion() {
         let (_temporary, store, _) = fixture();
-        let instance = store.create(request()).unwrap();
+        let mut instance = store.create(request()).unwrap();
         let mut output = store.output(&instance).unwrap();
+        instance.generation = "new".into();
+        instance.state = "running".into();
+        store.save(&instance).unwrap();
+        let receipt = store
+            .root
+            .join("results")
+            .join(format!("{}.json", instance.id));
         fs::write(
             store.directory(&instance.id).join("stdout.log"),
             b"last output",
         )
         .unwrap();
         crate::util::write_private_json(
-            &output.result,
+            &receipt,
             &Completion {
                 generation: "old".into(),
                 code: 0,
                 error: None,
+                log_end: None,
             },
         )
         .unwrap();
@@ -4116,11 +4383,12 @@ mod tests {
         assert_eq!(stdout, b"last output");
         output = store.output(&instance).unwrap();
         crate::util::write_private_json(
-            &output.result,
+            &receipt,
             &Completion {
                 generation: "new".into(),
                 code: 7,
                 error: None,
+                log_end: None,
             },
         )
         .unwrap();
@@ -4136,19 +4404,14 @@ mod tests {
         let (_temporary, store, _) = fixture();
         let mut config = request();
         config.auto_remove = true;
-        let instance = store.create(config).unwrap();
+        let mut instance = store.create(config).unwrap();
         let output = store.output(&instance).unwrap();
+        instance.generation = uuid();
+        instance.state = "starting".into();
+        store.save(&instance).unwrap();
         fs::write(store.directory(&instance.id).join("stdout.log"), b"out\0").unwrap();
         fs::write(store.directory(&instance.id).join("stderr.log"), b"err\0").unwrap();
-        crate::util::write_private_json(
-            &output.result,
-            &Completion {
-                generation: instance.generation.clone(),
-                code: 7,
-                error: None,
-            },
-        )
-        .unwrap();
+        finish_instance(&store, &mut instance, 7, None).unwrap();
         let (send, receive) = std::sync::mpsc::channel();
         let generation = instance.generation.clone();
         let reader = std::thread::spawn(move || {

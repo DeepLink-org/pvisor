@@ -85,6 +85,12 @@ and final synchronization, PID 1 reports that token and a checked `0..=255` code
 once. Missing/failed handshake prevents workload start; there is no legacy ioctl
 fallback. Shared request numbers and byte framing live in `api`.
 
+With the deferred OverlayFS boot profile, PID 1 claims the exit token on the
+minimal bootstrap root, then mounts `pvisor-rootfs` and changes root before
+reading launch JSON. The host can prepare that mount after PID 1 reaches it.
+No workload starts if attachment or configuration fails. The bootstrap root
+descriptor stays with PID 1 for exit reporting and is not inherited by workloads.
+
 Whole-VM snapshots preserve the capability in both PID 1 RAM and host device
 state, continuing the captured supervisor rather than rotating its token. Host
 snapshots remain private authority. This relies on a trusted guest kernel and
@@ -261,6 +267,11 @@ supervisor can expose services without guest-side configuration. Exec inherits l
 working directory unless overridden, keeps stdout/stderr separate without a
 PTY, and reports 126/127 for execution errors. TTY mode combines output on the
 PTY and supports initial dimensions; tracked native execs support live resizing through the PID-fenced registry.
+
+With `control_ready`, PID 1 also connects to the host notification port 1026
+after it launches the main process and starts the command adapter. The host
+must bind the private socket before boot. The connection carries no commands
+or identity and does not replace an authenticated service probe.
 
 Both host and guest use `control`'s shared protocol definitions. Raw vsock
 accept is required: `UnixListener::accept` rejects AF_VSOCK peer addresses.

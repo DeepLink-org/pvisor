@@ -26,6 +26,7 @@ pub mod mkdir;
 pub mod mknod;
 pub mod open;
 pub mod read;
+pub mod read_index;
 pub mod readdir;
 pub mod readlink;
 pub mod release;

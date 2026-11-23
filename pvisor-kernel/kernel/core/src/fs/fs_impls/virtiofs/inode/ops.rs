@@ -11,7 +11,6 @@ use aster_fuse::{
     ReleaseFlags, ReleaseKind, SetattrReq, SetattrValid, WriteFlags, WriteReq,
     ops::{
         getattr::{GetattrOperation, GetattrReq},
-        lookup::LookupOperation,
         open::{OpenOperation, OpenReq, OpendirOperation},
         release::ReleaseOptions,
         setattr::SetattrOperation,
@@ -25,23 +24,22 @@ use super::{
         dir::VirtioFsDir,
         file::{CachePolicy, VirtioFsFile},
         open_handle::VirtioFsOpenHandle,
-        valid_until,
     },
     InodeInner, TimeField, VirtioFsInode, WriteOffset,
-    metadata::StaleAttrAction,
+    metadata::{StaleAttrAction, metadata_from_attr},
 };
 use crate::{
     fs::{
         file::{AccessMode, PerOpenFileOps, StatusFlags},
         utils::DirentVisitor,
+        vfs::inode::Metadata,
     },
     prelude::*,
     thread::work_queue::{self, WorkPriority},
     time::clocks::MonotonicCoarseClock,
 };
 
-/// Use one page for each `FUSE_READDIR` request.
-const FUSE_READDIR_BUF_SIZE: u32 = 4096;
+const MAX_READDIR_BYTES: usize = 32 * 1024;
 
 impl VirtioFsInode {
     /// Reads file data through the page cache.
@@ -425,7 +423,7 @@ impl VirtioFsInode {
         entry_reply: &EntryReply,
         request_attr_version: AttrVersion,
         stale_action: StaleAttrAction,
-    ) -> Result<()> {
+    ) -> Result<Option<Metadata>> {
         debug_assert_eq!(entry_reply.nodeid(), self.nodeid());
         self.lookup_count.acquire();
 
@@ -449,12 +447,19 @@ impl VirtioFsInode {
         visitor: &mut dyn DirentVisitor,
     ) -> Result<usize> {
         let fs = self.fs_ref();
-        let data_buf = fs
-            .session()
-            .alloc_read_buf(FUSE_READDIR_BUF_SIZE as usize)?;
-        let entries: Vec<FuseDirEntry> = fs.session().readdir(
+        let session = fs.session();
+        let size = visitor
+            .remaining_bytes()
+            .unwrap_or(PAGE_SIZE)
+            .clamp(PAGE_SIZE, MAX_READDIR_BYTES);
+        let (data_buf, size) = match session.alloc_read_buf(size) {
+            Ok(buf) => (buf, size),
+            Err(_) if size > PAGE_SIZE => (session.alloc_read_buf(PAGE_SIZE)?, PAGE_SIZE),
+            Err(err) => return Err(err.into()),
+        };
+        let entries: Vec<FuseDirEntry> = session.readdir(
             self.nodeid(),
-            ReadReq::new(fh, offset as u64, FUSE_READDIR_BUF_SIZE, flags),
+            ReadReq::new(fh, offset as u64, size as u32, flags),
             data_buf,
         )?;
 
@@ -559,18 +564,21 @@ impl VirtioFsInode {
         &self,
         parent_nodeid: aster_fuse::FuseNodeId,
         name: &str,
-    ) -> Result<()> {
+    ) -> Result<Option<Metadata>> {
         let now = MonotonicCoarseClock::get().read_time();
         if now < *self.entry_valid_until.lock() {
-            return Ok(());
+            return Ok(None);
         }
 
         let old_nodeid = self.nodeid();
         let fs = self.fs_ref();
-        let request_attr_version = fs.session().snapshot_attr_version();
-        let lookup_reply = fs
-            .session()
-            .do_fuse_op(parent_nodeid, LookupOperation::new(name))?;
+        if let Some(attr) =
+            fs.dir_index()
+                .observe(parent_nodeid, name, old_nodeid, self.generation())
+        {
+            return Ok(Some(metadata_from_attr(attr, fs.container_device_id())));
+        }
+        let (lookup_reply, request_attr_version) = fs.dir_index().lookup(parent_nodeid, name)?;
 
         if lookup_reply.nodeid() != old_nodeid || lookup_reply.generation() != self.generation() {
             if let Err(err) = fs.session().forget(lookup_reply.nodeid(), 1) {
@@ -583,16 +591,7 @@ impl VirtioFsInode {
             return_errno_with_message!(Errno::ESTALE, "virtiofs stale dentry after revalidate");
         }
 
-        self.commit_entry_reply(
-            &lookup_reply,
-            request_attr_version,
-            StaleAttrAction::Discard,
-        )?;
-
-        *self.entry_valid_until.lock() =
-            valid_until(lookup_reply.entry_valid(), lookup_reply.entry_valid_nsec());
-
-        Ok(())
+        self.update_from_entry_reply(&lookup_reply, request_attr_version)
     }
 
     /// Refreshes cached attributes when their server TTL has expired.

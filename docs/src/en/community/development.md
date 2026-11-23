@@ -153,7 +153,7 @@ The shared setup action installs the same mise tools and Python development depe
 
 ## VM guest startup
 
-`pvisor-guest` provides the shared `GuestConfig` library and the `pvisor-guest` executable. With `pvisor-vm`'s `init-blob` feature, `crates/pvisor-vm/build.rs` uses Rust's `rust-lld` to build a release Linux musl ELF for the VM architecture. Separate `target/pvisor-guest/` avoids competing with the outer Cargo artifact lock. `pvisor-vm` embeds the ELF as `/init.krun`, which becomes guest PID 1.
+`pvisor-guest` provides the shared `GuestConfig` library and the `pvisor-guest` executable. With `pvisor-vm`'s `init-blob` feature, `crates/pvisor-vm/build.rs` uses Rust's `rust-lld` to build a release Linux musl ELF for the VM architecture. Separate `target/pvisor-guest/` avoids competing with the outer Cargo artifact lock. `pvisor-vm` exposes the embedded ELF as `/init.pvisor`, which runs as guest PID 1. Callers supplying their own init must place it at the same path.
 
 CLI/shim inject `/.pvisor-guest.json` containing argv, environment, cwd, workspace mounts, limits, optional networking and shim agent arguments. The supervisor initializes guest filesystems/console I/O, mounts the workspace, configures networking, launches the workload directly and reaps children. On exit, it reports the workload exit code using libkrun's private rootfs ioctl `0x7602`, then syncs/reboots. Nonzero exit fails the Execution; normal VM shutdown without a reported code fails with 125.
 

@@ -3,6 +3,7 @@
 Requires a native --e2b template, KVM and an empty delegated cgroup. The caller
 supplies an unused state directory and OPEN_SANDBOX_API_KEY/E2B_API_KEY. Only this
 script's sandbox is removed; the API process is always stopped on completion.
+Use --warm-pool with the template's exact limits to exercise actual pooling.
 """
 
 import argparse
@@ -33,6 +34,7 @@ def run(args):
         args.cgroup_root,
         "--state",
         args.state,
+        *(["--warm-pool", args.warm_pool] if args.warm_pool else []),
         "--listen",
         "127.0.0.1:0",
     ]
@@ -48,8 +50,9 @@ def run(args):
         for _ in range(500):
             if server.poll() is not None:
                 raise RuntimeError(log_path.read_text())
-            match = re.search(r"listening on (127\.0\.0\.1:\d+)", log_path.read_text())
-            if match:
+            text = log_path.read_text()
+            match = re.search(r"listening on (127\.0\.0\.1:\d+)", text)
+            if match and (not args.warm_pool or "warm pool parked " in text):
                 domain = match.group(1)
                 command[-1] = domain  # Rebind the same authority after restart.
                 return
@@ -80,6 +83,16 @@ def run(args):
         pending.disconnect()
         record_path = state / sandbox.sandbox_id / "run.json"
         identity = json.loads(record_path.read_text())
+        if args.warm_pool:
+            startup = json.loads(record_path.with_name("startup.json").read_text())
+            assert (
+                startup["execution_started_us"]
+                <= startup["pid1_waiting_for_root_us"]
+                <= startup["controls_verified_us"]
+                <= startup["warm_root_assigned_us"]
+                <= startup["guest_ready_notified_us"]
+                <= startup["services_initialized_us"]
+            ), startup
         server.terminate()
         server.wait(timeout=20)
         server = None
@@ -121,4 +134,5 @@ if __name__ == "__main__":
     parser.add_argument("--cgroup-root", required=True)
     parser.add_argument("--state", required=True)
     parser.add_argument("--template", default="native-e2b")
+    parser.add_argument("--warm-pool")
     run(parser.parse_args())

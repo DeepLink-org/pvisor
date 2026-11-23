@@ -100,25 +100,11 @@ cat hello.txt
 接收或丢弃文件不会撤销远端 API 调用、数据库写入、费用，也不会撤销已经合入的文件。
 详见[安全边界](https://deeplink-org.github.io/pvisor/zh/security/)。
 
-## Linux 预览：宿主工具与容器暂存挂载
+<a id="linux-预览宿主工具与容器暂存挂载"></a>
 
-`pvisor stage` 在 Linux VM 中运行宿主已安装的工具，保留 rootfs 改动供审查。
-apply 默认只处理记录的项目范围，环境变化继续暂存。宿主文件仍可读取，底层宿主文件系统
-不是冻结快照。系统级写回是独立的特权操作，不是操作系统升级事务。
+## 审查容器中的文件改动（Linux 预览）
 
-```bash
-pvisor stage -it --stage ../pvisor-experiment
-# Use the shell, then exit before reviewing.
-pvisor review ../pvisor-experiment --diff
-pvisor apply ../pvisor-experiment --path src --dry-run --diff
-pvisor apply ../pvisor-experiment --path src
-pvisor drop ../pvisor-experiment
-```
-
-确认剩余候选均不需要后才执行 drop；全部接收后应跳过。
-平台准备与限制见 [stage 指南](crates/pvisor-cli/README.md#staged-system-experiments-linux-preview)。
-
-Linux 的容器命令还支持暂存项目挂载：
+用 `:stage` 挂载项目，审查后再写回：
 
 ```bash
 mkdir project
@@ -134,6 +120,10 @@ pvisor rm edit
 记录的宿主来源写回，不能接收 instance rootfs 的改动。退出后再审查；多个暂存挂载需用
 `--mount` 选择。暂存挂载不能使用 `--rm` 或混合直接可写挂载。有剩余候选时，先按需
 丢弃再删除实例。挂载选择和生命周期见[容器暂存挂载](docs/src/zh/reference/cli.md#container-staged-binds)。
+
+在 Linux x86_64/KVM 上，`main` 构建还可以用 [`pvisor run @root` 运行宿主已安装的工具](docs/src/zh/reference/cli.md#run-host-tools)，
+无需拉取镜像。它可以读取实时宿主文件系统，包括可读的凭据。用 `-v ../experiment:/:stage`
+选择暂存改动的位置。
 
 ## 执行与集成
 

@@ -158,7 +158,11 @@ fn public_behavior_has_one_canonical_surface() {
         constants,
         [
             "CONFIG_PATH",
+            "DEFERRED_ROOT_ENV",
+            "DEFERRED_ROOT_TAG",
+            "DEFERRED_ROOT_MOUNTPOINT",
             "CONTROL_PORT",
+            "CONTROL_READY_PORT",
             "SERIAL_COMMAND_PORT",
             "SERIAL_SIGNAL_PORT",
             "SERIAL_MAX_REQUESTS",

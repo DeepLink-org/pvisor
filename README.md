@@ -108,27 +108,11 @@ through by default. File acceptance does not undo remote API calls, database
 writes, charges, or previously applied files. See
 [security boundaries](https://deeplink-org.github.io/pvisor/security/).
 
-## Linux preview: host tools and staged container binds
+<a id="linux-preview-host-tools-and-staged-container-binds"></a>
 
-For system-tool experiments, `pvisor stage` runs host-installed tools in a Linux
-VM and keeps rootfs changes for review. Apply defaults to the recorded project;
-environment changes remain staged. Host files stay readable, and the live host
-filesystem is not a snapshot. System writeback is a separate privileged operation,
-not an OS upgrade transaction.
+## Review changes from a container (Linux preview)
 
-```bash
-pvisor stage -it --stage ../pvisor-experiment
-# Use the shell, then exit before reviewing.
-pvisor review ../pvisor-experiment --diff
-pvisor apply ../pvisor-experiment --path src --dry-run --diff
-pvisor apply ../pvisor-experiment --path src
-pvisor drop ../pvisor-experiment
-```
-
-Only discard remaining candidates after checking them. If all changes were
-accepted, skip drop. See [stage setup and limits](crates/pvisor-cli/README.md#staged-system-experiments-linux-preview).
-
-Container commands also support staged project binds on Linux:
+Mount the project with `:stage` to review changes before writing them back:
 
 ```bash
 mkdir project
@@ -146,6 +130,11 @@ instance rootfs. Review after exit; multiple staged binds require `--mount`.
 Staged binds cannot use `--rm` or mix with direct-writable mounts. Use drop for
 remaining candidates when needed before removing the instance. See
 [mount selection and lifecycle](docs/src/en/reference/cli.md#container-staged-binds).
+
+On Linux x86_64/KVM, a build from `main` can also
+[run host-installed tools with `pvisor run @root`](docs/src/en/reference/cli.md#run-host-tools)
+without pulling an image. It can read the live host filesystem, including readable
+credentials. Use `-v ../experiment:/:stage` to choose where to retain changes.
 
 ## Execution and integration
 

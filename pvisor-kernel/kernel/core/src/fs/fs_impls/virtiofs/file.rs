@@ -58,12 +58,20 @@ impl Drop for VirtioFsFile {
         let fs = self.inode.fs_ref();
         let inode = self.inode.clone();
         let open_handle = self.open_handle.clone();
+        let keep_cache = open_handle
+            .open_flags()
+            .contains(FuseOpenFlags::FOPEN_KEEP_CACHE);
 
         work_queue::submit_work_func(
             move || {
                 // Keep the filesystem alive until the deferred flush completes.
                 let _fs_guard = &fs;
-                if let Err(err) = inode.invalidate_whole_page_cache() {
+                let result = if keep_cache {
+                    inode.sync(SyncMode::Data)
+                } else {
+                    inode.invalidate_whole_page_cache()
+                };
+                if let Err(err) = result {
                     warn!(
                         "virtiofs flush before release failed for inode {:?}: {:?}",
                         inode.nodeid(),
@@ -71,8 +79,7 @@ impl Drop for VirtioFsFile {
                     );
                 }
 
-                // Keep the handle alive until invalidation finishes, so
-                // `VirtioFsOpenHandle::drop` submits `FUSE_RELEASE` afterward.
+                // Keep the handle alive through writeback and eviction.
                 let _ = &open_handle;
             },
             WorkPriority::Normal,

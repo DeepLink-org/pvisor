@@ -30,6 +30,7 @@ tempfile = "3"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 openssl = { version = "0.10", optional = true }
+reqwest = { version = "0.12", default-features = false, features = ["blocking"] }
 
 [[bin]]
 name = "pvisor-benchmarks"

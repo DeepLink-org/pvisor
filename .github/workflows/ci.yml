@@ -458,6 +458,27 @@ jobs:
           mise exec -- rustc --edition=2021 --target x86_64-unknown-linux-musl -C linker=rust-lld pvisor-kernel/tests/guest.rs -o "$RUNNER_TEMP/native-stdio-guest"
           python3 pvisor-kernel/tests/task_stdio.py --binary target/debug/examples/vm_api_case --guest "$RUNNER_TEMP/native-stdio-guest"
 
+      - name: Rust guest metadata defaults and seeded filesystem stress / KVM
+        if: runner.os == 'Linux' && matrix.shard == 'pvisor'
+        env:
+          PVISOR_BUILD_NATIVE_KERNEL_BUNDLE: ${{ steps.native-stdio.outputs.bundle }}
+        shell: bash
+        run: |
+          mise exec -- cargo build --locked -p pvisor-vm --example guest_metadata_case
+          cc -static -O2 -Wall -Wextra -Werror pvisor-kernel/tests/stat_visibility.c -o "$RUNNER_TEMP/native-stat"
+          mise exec -- rustc --edition=2021 --target x86_64-unknown-linux-musl -C linker=rust-lld -O \
+            crates/pvisor-vm/src/probes/guest_metadata_guest.rs -o "$RUNNER_TEMP/native-metadata"
+          python3 pvisor-kernel/tests/fs_metadata.py \
+            --vm-api target/debug/examples/vm_api_case --stat-guest "$RUNNER_TEMP/native-stat" \
+            --metadata-case target/debug/examples/guest_metadata_case --metadata-guest "$RUNNER_TEMP/native-metadata" \
+            --output "$RUNNER_TEMP/native-fs-metadata" --seed 1 --seed 314159 --seed 57596
+      - uses: actions/upload-artifact@v4
+        if: failure() && runner.os == 'Linux' && matrix.shard == 'pvisor'
+        with:
+          name: native-fs-metadata
+          path: ${{ runner.temp }}/native-fs-metadata/
+          if-no-files-found: ignore
+
       - name: Ready barrier and failed-start ownership / Linux and Rust guests / KVM
         if: runner.os == 'Linux' && matrix.shard == 'pvisor'
         env:

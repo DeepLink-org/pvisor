@@ -12,7 +12,10 @@ use crate::{
             file_table::{FileDesc, RawFileDesc, get_file_fast},
         },
         utils::{NAME_MAX, PATH_MAX, SYMLINKS_MAX},
-        vfs::{inode::SymbolicLink, path::MountNamespace},
+        vfs::{
+            inode::{Metadata, SymbolicLink},
+            path::MountNamespace,
+        },
     },
     prelude::*,
     process::{
@@ -618,6 +621,11 @@ impl PathResolver {
 impl PathResolver {
     /// Looks up a child entry with `name` within a directory `path`.
     pub(crate) fn lookup_at_path(&self, path: &Path, name: &str) -> Result<Path> {
+        self.lookup_at_path_observed(path, name)
+            .map(|(path, _)| path)
+    }
+
+    fn lookup_at_path_observed(&self, path: &Path, name: &str) -> Result<(Path, Option<Metadata>)> {
         let dir_dentry = path.dentry.as_dir_dentry_or_err()?;
 
         if path.inode().check_permission(Permission::MAY_EXEC).is_err() {
@@ -627,16 +635,25 @@ impl PathResolver {
             return_errno_with_message!(Errno::ENAMETOOLONG, "the path name is too long");
         }
 
-        let target_path = if super::is_dot(name) {
-            return Ok(path.this());
+        let (target_path, observed) = if super::is_dot(name) {
+            return Ok((path.this(), None));
         } else if super::is_dotdot(name) {
-            self.resolve_parent(path).unwrap_or_else(|| path.this())
+            (
+                self.resolve_parent(path).unwrap_or_else(|| path.this()),
+                None,
+            )
         } else {
-            let target_dentry = dir_dentry.lookup_child(name)?;
-            Path::new(path.mount.clone(), target_dentry)
+            let (target_dentry, observed) = dir_dentry.lookup_child_observed(name)?;
+            (Path::new(path.mount.clone(), target_dentry), observed)
         };
 
-        Ok(target_path.get_top_path())
+        let Some(observed) = observed else {
+            return Ok((target_path.get_top_path(), None));
+        };
+        let mount = target_path.mount.clone();
+        let top = target_path.get_top_path();
+        let observed = Arc::ptr_eq(&mount, &top.mount).then_some(observed);
+        Ok((top, observed))
     }
 
     /// Lookups the target `Path` according to the `fs_path`.
@@ -653,6 +670,16 @@ impl PathResolver {
         self.lookup_unresolved_no_follow(fs_path)?.into_path()
     }
 
+    /// Resolves a path and returns metadata observed for its final inode, if any.
+    pub(crate) fn lookup_with_metadata(
+        &self,
+        fs_path: &FsPath,
+        follow_tail_link: bool,
+    ) -> Result<(Path, Option<Metadata>)> {
+        let (result, observed) = self.lookup_inner(fs_path, follow_tail_link)?;
+        Ok((result.into_path()?, observed))
+    }
+
     /// Lookups the target `Path` according to the `fs_path` and leaves
     /// the result unresolved.
     ///
@@ -662,7 +689,7 @@ impl PathResolver {
     ///
     /// Symlinks are always followed.
     pub(crate) fn lookup_unresolved(&self, fs_path: &FsPath) -> Result<LookupResult> {
-        self.lookup_inner(fs_path, true)
+        self.lookup_inner(fs_path, true).map(|(result, _)| result)
     }
 
     /// Lookups the target `Path` according to the `fs_path` and leaves
@@ -674,10 +701,14 @@ impl PathResolver {
     ///
     /// If the last component is a symlink, it will not be followed.
     pub(crate) fn lookup_unresolved_no_follow(&self, fs_path: &FsPath) -> Result<LookupResult> {
-        self.lookup_inner(fs_path, false)
+        self.lookup_inner(fs_path, false).map(|(result, _)| result)
     }
 
-    fn lookup_inner(&self, fs_path: &FsPath, follow_tail_link: bool) -> Result<LookupResult> {
+    fn lookup_inner(
+        &self,
+        fs_path: &FsPath,
+        follow_tail_link: bool,
+    ) -> Result<(LookupResult, Option<Metadata>)> {
         let lookup_res = match fs_path.inner {
             FsPathInner::Absolute(path) => {
                 self.lookup_from_parent(&self.root, path.trim_start_matches('/'), follow_tail_link)?
@@ -685,7 +716,7 @@ impl PathResolver {
             FsPathInner::CwdRelative(path) => {
                 self.lookup_from_parent(&self.cwd, path, follow_tail_link)?
             }
-            FsPathInner::Cwd => LookupResult::Resolved(self.cwd.clone()),
+            FsPathInner::Cwd => (LookupResult::Resolved(self.cwd.clone()), None),
             FsPathInner::FdRelative(fd, path) => {
                 let parent = {
                     let task = Task::current().unwrap();
@@ -699,7 +730,7 @@ impl PathResolver {
                 let task = Task::current().unwrap();
                 let mut file_table = task.as_thread_local().unwrap().borrow_file_table_mut();
                 let file = get_file_fast!(&mut file_table, fd);
-                LookupResult::Resolved(file.path().clone())
+                (LookupResult::Resolved(file.path().clone()), None)
             }
         };
 
@@ -723,14 +754,14 @@ impl PathResolver {
         parent: &Path,
         relative_path: &str,
         follow_tail_link: bool,
-    ) -> Result<LookupResult> {
+    ) -> Result<(LookupResult, Option<Metadata>)> {
         debug_assert!(!relative_path.starts_with('/'));
 
         if relative_path.len() > PATH_MAX {
             return_errno_with_message!(Errno::ENAMETOOLONG, "the path is too long");
         }
         if relative_path.is_empty() {
-            return Ok(LookupResult::Resolved(parent.clone()));
+            return Ok((LookupResult::Resolved(parent.clone()), None));
         }
 
         // To handle symlinks
@@ -751,15 +782,19 @@ impl PathResolver {
 
             // Iterate next path
             let next_is_tail = path_remain.is_empty();
-            let next_path = match self.lookup_at_path(&current_path, next_name) {
+            let (next_path, observed) = match self.lookup_at_path_observed(&current_path, next_name)
+            {
                 Ok(child) => child,
                 Err(e) => {
                     if next_is_tail && e.error() == Errno::ENOENT {
-                        return Ok(LookupResult::AtParent(LookupParentResult::new(
-                            current_path,
-                            next_name.to_string(),
-                            target_is_dir,
-                        )));
+                        return Ok((
+                            LookupResult::AtParent(LookupParentResult::new(
+                                current_path,
+                                next_name.to_string(),
+                                target_is_dir,
+                            )),
+                            None,
+                        ));
                     }
                     return Err(e);
                 }
@@ -816,12 +851,15 @@ impl PathResolver {
                 if target_is_dir && next_type != InodeType::Dir {
                     return_errno_with_message!(Errno::ENOTDIR, "the inode is not a directory");
                 }
+                if next_is_tail {
+                    return Ok((LookupResult::Resolved(next_path), observed));
+                }
                 current_path = next_path;
                 relative_path = path_remain;
             }
         }
 
-        Ok(LookupResult::Resolved(current_path))
+        Ok((LookupResult::Resolved(current_path), None))
     }
 }
 

@@ -2,13 +2,21 @@
 
 ## Motivation {#motivation}
 
-With prepared userspace and warm page caches, pVisor VM reaches its first command close to a container and before the tested reference VMs; host and staged runs wait less. Short-lived tasks create a fresh environment each time, so startup waiting accumulates with call volume. Consider that wait together with the isolation boundary you need.
+For local API callers repeatedly creating the same size of sandbox, reserving a VM slot cuts startup wait on a hit; an empty pool still requires a cold start. For direct launches with prepared userspace and warm page caches, pVisor VM reaches its first output close to a container and before the tested reference VMs. Host and staged runs wait less.
 
-pVisor VM has a median Ready time of 130.71 ms against Docker rootless at 105.03 ms, and below the reference VMs (Firecracker MMIO 287.13 ms, QEMU microvm 260.10 ms, QEMU q35 663.25 ms). Host and staged runs are faster still, at 33.52 ms and 50.59 ms.
+For serial local API requests, a warm hit took the median wait for `Running` from 77.89 ms down to 12.48 ms, and the median wait for the first successful command from 94.54 ms down to 38.18 ms. In the separate command-line experiment, pVisor VM reached Ready in a median of 130.71 ms and rootless Docker in 105.03 ms.
 
 ## Experiment design {#interpretation}
 
-Measure the interval from launch to the first checked shell output as environment Ready time. That interval is how quickly the system answers a caller: a shorter Ready time means the system handles bursts of large-scale requests better.
+Measure the intervals from sending a create request to receiving `Running` and to completing the first verified command as the API creation and first-use waits. The separate command-line experiment measures environment Ready from process launch to the first verified shell output. Shorter waits let the caller use a fresh environment sooner.
+
+### VM warm pool through the local API {#daemon-warm-pool-design}
+
+The same optimized pVisor daemon runs on an AMD Ryzen 7 9700X with Fedora Linux 7.3.3 and KVM, using a prepared Ubuntu 24.04 image and 4 vCPUs with a 256 MiB process-tree memory limit per instance. The two daemons, observer and VMs share host CPUs 4–7, a four-CPU quota, a 2 GiB memory limit and no swap. Reserving one matching VM is the only configuration difference.
+
+Loopback HTTP timing includes attaching the image and actual service readiness. It excludes daemon startup, image import and waiting for pool refill. Serial cold starts and confirmed hits are interleaved in seeded random order. Each round also sends two matching requests together with only one idle slot and records the hit separately from the fallback. Preflight and three correctness warmup rounds are excluded; every subsequent valid operation is retained, including the sampler's adaptive warmup. Each trial verifies slot ownership, resource limits, command output, private writes and cleanup. Any correctness failure or OOM invalidates the batch.
+
+### Direct executor launches {#direct-launch-design}
 
 The comparison runs on Linux x86_64 / KVM, AMD Ryzen 7 9700X, Fedora host. The controls are native, pVisor host, pVisor staged, pVisor VM, rootless Docker / overlay2, Firecracker with virtio-MMIO, QEMU q35 and QEMU microvm. Launch trees are pinned to CPUs 0,1; every VM has 2 vCPU / 128 MiB. Processes and containers have no memory limit.
 
@@ -19,6 +27,19 @@ Prepared userspace environments run the same `/bin/sh` output probe. Each execut
 Ready ends at the checked first shell marker. Firecracker is stopped under control after checking markers and results and confirming no panic. Failures, panic, mismatched output or changed artifacts are excluded from timing distributions; valid slow samples are retained.
 
 ## Data and analysis {#results}
+
+### Local API wait for a new instance {#daemon-warm-pool}
+
+| Request condition | N | Create to `Running` P50 / P95 (ms) | Create to first verified command completion P50 / P95 (ms) |
+| --- | ---: | ---: | ---: |
+| Serial, default cold start | 41 | 77.89 / 85.90 | 94.54 / 102.53 |
+| Serial, warm hit | 41 | 12.48 / 16.59 | 38.18 / 40.46 |
+| Two simultaneous requests, warm hit | 41 | 14.04 / 17.67 | 48.20 / 55.74 |
+| Two simultaneous requests, empty-pool fallback | 41 | 99.67 / 110.73 | 117.99 / 127.79 |
+
+In the serial pairs, the median time saved was 65.63 ms to `Running` (95% bootstrap interval: 63.48–66.76 ms) and 56.72 ms to command completion (54.98–58.59 ms). No request returned `Running` in under 1 ms. Of the 82 requests in the two-request experiment, 41 hit and 41 fell back. This is what happens with one slot available for each burst, not a production hit rate. The difference between the concurrent fallback and serial cold timings cannot be attributed to pooling alone.
+
+Measured on 2026-11-22, with no failures or valid operations excluded. Treat P95 as indicative. These timings cover a local daemon, not SDK or remote network overhead, and **do not form a cross-runtime ranking with the command-line results below**. See the [warm-pool reproduction steps](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/startup/README.md#daemon-vm-warm-pool).
 
 ### Environment Ready time {#ready}
 

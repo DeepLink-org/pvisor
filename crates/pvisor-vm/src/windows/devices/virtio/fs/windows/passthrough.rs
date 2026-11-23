@@ -39,7 +39,6 @@ use crate::utils::worker_message::WorkerMessage;
 // Constants
 //--------------------------------------------------------------------------------------------------
 
-const INIT_CSTR: &[u8] = b"init.krun\0";
 #[cfg(feature = "init-blob")]
 const INIT_BINARY: &[u8] = include_bytes!(env!("PVISOR_GUEST_BINARY"));
 #[cfg(not(feature = "init-blob"))]
@@ -737,8 +736,8 @@ impl FileSystem for PassthroughFs {
     }
 
     fn lookup(&self, _ctx: Context, parent: Inode, name: &CStr) -> io::Result<Entry> {
-        let init_name = unsafe { CStr::from_bytes_with_nul_unchecked(INIT_CSTR) };
-        if self._cfg.implicit_init && parent == fuse::ROOT_ID && name == init_name {
+        let init_name = crate::api::GUEST_INIT_PATH.trim_start_matches('/').as_bytes();
+        if self._cfg.implicit_init && parent == fuse::ROOT_ID && name.to_bytes() == init_name {
             return Ok(Entry {
                 inode: self.init_inode,
                 generation: 0,

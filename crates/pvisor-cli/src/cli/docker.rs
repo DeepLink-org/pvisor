@@ -44,7 +44,7 @@ pub(super) enum DockerCommand {
     Builder(builder::BuilderArgs),
     /// Manage image-based Compose projects without a Docker daemon.
     Compose(compose::ComposeArgs),
-    /// Create and run a new container in its own VM.
+    /// Run an image in its own VM, or use @root to run host-installed tools (Linux x86_64).
     #[command(disable_help_flag = true)]
     Run(Box<Run>),
     /// Manage containers using Docker's grouped command spelling.
@@ -214,7 +214,7 @@ pub(super) struct Run {
     user: Option<String>,
     #[arg(long)]
     entrypoint: Option<String>,
-    /// Bind or volume: HOST:GUEST[:ro|rw]; HOST:GUEST:stage explicitly stages a Linux bind.
+    /// Bind or volume: HOST:GUEST[:ro|rw|stage]; with @root, use PATH:/:stage for changeset storage.
     #[arg(short = 'v', long = "volume")]
     volumes: Vec<String>,
     #[arg(short = 'p', long = "publish")]
@@ -236,9 +236,9 @@ pub(super) struct Run {
     /// Share boot-kernel RAM through a private directory (Apple Silicon; experimental).
     #[arg(long, value_name = "DIR")]
     shared_kernel_base: Option<PathBuf>,
-    /// Connect to bridge (default), none, or a user-defined network.
-    #[arg(long, alias = "net", default_value = "bridge")]
-    network: String,
+    /// Network: bridge (image default), none (@root default), or a user-defined network (image only).
+    #[arg(long, alias = "net")]
+    network: Option<String>,
     /// Static IPv4 in a user-defined network's configured subnet.
     #[arg(long)]
     ip: Option<std::net::Ipv4Addr>,
@@ -260,9 +260,103 @@ pub(super) struct Run {
     /// Permit a detached guest to fork into independent children.
     #[arg(long)]
     branchable: bool,
-    /// Image followed by the optional command and its literal arguments.
+    /// Image or @root, followed by the optional command and its literal arguments.
     #[arg(required = true, num_args = 1.., trailing_var_arg = true, value_names = ["IMAGE", "COMMAND"])]
     invocation: Vec<String>,
+}
+
+impl Run {
+    fn into_root_stage(self) -> anyhow::Result<super::stage::StageArgs> {
+        ensure!(
+            cfg!(all(target_os = "linux", target_arch = "x86_64")),
+            "@root requires Linux x86_64 host-root VM support (no fallback)"
+        );
+        let Self {
+            help: _,
+            platform,
+            name,
+            detach,
+            rm,
+            interactive,
+            tty,
+            env,
+            env_files,
+            cwd,
+            user,
+            entrypoint,
+            volumes,
+            ports,
+            cpus,
+            memory,
+            memory_pool,
+            managed_memory,
+            shared_memory_pool,
+            shared_kernel_base,
+            network,
+            ip,
+            labels,
+            restart,
+            stop_signal,
+            stop_timeout,
+            no_healthcheck,
+            branchable,
+            mut invocation,
+        } = self;
+        for (flag, given) in [
+            ("--platform", platform.is_some()),
+            ("--detach", detach),
+            ("--rm", rm),
+            ("--user", user.is_some()),
+            ("--entrypoint", entrypoint.is_some()),
+            ("--publish", !ports.is_empty()),
+            (
+                "--memory-pool/-M",
+                memory_pool.is_some() || shared_memory_pool,
+            ),
+            ("--managed-memory", managed_memory),
+            ("--shared-kernel-base", shared_kernel_base.is_some()),
+            ("--ip", ip.is_some()),
+            ("--label", !labels.is_empty()),
+            ("--restart", restart != docker::RestartPolicy::No),
+            ("--stop-signal", stop_signal.is_some()),
+            ("--stop-timeout", stop_timeout.is_some()),
+            ("--no-healthcheck", no_healthcheck),
+            ("--branchable", branchable),
+        ] {
+            ensure!(!given, "{flag} is unsupported with @root");
+        }
+        ensure!((1..=8).contains(&cpus), "@root --cpus must be 1 through 8");
+        let network = network.unwrap_or_else(|| "none".into());
+        ensure!(
+            matches!(network.as_str(), "bridge" | "none"),
+            "@root --network must be bridge or none"
+        );
+        let stage = match volumes.as_slice() {
+            [] => None,
+            [value] => {
+                let path = value
+                    .strip_suffix(":/:stage")
+                    .filter(|path| !path.is_empty() && !path.contains(':'))
+                    .context("@root only supports --volume PATH:/:stage for changeset storage")?;
+                Some(PathBuf::from(path))
+            }
+            _ => bail!("@root accepts at most one --volume PATH:/:stage"),
+        };
+        let command = invocation.split_off(1);
+        Ok(super::stage::StageArgs {
+            interactive,
+            tty,
+            env,
+            env_files,
+            cwd,
+            name,
+            cpus,
+            memory,
+            network,
+            stage,
+            command,
+        })
+    }
 }
 
 #[derive(Debug, Args)]
@@ -408,7 +502,7 @@ pub(super) struct Exec {
 }
 
 pub(super) use crate::container_args::environment;
-use crate::container_args::{PsRow, batch, ps_header, ps_row};
+use crate::container_args::{HOST_ROOT_SELECTOR, PsRow, batch, batch_results, ps_header, ps_row};
 
 pub(super) fn memory(value: &str) -> Result<u32, String> {
     docker::parse_memory_limit(value).map_err(|error| error.to_string())
@@ -469,7 +563,13 @@ fn port(value: &str) -> anyhow::Result<docker::Port> {
 }
 
 pub(super) fn run(command: DockerCommand) -> anyhow::Result<i32> {
-    let command = command.ungroup();
+    let command = match command.ungroup() {
+        DockerCommand::Run(args) if args.invocation[0] == HOST_ROOT_SELECTOR => {
+            let run = Box::new(args.into_root_stage()?.into_run()?);
+            return super::host_service::call(super::host::SessionCommand::Run(run));
+        }
+        command => command,
+    };
     if let DockerCommand::Exec(args) = &command
         && args.session
     {
@@ -589,12 +689,12 @@ pub(super) fn run(command: DockerCommand) -> anyhow::Result<i32> {
                 !(args.tty && args.interactive && !args.detach) || unsafe { libc::isatty(0) } == 1,
                 "the input device is not a TTY"
             );
+            let network = args.network.as_deref().unwrap_or("bridge");
             ensure!(
-                !args.network.starts_with("container:") && args.network != "host",
-                "network mode is unsupported: {}",
-                args.network
+                !network.starts_with("container:") && network != "host",
+                "network mode is unsupported: {network}"
             );
-            let selected_network = store.inspect_network(&args.network)?;
+            let selected_network = store.inspect_network(network)?;
             ensure!(
                 !selected_network.builtin || args.ip.is_none(),
                 "--ip requires a user-defined network"
@@ -664,22 +764,13 @@ pub(super) fn run(command: DockerCommand) -> anyhow::Result<i32> {
             } else {
                 Some(Signals::forward(store.clone(), started.clone())?)
             };
-            if args.interactive && !args.detach && started.state != "exited" {
-                let mut input = store.connect(&started)?;
-                GuestFrameWrite::write_frame(&mut input, &GuestRequest::Input {})?;
-                ensure!(
-                    matches!(
-                        GuestFrameRead::read_frame::<GuestReply>(&mut input)?,
-                        GuestReply::Ready
-                    ),
-                    "guest stdin unavailable"
-                );
-                input.set_read_timeout(None)?;
-                input.set_write_timeout(None)?;
-                std::thread::spawn(move || {
-                    let _ = send_stdin(&mut input);
-                    let _ = GuestFrameRead::read_frame::<GuestReply>(&mut input);
-                });
+            if args.interactive
+                && !args.detach
+                && started.state != "exited"
+                && let Err(error) = forward_guest_stdin(&store, &started)
+                && !store.has_completed(&started)?
+            {
+                return Err(error);
             }
             if args.detach {
                 println!("{}", instance.id);
@@ -716,10 +807,10 @@ pub(super) fn run(command: DockerCommand) -> anyhow::Result<i32> {
             });
         }
         DockerCommand::Wait(args) => {
-            return batch(&args.containers, |selector| {
-                println!("{}", store.wait(selector)?);
+            return batch_results(store.wait_each(&args.containers)?.map(|result| {
+                println!("{}", result?);
                 Ok(())
-            });
+            }));
         }
         DockerCommand::Cp(args) => {
             let source = query::copy_endpoint(&args.source)?;
@@ -865,6 +956,25 @@ impl Drop for Signals {
     }
 }
 
+fn forward_guest_stdin(store: &Store, started: &docker::Instance) -> anyhow::Result<()> {
+    let mut input = store.connect(started)?;
+    GuestFrameWrite::write_frame(&mut input, &GuestRequest::Input {})?;
+    ensure!(
+        matches!(
+            GuestFrameRead::read_frame::<GuestReply>(&mut input)?,
+            GuestReply::Ready
+        ),
+        "guest stdin unavailable"
+    );
+    input.set_read_timeout(None)?;
+    input.set_write_timeout(None)?;
+    std::thread::spawn(move || {
+        let _ = send_stdin(&mut input);
+        let _ = GuestFrameRead::read_frame::<GuestReply>(&mut input);
+    });
+    Ok(())
+}
+
 fn send_stdin(stream: &mut std::os::unix::net::UnixStream) -> anyhow::Result<()> {
     let mut buffer = [0; 16384];
     loop {
@@ -953,6 +1063,55 @@ mod tests {
     struct Cli {
         #[command(subcommand)]
         command: DockerCommand,
+    }
+
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    #[test]
+    fn root_run_preserves_launch_options_and_literal_workload() {
+        for (network_option, network) in [
+            (None, "none"),
+            (Some("--network=none"), "none"),
+            (Some("--net=bridge"), "bridge"),
+        ] {
+            let argv = ["pvisor", "container", "run"]
+                .into_iter()
+                .chain(network_option)
+                .chain([
+                    "-it",
+                    "--name=trial",
+                    "-e",
+                    "A=value",
+                    "--env-file=trial.env",
+                    "--workdir=/work",
+                    "--cpus=8",
+                    "--memory=1g",
+                    "--volume=../my changes:/:stage",
+                    "@root",
+                    "/bin/echo",
+                    "--rm",
+                    "--help",
+                    "--network",
+                    "host",
+                ]);
+            let DockerCommand::Run(args) = Cli::try_parse_from(argv).unwrap().command.ungroup()
+            else {
+                panic!()
+            };
+            let stage = args.into_root_stage().unwrap();
+            assert!(stage.interactive && stage.tty);
+            assert_eq!(stage.name.as_deref(), Some("trial"));
+            assert_eq!(stage.env, ["A=value"]);
+            assert_eq!(stage.env_files, [PathBuf::from("trial.env")]);
+            assert_eq!(stage.cwd, Some(PathBuf::from("/work")));
+            assert_eq!(stage.cpus, 8);
+            assert_eq!(stage.memory, 1024);
+            assert_eq!(stage.network, network, "{network_option:?}");
+            assert_eq!(stage.stage, Some(PathBuf::from("../my changes")));
+            assert_eq!(
+                stage.command,
+                ["/bin/echo", "--rm", "--help", "--network", "host"]
+            );
+        }
     }
 
     #[test]
@@ -1076,13 +1235,13 @@ mod tests {
         let DockerCommand::Run(args) = parsed.command else {
             panic!()
         };
-        assert_eq!(args.network, "dev");
+        assert_eq!(args.network.as_deref(), Some("dev"));
         assert_eq!(args.ip, Some("172.18.0.11".parse().unwrap()));
         let parsed = Cli::try_parse_from(["pvisor", "run", "--net=dev", "alpine"]).unwrap();
         let DockerCommand::Run(args) = parsed.command else {
             panic!()
         };
-        assert_eq!(args.network, "dev");
+        assert_eq!(args.network.as_deref(), Some("dev"));
         assert!(args.ip.is_none());
         assert!(Cli::try_parse_from(["pvisor", "run", "--peer-network", "dev", "alpine"]).is_err());
         assert!(

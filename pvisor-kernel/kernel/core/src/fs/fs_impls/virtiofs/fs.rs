@@ -11,14 +11,17 @@ use aster_fuse::{
 use aster_virtio::device::filesystem::device::{self, AttrVersion, FileSystemDevice, FuseSession};
 use device_id::DeviceId;
 
-use super::inode::{InodeCache, VirtioFsInode};
+use super::{
+    dir_index::DirIndex,
+    inode::{InodeCache, VirtioFsInode},
+};
 use crate::{
     fs::{
         pseudofs::AnonDeviceId,
         utils::NAME_MAX,
         vfs::{
             file_system::{FileSystem, FsEventSubscriberStats, SuperBlock},
-            inode::Inode,
+            inode::{Inode, Metadata},
             registry::{FsCache, FsCreationCtx, FsProperties, FsType},
         },
     },
@@ -83,6 +86,7 @@ pub(super) struct VirtioFs {
     root: Arc<VirtioFsInode>,
     tag: String,
     session: Arc<FuseSession>,
+    dir_index: DirIndex,
     inode_cache: InodeCache,
     fs_event_subscriber_stats: FsEventSubscriberStats,
 }
@@ -123,6 +127,7 @@ impl VirtioFs {
                 sb,
                 root,
                 tag,
+                dir_index: DirIndex::new(session.clone()),
                 session,
                 inode_cache,
                 fs_event_subscriber_stats: FsEventSubscriberStats::new(),
@@ -134,17 +139,21 @@ impl VirtioFs {
         &self.session
     }
 
+    pub(super) fn dir_index(&self) -> &DirIndex {
+        &self.dir_index
+    }
+
     /// Returns the device ID of this virtio-fs mount.
     pub(super) fn container_device_id(&self) -> DeviceId {
         self.sb.container_dev_id
     }
 
-    /// Reads an inode from a FUSE entry reply via the inode cache.
-    pub(super) fn lookup_inode_from_cache(
+    /// Returns the inode and any accepted attributes from the entry reply.
+    pub(super) fn lookup_inode_observed(
         self: &Arc<Self>,
         lookup_reply: EntryReply,
         request_attr_version: AttrVersion,
-    ) -> Result<Arc<VirtioFsInode>> {
+    ) -> Result<(Arc<VirtioFsInode>, Option<Metadata>)> {
         self.inode_cache
             .lookup_inode(lookup_reply, request_attr_version, self)
     }
@@ -188,9 +197,13 @@ impl FileSystem for VirtioFs {
         Some(&self.tag)
     }
 
-    // TODO: Implement `sync` by issuing `fsync` to open files and syncing the device if supported.
     fn sync(&self) -> Result<()> {
-        Ok(())
+        match self.session.syncfs().map_err(Error::from) {
+            // Older servers may not implement a backing barrier. This is not
+            // an acknowledgement of durable host state.
+            Err(err) if err.error() == Errno::ENOSYS => Ok(()),
+            result => result,
+        }
     }
 
     fn root_inode(&self) -> Arc<dyn Inode> {

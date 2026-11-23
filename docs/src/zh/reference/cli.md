@@ -49,6 +49,28 @@ pvisor rm redis
 Unix 容器与任务 Session 使用 schema 4 记录，各有独立存储和命令能力。
 容器 review/apply/drop 选择暂存绑定挂载。
 
+### 用 `@root` 运行宿主已安装的工具 {#run-host-tools}
+
+在支持 KVM 的 Linux x86_64 上，把 `@root` 放在镜像名的位置。它不是 OCI 镜像，不会被拉取
+或出现在镜像列表中。VM 以实时宿主 `/` 为只读底层，写入留待审查，即使命令非零退出也会保留。
+请从你可能要写回文件的项目目录启动：
+
+```bash
+pvisor run -v ../experiment:/:stage @root /bin/sh -c 'echo changed > example.txt'
+pvisor review ../experiment --diff
+pvisor apply ../experiment --path example.txt --dry-run --diff
+pvisor apply ../experiment --path example.txt
+pvisor drop ../experiment
+```
+
+对于 `@root`，`-v PATH:/:stage` 指定一个尚未使用的宿主目录来保存改动，不是绑定挂载源。
+省略时使用默认 Session 存储，退出后打印路径。对于普通镜像，[`-v HOST:GUEST:stage`](#container-staged-binds)
+仍暂存对已有绑定挂载源的改动。普通 `apply` 只写回 `@root` 启动时记录的项目范围。
+
+Guest 默认断网，显式传 `--network bridge` 才开启网络。宿主上可读的文件（包括凭据）仍然可见。
+`@root` 是前台 Session，不出现在容器 `ps` 中，不接受 `-d`、`--rm`、端口转发或额外挂载。
+macOS 和 Windows 不支持。旧 `pvisor stage` 命令仍接受 `--stage PATH`，网络默认值仍是 `bridge`。
+
 ### Compose 项目（实验性） {#compose}
 
 在 Linux x86_64 或 Apple Silicon macOS 上，用 `pvisor compose` 从单个 Compose

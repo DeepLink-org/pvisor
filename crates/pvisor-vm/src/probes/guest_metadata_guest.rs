@@ -2027,8 +2027,140 @@ fn check_review_negative() {
     review_summary("review-negative", "NEGATIVE", cases, failed);
 }
 
+fn stress_rust_readindex(seed: u64) {
+    use std::{sync::Barrier, thread};
+
+    let start = Barrier::new(2);
+    thread::scope(|scope| {
+        let reader = scope.spawn(|| {
+            start.wait();
+            for pass in 0..8 {
+                for i in 0..512 {
+                    let index = 256 + (i * 197 + pass + (seed & 511) as usize) % 512;
+                    let stat = fs::symlink_metadata(format!("/dense/f{index:04}")).unwrap();
+                    assert!(stat.is_file());
+                    assert_eq!(stat.len(), 5, "stable file {index}, pass {pass}");
+                }
+                thread::yield_now();
+            }
+        });
+
+        start.wait();
+        let mut state = seed;
+        let mut expected = [None; 32];
+        for round in 0u64..64 {
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            let slot = (state >> 32) as usize % expected.len();
+            let path = format!("/dense/stress-{slot:02}");
+            if round % 3 == 0 && expected[slot].is_some() {
+                fs::remove_file(&path).unwrap();
+                assert_eq!(
+                    fs::symlink_metadata(&path).unwrap_err().raw_os_error(),
+                    Some(2)
+                );
+                expected[slot] = None;
+            } else {
+                let data = state.to_le_bytes();
+                let mut old = expected[slot].map(|data| (File::open(&path).unwrap(), data));
+                fs::write("/dense/pending", data).unwrap();
+                fs::rename("/dense/pending", &path).unwrap();
+                assert_eq!(fs::read(&path).unwrap(), data);
+                if let Some((fd, previous)) = &mut old {
+                    let mut observed = [0; 8];
+                    fd.read_exact(&mut observed).unwrap();
+                    assert_eq!(observed, *previous, "replaced file descriptor, slot {slot}");
+                }
+                expected[slot] = Some(data);
+            }
+            if state & 1 != 0 {
+                thread::yield_now();
+            }
+        }
+        reader.join().unwrap();
+        for (slot, data) in expected.iter().enumerate() {
+            let result = fs::read(format!("/dense/stress-{slot:02}"));
+            match data {
+                Some(data) => assert_eq!(result.unwrap(), *data, "final slot {slot}"),
+                None => assert_eq!(result.unwrap_err().raw_os_error(), Some(2)),
+            }
+        }
+    });
+    println!("RUST_READINDEX_STRESS_OK seed={seed}");
+}
+
+fn check_rust_readindex(seed: Option<u64>) {
+    let path = |i| format!("/dense/f{i:04}");
+    let mut old = File::open(path(50)).unwrap();
+    let warm = || {
+        for i in 0..8 {
+            assert_eq!(fs::symlink_metadata(path(i)).unwrap().len(), 5);
+        }
+    };
+
+    // Mutate entries not yet looked up after the initial window is admitted.
+    warm();
+    fs::rename(path(51), path(50)).unwrap();
+    assert_eq!(fs::metadata(path(51)).unwrap_err().raw_os_error(), Some(2));
+    assert_eq!(fs::read(path(50)).unwrap(), b"moved");
+    let mut bytes = Vec::new();
+    old.read_to_end(&mut bytes).unwrap();
+    assert_eq!(bytes, b"lower");
+
+    warm();
+    fs::remove_file(path(60)).unwrap();
+    assert_eq!(fs::metadata(path(60)).unwrap_err().raw_os_error(), Some(2));
+    fs::write(path(60), b"recreated").unwrap();
+    assert_eq!(fs::metadata(path(60)).unwrap().len(), 9);
+
+    warm();
+    fs::set_permissions(path(70), fs::Permissions::from_mode(0o600)).unwrap();
+    assert_eq!(fs::metadata(path(70)).unwrap().mode() & 0o777, 0o600);
+    fs::write(path(70), b"copy-up").unwrap();
+    assert_eq!(fs::metadata(path(70)).unwrap().len(), 7);
+
+    for i in 0..2048 {
+        let stat = fs::symlink_metadata(path(i));
+        match i {
+            51 => assert_eq!(stat.unwrap_err().raw_os_error(), Some(2)),
+            60 => assert_eq!(stat.unwrap().len(), 9),
+            70 => assert_eq!(stat.unwrap().len(), 7),
+            _ => assert_eq!(stat.unwrap().len(), 5),
+        }
+    }
+
+    if let Some(seed) = seed {
+        stress_rust_readindex(seed);
+    }
+
+    fs::set_permissions("/private", fs::Permissions::from_mode(0o700)).unwrap();
+    let private = fs::metadata("/private").unwrap();
+    assert_eq!(private.mode() & 0o777, 0o700);
+    let non_owner = if private.uid() == 65534 { 1000 } else { 65534 };
+    assert_eq!(fs::metadata("/private/file").unwrap().len(), 7);
+    unsafe extern "C" {
+        fn setgid(gid: u32) -> i32;
+        fn setuid(uid: u32) -> i32;
+    }
+    // SAFETY: Set the probe's own credentials after all privileged checks.
+    unsafe {
+        assert_eq!(setgid(non_owner), 0);
+        assert_eq!(setuid(non_owner), 0);
+    }
+    assert_eq!(
+        fs::metadata("/private/file").unwrap_err().raw_os_error(),
+        Some(13)
+    );
+    println!("RUST_READINDEX_OK");
+}
+
 fn main() {
     let mode = std::env::args().nth(1).unwrap();
+    if mode == "rust-readindex" {
+        check_rust_readindex(std::env::args().nth(2).map(|seed| seed.parse().unwrap()));
+        return;
+    }
     if mode == "review-negative" {
         check_review_negative();
         return;

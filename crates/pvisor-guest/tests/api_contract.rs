@@ -79,6 +79,31 @@ fn launch_json_rejects_unknown_fields_and_preserves_legacy_defaults() {
     }
 }
 
+#[test]
+fn control_ready_requires_the_guest_adapter_and_defaults_off() {
+    let mut config = launch();
+    assert!(
+        serde_json::to_value(&config)
+            .unwrap()
+            .get("control_ready")
+            .is_none()
+    );
+    config.control_ready = true;
+    assert_eq!(
+        config.validate().unwrap_err().kind(),
+        io::ErrorKind::InvalidInput
+    );
+    config.control = true;
+    config.process = Some(pvisor_guest::api::ProcessConfig {
+        new_session: true,
+        ..Default::default()
+    });
+    config.validate().unwrap();
+    let decoded: GuestConfig =
+        serde_json::from_value(serde_json::to_value(&config).unwrap()).unwrap();
+    assert!(decoded.control_ready && decoded.control);
+}
+
 fn roundtrip<T: serde::Serialize + serde::de::DeserializeOwned>(value: T) {
     let expected = serde_json::to_value(&value).unwrap();
     let mut bytes = Vec::new();

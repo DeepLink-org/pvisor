@@ -9,7 +9,7 @@ use aster_virtio::device::filesystem::device::AttrVersion;
 use hashbrown::HashMap;
 
 use super::{VirtioFs, VirtioFsInode};
-use crate::prelude::*;
+use crate::{fs::vfs::inode::Metadata, prelude::*};
 
 /// In-memory inode cache keyed by FUSE node ID.
 pub(in virtiofs) struct InodeCache {
@@ -28,7 +28,7 @@ impl InodeCache {
         lookup_reply: EntryReply,
         request_attr_version: AttrVersion,
         fs: &Arc<VirtioFs>,
-    ) -> Result<Arc<VirtioFsInode>> {
+    ) -> Result<(Arc<VirtioFsInode>, Option<Metadata>)> {
         let nodeid = lookup_reply.nodeid();
 
         // An `EntryReply` carries a new lookup reference even when the inode is
@@ -45,8 +45,8 @@ impl InodeCache {
             // page-cache resize or invalidation. There is no local recovery
             // path for those page-cache errors, so propagate them to the
             // lookup caller.
-            inode.update_from_entry_reply(&lookup_reply, request_attr_version)?;
-            return Ok(inode);
+            let observed = inode.update_from_entry_reply(&lookup_reply, request_attr_version)?;
+            return Ok((inode, observed));
         }
 
         // Recheck after taking the write lock because another thread may have
@@ -60,14 +60,15 @@ impl InodeCache {
             drop(inode_cache);
             // See the first cache-hit path above for why committing a fresh
             // `EntryReply` to a cached inode may still fail.
-            inode.update_from_entry_reply(&lookup_reply, request_attr_version)?;
-            return Ok(inode);
+            let observed = inode.update_from_entry_reply(&lookup_reply, request_attr_version)?;
+            return Ok((inode, observed));
         }
 
         let inode = VirtioFsInode::new_from_entry_reply(lookup_reply, fs);
+        let metadata = inode.inner.read().metadata;
         inode_cache.insert(nodeid, Arc::downgrade(&inode));
 
-        Ok(inode)
+        Ok((inode, Some(metadata)))
     }
 
     /// Inserts an inode by FUSE node ID.

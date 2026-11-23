@@ -530,6 +530,18 @@ impl DirectImage {
         self.attachment.root()
     }
 
+    pub(crate) fn bind_runner_to_image(&mut self) -> anyhow::Result<()> {
+        let parent = private_owner(self.root()).context("missing direct image owner")?;
+        let descriptor = parent.join(DESCRIPTOR);
+        let mut binding: Binding = serde_json::from_reader(fs::File::open(&descriptor)?)?;
+        let (access, client) =
+            super::network::NetworkAccess::start(parent, binding.client, &binding.handle)?;
+        binding.client = client;
+        Persistence::atomic_write(&descriptor, &serde_json::to_vec(&binding)?, 0o600)?;
+        self._network.push(access);
+        Ok(())
+    }
+
     /// Transfer only directory lifetime to a branch baseline; keep this process's
     /// backend attachment until its VM exits. Ordinary images still auto-remove.
     /// Call only on an image opened against the pinned OCI digest/platform.
@@ -618,6 +630,22 @@ pub(crate) struct RunnerLowers {
 pub(crate) fn attach_runner_lowers<'a>(
     roots: impl Iterator<Item = &'a PathBuf>,
 ) -> anyhow::Result<RunnerLowers> {
+    attach_lowers(roots, false)
+}
+
+pub(crate) fn attach_warm_lower(root: &PathBuf) -> anyhow::Result<RunnerLowers> {
+    let owners = attach_lowers(std::iter::once(root), true)?;
+    ensure!(
+        owners._attachments.len() == 1,
+        "warm root is not a pinned image projection"
+    );
+    Ok(owners)
+}
+
+fn attach_lowers<'a>(
+    roots: impl Iterator<Item = &'a PathBuf>,
+    brokered: bool,
+) -> anyhow::Result<RunnerLowers> {
     let mut owners = RunnerLowers {
         _attachments: vec![],
         snapshot_owners: vec![],
@@ -659,6 +687,15 @@ pub(crate) fn attach_runner_lowers<'a>(
         // Capability parsing must not construct an HTTP/S3 transport: those
         // start workers, but Linux namespace setup requires a single thread.
         let source = client_binding.resolved_source()?;
+        if brokered {
+            ensure!(
+                matches!(
+                    source,
+                    super::config::ResolvedSource::Server(super::transport::Endpoint::Unix(_))
+                ),
+                "warm root requires a private image broker"
+            );
+        }
         if cfg!(target_os = "linux") && source.needs_host_network() {
             let (access, local_binding) =
                 super::network::NetworkAccess::start(parent, client_binding, &binding.handle)?;

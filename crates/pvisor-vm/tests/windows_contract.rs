@@ -2,6 +2,7 @@
 #![cfg(windows)]
 use pvisor_vm::api::{
     Architecture, Hypervisor, RuntimeSupport, VmBuilder, VmConfiguration, VmPlatform,
+    GUEST_INIT_PATH,
 };
 use std::{io::ErrorKind, path::Path};
 
@@ -105,8 +106,18 @@ fn unsupported_operations_do_not_poison_later_attachments() {
     );
     vm.disable_implicit_init().unwrap();
     vm.filesystem("/dev/root", root.path(), 0).unwrap();
-    vm.virtual_file("/dev/root", "/init.krun", vec![1], 0o755, false)
+    vm.virtual_file("/dev/root", GUEST_INIT_PATH, vec![1], 0o755, false)
         .unwrap();
+}
+
+#[test]
+#[cfg(feature = "init-blob")]
+fn implicit_init_reserves_its_boot_path() {
+    let root = tempfile::tempdir().unwrap();
+    let mut vm = VmBuilder::new(1, 128).unwrap();
+    vm.filesystem("/dev/root", root.path(), 0).unwrap();
+    let result = vm.virtual_file("/dev/root", "/init.pvisor", vec![1], 0o755, false);
+    assert_eq!(result.unwrap_err().kind(), ErrorKind::InvalidInput);
 }
 
 #[test]

@@ -9,6 +9,19 @@ pub use supported::{VmExecutor, run_internal_if_requested};
 #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
 pub use unsupported::{VmExecutor, run_internal_if_requested};
 
+/// One request assigned to a parked native VM. This travels only on the private
+/// runner socket and never changes its CPU, RAM, network or host access grants.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WarmRootAssignment {
+    /// Absolute root of the pinned image projection inside the slot's private store.
+    pub root: std::path::PathBuf,
+    /// Executable and arguments from the admitted request.
+    pub argv: Vec<String>,
+    /// Explicit workload environment; no host inheritance.
+    pub env: std::collections::BTreeMap<String, String>,
+}
+
 pub(crate) mod checkpoint;
 #[cfg(target_os = "linux")]
 mod cpu;

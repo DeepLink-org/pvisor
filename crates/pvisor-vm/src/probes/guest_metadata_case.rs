@@ -8,8 +8,8 @@ use std::{
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<_> = std::env::args_os().skip(1).collect();
-    if !(3..=4).contains(&args.len()) {
-        return Err("expected ROOTFS FIRMWARE GUEST_BINARY [MODE]".into());
+    if !(3..=5).contains(&args.len()) {
+        return Err("expected ROOTFS FIRMWARE GUEST_BINARY [MODE [SEED]]".into());
     }
     let mode = args
         .get(3)
@@ -36,9 +36,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             | "review-flush"
             | "review-data"
             | "review-negative"
+            | "rust-readindex"
     ) {
         return Err("unsupported probe mode".into());
     }
+    let seed = args
+        .get(4)
+        .map(|s| {
+            if mode != "rust-readindex" {
+                return Err("SEED requires rust-readindex");
+            }
+            s.to_str()
+                .and_then(|value| value.parse::<u64>().ok())
+                .ok_or("SEED must be an unsigned 64-bit integer")
+        })
+        .transpose()?;
     let root = tempfile::tempdir()?;
     let mutable = root.path().join("mutable-lower");
     let stable = root.path().join("stable-lower");
@@ -47,6 +59,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     std::fs::create_dir(&stable)?;
     std::fs::create_dir(&fixture)?;
     std::fs::write(fixture.join("copyup-source"), b"original")?;
+    if mode == "rust-readindex" {
+        let dense = fixture.join("dense");
+        std::fs::create_dir(&dense)?;
+        for i in 0..2048 {
+            std::fs::write(dense.join(format!("f{i:04}")), b"lower")?;
+        }
+        std::fs::write(dense.join("f0051"), b"moved")?;
+        let private = fixture.join("private");
+        std::fs::create_dir(&private)?;
+        std::fs::write(private.join("file"), b"private")?;
+    }
     for kind in ["time", "setxattr", "removexattr", "link"] {
         std::fs::write(fixture.join(format!("lifetime-{kind}")), b"original")?;
     }
@@ -295,22 +318,29 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     let mut vm = VmBuilder::new(2, 512)?;
-    vm.set_firmware_path(PathBuf::from(&args[1]))?;
+    if args[1] != "-" {
+        vm.set_firmware_path(PathBuf::from(&args[1]))?;
+    }
+    if mode == "rust-readindex" {
+        vm.task_stdio(0, 1, 2)?;
+    }
     vm.overlay("/dev/root", root_overlay, 0)?;
-    vm.overlay(
-        "metadata-mutable",
-        overlay(
-            "mutable",
-            vec![mutable.clone()],
-            vec![LayerMutability::Mutable],
-        )?,
-        0,
-    )?;
-    vm.overlay(
-        "metadata-stable",
-        overlay("stable", vec![stable], vec![LayerMutability::Immutable])?,
-        0,
-    )?;
+    if mode != "rust-readindex" {
+        vm.overlay(
+            "metadata-mutable",
+            overlay(
+                "mutable",
+                vec![mutable.clone()],
+                vec![LayerMutability::Mutable],
+            )?,
+            0,
+        )?;
+        vm.overlay(
+            "metadata-stable",
+            overlay("stable", vec![stable], vec![LayerMutability::Immutable])?,
+            0,
+        )?;
+    }
     vm.virtual_file(
         "/dev/root",
         "/metadata-probe",
@@ -318,7 +348,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         0o755,
         false,
     )?;
-    let config = serde_json::json!({"argv": ["/metadata-probe", mode], "env": {}, "cwd": "/"});
+    let mut argv = vec!["/metadata-probe".to_owned(), mode.to_owned()];
+    if let Some(seed) = seed {
+        argv.push(seed.to_string());
+    }
+    let mut config = serde_json::json!({"argv": argv, "env": {}, "cwd": "/"});
+    if mode == "rust-readindex" {
+        config["stdio_ports"] = serde_json::json!([true, true, true]);
+    }
     vm.virtual_file(
         "/dev/root",
         "/.pvisor-guest.json",

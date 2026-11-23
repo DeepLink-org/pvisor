@@ -7,6 +7,11 @@ that talk to FUSE-compatible servers. Keeping these definitions in one crate
 allows clients to share the same request and reply formats instead of maintaining
 their own copies.
 
+The pVisor `READINDEX` extension decodes bounded directory pages. The caller
+owns lookup references from decoded backing records and releases unused
+references with `BATCH_FORGET`. The extension requires pVisor device negotiation
+because its FUSE INIT bit overlaps the standard io_uring capability.
+
 ## Scope
 
 This crate only describes the FUSE protocol. It does not choose a transport,

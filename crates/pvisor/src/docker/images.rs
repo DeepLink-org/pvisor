@@ -239,6 +239,19 @@ impl Store {
         self.open_cached(&image.cache, &image.digest, &image.platform)
     }
 
+    /// Open a pinned image for a runner already confined to this store's
+    /// projection directory. The returned owner retains a read-only broker
+    /// for this image only; the runner never receives source paths or credentials.
+    pub fn open_image_for_warm_runner(&self, image: &Image) -> anyhow::Result<ImageRoot> {
+        let mut image = self.open_image(image)?;
+        image
+            ._owner
+            .as_mut()
+            .context("missing image projection")?
+            .bind_runner_to_image()?;
+        Ok(image)
+    }
+
     pub(super) fn open_cached(
         &self,
         cached: &CachedImage,

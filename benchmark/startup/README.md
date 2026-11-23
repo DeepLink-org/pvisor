@@ -111,6 +111,49 @@ visibility); this is not a captured-stdio latency test.
 Missing stages, failed shells and timeouts remain in the output; any incomplete
 trial fails the command. `diagnostic.json` and the public Ready table are unchanged.
 
+## Daemon VM warm pool {#daemon-vm-warm-pool}
+
+[B-DAEMON-WARM-POOL](../REGISTRY.md#b-daemon-warm-pool) compares the same
+optimized native daemon with and without one 4 vCPU / 256 MiB parked slot.
+Prepare an Ubuntu 24.04 native OpenSandbox template with the bundled or
+executable-adjacent Linux firmware; do not pass a template firmware override.
+Prepare the inputs and compile the harness before starting the delegated scope:
+
+```sh
+/prepared/pvisor-daemon prepare-image --name ubuntu --image ubuntu:24.04 \
+  --images-dir /prepared/images
+cargo build --locked --release --manifest-path benchmark/criterion/Cargo.toml \
+  --bin pvisor-benchmarks
+systemd-run --user --scope --unit="pvisor-warm-$$" --quiet \
+  -p Delegate=yes -p CPUQuota=400% -p MemoryMax=2G -p MemorySwapMax=0 \
+  env PVISOR_BENCH_DAEMON_IMAGES=/prepared/images PVISOR_BENCH_DAEMON_IMAGE=ubuntu \
+  taskset -c 4,5,6,7 benchmark/criterion/target/release/pvisor-benchmarks \
+  startup/daemon_warm_pool.json --binary /prepared/pvisor-daemon \
+  --output benchmark/startup/.data/NEW-warm-pool \
+  --criterion-output benchmark/startup/.data/NEW-criterion
+```
+
+Choose four available logical CPUs. Use an otherwise idle KVM host and do not
+run unrelated builds or tests on those CPUs. The scope includes both daemons,
+VMs, brokers and observer. It must be fresh; the harness creates and cleans only
+its own service and instance subtrees. It freezes the executable, Linux
+firmware when external, template manifest and harness for the cohort.
+
+The client times loopback HTTP from create to `Running` and from create to the
+completed first shell command. Proof of a hit requires consuming the observed
+parked slot, not just enabling pooling. Each burst starts with one slot and
+checks two simultaneous matching creates, one hit and one pool-empty fallback.
+The measured requests verify the image, command success, private data, actual
+cgroup limits and cleanup. The test retains successful and failed evidence.
+
+`pairs.jsonl` stores the individual observations. `summary.json` uses all
+valid Criterion operations after the separate preflight and correctness warmups,
+including Criterion's adaptive warmup. Its request P50/P95 and paired bootstrap
+intervals are computed from the raw observations, not Criterion's batch
+averages. The Criterion duration measures the serial pair's summed first-command
+times; the burst is analyzed separately. The result is not a production hit
+rate or a comparison against other runtimes.
+
 ## Cold OCI first use and live fork
 
 The [cold OCI engineering experiment](cold_oci_fork/README.md) records component
