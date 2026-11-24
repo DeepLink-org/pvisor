@@ -166,19 +166,51 @@ pub(crate) fn lock(path: &Path) -> anyhow::Result<File> {
 }
 
 pub(crate) fn live(directory: &Path) -> anyhow::Result<bool> {
-    let file = match OpenOptions::new()
+    open_owner_lease(directory)?
+        .as_ref()
+        .map_or(Ok(false), owner_active)
+}
+
+fn open_owner_lease(directory: &Path) -> anyhow::Result<Option<File>> {
+    match OpenOptions::new()
         .read(true)
         .write(true)
         .open(directory.join("owner.lock"))
     {
-        Ok(file) => file,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
-        Err(error) => return Err(error.into()),
-    };
+        Ok(file) => Ok(Some(file)),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn owner_active(file: &File) -> anyhow::Result<bool> {
     match file.try_lock_exclusive() {
-        Ok(()) => Ok(false),
+        Ok(()) => {
+            fs2::FileExt::unlock(file)?;
+            Ok(false)
+        }
         Err(e) if contended(&e) => Ok(true),
         Err(e) => Err(e.into()),
+    }
+}
+
+fn follows_generation(dir: &Path, generation: &str, lease: &File) -> anyhow::Result<bool> {
+    match read::<Record>(&dir.join("record.json")) {
+        Ok(record) => Ok(record.info.generation == generation && owner_active(lease)?),
+        Err(error) => {
+            let io_error = error.downcast_ref::<io::Error>();
+            if io_error.is_some_and(|e| e.kind() == io::ErrorKind::NotFound) {
+                return Ok(false);
+            }
+            // Windows may deny opens during deletion, after the owner releases its lease.
+            if cfg!(windows)
+                && io_error.is_some_and(windows_replace_conflict)
+                && !owner_active(lease)?
+            {
+                return Ok(false);
+            }
+            Err(error.context("read followed container record"))
+        }
     }
 }
 
@@ -477,6 +509,12 @@ impl Containers for Store {
             }
         };
         let (mut out, mut err) = (open("stdout.log")?, open("stderr.log")?);
+        // Keep observing the same lease even while auto-removal unlinks its path.
+        let lease = if follow {
+            open_owner_lease(&dir)?
+        } else {
+            None
+        };
         loop {
             if let Some(file) = &mut out {
                 std::io::copy(file, stdout)?;
@@ -486,34 +524,11 @@ impl Containers for Store {
             }
             stdout.flush()?;
             stderr.flush()?;
-            let current = match read::<Record>(&dir.join("record.json")) {
-                Ok(current) => Some(current),
-                Err(error)
-                    if error
-                        .downcast_ref::<std::io::Error>()
-                        .is_some_and(|e| e.kind() == std::io::ErrorKind::NotFound) =>
-                {
-                    None
-                }
-                Err(error) => return Err(error),
+            let active = match &lease {
+                Some(file) => follows_generation(&dir, &record.info.generation, file)?,
+                None => false,
             };
-            let active = if let Some(current) = current {
-                current.info.generation == record.info.generation
-                    && match live(&dir) {
-                        Ok(active) => active,
-                        Err(error)
-                            if error
-                                .downcast_ref::<std::io::Error>()
-                                .is_some_and(|e| e.kind() == std::io::ErrorKind::NotFound) =>
-                        {
-                            false
-                        }
-                        Err(error) => return Err(error),
-                    }
-            } else {
-                false
-            };
-            if !follow || !active {
+            if !active {
                 if let Some(file) = &mut out {
                     std::io::copy(file, stdout)?;
                 }
@@ -805,6 +820,30 @@ mod tests {
         fs::write(dir.join("stdout.log"), b"initial-out\n").unwrap();
         fs::write(dir.join("stderr.log"), b"initial-err\n").unwrap();
         (dir, record)
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn followed_record_conflict_only_ends_follow_after_owner_exit() {
+        use std::os::windows::fs::OpenOptionsExt;
+
+        let temp = tempfile::tempdir().unwrap();
+        let store = Store::open(Some(temp.path().join("store"))).unwrap();
+        let (dir, record) = logs_fixture(&store);
+        let owner = lock(&dir.join("owner.lock")).unwrap();
+        let lease = open_owner_lease(&dir).unwrap().unwrap();
+        let _exclusive = OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .open(dir.join("record.json"))
+            .unwrap();
+        let err = follows_generation(&dir, &record.info.generation, &lease).unwrap_err();
+        assert_eq!(
+            err.downcast_ref::<io::Error>().unwrap().raw_os_error(),
+            Some(32)
+        );
+        drop(owner);
+        assert!(!follows_generation(&dir, &record.info.generation, &lease).unwrap());
     }
 
     #[test]
