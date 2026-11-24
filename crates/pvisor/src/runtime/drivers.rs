@@ -2,6 +2,8 @@
 
 use super::execution::RunRecordState;
 use super::implant::{ImplantPlan, OverlayHint};
+#[cfg(target_os = "linux")]
+use super::overlay::relocate_merged_for_host_sandbox;
 use super::overlay::{
     OverlayMount, OverlayRecord, apply_overlay, discard_overlay, hint_from_record,
     lower_stack_from_config, mount_overlay_record_observed, prepare_execution_overlay_record,
@@ -704,6 +706,7 @@ pub(crate) fn prepare_execution(
         opts.overlay_override.execution_snapshot.as_ref(),
         &opts.overlay_override,
         preparation.workspace_base.as_deref(),
+        crate::executor::sandbox::sandbox_required(spec) && !preparation.guest_workspace_overlay,
     )?;
     crate::util::startup_mark_run("storage.overlay_ready", spec.run_id.as_str());
     let PreparedOverlay {
@@ -846,6 +849,7 @@ pub(crate) fn prepare_overlay_execution(
         opts.overlay.execution_snapshot.as_ref(),
         &opts.overlay,
         preparation.workspace_base.as_deref(),
+        crate::executor::sandbox::sandbox_required(spec) && !preparation.guest_workspace_overlay,
     )?;
     crate::util::startup_mark_run("storage.overlay_ready", spec.run_id.as_str());
     let PreparedOverlay {
@@ -1294,6 +1298,7 @@ fn prepare_overlay(
     execution_snapshot: Option<&super::implant::ExecutionOverlayHint>,
     declaration: &OverlayHint,
     workspace_base: Option<&super::owned_workspace::OwnedWorkspace>,
+    host_sandbox_hides_state_roots: bool,
 ) -> anyhow::Result<PreparedOverlay> {
     if !overlay_cfg.enabled && overlay_cfg.target.is_none() {
         return Ok(PreparedOverlay {
@@ -1364,6 +1369,12 @@ fn prepare_overlay(
                     None,
                 )
             } else {
+                #[cfg(target_os = "linux")]
+                if host_sandbox_hides_state_roots {
+                    relocate_merged_for_host_sandbox(&mut record, root_session);
+                }
+                #[cfg(not(target_os = "linux"))]
+                let _ = host_sandbox_hides_state_roots;
                 let metrics = FsMetrics::default();
                 let mount = mount_overlay_record_observed(
                     &record,
