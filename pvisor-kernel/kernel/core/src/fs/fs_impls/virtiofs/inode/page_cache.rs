@@ -251,7 +251,9 @@ impl VirtioFsInode {
     }
 
     pub(in crate::fs::fs_impls::virtiofs) fn invalidate_whole_page_cache(&self) -> Result<()> {
-        self.inner.write().invalidate_page_cache()
+        let inner = self.inner.write();
+        self.fs_ref()
+            .record_writeback(inner.invalidate_page_cache())
     }
 }
 
@@ -326,14 +328,12 @@ fn submit_write_chunk(
     );
 
     let complete_fn = move |status| {
-        // FIXME: Handle short FUSE writeback by invalidating or retrying unwritten
-        // page contents. For now, continue with the usual writeback completion.
-        if let FuseCompletion::MalformedResponse | FuseCompletion::RemoteError(_) = status {
-            ostd::error!("virtiofs writeback failed; page data may be lost");
-        }
-
         for page in completion_pages.iter() {
-            page.clear_writing_back();
+            if matches!(status, FuseCompletion::Complete(_)) {
+                page.clear_writing_back();
+            } else {
+                page.fail_writeback();
+            }
         }
 
         // Keep the handle alive until the request completes or until the

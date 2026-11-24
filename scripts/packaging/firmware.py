@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import argparse
-import fcntl
 import hashlib
 import importlib.util
+import io
 import json
 import os
 import platform
@@ -17,6 +17,7 @@ import sys
 import tarfile
 import tempfile
 import urllib.request
+import zipfile
 from contextlib import contextmanager
 from pathlib import Path
 from typing import NamedTuple
@@ -24,6 +25,10 @@ from typing import NamedTuple
 ROOT = Path(__file__).resolve().parents[2]
 FW = ROOT / "fw"
 MACOS_DEPLOYMENT_TARGET = "11.0"
+VDSO_SOURCES = {
+    "linux-6.2.10": "57c562c3cd2753f232549cab05c8ad770ed848ae86401619c7581bdffaeea4fe",
+    "linux-6.8": "c969dea4e8bb6be991bbf7c010ba0e0a5643a3a8d8fb0a2aaa053406f1e965f3",
+}
 
 
 class ResolvedFirmware(NamedTuple):
@@ -362,6 +367,7 @@ def firmware_build_directory(work: Path, macos: bool):
 def build_firmware(
     target: str, *, target_dir: str | None = None, jobs: str | None = None, offline: bool = False
 ) -> Path:
+    import fcntl
     from platform import machine
 
     host = (sys.platform, machine().lower())
@@ -506,7 +512,106 @@ def source_record(source: Path) -> str:
     )
 
 
-def source_archive(source: Path, destination: Path) -> None:
+def wheel_source_record(wheel: Path) -> dict:
+    with zipfile.ZipFile(wheel) as archive:
+        names = [
+            name for name in archive.namelist() if name.endswith(".data/scripts/libkrunfw.SOURCE")
+        ]
+        if len(names) != 1:
+            raise ValueError(f"{wheel.name}: expected exactly one firmware receipt")
+        return json.loads(archive.read(names[0]))
+
+
+def export_wheel_sources(
+    wheel: Path, destination: Path, *, target_dir: str | None, offline: bool
+) -> None:
+    record = wheel_source_record(wheel)
+    target = host_target()
+    if record.get("target") != target or not re.fullmatch(
+        "[0-9a-f]{64}", record.get("build_id", "")
+    ):
+        raise ValueError(f"{wheel.name}: incompatible firmware build receipt")
+    if record.get("origin") != "pvisor/fw":
+        raise ValueError(f"{wheel.name}: corresponding Linux sources require an in-tree build")
+    build_dir = Path(target_dir or ROOT / "target")
+    linux_cache = Path(os.getenv("PVISOR_FW_BUILD_DIR") or build_dir / "fw").expanduser()
+    work = linux_cache / f"{target}-{record['build_id']}"
+    info = metadata()
+    linux = work / (
+        f"libkrunfw.{info['ABI_VERSION']}.dylib"
+        if target == "aarch64-apple-darwin"
+        else f"libkrunfw.so.{info['FULL_VERSION']}"
+    )
+
+    native = record.get("rust_native_kernel", {})
+    identity = {key: native[key] for key in ("inputs", "toolchain", "profile")}
+    if identity["profile"] != f"rust-native-virtiofs-{target.split('-')[0]}-v1":
+        raise ValueError(f"{wheel.name}: incompatible Rust kernel build receipt")
+    key = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
+    bundle = build_dir / "pvisor-kernel" / key / "bundle"
+    if native_source_record(bundle) != native or json.loads(source_record(linux)) != {
+        key: value for key, value in record.items() if key != "rust_native_kernel"
+    }:
+        raise ValueError(f"{wheel.name}: firmware cache does not match the wheel receipt")
+    source_archive(linux, destination, native_bundle=bundle, offline=offline)
+
+
+def validate_product_sources(wheel: Path, source: Path, target: str) -> None:
+    record = wheel_source_record(wheel)
+    native = record.get("rust_native_kernel", {})
+    native_inputs = native.get("inputs", {})
+    if (
+        record.get("origin") != "pvisor/fw"
+        or record.get("target") != target
+        or native.get("profile") != f"rust-native-virtiofs-{target.split('-')[0]}-v1"
+        or not {
+            "IMPORT.md",
+            "LICENSE-MPL",
+            "Cargo.lock",
+            "provenance.json",
+            "vdso/vdso_x86_64.so",
+            "vdso/vdso_aarch64.so",
+        }
+        <= native_inputs.keys()
+    ):
+        raise ValueError(f"{wheel.name}: incomplete firmware source receipt")
+    expected = {
+        **{f"fw/{name}": digest for name, digest in record["inputs"].items()},
+        f"fw/tarballs/{record['kernel_version']}.tar.xz": record["kernel_source_sha256"],
+        "actual.config": record["actual_config_sha256"],
+        "build/firmware.py": record["builder_sha256"],
+        **{f"pvisor-kernel/{name}": digest for name, digest in native_inputs.items()},
+        "pvisor-kernel/actual.Cargo.lock": native["kernel_lock_sha256"],
+        **{
+            f"pvisor-kernel/vdso/source/{version}.tar.xz": digest
+            for version, digest in VDSO_SOURCES.items()
+        },
+    }
+    seen = set()
+    with tarfile.open(source, "r|gz") as bundle:
+        for member in bundle:
+            name = member.name
+            if name != "libkrunfw.SOURCE" and name not in expected:
+                continue
+            if not member.isfile() or name in seen:
+                raise ValueError(f"{source.name}: invalid firmware source entry {name}")
+            with bundle.extractfile(member) as contents:
+                matches = (
+                    json.load(contents) == record
+                    if name == "libkrunfw.SOURCE"
+                    else hashlib.file_digest(contents, "sha256").hexdigest() == expected[name]
+                )
+            if not matches:
+                raise ValueError(f"{source.name}: source receipt mismatch for {name}")
+            seen.add(name)
+    missing = (expected.keys() | {"libkrunfw.SOURCE"}) - seen
+    if missing:
+        raise ValueError(f"{source.name}: missing firmware source {min(missing)}")
+
+
+def source_archive(
+    source: Path, destination: Path, *, native_bundle: Path | None = None, offline: bool = False
+) -> None:
     record = json.loads(source_record(source))
     if record["origin"] != "pvisor/fw":
         raise RuntimeError("Cannot export corresponding sources for an external firmware override")
@@ -523,6 +628,44 @@ def source_archive(source: Path, destination: Path) -> None:
     builder = Path(__file__)
     if sha256(builder) != record["builder_sha256"]:
         raise RuntimeError("Firmware builder changed since firmware build")
+    native_sources = {}
+    vdso_sources = {}
+    if native_bundle is not None:
+        import fcntl
+
+        native = native_source_record(native_bundle)
+        record["rust_native_kernel"] = native
+        # Cargo rewrites the working snapshot's lockfile during kernel generation.
+        snapshot = ROOT / "pvisor-kernel"
+        for name, digest in native["inputs"].items():
+            relative = Path(name)
+            path = snapshot / relative
+            if (
+                relative.is_absolute()
+                or ".." in relative.parts
+                or not path.resolve().is_relative_to(snapshot.resolve())
+                or sha256(path) != digest
+            ):
+                raise RuntimeError(f"Rust kernel source snapshot changed: {name}")
+            native_sources[f"pvisor-kernel/{name}"] = path
+        lockfile = native_bundle.parent / "target/osdk/pvisor-kernel-run-base/Cargo.lock"
+        if sha256(lockfile) != native["kernel_lock_sha256"]:
+            raise RuntimeError("Generated Rust kernel lockfile changed since the build")
+        native_sources["pvisor-kernel/actual.Cargo.lock"] = lockfile
+        with (work.parent / ".build.lock").open("a") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            for version, digest in VDSO_SOURCES.items():
+                filename = f"{version}.tar.xz"
+                vdso_source = download_kernel(
+                    work.parent / "tarballs",
+                    {
+                        "KERNEL_VERSION": version,
+                        "KERNEL_SHA256": digest,
+                        "KERNEL_URL": f"https://cdn.kernel.org/pub/linux/kernel/v6.x/{filename}",
+                    },
+                    offline=offline,
+                )
+                vdso_sources[f"pvisor-kernel/vdso/source/{filename}"] = vdso_source.resolve()
     destination.parent.mkdir(parents=True, exist_ok=True)
     temporary = None
     try:
@@ -533,8 +676,13 @@ def source_archive(source: Path, destination: Path) -> None:
                 bundle.add(work / name, arcname=f"fw/{name}", recursive=False)
             bundle.add(archive.resolve(), arcname=f"fw/tarballs/{archive.name}")
             bundle.add(config, arcname="actual.config")
-            bundle.add(work / "libkrunfw.SOURCE", arcname="libkrunfw.SOURCE")
             bundle.add(builder, arcname="build/firmware.py")
+            receipt = json.dumps(record, indent=2, sort_keys=True).encode() + b"\n"
+            info = tarfile.TarInfo("libkrunfw.SOURCE")
+            info.size = len(receipt)
+            bundle.addfile(info, io.BytesIO(receipt))
+            for name, path in (native_sources | vdso_sources).items():
+                bundle.add(path, arcname=name, recursive=False)
         os.replace(temporary, destination)
     finally:
         if temporary is not None:
@@ -550,7 +698,15 @@ def main() -> None:
     parser.add_argument("--offline", action="store_true")
     parser.add_argument("--source-output", type=Path)
     parser.add_argument("--source-archive", type=Path)
+    parser.add_argument("--wheel", type=Path)
     args = parser.parse_args()
+    if args.wheel:
+        if not args.source_archive:
+            parser.error("--wheel requires --source-archive")
+        export_wheel_sources(
+            args.wheel, args.source_archive, target_dir=args.target_dir, offline=args.offline
+        )
+        return
     source = build_firmware(
         args.target or host_target(),
         target_dir=args.target_dir,

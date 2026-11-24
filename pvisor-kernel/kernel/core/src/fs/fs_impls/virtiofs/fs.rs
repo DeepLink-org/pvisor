@@ -17,6 +17,7 @@ use super::{
 };
 use crate::{
     fs::{
+        file::SyncMode,
         pseudofs::AnonDeviceId,
         utils::NAME_MAX,
         vfs::{
@@ -88,6 +89,7 @@ pub(super) struct VirtioFs {
     session: Arc<FuseSession>,
     dir_index: DirIndex,
     inode_cache: InodeCache,
+    writeback_error: Mutex<Option<Error>>,
     fs_event_subscriber_stats: FsEventSubscriberStats,
 }
 
@@ -130,6 +132,7 @@ impl VirtioFs {
                 dir_index: DirIndex::new(session.clone()),
                 session,
                 inode_cache,
+                writeback_error: Mutex::new(None),
                 fs_event_subscriber_stats: FsEventSubscriberStats::new(),
             }
         }))
@@ -141,6 +144,13 @@ impl VirtioFs {
 
     pub(super) fn dir_index(&self) -> &DirIndex {
         &self.dir_index
+    }
+
+    pub(super) fn record_writeback(&self, result: Result<()>) -> Result<()> {
+        if let Err(error) = result {
+            self.writeback_error.lock().get_or_insert(error);
+        }
+        result
     }
 
     /// Returns the device ID of this virtio-fs mount.
@@ -198,12 +208,16 @@ impl FileSystem for VirtioFs {
     }
 
     fn sync(&self) -> Result<()> {
-        match self.session.syncfs().map_err(Error::from) {
+        for inode in self.inode_cache.live_inodes() {
+            let _ = inode.sync(SyncMode::Data);
+        }
+        let host = match self.session.syncfs().map_err(Error::from) {
             // Older servers may not implement a backing barrier. This is not
             // an acknowledgement of durable host state.
             Err(err) if err.error() == Errno::ENOSYS => Ok(()),
             result => result,
-        }
+        };
+        self.writeback_error.lock().map_or(host, Err)
     }
 
     fn root_inode(&self) -> Arc<dyn Inode> {

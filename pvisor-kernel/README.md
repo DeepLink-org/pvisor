@@ -137,17 +137,15 @@ default-on path. `PVISOR_VM_GUEST_CACHE=0` also disables the protocol.
 On Linux x86_64/KVM `vm_api_case` runs the guest supervisor and a static
 workload on a writable virtio-fs root. The workload checks the boot ID, reads
 back its write, rejects forged exit ioctls, and exits with code 7.
-The aarch64 source and cross-build path are restored; ARM KVM/HVF workload
-acceptance requires an ARM host and has not been run on the x86_64 development host.
+On Apple Silicon/HVF, the same probe checks named stdio, shared-rootfs bytes
+and authenticated exit on a fresh one-vCPU VM. ARM KVM still requires
+separate workload acceptance.
 The ARM64 boot-only QEMU/TCG diagnostic passed through kernel-thread startup
 and the expected missing-rootfs failure. The ARM Linux VMM library cross-check
 and CLI cross-check also passed with the actual ARM payload embedded.
 Common filesystem records and control framing compile independently of
-backend-only checkpoint/restore code. The macOS VMM cross-check
-on Linux is blocked by the missing Darwin FUSE SDK; a native macOS build is
-still required.
-These VM API probes do not qualify the Docker CLI workload matrix or ARM guest
-execution.
+backend-only checkpoint/restore code. The VM API probes cover the static
+workload; Docker CLI compatibility has a separate matrix.
 
 ```sh
 mise run kernel -- test
@@ -219,9 +217,11 @@ without extending that deadline. A mode change refreshes or invalidates the
 cached result; an expired result and files with set-ID bits keep the normal
 privilege checks.
 
-`syncfs` sends `FUSE_SYNCFS` and propagates backend errors to the caller and
-the guest supervisor's exit check. A legacy server's `ENOSYS` retains the
-write-through behavior and is not a durable-stage acknowledgement.
+`syncfs` flushes live inode caches before sending `FUSE_SYNCFS`. A guest
+writeback failure remains visible to filesystem sync and the supervisor's
+exit check even after the affected file closes. `msync(MS_SYNC)` uses the
+mapping's file handle and propagates writeback and server fsync errors.
+A legacy server's `ENOSYS` can acknowledge guest writeback only.
 
 The [write-path probe](tests/write_path.rs) runs as UID/GID 1000 without
 effective capabilities. It tests set-ID clearing after `chmod`, then writes
@@ -279,6 +279,11 @@ python3 pvisor-kernel/tests/task_stdio.py --binary /path/to/vm_api_case \
 
 This checks immediate EOF and a multi-page binary input, byte-exact stdout,
 separate stderr, shared-rootfs contents and exit status in fresh two-vCPU VMs.
+On Apple Silicon, compile the guest with `--target aarch64-unknown-linux-musl`,
+sign the VM API probe with `crates/pvisor/macos-hypervisor.entitlements`, and
+pass `--cpus 1`. Run `tests/mapped_sync.py` with the same binary and guest
+to check host visibility while the mapping is live and exit status after a
+host write failure.
 
 ### KVM metadata acceptance
 

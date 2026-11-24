@@ -42,7 +42,6 @@ relicensed under the parent project's Apache-2.0 license.
 
 The separately pinned prebuilt Linux vDSOs are retained locally for the
 kernel's userspace ABI: x86_64 from Linux 6.2.10 and aarch64 from Linux 6.8.0.
-Their upstream
-archive does not include corresponding sources or license texts. A complete
-redistribution must supply those independently, along with the modified
-kernel sources and applicable notices.
+The wheel build's corresponding-source archive includes the hash-pinned
+Linux 6.2.10 and 6.8 source archives with their license texts, alongside the
+Rust kernel input snapshot audited against the wheel receipt.

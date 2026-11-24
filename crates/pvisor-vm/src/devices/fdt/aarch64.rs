@@ -88,8 +88,7 @@ pub fn create_fdt<T: DeviceInfoForFDT + Clone + Debug>(
     // https://github.com/torvalds/linux/blob/master/Documentation/devicetree/booting-without-of.txt#L845
     // Look for "Required nodes and properties".
 
-    // Header or the root node as per above mentioned documentation.
-    let root_node = fdt.begin_node("root")?;
+    let root_node = fdt.begin_node("")?;
     fdt.property_string("compatible", "linux,dummy-virt")?;
     // For info on #address-cells and size-cells read "Note about cells and address representation"
     // from the above mentioned txt file.
@@ -465,6 +464,37 @@ mod boot_entropy_tests {
         fn length(&self) -> u64 {
             0
         }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn root_node_has_an_empty_unit_name() {
+        use crate::devices::legacy::{GicV3, IrqChipDevice, VcpuList};
+        use std::sync::{Arc, Mutex};
+
+        let start = 0x8000_0000;
+        let memory = GuestMemoryMmap::from_ranges(&[(GuestAddress(start), 0x10_000)]).unwrap();
+        let layout = ArchMemoryInfo {
+            ram_start_addr: start,
+            ram_last_addr: start + 0x10_000,
+            fdt_addr: start,
+            ..Default::default()
+        };
+        let gic = Arc::new(Mutex::new(IrqChipDevice::new(Box::new(GicV3::new(
+            Arc::new(VcpuList::new(1)),
+        )))));
+        let blob = create_fdt(
+            &memory,
+            &layout,
+            vec![0],
+            "",
+            &HashMap::<_, NoDevice>::new(),
+            &gic,
+            &None,
+        )
+        .unwrap();
+        let structure = u32::from_be_bytes(blob[8..12].try_into().unwrap()) as usize;
+        assert_eq!(&blob[structure..structure + 8], &[0, 0, 0, 1, 0, 0, 0, 0]);
     }
 
     #[test]

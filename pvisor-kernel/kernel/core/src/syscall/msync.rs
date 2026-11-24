@@ -50,22 +50,24 @@ pub(super) fn sys_msync(
     }
 
     // Do nothing if not file-backed, as <https://pubs.opengroup.org/onlinepubs/9699919799/> says.
-    let inodes = query_guard
+    let files = query_guard
         .iter()
-        .filter_map(|m| m.inode().cloned())
+        .filter_map(|m| m.shared_file().cloned())
         .collect::<Vec<_>>();
-    let task_fn = move || {
-        for inode in inodes {
-            // TODO: Sync a necessary range instead of syncing the whole inode.
-            let _ = inode.sync(SyncMode::Full);
-        }
-    };
+    drop(query_guard);
 
     // If neither MS_SYNC nor MS_ASYNC is specified, Linux defaults to MS_ASYNC behavior.
     if flags.contains(MsyncFlags::MS_SYNC) {
-        task_fn();
+        for file in files {
+            file.sync(SyncMode::Full)?;
+        }
     } else {
-        ThreadOptions::new(task_fn).spawn();
+        ThreadOptions::new(move || {
+            for file in files {
+                let _ = file.path().inode().sync(SyncMode::Full);
+            }
+        })
+        .spawn();
     }
 
     Ok(SyscallReturn::Return(0))

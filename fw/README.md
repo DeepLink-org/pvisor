@@ -83,7 +83,11 @@ mise run fw -- build --source-output target/libkrunfw.SOURCE \
 
 Release CI publishes corresponding-source archives alongside the wheels and
 daemon distribution. They contain the original kernel archive, firmware sources,
-patches, licenses, actual configuration and build receipt. Extract an archive and
+patches, licenses, actual configuration and build receipt. For product wheels
+with both guest kernels, the archive also includes the Rust kernel inputs,
+its generated dependency lock, and the pinned Linux sources for its vDSOs. The
+release checks both source trees against each wheel's firmware receipt.
+Extract an archive and
 run the recorded Make command with `-C` changed to its `fw/` directory and `PYTHON`
 changed to a local Python with `pyelftools` installed; use the recorded toolchain.
 An external firmware override must supply its own corresponding sources.

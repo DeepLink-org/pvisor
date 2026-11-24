@@ -182,6 +182,13 @@ impl VmMapping {
         self.file.as_ref().map(|file| file.path().inode())
     }
 
+    pub(crate) fn shared_file(&self) -> Option<&Arc<dyn FileLike>> {
+        self.map_mode
+            .is_shared()
+            .then_some(self.file.as_ref())
+            .flatten()
+    }
+
     /// Returns a reference to the VMO if this mapping is VMO-backed.
     pub(super) fn vmo(&self) -> Option<&MappedVmo> {
         match &self.mapped_mem {

@@ -10,6 +10,7 @@ import io
 import os
 import re
 import subprocess
+import sys
 import tarfile
 import tempfile
 import zipfile
@@ -18,6 +19,9 @@ from pathlib import Path
 from check_release_artifacts import validate_artifacts, validate_release_set
 
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "scripts" / "packaging"))
+import firmware  # noqa: E402
+
 BINARIES = ("pvisor", "pvisor-replay", "pvisor-daemon")
 
 
@@ -123,10 +127,14 @@ def build_assets(directory: Path, version: str, repository: str, *, stable: bool
     if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository):
         raise ValueError("repository must be owner/name")
     wheels = validate_artifacts(directory, version)
-    for platform in wheels:
+    for platform, wheel in wheels.items():
         source = directory / f"pvisor-firmware-source-{platform}.tar.gz"
         if not source.is_file() or source.stat().st_size == 0:
             raise ValueError(f"missing corresponding firmware sources: {source.name}")
+        target = (
+            "aarch64-apple-darwin" if platform == "macos-arm64" else "x86_64-unknown-linux-musl"
+        )
+        firmware.validate_product_sources(wheel, source, target)
     archives = {}
     for platform, wheel in wheels.items():
         archive = directory / f"pvisor-{version}-{platform}.tar.gz"

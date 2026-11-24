@@ -568,7 +568,8 @@ impl Inode for VirtioFsInode {
         };
         let cached_size = page_cache.size();
         if cached_size > 0 {
-            page_cache.flush_range(0..cached_size)?;
+            self.fs_ref()
+                .record_writeback(page_cache.flush_range(0..cached_size))?;
         }
 
         Ok(())
