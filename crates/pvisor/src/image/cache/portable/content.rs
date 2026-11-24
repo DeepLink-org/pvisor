@@ -116,7 +116,7 @@ impl DataCache {
             self.bytes -= old.retained_bytes();
         }
         let bytes = value.retained_bytes();
-        while self.bytes + bytes > 64 * 1024 * 1024 || self.entries.len() >= 4096 {
+        while self.bytes + bytes > 8 * 1024 * 1024 || self.entries.len() >= 4096 {
             if self.pop_lru().is_none() {
                 return;
             }

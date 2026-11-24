@@ -1427,6 +1427,7 @@ async fn execute_config(
         }
     }
     validate(&config, safe)?;
+    use_ephemeral_default_listeners(&mut config);
 
     let filesystem_isolated = config.filesystem == FilesystemMode::Sandbox;
 
@@ -2127,7 +2128,7 @@ fn valid_environment_name(name: &str) -> bool {
         && !name.as_bytes()[0].is_ascii_digit()
 }
 
-fn apply_safe_defaults(config: &mut RunConfig) -> anyhow::Result<()> {
+fn apply_safe_defaults(config: &mut RunConfig) {
     // Preserve Codex account/routing discovery through CODEX_* and provider variables.
     config.run.inherit_env = config
         .run
@@ -2136,12 +2137,6 @@ fn apply_safe_defaults(config: &mut RunConfig) -> anyhow::Result<()> {
         .and_then(|command| Path::new(command).file_name())
         .and_then(|name| name.to_str())
         == Some("codex");
-    if config.overlaynet.listen == OverlayNetSettings::default().listen {
-        config.overlaynet.listen = free_loopback_address()?;
-    }
-    if config.gateway.admin_listen == pvisor::GatewaySettings::default().admin_listen {
-        config.gateway.admin_listen = free_loopback_address()?;
-    }
     if config.run.agent == "agent"
         && let Some(program) = config.run.command.first()
     {
@@ -2151,12 +2146,17 @@ fn apply_safe_defaults(config: &mut RunConfig) -> anyhow::Result<()> {
             .unwrap_or("agent")
             .to_owned();
     }
-    Ok(())
 }
 
-fn free_loopback_address() -> anyhow::Result<String> {
-    let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
-    Ok(listener.local_addr()?.to_string())
+// The listening sockets select and retain their ports at bind time; both
+// drivers publish their actual addresses before starting the workload.
+fn use_ephemeral_default_listeners(config: &mut RunConfig) {
+    if config.overlaynet.listen == OverlayNetSettings::default().listen {
+        config.overlaynet.listen = "127.0.0.1:0".into();
+    }
+    if config.gateway.admin_listen == pvisor::GatewaySettings::default().admin_listen {
+        config.gateway.admin_listen = "127.0.0.1:0".into();
+    }
 }
 
 /// Resolve ordinary defaults/config, then the opt-in preset, then explicit CLI values.
@@ -2176,7 +2176,7 @@ fn apply_run_options(config: &mut RunConfig, args: RunArgs) -> anyhow::Result<()
     }
     apply_cli(config, args.clone())?;
     reject_ask_config(config)?;
-    apply_safe_defaults(config)?;
+    apply_safe_defaults(config);
     Ok(())
 }
 
@@ -4562,6 +4562,20 @@ mod tests {
     }
 
     #[test]
+    fn only_default_listeners_defer_port_selection_to_bind() {
+        let mut config = RunConfig::default();
+        use_ephemeral_default_listeners(&mut config);
+        assert_eq!(config.overlaynet.listen, "127.0.0.1:0");
+        assert_eq!(config.gateway.admin_listen, "127.0.0.1:0");
+
+        config.overlaynet.listen = "127.0.0.1:19082".into();
+        config.gateway.admin_listen = "127.0.0.1:9877".into();
+        use_ephemeral_default_listeners(&mut config);
+        assert_eq!(config.overlaynet.listen, "127.0.0.1:19082");
+        assert_eq!(config.gateway.admin_listen, "127.0.0.1:9877");
+    }
+
+    #[test]
     fn toml_safe_profile_resolves_the_same_preset_as_the_cli_flag() {
         let mut from_toml: RunConfig = toml::from_str("[run]\nprofile = 'safe'\n").unwrap();
         from_toml.overlaynet.listen = "127.0.0.1:0".into();
@@ -5380,7 +5394,7 @@ sandbox = "required""#
         ]);
         let mut config = RunConfig::default();
         apply_cli(&mut config, args).unwrap();
-        apply_safe_defaults(&mut config).unwrap();
+        apply_safe_defaults(&mut config);
         assert!(!config.run.inherit_env);
         assert_eq!(config.run.pass_env, ["EXPLICIT_TOKEN"]);
         assert_eq!(config.run.resource_limits.memory_bytes, Some(1_048_576));

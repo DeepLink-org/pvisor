@@ -31,7 +31,7 @@ struct HotBlocks {
     bytes: usize,
 }
 impl HotBlocks {
-    const MAX_BYTES: usize = 64 * 1024 * 1024;
+    const MAX_BYTES: usize = 8 * 1024 * 1024;
     const MAX_ENTRIES: usize = 4096;
 
     fn get(&self, file: u64, block: u64) -> Option<Arc<[u8]>> {
