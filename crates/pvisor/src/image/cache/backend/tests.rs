@@ -297,11 +297,12 @@ fn hot_blocks_bound_memory_and_reuse_verified_buffers() {
     let bytes: Arc<[u8]> = vec![42; MAX_READ as usize].into();
     hot.insert(1, 0, bytes.clone());
     assert!(Arc::ptr_eq(&hot.get(1, 0).unwrap(), &bytes));
-    for file in 2..=66 {
+    let capacity = HotBlocks::MAX_BYTES / bytes.len();
+    for file in 2..=(capacity as u64 + 1) {
         hot.insert(file, 0, bytes.clone());
     }
     assert_eq!(hot.bytes, HotBlocks::MAX_BYTES);
-    assert_eq!(hot.files.len(), 64);
+    assert_eq!(hot.files.len(), capacity);
     assert!(hot.get(1, 0).is_none());
     let mut tiny = HotBlocks::default();
     let byte: Arc<[u8]> = vec![1].into();

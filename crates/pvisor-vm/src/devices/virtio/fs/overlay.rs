@@ -345,7 +345,7 @@ enum Handle {
 
 #[derive(Default)]
 struct Nodes {
-    by_inode: HashMap<u64, PathBuf>,
+    by_inode: HashMap<u64, Arc<Path>>,
     // Guest LOOKUP references differ from the single native lookup lease held
     // for a detached writeback object. Namespace removal must not erase them.
     lookup_refs: HashMap<u64, u64>,
@@ -354,19 +354,30 @@ struct Nodes {
     legacy_lookup_refs: BTreeSet<u64>,
     // Retain constant-time lookups on the hot path. The separate component-ordered
     // index makes namespace updates visit only the affected subtree.
-    by_path: HashMap<PathBuf, u64>,
-    ordered_paths: BTreeSet<PathBuf>,
-    aliases: HashMap<u64, BTreeSet<PathBuf>>,
+    by_path: HashMap<Arc<Path>, u64>,
+    ordered_paths: BTreeSet<Arc<Path>>,
+    aliases: HashMap<u64, BTreeSet<Arc<Path>>>,
     by_object: HashMap<(usize, u64, u64), u64>,
     objects_by_inode: HashMap<u64, Vec<(usize, u64, u64)>>,
 }
 
 impl Nodes {
     fn insert_path(&mut self, path: PathBuf, inode: u64) {
+        let path = match self.by_path.get_key_value(path.as_path()) {
+            Some((existing, _)) => existing.clone(),
+            None => Arc::<Path>::from(path),
+        };
         self.ordered_paths.insert(path.clone());
         self.by_path.insert(path.clone(), inode);
         self.by_inode.entry(inode).or_insert_with(|| path.clone());
         self.aliases.entry(inode).or_default().insert(path);
+    }
+
+    fn set_canonical(&mut self, inode: u64, path: &Path) {
+        let path = self.by_path.get_key_value(path)
+            .map(|(registered, _)| registered.clone())
+            .unwrap_or_else(|| Arc::from(path));
+        self.by_inode.insert(inode, path);
     }
 
     fn bind_object(&mut self, inode: u64, object: (usize, u64, u64)) {
@@ -386,7 +397,7 @@ impl Nodes {
             if self
                 .by_inode
                 .get(&inode)
-                .is_some_and(|canonical| canonical == path)
+                .is_some_and(|canonical| canonical.as_ref() == path)
             {
                 self.by_inode.insert(inode, survivor.clone());
             }
@@ -1925,7 +1936,7 @@ impl OverlayFs {
             .unwrap()
             .by_inode
             .get(&inode)
-            .cloned()
+            .map(|path| path.to_path_buf())
             .ok_or_else(|| io::Error::from_raw_os_error(libc::ENOENT))
     }
 
@@ -1936,7 +1947,7 @@ impl OverlayFs {
 
     fn allocate_inode(&self, path: PathBuf) -> u64 {
         let mut nodes = self.nodes.lock().unwrap();
-        if let Some(inode) = nodes.by_path.get(&path) {
+        if let Some(inode) = nodes.by_path.get(path.as_path()) {
             return *inode;
         }
         let inode = self.inode_alloc.next();
@@ -1961,7 +1972,7 @@ impl OverlayFs {
             if attr.st_nlink > 1 || nodes.objects_by_inode.contains_key(&inode) {
                 nodes.bind_object(inode, (0, attr.st_dev as _, attr.st_ino));
             }
-            nodes.by_inode.insert(inode, path.to_path_buf());
+            nodes.set_canonical(inode, path);
         }
         if inode != fuse::ROOT_ID && !nodes.legacy_lookup_refs.contains(&inode) {
             let count = nodes.lookup_refs.entry(inode).or_default();
@@ -1981,7 +1992,7 @@ impl OverlayFs {
         let mut nodes = self.nodes.lock().unwrap();
         let inode = nodes
             .by_path
-            .get(&path)
+            .get(path.as_path())
             .or_else(|| nodes.by_object.get(&object))
             .copied()
             .unwrap_or_else(|| self.inode_alloc.next());
@@ -1995,7 +2006,7 @@ impl OverlayFs {
         if attr.st_nlink > 1 || nodes.objects_by_inode.contains_key(&inode) {
             nodes.bind_object(inode, (0, attr.st_dev as _, attr.st_ino));
         }
-        nodes.by_inode.insert(inode, path.to_path_buf());
+        nodes.set_canonical(inode, path);
     }
 
     fn preserve_other_aliases(&self, path: &Path) -> io::Result<()> {
@@ -2006,7 +2017,7 @@ impl OverlayFs {
             };
             nodes.aliases[inode]
                 .iter()
-                .filter(|alias| alias.as_path() != path)
+                .filter(|alias| alias.as_ref() != path)
                 .cloned()
                 .collect::<Vec<_>>()
         };
@@ -2166,7 +2177,7 @@ impl OverlayFs {
         let mut nodes = self.nodes.lock().unwrap();
         let paths = nodes
             .ordered_paths
-            .range(prefix.to_path_buf()..)
+            .range::<Path, _>((std::ops::Bound::Included(prefix), std::ops::Bound::Unbounded))
             .take_while(|path| path.starts_with(prefix))
             .cloned()
             .collect::<Vec<_>>();
@@ -2180,7 +2191,7 @@ impl OverlayFs {
         let mut nodes = self.nodes.lock().unwrap();
         let changes = nodes
             .ordered_paths
-            .range(old.to_path_buf()..)
+            .range::<Path, _>((std::ops::Bound::Included(old), std::ops::Bound::Unbounded))
             .take_while(|path| path.starts_with(old))
             .map(|path| {
                 let inode = nodes.by_path[path];
@@ -2201,7 +2212,7 @@ impl OverlayFs {
         }
         for (_, new_path, inode) in changes {
             nodes.insert_path(new_path.clone(), inode);
-            nodes.by_inode.insert(inode, new_path);
+            nodes.set_canonical(inode, &new_path);
         }
     }
 
@@ -3653,7 +3664,7 @@ impl FileSystem for OverlayFs {
                     .components()
                     .any(|c| !matches!(c, std::path::Component::Normal(_)))
                 || nodes.by_inode.contains_key(inode)
-                || nodes.by_path.contains_key(&path)
+                || nodes.by_path.contains_key(path.as_path())
             {
                 return Err(invalid("invalid overlay inode paths"));
             }
@@ -3664,7 +3675,7 @@ impl FileSystem for OverlayFs {
             if path.as_os_str().is_empty()
                 || OverlayCore::validate_rel(&path).is_err()
                 || !nodes.by_inode.contains_key(inode)
-                || nodes.by_path.contains_key(&path)
+                || nodes.by_path.contains_key(path.as_path())
             {
                 return Err(invalid("invalid overlay inode aliases"));
             }
