@@ -15,14 +15,18 @@ $ python3 "$TESTDIR/../fixture.py" doc S-DOC-052 --timeout 180 <<'CASE'
 > require_rootless
 > case_setup
 > case_run success <<'CASE_COMMAND'
-> pvisor --stage "$CASE_ROOT/live-stage" -- /bin/sleep 30 > live.log 2>&1 &
+> pvisor --stage "$CASE_ROOT/live-stage" -- /bin/sh -c 'printf ready > ready.txt; exec /bin/sleep 30' > live.log 2>&1 &
 > session_pid=$!
+> trap 'kill "$session_pid" 2>/dev/null || true; wait "$session_pid" 2>/dev/null || true' EXIT
 > for ((execution=0; execution<100; execution++)); do
->   test -f "$CASE_ROOT/live-stage/run.json" && break
+>   test -f "$CASE_ROOT/live-stage/upper/ready.txt" && break
+>   kill -0 "$session_pid" || exit 1
 >   sleep 0.05
 > done
+> test -f "$CASE_ROOT/live-stage/upper/ready.txt" || exit 1
 > pvisor kill "$CASE_ROOT/live-stage"
 > if wait "$session_pid"; then exit 1; fi
+> trap - EXIT
 > pvisor status --json "$CASE_ROOT/live-stage" > stopped.json
 > CASE_COMMAND
 >
