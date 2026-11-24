@@ -962,6 +962,40 @@ impl<S: ColdRamStore> Pager<S> {
     }
 }
 
+#[derive(Default)]
+struct BranchScanCadence {
+    misses: u8,
+    last_start: Option<Instant>,
+}
+
+impl BranchScanCadence {
+    fn begin(&mut self, now: Instant) -> bool {
+        let gap_ms = match self.misses {
+            0..=1 => 0,
+            2..=3 => 8,
+            4..=7 => 64,
+            8..=15 => 512,
+            _ => 4096,
+        };
+        if self
+            .last_start
+            .is_some_and(|start| now.duration_since(start) < Duration::from_millis(gap_ms))
+        {
+            return false;
+        }
+        self.last_start = Some(now);
+        true
+    }
+
+    fn observe(&mut self, sampled: usize, merged: bool) {
+        if merged {
+            self.misses = 0;
+        } else if sampled > 0 {
+            self.misses = self.misses.saturating_add(1);
+        }
+    }
+}
+
 pub(crate) fn activity() -> ColdRamActivity {
     ColdRamActivity {
         pending_file_bytes: 0,
@@ -1201,6 +1235,7 @@ pub(crate) fn start<S: ColdRamStore + 'static>(
     let worker_stop = stop.clone();
     let worker = std::thread::Builder::new().name("pvisor-cold-pager".into()).spawn(move || {
         let pool = worker_pager.lock().unwrap().store.clone();
+        let mut cadence = branch.then(BranchScanCadence::default);
         loop {
             // A full adaptive scan round always yields, even when every region
             // is productive. Empty/sparse rounds cannot spin at the 1 ms pace.
@@ -1230,6 +1265,9 @@ pub(crate) fn start<S: ColdRamStore + 'static>(
                         Err(error) => fatal(error),
                     }
                 }
+            }
+            if cadence.as_mut().is_some_and(|policy| !policy.begin(Instant::now())) {
+                continue;
             }
             let mut candidates = worker_pager.lock().unwrap_or_else(|_| fatal("pager poisoned")).candidates();
             let sampled = quiesce_nonempty(&mut candidates, |candidates| handle.ram_quiesced(|vmm| {
@@ -1272,6 +1310,7 @@ pub(crate) fn start<S: ColdRamStore + 'static>(
             worker_pager.lock().unwrap_or_else(|_| fatal("pager poisoned")).put_rejections += put_rejections;
             let committed = quiesce_nonempty(&mut objects, |objects| handle.ram_quiesced(|vmm| {
                 let mut pager = worker_pager.lock().map_err(|_| "pager poisoned")?;
+                let discarded_before = pager.discarded;
                 for (snapshot, object) in objects {
                     if branch && !vmm.branch_share_candidate(pager.pages.range(snapshot.index).start).map_err(|e| e.to_string())? {
                         continue;
@@ -1282,13 +1321,17 @@ pub(crate) fn start<S: ColdRamStore + 'static>(
                         *object = pager.commit(snapshot, published).map_err(|error| error.to_string())?;
                     }
                 }
-                Ok(())
+                Ok(pager.discarded > discarded_before)
             }));
             for object in objects.into_iter().filter_map(|(_, object)| object) {
                 pool.lock().unwrap_or_else(|_| fatal("store poisoned")).release(object).unwrap_or_else(|error| fatal(error));
             }
             match committed {
-                Ok(_) => {},
+                Ok(merged) => {
+                    if let Some(policy) = &mut cadence {
+                        policy.observe(batch.0.len(), merged == Some(true));
+                    }
+                },
                 Err(error) if error == "VMM has stopped" => break,
                 Err(error) => fatal(error),
             }
@@ -1332,6 +1375,34 @@ mod tests {
     use crate::api::ColdRamPoolStats;
     use std::io::{Read, Write};
     use vm_memory::{Bytes, GuestAddress};
+
+    #[rstest::rstest]
+    #[case(0, 0)]
+    #[case(1, 0)]
+    #[case(2, 8)]
+    #[case(3, 8)]
+    #[case(4, 64)]
+    #[case(7, 64)]
+    #[case(8, 512)]
+    #[case(15, 512)]
+    #[case(16, 4096)]
+    #[case(300, 4096)]
+    fn branch_scan_gap_tracks_sampled_misses(#[case] misses: usize, #[case] gap_ms: u64) {
+        let mut policy = BranchScanCadence::default();
+        let start = Instant::now();
+        assert!(policy.begin(start));
+        for _ in 0..misses {
+            policy.observe(1, false);
+        }
+        policy.observe(0, false);
+        if gap_ms > 0 {
+            assert!(!policy.begin(start + Duration::from_millis(gap_ms - 1)));
+        }
+        let due = start + Duration::from_millis(gap_ms);
+        assert!(policy.begin(due));
+        policy.observe(1, true);
+        assert!(policy.begin(due));
+    }
 
     #[derive(Default)]
     struct CompressedStore {
