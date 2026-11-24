@@ -30,6 +30,8 @@ pub mod build;
 /// Validated, image-based Compose projects and project-scoped lifecycle.
 pub mod compose;
 mod copy;
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+mod early_image;
 mod file_bind;
 /// Owner-supervised, generation-scoped container health checks.
 pub mod health;
@@ -158,6 +160,17 @@ pub struct Image<Backing = CachedImage> {
     pub created_ms: u64,
 }
 
+// Keep both the private unpacked tree and the reference lock until publication finishes.
+struct PreparedPull {
+    image: Image<()>,
+    cached: Option<CachedImage>,
+    rootfs: PathBuf,
+    source: crate::image::oci::ImageStore,
+    config: Vec<u8>,
+    _staging: Option<crate::image::store::ImportDirectory>,
+    _pull: File,
+}
+
 impl<Backing> Image<Backing> {
     fn map_cache<T>(self, map: impl FnOnce(Backing) -> T) -> Image<T> {
         Image {
@@ -187,7 +200,7 @@ pub struct CachedImage {
     /// Absolute local pool directory, shared by images in this Docker store.
     /// For remote bindings this is a reserved local pool path, never a read fallback.
     pub location: PathBuf,
-    /// Authenticated immutable image revision handle.
+    /// Immutable published revision, or an instance-private verified cold import.
     pub handle: String,
     /// Optional immutable repository URL: file, S3, GCS or HTTP(S).
     /// Credentials belong to the host. Repository failures never fall back to the local pool.
@@ -235,6 +248,7 @@ pub struct ResolvedImageRepository {
 /// Owns a usable root directory and its lazy backend through file/VM access.
 /// Dropping it removes the published image's temporary projection.
 pub struct ImageRoot {
+    _import_lease: Option<File>,
     root: PathBuf,
     _owner: Option<crate::image::cache::DirectImage>,
 }
@@ -645,6 +659,11 @@ impl Store {
         let records: Vec<Image> = serde_json::from_reader(File::open(path)?)?;
         let mut images = BTreeMap::new();
         for image in records {
+            #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+            ensure!(
+                !image.cache.handle.starts_with(early_image::PREFIX),
+                "unpublished image in catalog"
+            );
             let key = image_reference_key(&image.reference)?;
             ensure!(
                 images.insert(key.clone(), image).is_none(),
@@ -772,14 +791,32 @@ impl Store {
         platform: &str,
         progress: &mut dyn FnMut(PullProgress),
     ) -> anyhow::Result<Image> {
+        let prepared = self.prepare_pull(reference, platform, progress, None)?;
+        self.publish_pull(prepared)
+    }
+
+    fn prepare_pull(
+        &self,
+        reference: &str,
+        platform: &str,
+        progress: &mut dyn FnMut(PullProgress),
+        directory: Option<&Path>,
+    ) -> anyhow::Result<PreparedPull> {
         let platform = canonical_platform(platform)?;
         let arch = platform.strip_prefix("linux/").unwrap();
         let reference = normalize_reference(reference);
         let reference = reference.as_str();
         progress(PullProgress::Waiting);
         let _pull = self.image_pull_lock(reference, arch)?;
-        let staging = self.images.staging()?;
-        let mut store = crate::image::oci::ImageStore::new(Some(staging.path().into()))?;
+        let staging = if directory.is_none() {
+            Some(self.images.staging()?)
+        } else {
+            None
+        };
+        let root = directory
+            .or_else(|| staging.as_ref().map(|s| s.path()))
+            .context("missing import directory")?;
+        let mut store = crate::image::oci::ImageStore::new(Some(root.into()))?;
         if let Some(credentials) = &self.registry_credentials {
             store.set_registry_credentials(credentials.clone());
         }
@@ -812,7 +849,7 @@ impl Store {
                 && id[7..].bytes().all(|c| c.is_ascii_hexdigit()),
             "invalid image config digest"
         );
-        let config_bytes = fs::read(staging.path().join("blobs/sha256").join(&id[7..]))?;
+        let config_bytes = fs::read(store.root.join("blobs/sha256").join(&id[7..]))?;
         let config: serde_json::Value = serde_json::from_slice(&config_bytes)?;
         let config = &config["config"];
         let cwd = config["WorkingDir"]
@@ -839,15 +876,33 @@ impl Store {
                 .unwrap_or_default(),
             created_ms: crate::unix_now_ms(),
         };
-        let image = if let Some(cache) = cached {
-            self.images.retain_config(&image.id, &config_bytes)?;
-            image.map_cache(|()| cache)
+        Ok(PreparedPull {
+            image,
+            cached,
+            rootfs: prepared.rootfs,
+            source: store,
+            config: config_bytes,
+            _staging: staging,
+            _pull,
+        })
+    }
+
+    fn publish_pull(&self, prepared: PreparedPull) -> anyhow::Result<Image> {
+        let image = if let Some(cache) = prepared.cached {
+            self.images
+                .retain_config(&prepared.image.id, &prepared.config)?;
+            prepared.image.map_cache(|()| cache)
         } else {
-            self.pool_image(image, &prepared.rootfs, &store, &config_bytes)?
+            self.pool_image(
+                prepared.image,
+                &prepared.rootfs,
+                &prepared.source,
+                &prepared.config,
+            )?
         };
         let _guard = self.lock()?;
         let mut images = self.catalog()?;
-        images.insert(image_reference_key(reference)?, image.clone());
+        images.insert(image_reference_key(&image.reference)?, image.clone());
         self.save_catalog(&images)?;
         Ok(image)
     }
@@ -961,10 +1016,27 @@ impl Store {
 
     fn create_pinned_member(
         &self,
-        mut config: Create,
+        config: Create,
         progress: &mut dyn FnMut(PullProgress),
         membership: Option<compose::Membership>,
         pinned: Option<Image>,
+    ) -> anyhow::Result<Instance> {
+        self.create_resolving(config, membership, |reference| {
+            if let Some(image) = pinned {
+                Ok(image)
+            } else if let Some(image) = self.local_image(reference)? {
+                Ok(image)
+            } else {
+                self.pull_with_progress(reference, progress)
+            }
+        })
+    }
+
+    fn create_resolving(
+        &self,
+        mut config: Create,
+        membership: Option<compose::Membership>,
+        resolve: impl FnOnce(&str) -> anyhow::Result<Image>,
     ) -> anyhow::Result<Instance> {
         lifecycle::validate(&config)?;
         managed::validate_config(&config)?;
@@ -1032,13 +1104,7 @@ impl Store {
                 "--ip requires a user-defined network"
             );
         }
-        let image = if let Some(image) = pinned {
-            image
-        } else if let Some(image) = self.local_image(&config.image)? {
-            image
-        } else {
-            self.pull_with_progress(&config.image, progress)?
-        };
+        let image = resolve(&config.image)?;
         require_native_platform(&image.platform)?;
         if membership.is_none() {
             if config.no_healthcheck {
@@ -1626,6 +1692,10 @@ impl Store {
         let projections = live_fork::unreferenced_images(self, &self.directory(&instance.id))?;
         fs::remove_dir_all(self.directory(&instance.id))?;
         #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+        if instance.image.cache.handle.starts_with(early_image::PREFIX) {
+            early_image::collect(self)?;
+        }
+        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
         for directory in projections {
             fs::remove_dir_all(directory)?;
         }
@@ -1861,6 +1931,14 @@ pub fn internal_if_requested() -> anyhow::Result<bool> {
     let Some(mode) = args.get(1).and_then(|s| s.to_str()) else {
         return Ok(false);
     };
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    if mode == "--pvisor-internal-cold-run" {
+        ensure!(args.len() == 4, "invalid cold run arguments");
+        let images = crate::image::store::LocalStore::open(PathBuf::from(&args[3]))?;
+        let store = Store::open_with_images(PathBuf::from(&args[2]), images)?;
+        early_image::worker(&store)?;
+        return Ok(true);
+    }
     if !matches!(
         mode,
         "--pvisor-internal-docker-owner"
@@ -1891,7 +1969,7 @@ pub fn internal_if_requested() -> anyhow::Result<bool> {
         let fork = live_fork::load(&store.directory(&instance.id))?;
         #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
         let lower = match fork {
-            Some(saved) => saved.open_image()?,
+            Some(saved) => saved.open_image(&store, &instance.image)?,
             None => store.open_image(&instance.image)?,
         };
         #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]

@@ -26,29 +26,33 @@ impl ImportDirectory {
 }
 impl Drop for ImportDirectory {
     fn drop(&mut self) {
-        use std::os::unix::fs::PermissionsExt;
-        let mut pending = vec![self.0.path().to_owned()];
-        while let Some(path) = pending.pop() {
-            // Imports are private and no longer in use. Do not follow image
-            // symlinks or alter permissions on their external targets.
-            let result = (|| -> std::io::Result<()> {
-                if fs::symlink_metadata(&path)?.is_dir() {
-                    fs::set_permissions(&path, fs::Permissions::from_mode(0o700))?;
-                    for entry in fs::read_dir(&path)? {
-                        let entry = entry?;
-                        if entry.file_type()?.is_dir() {
-                            pending.push(entry.path());
-                        }
-                    }
+        if let Err(error) = restore_import_permissions(self.path()) {
+            tracing::warn!(%error, "cannot restore OCI import directory access for cleanup");
+        }
+    }
+}
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+pub(crate) fn remove_import(root: &Path) -> std::io::Result<()> {
+    restore_import_permissions(root)?;
+    fs::remove_dir_all(root)
+}
+
+fn restore_import_permissions(root: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let mut pending = vec![root.to_owned()];
+    while let Some(path) = pending.pop() {
+        if fs::symlink_metadata(&path)?.is_dir() {
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o700))?;
+            for entry in fs::read_dir(&path)? {
+                let entry = entry?;
+                if entry.file_type()?.is_dir() {
+                    pending.push(entry.path());
                 }
-                Ok(())
-            })();
-            if let Err(error) = result {
-                tracing::warn!(%error, "cannot restore OCI import directory access for cleanup");
             }
         }
-        // TempDir removes the tree after this Drop body returns.
     }
+    Ok(())
 }
 
 impl LocalStore {

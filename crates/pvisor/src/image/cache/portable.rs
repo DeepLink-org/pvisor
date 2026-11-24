@@ -18,6 +18,8 @@ mod frames;
 #[cfg(test)]
 mod measurement;
 mod publish;
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+pub(crate) use publish::supports_extracted_run;
 #[cfg(test)]
 mod tests;
 use binary::LoadedImage;

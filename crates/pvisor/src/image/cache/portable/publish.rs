@@ -27,6 +27,68 @@ fn publication_workers(value: Option<&std::ffi::OsStr>) -> anyhow::Result<usize>
     Ok(workers)
 }
 
+fn visit_source(
+    store: &ImageStore,
+    digest: &str,
+    mut visit: impl FnMut(Vec<u8>, Response) -> anyhow::Result<bool>,
+) -> anyhow::Result<bool> {
+    let mut seen = 0;
+    let mut pending = vec![Vec::new()];
+    while let Some(path) = pending.pop() {
+        let metadata = super::super::source::stat(store, digest, &path)?;
+        if matches!(&metadata, Response::Metadata {kind, ..} if kind == "directory") {
+            for name in super::super::source::directory(store, digest, &path)?.iter() {
+                let mut child = path.clone();
+                if !child.is_empty() {
+                    child.push(b'/');
+                }
+                child.extend_from_slice(name);
+                pending.push(child);
+            }
+        }
+        seen += 1;
+        ensure!(
+            seen + pending.len() <= MAX_ENTRIES,
+            "image exceeds cache entry limit"
+        );
+        if !visit(path, metadata)? {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+pub(crate) fn supports_extracted_run(store: &ImageStore, digest: &str) -> anyhow::Result<bool> {
+    let mut spans = 0u64;
+    visit_source(store, digest, |path, metadata| {
+        let Response::Metadata {
+            kind,
+            size,
+            inode,
+            nlink,
+            mtime_nsec,
+            ..
+        } = metadata
+        else {
+            bail!("invalid source metadata")
+        };
+        ensure!(
+            inode > 0 && nlink > 0 && (0..1_000_000_000).contains(&mtime_nsec),
+            "invalid source attributes"
+        );
+        if !matches!(kind.as_str(), "directory" | "file" | "symlink") {
+            return Ok(false);
+        }
+        super::super::source::validate_pool_attributes(store, digest, &path, &kind)?;
+        if kind == "file" {
+            // A conservative bound before publication deduplicates file contents.
+            spans = spans.saturating_add(size.div_ceil(MAX_READ as u64));
+        }
+        Ok(spans <= MAX_SPANS as u64)
+    })
+}
+
 impl PortableCache {
     #[cfg(test)]
     pub(in crate::image::cache) fn publish(
@@ -102,29 +164,14 @@ impl PortableCache {
         // publication never races re-reading a changed source file.
         let staging = tempfile::tempdir_in(&store.root)?;
         let mut entries = Vec::new();
-        let mut pending = vec![Vec::new()];
-        while let Some(path) = pending.pop() {
-            let metadata = super::super::source::stat(store, &image.digest, &path)?;
-            if matches!(&metadata,Response::Metadata{kind,..} if kind=="directory") {
-                for name in super::super::source::directory(store, &image.digest, &path)?.iter() {
-                    let mut child = path.clone();
-                    if !child.is_empty() {
-                        child.push(b'/');
-                    }
-                    child.extend_from_slice(name);
-                    pending.push(child);
-                }
-            }
+        visit_source(store, &image.digest, |path, metadata| {
             entries.push(SourceEntry {
                 path,
                 metadata,
                 content: None,
             });
-            ensure!(
-                entries.len() + pending.len() <= MAX_ENTRIES,
-                "image exceeds cache entry limit"
-            );
-        }
+            Ok(true)
+        })?;
         entries.sort_by(|a, b| a.path.cmp(&b.path));
         let mut contents: BTreeMap<String, SourceContent> = BTreeMap::new();
         let mut objects = BTreeMap::new();

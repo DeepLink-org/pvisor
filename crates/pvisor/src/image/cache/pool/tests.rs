@@ -240,6 +240,13 @@ fn import_rejects_unrepresentable_xattrs_without_publishing_a_revision() {
         cmd: vec![],
     };
     let pool = temporary.path().join("pool");
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    assert!(
+        super::super::supports_extracted_run(&source, &image.digest)
+            .unwrap_err()
+            .to_string()
+            .contains("does not support xattr user.required")
+    );
     let error = publish_local_image(&pool, &source, &image, "example:xattr", "amd64").unwrap_err();
     assert!(
         error

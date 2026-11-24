@@ -1414,6 +1414,14 @@ revision. Existing containers retain their pinned image. Each distinct tag commi
 independently; there is no multi-tag filesystem transaction. Container `images.json` remains
 its frontend catalog; `rmi` removes catalog references, not shared pool objects.
 
+On Linux x86-64, a Docker CLI cold run admits its first instance from the verified
+rootfs while publication continues. Instance records pin the private import under
+`cold-imports` in the Docker home. Readers and the publisher hold shared locks;
+instance removal and subsequent runs reclaim unreferenced imports. After a host
+reboot a surviving instance requires its recorded durable revision. A publication
+error is recorded in the import's `publication-error.json`; an explicit pull can
+retry publication.
+
 Published `Image` records require `CachedImage`, binding the pool location and
 immutable handle. There is no directory-root field or fallback. Private builds
 use a distinct backing type in `Image<BuildSource>`/`Instance<BuildSource>`;

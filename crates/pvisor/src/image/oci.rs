@@ -88,7 +88,7 @@ impl std::fmt::Debug for RegistryCredentials {
 
 /// Synchronous observations of OCI image preparation. Byte counts represent
 /// compressed blob bytes actually received, not extracted filesystem size.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum PullProgress {
     /// Waiting for another preparation to release its image lock.
     Waiting,
