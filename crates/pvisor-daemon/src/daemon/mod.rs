@@ -433,6 +433,10 @@ impl Daemon {
         if record.sandbox.status.state == "Stopping" {
             return Ok(record.sandbox);
         }
+        self.observe_locked(id, record).await
+    }
+
+    async fn observe_locked(&self, id: &str, record: Record) -> Result<Sandbox, ApiError> {
         let state = self.runtime.inspect(id).await.map_err(|e| {
             eprintln!("sandbox {id} inspection failed: {e:#}");
             ApiError::new(
@@ -559,32 +563,45 @@ impl Daemon {
     }
 
     pub(crate) async fn delete(self: &Arc<Self>, id: &str) -> Result<(), ApiError> {
-        self.delete_conditionally(id, false).await
-    }
-
-    async fn delete_conditionally(
-        self: &Arc<Self>,
-        id: &str,
-        expired_only: bool,
-    ) -> Result<(), ApiError> {
         let this = self.clone();
         let id = id.to_owned();
         tokio::spawn(async move {
             let gate = this.operation(&id).await?;
             let _operation = gate.write().await;
+            claims::require_visible(&this.record(&id).await?)?;
+            this.delete_locked(&id).await
+        })
+        .await
+        .map_err(|e| ApiError::internal(e.to_string()))?
+    }
+
+    async fn maintain(
+        self: &Arc<Self>,
+        id: &str,
+        action: MaintenanceAction,
+    ) -> Result<(), ApiError> {
+        let this = self.clone();
+        let id = id.to_owned();
+        tokio::spawn(async move {
+            let gate = this.operation(&id).await?;
+            let _operation = match action {
+                MaintenanceAction::Delete => gate.write().await,
+                // An active create/control is already handling this transition.
+                MaintenanceAction::Observe => match gate.try_write() {
+                    Ok(guard) => guard,
+                    Err(_) => return Ok(()),
+                },
+            };
             let record = this.record(&id).await?;
             claims::require_visible(&record)?;
-            // Recheck under the same lock used by renew, not from a stale scan.
-            if expired_only
-                && record.sandbox.status.state != "Stopping"
-                && !record
-                    .sandbox
-                    .expires_at
-                    .is_some_and(|deadline| deadline <= Utc::now())
-            {
-                return Ok(());
+            // A renewal or control may have changed the record since the scan.
+            match MaintenanceAction::due(&record.sandbox, Utc::now()) {
+                Some(MaintenanceAction::Delete) => this.delete_locked(&id).await,
+                Some(MaintenanceAction::Observe) => {
+                    this.observe_locked(&id, record).await.map(|_| ())
+                }
+                None => Ok(()),
             }
-            this.delete_locked(&id).await
         })
         .await
         .map_err(|e| ApiError::internal(e.to_string()))?
@@ -736,6 +753,24 @@ impl Daemon {
             .endpoint(id, port)
             .await
             .map_err(|e| ApiError::new(503, "ENDPOINT_UNAVAILABLE", e.to_string()))
+    }
+}
+
+enum MaintenanceAction {
+    Delete,
+    Observe,
+}
+
+impl MaintenanceAction {
+    fn due(sandbox: &Sandbox, now: DateTime<Utc>) -> Option<Self> {
+        let state = sandbox.status.state.as_str();
+        if state == "Stopping" || sandbox.expires_at.is_some_and(|deadline| deadline <= now) {
+            Some(Self::Delete)
+        } else if matches!(state, "Pending" | "Pausing" | "Resuming") {
+            Some(Self::Observe)
+        } else {
+            None
+        }
     }
 }
 
@@ -901,20 +936,26 @@ impl DaemonService for Daemon {
                 tokio::select! {
                     _ = interval.tick() => {
                         let Some(this) = weak.upgrade() else { return; };
-                        let mut sandboxes = match this.list().await { Ok(items) => items, Err(_) => continue };
+                        let mut sandboxes = match this.list().await {
+                            Ok(items) => items,
+                            Err(error) => {
+                                eprintln!("sandbox maintenance stopped: {}", error.message);
+                                return;
+                            }
+                        };
                         let start = sandboxes.partition_point(|sandbox| sandbox.id <= cursor);
                         sandboxes.rotate_left(start);
+                        let now = Utc::now();
                         for sandbox in sandboxes {
                             if sessions.len() >= BACKGROUND_CONCURRENCY { break; }
                             cursor = sandbox.id.clone();
                             if !in_flight.contains(&sandbox.id)
-                                && (sandbox.expires_at.is_some_and(|deadline| deadline <= Utc::now())
-                                    || sandbox.status.state == "Stopping") {
+                                && let Some(action) = MaintenanceAction::due(&sandbox, now) {
                                 let id = sandbox.id;
                                 in_flight.insert(id.clone());
                                 let this = this.clone();
                                 sessions.spawn(async move {
-                                    let outcome = this.delete_conditionally(&id, true).await;
+                                    let outcome = this.maintain(&id, action).await;
                                     (id, outcome)
                                 });
                             }
@@ -924,9 +965,9 @@ impl DaemonService for Daemon {
                         match completed {
                             Ok((id, outcome)) => {
                                 in_flight.remove(&id);
-                                if let Err(error) = outcome { eprintln!("sandbox {id} cleanup deferred: {}", error.message); }
+                                if let Err(error) = outcome { eprintln!("sandbox {id} maintenance deferred: {}", error.message); }
                             }
-                            Err(error) => { eprintln!("cleanup task failed: {error}"); in_flight.clear(); }
+                            Err(error) => { eprintln!("maintenance task failed: {error}"); in_flight.clear(); }
                         }
                     }
                 }

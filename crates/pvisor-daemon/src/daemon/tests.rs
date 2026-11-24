@@ -1,5 +1,5 @@
 use super::store::CommitPoint;
-use super::{Config, CreateRequest, Daemon};
+use super::{Config, CreateRequest, Daemon, MaintenanceAction};
 use crate::api::DaemonService;
 use crate::api::{Runtime, RuntimeSpec, RuntimeState};
 use serde_json::{Value, json};
@@ -379,7 +379,7 @@ async fn claim_full_ledger_preserves_lifecycle_headroom_and_immutable_result() {
         .await
         .unwrap();
     daemon
-        .delete_conditionally(&ttl_snapshot.id, true)
+        .maintain(&ttl_snapshot.id, MaintenanceAction::Delete)
         .await
         .unwrap();
     assert_eq!(claim_ledger_charge(&daemon).await, 16 * 1024 * 1024);
@@ -1647,6 +1647,153 @@ async fn pending_restart_releases_only_confirmed_absence_and_keeps_live_or_uncer
 }
 
 #[tokio::test]
+async fn maintenance_recovers_pending_without_ttl_after_startup_inspection_fails() {
+    for live in [true, false] {
+        let directory = tempfile::tempdir().unwrap();
+        let runtime = Arc::new(FakeRuntime::default());
+        let cfg = || Config {
+            max_sandboxes: 1,
+            ..config(&directory)
+        };
+        let daemon = bounded(open(cfg(), &runtime)).await;
+        let sandbox = bounded(create(&daemon)).await;
+        // Model a crash before the create outcome was committed.
+        bounded(daemon.update(&sandbox.id, |registry| {
+            let mut record = registry.sandboxes[&sandbox.id].clone();
+            record.sandbox.status.state = "Pending".into();
+            record.sandbox.expires_at = None;
+            Ok((Some(record), ()))
+        }))
+        .await
+        .unwrap();
+        {
+            let mut state = runtime.state.lock().unwrap();
+            state.inspect_error = true;
+            state.delete_outcome = DeleteOutcome::Error;
+            if !live {
+                state.sandboxes.remove(&sandbox.id);
+            }
+        }
+        drop(daemon);
+
+        let daemon = bounded(open(cfg(), &runtime)).await;
+        let inspections = runtime.state.lock().unwrap().inspections;
+        let maintenance = daemon.start_maintenance();
+        bounded(async {
+            while runtime.state.lock().unwrap().inspections == inspections {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await;
+        assert_eq!(
+            bounded(daemon.list()).await.unwrap()[0].status.state,
+            "Pending"
+        );
+        assert_eq!(
+            bounded(daemon.create(request())).await.unwrap_err().status,
+            429
+        );
+        assert_eq!(runtime.state.lock().unwrap().deletes, 0);
+
+        runtime.state.lock().unwrap().inspect_error = false;
+        let expected = if live { "Running" } else { "Stopping" };
+        bounded(async {
+            loop {
+                let records = daemon.list().await.unwrap();
+                assert_eq!(records[0].id, sandbox.id);
+                if records[0].status.state == expected {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await;
+        assert_eq!(
+            bounded(daemon.create(request())).await.unwrap_err().status,
+            429
+        );
+        assert_eq!(
+            runtime.state.lock().unwrap().creates,
+            1,
+            "never replay create"
+        );
+        if live {
+            assert_eq!(runtime.state.lock().unwrap().deletes, 0);
+        } else {
+            runtime.state.lock().unwrap().delete_outcome = DeleteOutcome::Confirmed;
+            bounded(async {
+                while !daemon.list().await.unwrap().is_empty() {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await;
+            assert_ne!(bounded(create(&daemon)).await.id, sandbox.id);
+            assert_eq!(
+                bounded(daemon.create(request())).await.unwrap_err().status,
+                429
+            );
+        }
+        maintenance.abort();
+        let _ = bounded(maintenance).await;
+    }
+}
+
+#[tokio::test]
+async fn maintenance_observes_applied_control_after_lost_ack_without_reissuing_it() {
+    let directory = tempfile::tempdir().unwrap();
+    let runtime = Arc::new(FakeRuntime::default());
+    let daemon = bounded(open(config(&directory), &runtime)).await;
+    let sandbox = bounded(create(&daemon)).await;
+    let maintenance = daemon.start_maintenance();
+    for (pause, pending, expected) in [(true, "Pausing", "Paused"), (false, "Resuming", "Running")]
+    {
+        let (entered, reached) = oneshot::channel();
+        let (release, blocked) = oneshot::channel();
+        *runtime.control_gate.lock().unwrap() = Some(NativeGate {
+            entered,
+            release: blocked,
+        });
+        runtime.state.lock().unwrap().control_reply =
+            Some(Err(anyhow::anyhow!("lost acknowledgement")));
+        let caller = {
+            let daemon = daemon.clone();
+            let id = sandbox.id.clone();
+            tokio::spawn(async move { daemon.control(&id, pause).await })
+        };
+        bounded(reached).await.unwrap();
+        assert_eq!(
+            bounded(daemon.list()).await.unwrap()[0].status.state,
+            pending
+        );
+        let inspections = runtime.state.lock().unwrap().inspections;
+        bounded(daemon.maintain(&sandbox.id, MaintenanceAction::Observe))
+            .await
+            .unwrap();
+        assert_eq!(runtime.state.lock().unwrap().inspections, inspections);
+        release.send(()).unwrap();
+        assert_eq!(
+            bounded(caller).await.unwrap().unwrap_err().code,
+            "RUNTIME_UNAVAILABLE"
+        );
+        bounded(async {
+            while daemon.list().await.unwrap()[0].status.state != expected {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await;
+    }
+    {
+        let state = runtime.state.lock().unwrap();
+        assert_eq!(
+            (state.creates, state.pauses, state.resumes, state.deletes),
+            (1, 1, 1, 0)
+        );
+    }
+    maintenance.abort();
+    let _ = bounded(maintenance).await;
+}
+
+#[tokio::test]
 async fn uncertain_delete_retains_durable_reservation_until_confirmed() {
     for outcome in [DeleteOutcome::Error, DeleteOutcome::Unconfirmed] {
         let directory = tempfile::tempdir().unwrap();
@@ -1865,7 +2012,7 @@ async fn stale_maintenance_expiration_does_not_delete_renewed_sandbox() {
     assert_eq!(renewed.expires_at, renewed_until);
 
     daemon
-        .delete_conditionally(&stale_scan.id, true)
+        .maintain(&stale_scan.id, MaintenanceAction::Delete)
         .await
         .unwrap();
     let stored = daemon.list().await.unwrap();
@@ -1926,7 +2073,7 @@ async fn cancelled_accepted_renewal_survives_stale_cleanup_but_not_expiration() 
         drop(bounded(handoff).await);
         // An expiry job selected from an old scan must use the committed deadline,
         // even when the caller never received the accepted renewal's response.
-        bounded(daemon.delete_conditionally(&sandbox.id, true))
+        bounded(daemon.maintain(&sandbox.id, MaintenanceAction::Delete))
             .await
             .unwrap();
         assert_eq!(
@@ -1966,7 +2113,7 @@ async fn cancelled_accepted_renewal_survives_stale_cleanup_but_not_expiration() 
         runtime.state.lock().unwrap().delete_outcome = outcome;
         for _ in 0..2 {
             assert_eq!(
-                bounded(daemon.delete_conditionally(&sandbox.id, true))
+                bounded(daemon.maintain(&sandbox.id, MaintenanceAction::Delete))
                     .await
                     .unwrap_err()
                     .code,
@@ -1995,7 +2142,7 @@ async fn cancelled_accepted_renewal_survives_stale_cleanup_but_not_expiration() 
         }
         assert_eq!(runtime.state.lock().unwrap().creates, 1);
         runtime.state.lock().unwrap().delete_outcome = DeleteOutcome::Confirmed;
-        bounded(daemon.delete_conditionally(&sandbox.id, true))
+        bounded(daemon.maintain(&sandbox.id, MaintenanceAction::Delete))
             .await
             .unwrap();
         assert!(bounded(daemon.list()).await.unwrap().is_empty());
@@ -2279,6 +2426,7 @@ async fn uncertain_commits_fail_stop_and_restart_uses_the_disk_winner() {
         daemon.store.set_commit_hook(|_| Ok(()));
         let calls = runtime_calls(&runtime);
         let bytes = disk_inventory(&directory);
+        bounded(daemon.start_maintenance()).await.unwrap();
         let id = existing
             .as_ref()
             .map(|s| s.id.as_str())

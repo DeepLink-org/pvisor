@@ -358,7 +358,8 @@ authorize cache requests.
 The daemon prepares sandbox resources first, then waits up to ten seconds for the
 cache worker's post-bind readiness acknowledgement before serving sandbox requests.
 A cache startup failure aborts startup; an unexpected component exit fails the
-daemon. SIGINT/SIGTERM stops API admission, allows up to ten seconds for HTTP
+daemon. An unexpected sandbox maintenance exit also stops API admission and
+exits nonzero. SIGINT/SIGTERM stops API admission, allows up to ten seconds for HTTP
 requests to drain, then terminates/reaps the owned cache worker. Cache requests
 in flight may fail; clients must reconcile uncertain preparation results. The
 worker is an internal implementation component, not a public service command.
@@ -1095,9 +1096,10 @@ No security audit or hostile multi-user assurance is claimed.
   proof, and errors retain reservations.
 - HTTP disconnects do not cancel accepted lifecycle operations. Authenticated
   OpenSandbox and E2B control requests share 32 body-buffering slots per server
-  router, a 1 MiB per-body limit and a 30-second body-read deadline. Capacity
-  exhaustion returns 429 (`CONTROL_BODY_CAPACITY_EXCEEDED`); a slow body returns
-  408 (`CONTROL_BODY_TIMEOUT`). Slots are released after buffering, failure or
+  router, a 1 MiB per-body limit and a 30-second body-read deadline. Requests
+  whose body stream has already ended do not take a slot. Capacity exhaustion
+  returns 429 (`CONTROL_BODY_CAPACITY_EXCEEDED`); a slow body returns 408
+  (`CONTROL_BODY_TIMEOUT`). Slots are released after buffering, failure or
   cancellation; the deadline does not wrap accepted lifecycle handlers. These
   bounds do not replace ingress connection/rate limits or API-process budgets.
 - Different sandboxes have independent lifecycle locks. There is no global runtime
@@ -1135,10 +1137,13 @@ No security audit or hostile multi-user assurance is claimed.
   remain usable at proxy capacity. This is an HTTP stream count, not a hard
   node RSS/FD/disk limit or a per-tenant fairness guarantee; the pool and host
   service processes still require separately provisioned resources.
-- Maintenance scans once per second with at most eight concurrent cleanup sessions.
-  A rotating inventory cursor prevents repeatedly failing records at the start
-  of the inventory from starving later candidates. Runtime operations retain
-  their own cleanup/fallback timing; rotation is not a hard cleanup deadline.
+- Maintenance scans once per second with at most eight concurrent tasks. It
+  retries pending deletion, expires TTLs, and reconciles `Pending`, `Pausing`
+  and `Resuming` against live state without reissuing create, pause or resume.
+  Observations skip busy lifecycle gates; cleanup queues for exclusive access.
+  Both recheck state and expiration under the gate. A rotating cursor prevents
+  repeatedly failing records from starving later candidates. Native timeouts
+  and cleanup fallbacks still apply.
 - TTL cleanup is best effort, not a hard execution deadline: native commands,
   uploads/header waits and same-sandbox controls can delay it. New proxy requests
   are rejected after expiration. Native templates enforce the bounded output limits above; upstream templates retain their service-specific quotas.
@@ -1169,6 +1174,9 @@ released during blocking-pool disk I/O, exposing the last committed inventory.
 The in-memory target updates only after commit success. An uncertain rename/unlink
 or subsequent fsync error retains the existing fail-stop storage latch: do not
 continue from stale memory; preserve state, repair storage, restart and reconcile.
+The maintenance loop exits on the latched failure and `pvisor-daemon serve`
+reports a nonzero exit. Use external process supervision with restart backoff;
+restarts cannot repair unavailable storage or corrupted records.
 The aggregate budget counts one header/owner, sandbox keys and record contents as
 a v1-equivalent logical snapshot, not physical directory bytes, so a valid v1
 snapshot at the limit remains migratable.
@@ -1195,8 +1203,10 @@ and runtime state compatibility; their persisted representations remain unchange
 Keep the same state directory and compatible runtime configuration across restarts.
 Never delete state to fix an error: it carries native ownership and unresolved
 reservations. Missing sandboxes remain visible as Failed until explicitly deleted.
-Failed native creation with verified cleanup releases its reservation; uncertain
-creation retains its ID in the error message so callers can inspect/delete it.
+Failed native creation releases its reservation only after verifying absence and
+that no cleanup remains. A template rejected before any native state is created
+for an unused ID needs no cleanup. Uncertain creation retains its ID in the
+error message so callers can inspect/delete it.
 
 An occupied version-1 `sandboxes.json` without the native `owner.json` marker is rejected under the existing exclusive store lock: it may still own live Podman containers. Use fresh native state while preserving and cleaning up the old deployment, or delete every sandbox through the old Podman daemon and confirm cleanup before switching backends with the emptied registry. Never erase registry entries, reservations or ownership state, or fabricate a native marker to bypass this guard. The native daemon neither adopts those containers as Missing nor silently releases their reservations.
 
@@ -1221,8 +1231,9 @@ retains capacity and the next startup resumes deletion.
 Live Running/Paused creations are adopted as observations; unavailable control or
 uncertain cleanup retains its record and capacity. Completed/failed previously
 launched sandboxes keep their existing explicit-deletion contract.
-The maintenance loop retries pending/expired deletion. Continuous native process
-monitoring and event-driven reconciliation are not implemented.
+If inspection is temporarily unavailable, maintenance retries interrupted
+transitions even without a TTL or a new client request. It does not monitor
+steady-state native processes or restart lost sandboxes.
 
 ## Run
 
@@ -1379,8 +1390,10 @@ pidfd-confirmed peer exit is required before releasing mapped references.
 Default limits are 512 MiB of page storage, 32,768 objects, 32 connections and
 32,768 references per connection. At 4 KiB per object, the object ceiling bounds
 the default pool to 128 MiB of distinct pages and each VM to 128 MiB of references.
-Indexes, VM mappings, threads and allocator memory add overhead. Budget rejection
-keeps the original page resident. An older compressed pool is not reused by the
+Indexes, VM mappings, threads and allocator memory add overhead. Temporary
+descriptor or thread exhaustion can delay or reject new pool connections without
+closing existing sessions or replacing the backing file. Budget rejection keeps
+the original page resident. An older compressed pool is not reused by the
 physical-sharing client; drain old VMs and use fresh pool state when upgrading.
 
 Compressed-mode byte accounting includes frame headers and 4 KiB file-page
@@ -1549,6 +1562,13 @@ extension. A directly modeled expired deadline then fences renewal; failed and
 unconfirmed cleanup retries retain Stopping and capacity until confirmed deletion.
 It uses the existing disk barrier and fake runtime, with no wall-clock waits.
 
+The maintenance recovery regressions model interrupted creation without a TTL
+and temporary supervisor unavailability on restart. Only confirmed cleanup
+releases capacity; an already-running sandbox retains its identity. Lost
+pause/resume acknowledgements converge by observation without replaying the
+operation. Commit failpoints before and after publication also verify that
+maintenance exits without changing the surviving disk state.
+
 Run targeted checks with:
 
 ```sh
@@ -1605,6 +1625,35 @@ Keep `OPEN_SANDBOX_API_KEY` in the environment. These tests establish only the
 listed native core profile; isolated-session/bwrap, notebook languages, arbitrary
 applications, network-policy enforcement, hostile-user isolation and production
 density require their own validation.
+
+### API process fault injection (Linux x86-64)
+
+[`tests/recovery_chaos.rs`](tests/recovery_chaos.rs) starts the built daemon with
+a fresh private registry and drives authenticated HTTP over loopback:
+
+| Fault | Required recovery |
+| --- | --- |
+| Revoke write permission on the live records directory | Create returns `503/STORAGE_UNAVAILABLE`; the daemon exits nonzero without changing registry bytes. With write permission restored, repeated creates with a missing template do not consume the only slot. |
+| Fill all 32 control-body slots, then `SIGKILL` the API | An extra create gets `429/CONTROL_BODY_CAPACITY_EXCEEDED` while an authenticated read still succeeds. After restart, create reaches the runtime again and no incomplete request left a sandbox or reservation. |
+| Truncate the header while the daemon is stopped | Startup fails without publishing HTTP or replacing any registry bytes. Restoring the original header makes the same registry usable again. |
+
+Run as an unprivileged user with `/dev/kvm` access. A recent systemd user
+manager with `DelegateSubgroup` can provide a fresh cgroup without `sudo`:
+
+```sh
+systemd-run --user --quiet --wait --pipe --collect --working-directory="$PWD" \
+  -p 'Delegate=cpu memory pids' -p DelegateSubgroup=runner sh -eu -c '
+    group=$(dirname "/sys/fs/cgroup$(cut -d: -f3 /proc/self/cgroup)")
+    printf "+cpu +memory +pids\n" > "$group/cgroup.subtree_control"
+    export PVISOR_DAEMON_CHAOS_CGROUP="$group"
+    exec "$1" run test -- pvisor-daemon -- --test recovery_chaos --run-ignored only
+  ' sh "$(command -v mise)"
+```
+
+With an already delegated test cgroup, set `PVISOR_DAEMON_CHAOS_CGROUP` and run
+the `mise` command directly. KVM is needed for native preflight; the test
+does not boot a guest, so it needs no firmware, image, or SDK. These faults
+do not test survival of a running VM or durability after host power loss.
 
 ## Implementation ownership
 

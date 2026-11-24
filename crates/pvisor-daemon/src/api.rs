@@ -177,7 +177,7 @@ pub enum RuntimeState {
 /// Downcastable create failure. Unknown cleanup must retain admission/intent.
 #[derive(Debug)]
 pub struct CreateError {
-    /// False only after verified cleanup; true retains admission and durable intent.
+    /// False only with verified absence and no cleanup pending; true retains admission.
     pub requires_reconciliation: bool,
     /// Diagnostic detail; must not contain credentials. Unknown error types also retain capacity.
     pub message: String,
@@ -323,8 +323,8 @@ pub trait Runtime: Send + Sync {
     /// Check actual host capabilities before admission. Failure prevents service open.
     async fn preflight(&self) -> Result<()>;
     /// Launch once after durable admission; success confirms readiness and enforcement.
-    /// Return CreateError with confirmed cleanup to release capacity; all other
-    /// failures retain ownership/reservation until deletion is confirmed.
+    /// Return CreateError with confirmed absence and no pending cleanup to release
+    /// capacity; all other failures retain ownership/reservation until deletion is confirmed.
     async fn create(&self, spec: &RuntimeSpec) -> Result<()>;
     /// Authenticate the current instance and observe live state, never cached liveness.
     async fn inspect(&self, id: &str) -> Result<RuntimeState>;
@@ -372,9 +372,11 @@ pub trait DaemonService: Sized {
     /// locks and proxy budget. The router retains the owner and its state lock.
     /// Serve behind TLS on untrusted networks; unsupported features fail explicitly.
     fn router(self: Arc<Self>) -> axum::Router;
-    /// Spawn one bounded TTL/deletion retry loop per owner. Start once after open;
-    /// abort and await its handle at shutdown. Dropping a handle does not stop it.
-    /// Idle work holds a weak owner; in-flight work can retain the state lock.
+    /// Spawn bounded retry of pending/expired deletion and interrupted transitions.
+    /// Start once after open. The task exits when the owner is dropped or storage
+    /// fails closed; supervise the handle while serving. Abort and await it at
+    /// shutdown; dropping it does not stop the task. Idle work holds a weak owner;
+    /// accepted work can retain the state lock even after the loop is stopped.
     fn start_maintenance(self: &Arc<Self>) -> tokio::task::JoinHandle<()>;
 }
 
