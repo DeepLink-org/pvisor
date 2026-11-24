@@ -56,6 +56,10 @@ Docker credential helpers and the Docker Engine API are unsupported.
 Unix containers and task Sessions use schema 4 records with separate stores
 and command capabilities. Container review/apply/drop select staged binds.
 
+If container removal reports pending cleanup, run `pvisor rm --retired FULL_ID`
+with the full ID from the error. The command refuses active container records.
+An already-absent full ID succeeds, so the command can be repeated.
+
 ### Run host-installed tools with `@root` {#run-host-tools}
 
 On Linux x86_64 with KVM, put `@root` where an image name normally goes. It is

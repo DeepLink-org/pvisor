@@ -2,6 +2,7 @@
 use super::*;
 use crate::environment_snapshot::{TreeInventory, copy_live_tree};
 use crate::image::cache::RetainedImage;
+use pvisor_journal::api::{DurableFiles, Persistence};
 use pvisor_vm::api::{
     MachineRestore, MachineSnapshot, RamRestoreExtent, SnapshotCapture, SnapshotControl,
     SnapshotState, VmmHandle,
@@ -346,47 +347,120 @@ fn register_image(dir: &Path, image: &ForkLower) -> anyhow::Result<()> {
     Ok(())
 }
 
-// A retained lazy projection can be opened by multiple VMM processes. Session
-// removal holds the catalog lock and releases the projection after the last
-// member has released its on-disk reference.
-pub(super) fn unreferenced_images(store: &Store, removed: &Path) -> anyhow::Result<Vec<PathBuf>> {
-    fn read_refs(dir: &Path) -> anyhow::Result<Vec<RetainedImage>> {
-        let refs = dir.join("fork-images");
-        if !refs.try_exists()? {
-            return Ok(Vec::new());
-        }
-        let mut result = Vec::new();
-        for entry in fs::read_dir(refs)? {
-            result.push(serde_json::from_reader(File::open(entry?.path())?)?);
-        }
-        Ok(result)
+#[derive(Serialize, Deserialize)]
+pub(super) struct ProjectionRemoval {
+    owner: PathBuf,
+    device: u64,
+    inode: u64,
+}
+
+fn read_image_refs(dir: &Path) -> anyhow::Result<Vec<RetainedImage>> {
+    let refs = dir.join("fork-images");
+    if !refs.try_exists()? {
+        return Ok(Vec::new());
     }
-    let mut candidates = read_refs(removed)?;
-    if candidates.is_empty() {
-        return Ok(vec![]);
+    fs::read_dir(refs)?
+        .map(|entry| Ok(serde_json::from_reader(File::open(entry?.path())?)?))
+        .collect()
+}
+
+fn referenced_image_roots(
+    store: &Store,
+    exclude: Option<&Path>,
+) -> anyhow::Result<std::collections::BTreeSet<PathBuf>> {
+    let mut roots = std::collections::BTreeSet::new();
+    for entry in fs::read_dir(store.root.join("instances"))? {
+        let directory = entry?.path();
+        if exclude != Some(directory.as_path()) {
+            for image in read_image_refs(&directory)? {
+                roots.insert(image.root().to_path_buf());
+            }
+        }
     }
-    for dir in fs::read_dir(store.root.join("instances"))? {
-        let dir = dir?.path();
-        if dir == removed {
+    Ok(roots)
+}
+
+fn projection_owner_pool<'a>(store: &Store, owner: &'a Path) -> anyhow::Result<&'a Path> {
+    let pool = owner.parent().context("missing projection pool")?;
+    ensure!(
+        pool == store.images.projections() || pool == store.root.join("images/projections"),
+        "projection outside container image store"
+    );
+    ensure!(
+        crate::image::cache::direct_image_owner(&owner.join("lower")) == Some(owner),
+        "invalid retained projection"
+    );
+    Ok(pool)
+}
+
+// Record the verified owner identity while holding the catalog lock. Retry may
+// no longer find the descriptor if an earlier removal deleted it.
+pub(super) fn unreferenced_projection_removals(
+    store: &Store,
+    directory: &Path,
+) -> anyhow::Result<Vec<ProjectionRemoval>> {
+    let candidates = read_image_refs(directory)?;
+    let mut owners = std::collections::BTreeSet::new();
+    if !candidates.is_empty() {
+        let referenced = referenced_image_roots(store, Some(directory))?;
+        for image in candidates {
+            if referenced.contains(image.root()) {
+                continue;
+            }
+            image.verify()?;
+            let owner = crate::image::cache::direct_image_owner(image.root())
+                .context("invalid retained projection")?;
+            projection_owner_pool(store, owner)?;
+            owners.insert(owner.to_path_buf());
+        }
+    }
+
+    owners
+        .into_iter()
+        .map(|owner| {
+            let metadata = owner.symlink_metadata()?;
+            Ok(ProjectionRemoval {
+                owner,
+                device: metadata.dev(),
+                inode: metadata.ino(),
+            })
+        })
+        .collect()
+}
+
+pub(super) fn reap_projections(store: &Store, plan: Vec<ProjectionRemoval>) -> anyhow::Result<()> {
+    if plan.is_empty() {
+        return Ok(());
+    }
+    let referenced = referenced_image_roots(store, None)?;
+    for entry in plan {
+        let pool = projection_owner_pool(store, &entry.owner)?;
+        if referenced.contains(&entry.owner.join("lower")) {
             continue;
         }
-        for image in read_refs(&dir)? {
-            candidates.retain(|c| c.root() != image.root());
-        }
-    }
-    let mut owners = std::collections::BTreeSet::new();
-    for candidate in candidates {
-        candidate.verify()?;
-        let owner = crate::image::cache::direct_image_owner(candidate.root())
-            .context("invalid retained projection")?;
-        let pool = owner.parent().context("missing projection pool")?;
+        let metadata = match entry.owner.symlink_metadata() {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                if pool.try_exists()? {
+                    Persistence::sync_directory(pool)?;
+                }
+                continue;
+            }
+            Err(error) => return Err(error.into()),
+        };
         ensure!(
-            pool == store.images.projections() || pool == store.root.join("images/projections"),
-            "projection outside container image store"
+            metadata.is_dir()
+                && metadata.uid() == unsafe { libc::geteuid() }
+                && metadata.mode() & 0o077 == 0
+                && (metadata.dev(), metadata.ino()) == (entry.device, entry.inode)
+                && entry.owner.canonicalize()? == entry.owner,
+            "retained projection owner changed during removal"
         );
-        owners.insert(owner.to_path_buf());
+        fs::remove_dir_all(&entry.owner)
+            .with_context(|| format!("remove projection {}", entry.owner.display()))?;
+        Persistence::sync_directory(pool)?;
     }
-    Ok(owners.into_iter().collect())
+    Ok(())
 }
 
 struct NewDirectory(Option<PathBuf>);
@@ -697,6 +771,52 @@ use std::os::unix::fs::DirBuilderExt;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn projection_removal_survives_reopen_and_rejects_a_replaced_owner() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("catalog");
+        let store = Store::open(root.clone()).unwrap();
+        let pool = store.images.projections();
+        let owner = pool.join(".pvisor-direct-image-fixture");
+        private_directory(&owner).unwrap();
+        let metadata = owner.symlink_metadata().unwrap();
+        let id = "a".repeat(64);
+        let retired = store.retired_directory(&id);
+        private_directory(&retired).unwrap();
+        let plan = RetiredImages {
+            collect_cold_imports: false,
+            projections: vec![ProjectionRemoval {
+                owner: owner.clone(),
+                device: metadata.dev(),
+                inode: metadata.ino(),
+            }],
+        };
+        fs::write(
+            retired.join(RETIRED_IMAGES),
+            serde_json::to_vec(&plan).unwrap(),
+        )
+        .unwrap();
+        drop(store);
+
+        let original = pool.join("original");
+        fs::rename(&owner, &original).unwrap();
+        private_directory(&owner).unwrap();
+        fs::write(owner.join("keep"), b"replacement").unwrap();
+        let store = Store::open(root).unwrap();
+        let error = store.remove_retired(&id).unwrap_err();
+        assert!(format!("{error:#}").contains("retained projection owner changed"));
+        assert!(retired.is_dir());
+        assert_eq!(fs::read(owner.join("keep")).unwrap(), b"replacement");
+
+        let replacement = pool.join("replacement");
+        fs::rename(&owner, &replacement).unwrap();
+        fs::rename(&original, &owner).unwrap();
+        store.remove_retired(&id).unwrap();
+        store.remove_retired(&id).unwrap();
+        assert!(!retired.exists() && !owner.exists());
+        assert_eq!(fs::read(replacement.join("keep")).unwrap(), b"replacement");
+    }
 
     #[test]
     fn pressure_children_require_disjoint_cgroups_in_either_order() {

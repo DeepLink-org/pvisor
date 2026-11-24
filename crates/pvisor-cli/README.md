@@ -683,6 +683,11 @@ unsupported. An empty managed volume must first be initialized through a
 writable mount before it can be mounted read-only. Read-only shares reject
 mutation requests in the host adapter as well as in the guest mount. `stop`/`start` retains the instance upper and volumes; `rm` drops
 the upper, `rm -v` also drops anonymous volumes, and named volumes survive.
+A retry of `rm -v` skips anonymous volumes already removed.
+If container cleanup reports a retry command, use `rm --retired FULL_ID`
+to finish deletion. This also resumes pending cleanup of retained image
+projections and cold imports. The command addresses retired data by exact
+ID and refuses active instance directories. An already-absent full ID succeeds.
 `volume rm` refuses references from running **or stopped** containers, validates
 Compose-owned directory identity and reconciles its ownership record after deletion.
 It never removes host binds; there is no force bypass, volume prune or nonlocal driver.

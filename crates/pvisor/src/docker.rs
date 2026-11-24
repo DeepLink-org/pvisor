@@ -466,8 +466,8 @@ impl Output {
     /// Drain output until this exact generation has completed, then return its
     /// exit code. Polling never interprets a previous generation as completion.
     /// Automatic removal must finish before returning, so its name can be reused.
-    /// A committed result survives owner exit; incomplete removal fails after
-    /// thirty seconds while retaining the record for inspection.
+    /// A committed result survives owner exit; incomplete removal reports the
+    /// container ID after thirty seconds.
     pub fn follow(
         mut self,
         generation: &str,
@@ -511,13 +511,25 @@ impl Output {
             Self::drain(&mut self.stdout, limit.stdout, stdout)?;
             Self::drain(&mut self.stderr, limit.stderr, stderr)?;
             if let Some((code, observed, _)) = completed {
-                if !self.auto_remove || !self.directory.try_exists()? {
+                let catalogued = self.auto_remove && self.directory.try_exists()?;
+                let retired = self.auto_remove
+                    && !catalogued
+                    && self.store.retired_directory(&self.id).try_exists()?;
+                if !catalogued && !retired {
                     return Ok(code);
                 }
-                ensure!(
-                    observed.elapsed() < Duration::from_secs(30),
-                    "container completed but automatic removal did not finish; inspect the retained record"
-                );
+                if observed.elapsed() >= Duration::from_secs(30) {
+                    if retired {
+                        bail!(
+                            "automatic removal incomplete; retry pvisor rm --retired {}",
+                            self.id
+                        );
+                    }
+                    bail!(
+                        "automatic removal incomplete; inspect container {}",
+                        self.id
+                    );
+                }
             } else if !active {
                 return Ok(137);
             }
@@ -583,6 +595,21 @@ fn valid_name(name: &str) -> bool {
         && name
             .bytes()
             .all(|c| c.is_ascii_alphanumeric() || b"_.-".contains(&c))
+}
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+const RETIRED_IMAGES: &str = "image-removal.json";
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RetiredImages {
+    collect_cold_imports: bool,
+    projections: Vec<live_fork::ProjectionRemoval>,
+}
+
+fn valid_container_id(id: &str) -> bool {
+    id.len() == 64 && id.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
 fn uuid() -> String {
@@ -697,6 +724,14 @@ impl Store {
     fn directory(&self, id: &str) -> PathBuf {
         self.root.join("instances").join(id)
     }
+    fn retired_root(&self) -> PathBuf {
+        self.root.join("instances/.retired")
+    }
+
+    fn retired_directory(&self, id: &str) -> PathBuf {
+        self.retired_root().join(id)
+    }
+
     fn save<Backing: Serialize + Clone>(&self, instance: &Instance<Backing>) -> anyhow::Result<()> {
         self.save_session(instance)
     }
@@ -725,9 +760,7 @@ impl Store {
                     continue;
                 };
                 ensure!(
-                    instance.schema == 1
-                        && instance.id.len() == 64
-                        && instance.id.bytes().all(|c| c.is_ascii_hexdigit()),
+                    instance.schema == 1 && valid_container_id(&instance.id),
                     "unknown container record"
                 );
                 if (matches!(instance.state.as_str(), "running" | "restarting")
@@ -1522,6 +1555,7 @@ impl Store {
             timeout,
             requested_signal,
         )
+        .map(|_| ())
     }
 
     fn stop_selected(
@@ -1529,7 +1563,7 @@ impl Store {
         select: impl FnOnce() -> anyhow::Result<Option<Instance>>,
         timeout: Duration,
         requested_signal: Option<&str>,
-    ) -> anyhow::Result<()> {
+    ) -> anyhow::Result<Option<Instance>> {
         let parsed_signal = requested_signal
             .map(GuestSignal::parse_signal)
             .transpose()?;
@@ -1545,7 +1579,7 @@ impl Store {
         let instance = {
             let _guard = self.lock()?;
             let Some(instance) = select()? else {
-                return Ok(());
+                return Ok(None);
             };
             if self.active(&instance)? {
                 // Commit suppression under the same catalog lock as restart
@@ -1558,7 +1592,7 @@ impl Store {
             instance
         };
         if !self.active(&instance)? {
-            return Ok(());
+            return Ok(Some(instance));
         }
         let request = Request::Stop {
             signal: parsed_signal
@@ -1576,7 +1610,7 @@ impl Store {
             // Auto-removal uses the same lock; never publish into a removed instance.
             let _guard = self.lock()?;
             if !self.generation_active(&instance)? {
-                return Ok(());
+                return Ok(Some(instance));
             }
             crate::util::write_private_json(
                 &self.directory(&instance.id).join("force-stop.json"),
@@ -1591,7 +1625,7 @@ impl Store {
             );
             std::thread::sleep(Duration::from_millis(20));
         }
-        Ok(())
+        Ok(Some(instance))
     }
     /// Deliver a Linux signal to the selected main execution without a grace
     /// timer or later escalation. SIGKILL uses confirmed forced teardown and
@@ -1623,6 +1657,44 @@ impl Store {
         self.remove_selected(&instance, volumes)
     }
 
+    /// Stop and remove a container admitted through one selector lookup.
+    /// A completed auto-removal satisfies removal of that same container.
+    pub fn force_remove(&self, selector: &str, volumes: bool) -> anyhow::Result<()> {
+        let admitted = self
+            .stop_selected(
+                || self.resolve(selector).map(Some),
+                Duration::ZERO,
+                Some("SIGKILL"),
+            )?
+            .context("forced removal did not admit a container")?;
+        self.remove_after_stop(&admitted, volumes)
+    }
+
+    fn remove_after_stop(&self, admitted: &Instance, volumes: bool) -> anyhow::Result<()> {
+        let _guard = self.lock()?;
+        let Some(current) = self.find_id(&admitted.id)? else {
+            return match self.directory(&admitted.id).symlink_metadata() {
+                Ok(_) => bail!("container directory remains without a catalog record"),
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                    match self.retired_directory(&admitted.id).symlink_metadata() {
+                        Ok(_) => bail!(
+                            "container cleanup incomplete; retry pvisor rm --retired {}",
+                            admitted.id
+                        ),
+                        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+                        Err(error) => Err(error.into()),
+                    }
+                }
+                Err(error) => Err(error.into()),
+            };
+        };
+        ensure!(
+            current.generation == admitted.generation,
+            "container execution changed during forced removal"
+        );
+        self.remove_selected(&current, volumes)
+    }
+
     fn find_id(&self, id: &str) -> anyhow::Result<Option<Instance>> {
         Ok(self.all()?.into_iter().find(|instance| instance.id == id))
     }
@@ -1634,6 +1706,7 @@ impl Store {
         signal: Option<&str>,
     ) -> anyhow::Result<()> {
         self.stop_selected(|| self.find_id(id), timeout, signal)
+            .map(|_| ())
     }
 
     fn stop_and_remove_recorded(
@@ -1670,6 +1743,36 @@ impl Store {
         let _stages = staging::lock_previous(self, instance, true)?;
         self.remove_instance_files(instance, volumes)
     }
+    /// Finish an authorized directory deletion by full container ID.
+    /// Repeating a completed retirement is harmless. Active records are refused.
+    pub fn remove_retired(&self, id: &str) -> anyhow::Result<()> {
+        ensure!(
+            valid_container_id(id),
+            "retired cleanup requires a full container ID"
+        );
+        let _guard = self.lock()?;
+        match self.directory(id).symlink_metadata() {
+            Ok(_) => bail!("container still has an active directory"),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+        let retired_root = self.retired_root();
+        match retired_root.symlink_metadata() {
+            Ok(_) => private_directory(&retired_root)?,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(error.into()),
+        }
+        let retired = retired_root.join(id);
+        match retired.symlink_metadata() {
+            Ok(metadata) => {
+                ensure!(metadata.is_dir(), "invalid retired container directory");
+                self.reap_retired(&retired, id)
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error.into()),
+        }
+    }
+
     // Caller holds the catalog lock and has fenced the workload. A completing
     // owner retains its own lease; public removal independently refuses owners.
     fn remove_instance_files(&self, instance: &Instance, volumes: bool) -> anyhow::Result<()> {
@@ -1684,22 +1787,108 @@ impl Store {
                             && other.config.mounts.iter().any(|m| m.source == mount.source)
                     })
                 {
-                    fs::remove_dir_all(self.root.join("volumes").join(name))?;
+                    let path = self.root.join("volumes").join(name);
+                    if let Err(error) = fs::remove_dir_all(&path) {
+                        let already_absent = error.kind() == io::ErrorKind::NotFound
+                            && matches!(path.symlink_metadata(), Err(check) if check.kind() == io::ErrorKind::NotFound);
+                        if !already_absent {
+                            return Err(error.into());
+                        }
+                    }
                 }
             }
         }
+        let directory = self.directory(&instance.id);
         #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-        let projections = live_fork::unreferenced_images(self, &self.directory(&instance.id))?;
-        fs::remove_dir_all(self.directory(&instance.id))?;
-        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-        if instance.image.cache.handle.starts_with(early_image::PREFIX) {
+        self.prepare_retired_images(instance, &directory)?;
+        let retired_root = self.retired_root();
+        private_directory(&retired_root)?;
+        let retired = retired_root.join(&instance.id);
+        match retired.symlink_metadata() {
+            Ok(_) => bail!("retired container directory already exists"),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+        fs::rename(directory, &retired)?;
+        self.reap_retired(&retired, &instance.id)
+    }
+
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    fn prepare_retired_images(&self, instance: &Instance, directory: &Path) -> anyhow::Result<()> {
+        use pvisor_journal::api::{DurableFiles, Persistence};
+
+        let plan = RetiredImages {
+            collect_cold_imports: instance.image.cache.handle.starts_with(early_image::PREFIX),
+            projections: live_fork::unreferenced_projection_removals(self, directory)?,
+        };
+        Persistence::atomic_write(
+            &directory.join(RETIRED_IMAGES),
+            &serde_json::to_vec(&plan)?,
+            0o600,
+        )
+    }
+
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    fn reap_retired_images(&self, directory: &Path) -> anyhow::Result<bool> {
+        use pvisor_journal::api::{DurableFiles, Persistence};
+
+        let file = match OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+            .open(directory.join(RETIRED_IMAGES))
+        {
+            Ok(file) => file,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                ensure!(
+                    fs::read_dir(directory)?.next().transpose()?.is_none(),
+                    "missing image removal plan in {}",
+                    directory.display()
+                );
+                return Ok(false);
+            }
+            Err(error) => return Err(error.into()),
+        };
+        ensure!(file.metadata()?.is_file(), "invalid image removal plan");
+        let plan: RetiredImages =
+            serde_json::from_reader(file).context("invalid image removal plan")?;
+        // Publish the retirement before reclaiming anything outside its directory.
+        Persistence::sync_directory(&self.retired_root())?;
+        Persistence::sync_directory(&self.root.join("instances"))?;
+        if plan.collect_cold_imports {
             early_image::collect(self)?;
         }
+        live_fork::reap_projections(self, plan.projections)?;
+        Ok(true)
+    }
+
+    fn reap_retired(&self, directory: &Path, id: &str) -> anyhow::Result<()> {
+        let retry = || format!("container cleanup incomplete; retry pvisor rm --retired {id}");
         #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-        for directory in projections {
-            fs::remove_dir_all(directory)?;
+        {
+            (|| -> anyhow::Result<()> {
+                if self.reap_retired_images(directory)? {
+                    // Keep the plan through a partial directory deletion. Once the
+                    // plan is gone, only an empty retirement directory can remain.
+                    let entries = fs::read_dir(directory)?.collect::<io::Result<Vec<_>>>()?;
+                    for entry in entries {
+                        if entry.file_name() == RETIRED_IMAGES {
+                            continue;
+                        }
+                        if entry.file_type()?.is_dir() {
+                            fs::remove_dir_all(entry.path())?;
+                        } else {
+                            fs::remove_file(entry.path())?;
+                        }
+                    }
+                    fs::remove_file(directory.join(RETIRED_IMAGES))?;
+                }
+                fs::remove_dir(directory)?;
+                Ok(())
+            })()
+            .with_context(retry)
         }
-        Ok(())
+        #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+        fs::remove_dir_all(directory).with_context(retry)
     }
     /// Reports whether this exact execution has committed its completion.
     pub fn has_completed(&self, instance: &Instance) -> anyhow::Result<bool> {
@@ -4497,10 +4686,29 @@ mod tests {
             let code = output.follow(&generation, &mut stdout, &mut stderr);
             send.send((code, stdout, stderr)).unwrap();
         });
-        let early = receive.recv_timeout(Duration::from_millis(100));
+        let early = match receive.recv_timeout(Duration::from_millis(100)) {
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                private_directory(&store.retired_root()).unwrap();
+                #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+                store
+                    .prepare_retired_images(&instance, &store.directory(&instance.id))
+                    .unwrap();
+                fs::rename(
+                    store.directory(&instance.id),
+                    store.retired_directory(&instance.id),
+                )
+                .unwrap();
+                receive.recv_timeout(Duration::from_millis(100))
+            }
+            other => other,
+        };
         let returned_early = early.is_ok();
         // Always release/join the reader before asserting, even on regression.
-        store.remove(&instance.id, false).unwrap();
+        if store.directory(&instance.id).is_dir() {
+            store.remove(&instance.id, false).unwrap();
+        } else {
+            store.remove_retired(&instance.id).unwrap();
+        }
         let result = match early {
             Ok(result) => result,
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
@@ -4553,6 +4761,131 @@ mod tests {
         assert_eq!(fs::read(named.join("value")).unwrap(), b"retained");
         drop(owner);
     }
+    #[test]
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    fn docker_removal_keeps_the_plan_until_the_retired_directory_is_empty() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let (temporary, store, _) = fixture();
+        let instance = store.create(request()).unwrap();
+        let directory = store.directory(&instance.id);
+        assert!(store.remove_retired(&instance.id).is_err());
+        store.prepare_retired_images(&instance, &directory).unwrap();
+        let plan = fs::read(directory.join(RETIRED_IMAGES)).unwrap();
+        let retired = store.retired_directory(&instance.id);
+        private_directory(&store.retired_root()).unwrap();
+        fs::rename(directory, &retired).unwrap();
+        let store = Store::open(temporary.path().join("docker")).unwrap();
+        assert!(store.all().unwrap().is_empty());
+
+        let plan_path = retired.join(RETIRED_IMAGES);
+        fs::remove_file(&plan_path).unwrap();
+        let error = store.remove_retired(&instance.id).unwrap_err();
+        assert!(format!("{error:#}").contains("missing image removal plan"));
+        assert!(retired.is_dir());
+        fs::write(&plan_path, b"{").unwrap();
+        let error = store.remove_retired(&instance.id).unwrap_err();
+        assert!(format!("{error:#}").contains("invalid image removal plan"));
+
+        fs::write(&plan_path, &plan).unwrap();
+        if unsafe { libc::geteuid() } != 0 {
+            let blocked = retired.join("blocked");
+            fs::create_dir(&blocked).unwrap();
+            fs::write(blocked.join("file"), b"value").unwrap();
+            fs::set_permissions(&blocked, fs::Permissions::from_mode(0o500)).unwrap();
+            let result = store.remove_retired(&instance.id);
+            fs::set_permissions(&blocked, fs::Permissions::from_mode(0o700)).unwrap();
+            assert!(result.is_err());
+            assert_eq!(fs::read(&plan_path).unwrap(), plan);
+        }
+        store.remove_retired(&instance.id).unwrap();
+        assert!(!retired.exists());
+        fs::create_dir(&retired).unwrap();
+        store.remove_retired(&instance.id).unwrap();
+        store.remove_retired(&instance.id).unwrap();
+    }
+
+    #[test]
+    fn docker_removal_retries_after_one_anonymous_volume_is_gone() {
+        let (_temporary, store, _) = fixture();
+        let first = store.volume("anonymous-first").unwrap();
+        let second = store.volume("anonymous-second").unwrap();
+        fs::write(second.join("data"), b"remove on retry").unwrap();
+        let mut config = request();
+        config.mounts = vec![
+            Mount {
+                source: first.clone(),
+                target: "/first".into(),
+                read_only: false,
+                volume: Some("anonymous:anonymous-first".into()),
+                staged: false,
+            },
+            Mount {
+                source: second.clone(),
+                target: "/second".into(),
+                read_only: false,
+                volume: Some("anonymous:anonymous-second".into()),
+                staged: false,
+            },
+        ];
+        let instance = store.create(config).unwrap();
+        fs::remove_dir_all(first).unwrap();
+
+        store.remove(&instance.id, true).unwrap();
+
+        assert!(!second.exists());
+        assert!(!store.directory(&instance.id).exists());
+    }
+
+    #[test]
+    fn docker_force_remove_does_not_follow_a_reused_name_or_execution() {
+        let (_temporary, store, _) = fixture();
+        let mut config = request();
+        config.name = Some("reused".into());
+        let original = store.create(config.clone()).unwrap();
+        let admitted = store
+            .stop_selected(
+                || store.resolve("reused").map(Some),
+                Duration::ZERO,
+                Some("SIGKILL"),
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(admitted.id, original.id);
+        store.remove(&original.id, false).unwrap();
+        let mut replacement = store.create(config).unwrap();
+
+        store.remove_after_stop(&admitted, false).unwrap();
+        assert_eq!(store.resolve("reused").unwrap().id, replacement.id);
+
+        let before_restart = replacement.clone();
+        replacement.generation = uuid();
+        replacement.owner_epoch = replacement.generation.clone();
+        finish_instance(&store, &mut replacement, 0, None).unwrap();
+        let error = store.remove_after_stop(&before_restart, false).unwrap_err();
+        assert!(error.to_string().contains("execution changed"));
+        let directory = store.directory(&replacement.id);
+        fs::remove_file(directory.join(crate::runtime::session_execution::STATE)).unwrap();
+        let error = store.remove_after_stop(&replacement, false).unwrap_err();
+        assert!(error.to_string().contains("directory remains"));
+        assert!(directory.is_dir());
+    }
+
+    #[test]
+    fn docker_force_remove_accepts_expired_unowned_start() {
+        let (_temporary, store, _) = fixture();
+        let mut instance = store.create(request()).unwrap();
+        instance.generation = uuid();
+        instance.owner_epoch = instance.generation.clone();
+        instance.started_ms = crate::unix_now_ms().saturating_sub(31_000);
+        instance.state = "starting".into();
+        store.save(&instance).unwrap();
+
+        store.force_remove(&instance.id, false).unwrap();
+
+        assert!(!store.directory(&instance.id).exists());
+    }
+
     #[test]
     fn docker_removal_keeps_anonymous_volume_until_its_last_container() {
         let (_temporary, store, _) = fixture();
