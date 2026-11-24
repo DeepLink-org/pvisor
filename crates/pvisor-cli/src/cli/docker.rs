@@ -146,6 +146,8 @@ pub(super) enum ImageCommand {
     Ls(ListImages),
     #[command(alias = "remove")]
     Rm(RemoveImages),
+    /// Reclaim temporary work left by interrupted local image imports.
+    PruneStaging,
     Inspect(Inspect),
 }
 
@@ -177,9 +179,9 @@ impl DockerCommand {
                 ImageCommand::Push(args) => Self::Push(args),
                 ImageCommand::Ls(args) => Self::Images(args),
                 ImageCommand::Rm(args) => Self::Rmi(args),
-                ImageCommand::Inspect(args) => Self::Image {
-                    command: ImageCommand::Inspect(args),
-                },
+                command @ (ImageCommand::Inspect(_) | ImageCommand::PruneStaging) => {
+                    Self::Image { command }
+                }
             },
             command => command,
         }
@@ -646,6 +648,14 @@ pub(super) fn run(command: DockerCommand) -> anyhow::Result<i32> {
             }
             _ => {}
         }
+    }
+    if let DockerCommand::Image {
+        command: ImageCommand::PruneStaging,
+    } = command
+    {
+        let removed = Store::discover()?.prune_image_staging()?;
+        println!("Removed {removed} interrupted image import directories.");
+        return Ok(0);
     }
     if matches!(
         command,

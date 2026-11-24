@@ -759,6 +759,12 @@ impl Store {
                 || lease_active(&self.directory(&instance.id).join("vm.lock"))?,
         )
     }
+    /// Reclaim interrupted local image imports created with staging leases.
+    /// Active imports, legacy staging and published images are preserved.
+    pub fn prune_image_staging(&self) -> anyhow::Result<usize> {
+        self.images.prune_staging()
+    }
+
     /// List catalog images without contacting a registry.
     pub fn images(&self) -> anyhow::Result<Vec<Image>> {
         let _guard = self.lock()?;

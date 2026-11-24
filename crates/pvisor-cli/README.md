@@ -1698,6 +1698,11 @@ reapplying the image. A new owner generation fences old attachments. Unknown
 or unconfirmed preparation cannot restart. `rmi -f` untags in-use images without
 deleting container data; blob garbage collection is not yet provided.
 
+Use `pvisor image prune-staging` to reclaim temporary downloads and extracted
+files left by interrupted local image imports. The command checks each import
+lease and leaves active imports, published images and legacy staging directories
+in place.
+
 Unix unit-test builds also compile and test the actual Windows argument parser.
 This checks command/option spelling and literal values, not native pipe I/O or
 WHP execution; those still require the Windows acceptance driver.
