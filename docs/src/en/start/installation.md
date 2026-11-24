@@ -33,7 +33,7 @@ python -m pip install pvisor-sandbox
 
 The installed command is `pvisor`; the Python distribution is `pvisor-sandbox`. In a new terminal, run `source ~/.venvs/pvisor/bin/activate` before using the CLI. If `venv` is unavailable, install your operating system's Python venv support first.
 
-You can also install into an existing project virtual environment. For installation without Python, use [Homebrew or native packages](#native-downloads) below.
+You can also install into an existing project virtual environment. For installation without Python, use the [shell installer](#shell-installer), [Homebrew or native packages](#native-downloads) below.
 
 <a id="2-check-platform-prerequisites"></a>
 
@@ -166,6 +166,47 @@ python -m pip uninstall pvisor-sandbox
 
 Uninstalling leaves Session state and user caches in place.
 
+### Install with `sh` {#shell-installer}
+
+On Linux x86_64 or Apple Silicon macOS, use `sh`, `curl`, `tar` and either
+`sha256sum` or `shasum`. Both commands run the installer from the project
+repository. It downloads the native archive for the chosen channel from
+GitHub Releases and checks its SHA-256 before installing. It does not need
+Python, Cargo or `sudo`. To review the script first, download it without
+the pipe and run it separately.
+
+Install the latest stable release:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/DeepLink-org/pvisor/main/scripts/install.sh | sh
+```
+
+Install the latest nightly build from `main`:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/DeepLink-org/pvisor/main/scripts/install.sh | sh -s -- --nightly
+```
+
+Verify the installed version without changing `PATH`:
+
+```sh
+"$HOME/.local/share/pvisor/cli/current/bin/pvisor" --version
+"$HOME/.local/share/pvisor/cli-nightly/current/bin/pvisor" --version
+```
+
+Check only the channel you installed. Nightly versions include the build
+suffix `+g<run-number>.<commit>`. The channels have separate install directories
+by default; add the desired `current/bin` to `PATH`. The script does not
+edit shell startup files or start services.
+
+Rerun a channel's command to upgrade it. Pass `--version 0.4.0` to `sh -s --`
+to pin or roll back stable. Nightly always installs from the rolling nightly
+release. Each install switches the complete CLI and companion set and
+keeps previously installed versions. Use `--install-dir /absolute/path`
+to choose another private install directory. To uninstall, remove only
+the selected install directory and its `PATH` entry; Session state and
+user caches stay in place.
+
 <a id="homebrew-and-native-downloads"></a>
 
 ### Homebrew and native downloads {#native-downloads}
@@ -205,7 +246,8 @@ install the wheel or native archive under your own protected directory instead.
 
 ### Nightly and source builds {#nightly-source}
 
-Install a nightly build from `main` inside the activated Python environment:
+Use the [shell installer](#shell-installer) for native Nightly installation.
+To install the nightly wheel instead, run this inside an activated Python environment:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/DeepLink-org/pvisor/main/scripts/install-nightly.sh | bash

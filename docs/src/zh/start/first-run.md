@@ -21,6 +21,8 @@ description: 逐步运行离线命令、检查暂存文件、选择性合入并�
 
 ## 容器命令 {#docker-style}
 
+在 Apple Silicon 上第一次用 pVisor？先[运行第一个容器](container-quickstart.md)，再继续本节的演练。
+
 在本机终端[安装 CLI](installation.md#install-cli)，并完成 [VM 平台准备](installation.md#docker-prerequisites)。Linux x86_64 需要可读写的 `/dev/kvm`；Apple Silicon macOS 需要具备 Hypervisor entitlement 的发布包。无需 Docker Daemon 或模型账号，这里也不挂载宿主目录。
 
 ### 1. 准备镜像 {#docker-image}

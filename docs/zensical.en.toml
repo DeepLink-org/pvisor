@@ -16,6 +16,7 @@ extra_javascript = ["assets/javascripts/alternate.js"]
 nav = [
   { "Home" = "index.md" },
   { "Quick start" = [
+    { "Run your first container" = "start/container-quickstart.md" },
     { "Installation" = "start/installation.md" },
     { "Run and review" = "start/first-run.md" },
     { "Run tools in a VM" = "start/infrastructure.md" },

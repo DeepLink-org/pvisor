@@ -21,6 +21,8 @@ Choose what to verify first. The examples are independent and neither needs a mo
 
 ## Container commands {#docker-style}
 
+New to pVisor on Apple Silicon? [Run your first container](container-quickstart.md) before trying this walkthrough.
+
 In a local terminal, [install the CLI](installation.md#install-cli) and complete [VM platform setup](installation.md#docker-prerequisites). Linux x86_64 needs read/write access to `/dev/kvm`; Apple Silicon macOS needs a release package with the Hypervisor entitlement. No Docker Daemon or model account is needed, and this example mounts no host directory.
 
 ### 1. Prepare an image {#docker-image}

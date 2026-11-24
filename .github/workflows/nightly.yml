@@ -79,13 +79,21 @@ jobs:
           body: |
             Rolling nightly build from [`${{ github.sha }}`](${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}) on **${{ github.ref_name }}**.
 
-            **pVisor Python wheel** (auto-detect platform / Python):
+            **Native CLI** (Linux x86_64 or Apple Silicon macOS, no Python or Rust):
+
+            ```sh
+            curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/main/scripts/install.sh | sh -s -- --nightly
+            ```
+
+            Verify with `"$HOME/.local/share/pvisor/cli-nightly/current/bin/pvisor" --version`. This installer keeps nightly separate from stable and prints the directory to add to `PATH`.
+
+            **Python wheel** (run inside an activated Python environment):
 
             ```bash
             curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/main/scripts/install-nightly.sh | bash
             ```
 
-            Native archives (`pvisor-*-linux-x86_64.tar.gz` and `pvisor-*-macos-arm64.tar.gz`) need neither Python nor Rust. Download the matching archive and `SHA256SUMS`, verify its SHA-256, then extract it and add its `bin` directory to PATH. Keep the component set together. Corresponding firmware sources are attached.
+            The installer checks `SHA256SUMS` before installing. For a manual install, download the matching native archive and verify its SHA-256 before extracting. Keep the component set together. Corresponding firmware sources are attached.
 
             The Linux sandbox daemon requires KVM access and delegated cgroup v2. See the installation guide for VM and daemon setup.
 

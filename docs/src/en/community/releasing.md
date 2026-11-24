@@ -128,6 +128,11 @@ checks each platform receipt against the source commit and SHA-256 of the exact
 wheel to ship. Windows WHP CI validates a source-built profile and produces no
 stable Windows package.
 
+The shell installer runs on Linux x86_64 and macOS arm64 before either
+channel can publish. It reads the candidate archive and `SHA256SUMS` from CI
+instead of GitHub Releases, installs via `sh` on standard input, and checks
+the installed version, both companions, and a Host task that prints `hello`.
+
 Native archives are also tested on the build runners through a Homebrew-style symlink layout, including host execution and companion discovery. Archives copy signed macOS binaries unchanged; their guest kernel is embedded and the provenance receipt remains beside the executables. The stable Homebrew session downloads the published archive, installs it, removes group/other write permission from the runner's Cellar, and runs `brew test`. Formula tests check versions, protocol and companion help inside Homebrew's sandbox. The session then executes a real host Session outside that sandbox, checks its exit status and `hello` output, and uninstalls the formula before updating the tap. Homebrew's Seatbelt sandbox cannot nest pVisor's; installation permissions are covered in the [installation guide](../start/installation.md). Linux Homebrew installation and upgrade/rollback acceptance still need native coverage.
 
 Stable versions are immutable. A retry verifies existing GitHub/PyPI file
@@ -164,14 +169,14 @@ archives are not published.
 
 ## Distribution evolution {#distribution-plan}
 
-The release workflow now derives native downloads and the Homebrew formula from verified wheels. A standalone version-selecting installer, a structured release manifest and additional package-manager channels remain proposals.
+The release workflow derives native downloads and the Homebrew formula from verified wheels. The [shell installer](../start/installation.md#shell-installer) consumes those native archives without rebuilding them. A structured release manifest and additional package-manager channels remain proposals.
 
 ### Channel roles
 
 | Channel | Users | Current status and direction |
 | --- | --- | --- |
 | PyPI | CLI users in Python environments | Wheel workflow exists; add installation and upgrade acceptance for isolated tool environments |
-| GitHub Release | CI, servers and offline installation | Wheels, native archives, firmware sources and SHA-256 checksums; a version-selecting installer remains proposed |
+| GitHub Release | CI, servers and offline installation | Wheels, native archives, firmware sources and SHA-256 checksums; shell installation supports stable version selection and a separate rolling Nightly |
 | Homebrew | Apple Silicon macOS and Linux x86_64 users | Generated formula and macOS installation test; automatic project tap update requires the repository variable and token above |
 | npm | CLI users in Node toolchains | Add a native-program installation entry point when needed; deliver it separately from a TypeScript SDK |
 | crates.io / Cargo | Rust embedding and source-build users | Evaluate later, after addressing internal path dependencies, build resources and public API publication boundaries |

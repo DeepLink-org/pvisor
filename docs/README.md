@@ -244,7 +244,9 @@ and user-facing protocol pages belong in the site's `reference/` tree, not at th
 Keep exactly seven top-level tabs in this order: Home → Quick start → User guide
 → Basic concepts → Benchmarks → System design → Contributing
 (首页 → 快速开始 → 用户指南 → 基本概念 → 基准测试 → 系统设计 → 参与开发).
-Quick start owns CLI installation, container and agent task walkthroughs in `start/first-run.md`, and the infrastructure tool-execution example. User guide owns
+Quick start opens with `start/container-quickstart.md`, the single first-container
+path. It also owns CLI installation, the longer container and agent walkthroughs
+in `start/first-run.md`, and the infrastructure tool-execution example. User guide owns
 local workflows, Agent integration, executors, policies, task operations, platform
 integration, daemon setup, trajectories and command/configuration reference.
 Basic concepts owns the product overview, core concepts, the four core capabilities,

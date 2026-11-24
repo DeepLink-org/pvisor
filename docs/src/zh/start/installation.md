@@ -33,7 +33,7 @@ python -m pip install pvisor-sandbox
 
 安装后命令名为 `pvisor`，Python 分发包名为 `pvisor-sandbox`。打开新终端后，运行 `source ~/.venvs/pvisor/bin/activate` 再使用 CLI。若 `venv` 不可用，先安装操作系统提供的 Python venv 支持。
 
-已有项目虚拟环境时可以直接在其中安装。希望不依赖 Python 时，使用下方的 [Homebrew 或原生包](#native-downloads)。
+已有项目虚拟环境时可以直接在其中安装。希望不依赖 Python 时，使用下方的 [Shell 安装脚本](#shell-installer)、[Homebrew 或原生包](#native-downloads)。
 
 <a id="2"></a>
 
@@ -166,6 +166,41 @@ python -m pip uninstall pvisor-sandbox
 
 卸载不会清理 Session 状态与用户缓存。
 
+### 用 `sh` 安装 {#shell-installer}
+
+在 Linux x86_64 或 Apple Silicon macOS 上，准备 `sh`、`curl`、`tar` 和
+`sha256sum` 或 `shasum`。下面两个命令会执行项目仓库里的安装脚本。脚本从
+GitHub Releases 下载所选渠道的原生包，校验 SHA-256 后安装，不需要
+Python、Cargo 或 `sudo`。如需先审阅脚本，可以去掉管道，下载后再执行。
+
+安装最新稳定版：
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/DeepLink-org/pvisor/main/scripts/install.sh | sh
+```
+
+安装 `main` 的最新 Nightly 构建：
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/DeepLink-org/pvisor/main/scripts/install.sh | sh -s -- --nightly
+```
+
+不改 `PATH` 也可以检查安装后的版本：
+
+```sh
+"$HOME/.local/share/pvisor/cli/current/bin/pvisor" --version
+"$HOME/.local/share/pvisor/cli-nightly/current/bin/pvisor" --version
+```
+
+只检查已安装的渠道。Nightly 版本号包含 `+g<run-number>.<commit>` 构建后缀。
+两个渠道默认使用独立目录；把要使用的渠道的 `current/bin` 加入 `PATH`。
+脚本不改 shell 启动文件，也不启动服务。
+
+重新运行对应渠道的命令即可升级。给 `sh -s --` 传入 `--version 0.4.0`
+可固定或回退稳定版，Nightly 始终使用滚动发布。脚本会一起切换 CLI 与配套工具，
+并保留已安装过的版本。用 `--install-dir /absolute/path` 可指定其他私有安装目录。
+卸载时只移除该渠道的安装目录和对应的 `PATH` 配置，保留 Session 状态与用户缓存。
+
 <a id="homebrew"></a>
 
 ### Homebrew 与原生下载包 {#native-downloads}
@@ -202,7 +237,8 @@ brew test DeepLink-org/formula/pvisor
 
 ### Nightly 与源码构建 {#nightly-source}
 
-需要 `main` 的 nightly 构建时，在已激活的 Python 环境中安装：
+原生 Nightly 请用[上方的 Shell 安装脚本](#shell-installer)。
+如需安装 nightly wheel，则在已激活的 Python 环境中运行：
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/DeepLink-org/pvisor/main/scripts/install-nightly.sh | bash

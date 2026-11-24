@@ -364,6 +364,7 @@ class DocsTests(unittest.TestCase):
             assert "security/index.md" in pages(security)
             quickstart = config["nav"][1][expected_sections[locale][1]]
             assert pages(quickstart) == [
+                "start/container-quickstart.md",
                 "start/installation.md",
                 "start/first-run.md",
                 "start/infrastructure.md",

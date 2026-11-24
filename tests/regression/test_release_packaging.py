@@ -6,6 +6,7 @@ import shutil
 import subprocess
 import sys
 import unittest
+import zipfile
 
 import yaml
 
@@ -14,6 +15,52 @@ from tests.packaging_fixtures import release_version, wheel_stage
 
 
 class ReleasePackagingTests(unittest.TestCase):
+    def test_wheel_contains_version_marker_but_not_kernel_build_inputs(self):
+        with workspace() as (root, _):
+            for name in (
+                "pyproject.toml",
+                "setup.py",
+                "MANIFEST.in",
+                "README.md",
+                "LICENSE",
+                "NOTICE",
+            ):
+                shutil.copyfile(ROOT / name, root / name)
+            (root / "pvisor").mkdir()
+            shutil.copyfile(ROOT / "pvisor/__init__.py", root / "pvisor/__init__.py")
+            vdso = root / "pvisor-kernel/vdso"
+            vdso.mkdir(parents=True)
+            for target in ("x86_64", "aarch64"):
+                (vdso / f"vdso_{target}.so").write_bytes(b"guest assembly build input")
+
+            # Test the wheel packager without rebuilding native executables.
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    "-c",
+                    "from setuptools.build_meta import build_wheel; build_wheel('dist')",
+                ],
+                cwd=root,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            (wheel,) = (root / "dist").glob("*.whl")
+            with zipfile.ZipFile(wheel) as archive:
+                modules = set()
+                for entry in archive.namelist():
+                    root_name, _, member = entry.partition("/")
+                    if root_name.endswith(".dist-info"):
+                        continue
+                    if root_name.endswith(".data"):
+                        scheme, _, member = member.partition("/")
+                        if scheme not in ("purelib", "platlib"):
+                            continue
+                        entry = member
+                    modules.add(entry)
+                self.assertEqual(modules, {"pvisor/__init__.py"})
+
     def test_candidate_build_validates_versions_without_relaxing_tag_ancestry(self):
         jobs = yaml.safe_load((ROOT / ".github/workflows/release.yml").read_text())["jobs"]
         steps = jobs["validate"]["steps"]
