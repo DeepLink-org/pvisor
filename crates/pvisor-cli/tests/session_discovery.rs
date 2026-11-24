@@ -124,6 +124,7 @@ fn last_finds_default_and_custom_storage_after_success_failure_and_timeout() {
 }
 
 #[test]
+#[cfg_attr(target_os = "macos", ignore = "requires macFUSE")]
 fn last_prefers_the_nearest_workspace_and_its_latest_session() {
     let fixture = Fixture::new();
     let outer = &fixture.workspace;
