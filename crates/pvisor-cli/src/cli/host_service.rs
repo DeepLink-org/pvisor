@@ -589,6 +589,9 @@ fn watch_owner(parent: i32, finished: Arc<AtomicBool>) -> anyhow::Result<()> {
     let mut deadline = None;
     let mut finalization = false;
     loop {
+        // Linux subreaper adoption preserves live orphans until cleanup discovers them.
+        // macOS needs to record descendants before they can be reparented.
+        #[cfg(target_os = "macos")]
         tree.refresh()?;
         if finished.load(Ordering::SeqCst) {
             return tree.cleanup(false);

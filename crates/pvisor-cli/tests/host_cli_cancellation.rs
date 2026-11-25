@@ -1,4 +1,4 @@
-//! Cancellation must own escaped groups and survive frontend disconnection.
+//! Session cleanup owns escaped groups on completion, cancellation and frontend disconnection.
 #![cfg(target_os = "linux")]
 use std::process::Command;
 const CANCEL: &str = r#"
@@ -12,14 +12,16 @@ pid = os.fork()
 if pid == 0:
     os.setsid()
     if os.fork() != 0: os._exit(0)
+    if sys.argv[2] == 'complete': os.closerange(0, 3)
     with open(sys.argv[1] + '.tmp', 'w') as f: f.write(str(os.getpid()))
     os.rename(sys.argv[1] + '.tmp', sys.argv[1])
     while True: time.sleep(1)
 while not os.path.exists(sys.argv[1]): time.sleep(.01)
 print('READY', flush=True)
+if sys.argv[2] == 'complete': sys.exit(23)
 while True: time.sleep(1)
 '''
-child = subprocess.Popen([binary, 'spawn', '--no-agent-defaults', '--overlaynet', 'off', '--', sys.executable, '-c', workload, marker],
+child = subprocess.Popen([binary, 'spawn', '--no-agent-defaults', '--overlaynet', 'off', '--', sys.executable, '-c', workload, marker, kind],
     cwd=root, env=dict(os.environ, PVISOR_RUN_HOME=os.path.join(root, 'runs'), PVISOR_STARTUP_TIMING='0'), stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 try:
     ready, _, _ = select.select([child.stdout], [], [], 20)
@@ -55,17 +57,17 @@ try:
         else:
             assert killed.returncode == 0, killed.stderr
             assert json.loads(killed.stdout)['cooperative'], killed.stdout
-    else:
+    elif kind != 'complete':
         child.send_signal(signal.SIGINT if kind == 'cancel' else signal.SIGKILL)
     out, err = child.communicate(timeout=10)
-    expected = 130 if kind == 'cancel' else -9 if kind == 'disconnect' else 143
+    expected = {'cancel': 130, 'disconnect': -9, 'complete': 23}.get(kind, 143)
     assert child.returncode == expected, (child.returncode, err)
     assert time.monotonic() - started < 9, err
     deadline = time.monotonic() + 2
     while time.monotonic() < deadline:
         try:
             stat = open('/proc/%s/stat' % escaped).read().rsplit(')', 1)[1].split()
-            if stat[0] == 'Z': break  # init may reap non-child orphans asynchronously
+            if kind != 'complete' and stat[0] == 'Z': break  # init may reap non-child orphans asynchronously
         except (FileNotFoundError, ProcessLookupError): break
         time.sleep(.02)
     else: raise AssertionError('escaped session survived request cleanup: %s' % escaped)
@@ -73,8 +75,14 @@ finally:
     if child.poll() is None: child.kill(); child.wait()
 "#;
 #[test]
-fn ignored_signals_and_double_fork_sessions_are_bounded_on_cancel_and_disconnect() {
-    for kind in ["cancel", "disconnect", "kill", "missing-endpoint"] {
+fn ignored_signals_and_double_fork_sessions_are_bounded_on_exit_cancel_and_disconnect() {
+    for kind in [
+        "complete",
+        "cancel",
+        "disconnect",
+        "kill",
+        "missing-endpoint",
+    ] {
         let root = tempfile::tempdir().unwrap();
         let output = Command::new("python3")
             .args(["-c", CANCEL, env!("CARGO_BIN_EXE_pvisor")])

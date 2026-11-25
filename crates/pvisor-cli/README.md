@@ -1243,9 +1243,11 @@ that limit before capture, and no capture binding is installed. Workspace logica
 checkpoints retain their independent behavior. See the runtime README for the
 ownership and platform limits.
 
-Successful owner process-tree cleanup is idempotent. Linux uses subreaper
-adoption and pidfds, observes stopped forkers before rescanning, and reaps escaped
-descendants inside the owner. The frontend reaps its own owner child. After
+Successful owner process-tree cleanup is idempotent. On Linux the Session owner
+is a subreaper before the workload starts. Its watchdog discovers descendants at
+cleanup rather than scanning `/proc` while the workload runs. It uses pidfds,
+observes stopped forkers before rescanning, and reaps adopted descendants.
+The frontend reaps its own owner child. After
 Execution terminal publication, the owner allows the existing bounded RAM/macFUSE
 cleanup window before escalating. macOS keeps
 birth-identity checks, polling and its existing limitations for missed reparented
