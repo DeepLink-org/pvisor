@@ -48,8 +48,8 @@ def render(report, *, startup=False):
         failures += passed is False
     if startup:
         complete = {name: set(cells) for name, cells in table.items()} == {
-            "direct-running": set(BACKENDS),
-            "create-running": {"linux"},
+            "direct-command-start": set(BACKENDS),
+            "warm-command-start": {"linux"},
         }
     else:
         complete = len(table) == 15 and all(
@@ -64,19 +64,19 @@ def render(report, *, startup=False):
         return "\n".join(
             [
                 f"**{'FAIL' if failures else 'PASS'}** · {failures}/3 pVisor startup cells "
-                f"exceed the {threshold:g}% threshold. **Create → Running**, baseline → candidate "
+                f"exceed the {threshold:g}% threshold. **Create → guest command start**, baseline → candidate "
                 "(change), median **ms**.",
                 "",
                 "| Launch mode | pVisor + Linux FW | pVisor + Rust native | Firecracker (reference) |",
                 "|---|---:|---:|---:|",
-                "| Direct: spawn → VMM running | "
-                + " | ".join(table["direct-running"][b] for b in BACKENDS)
+                "| Direct: spawn → guest command starts | "
+                + " | ".join(table["direct-command-start"][b] for b in BACKENDS)
                 + " |",
-                f"| Daemon: Create → sandbox Running (confirmed pool hit) | {table['create-running']['linux']} "
+                f"| Daemon: Create → guest entrypoint starts (confirmed pool hit) | {table['warm-command-start']['linux']} "
                 "| N/A: no deferred root | N/A: not managed by pvisor-daemon |",
                 "",
-                "Direct measures the VMM transition; daemon measures the Running API response. "
-                "Guest command execution is verified after Running, outside both clocks.",
+                "Both clocks stop when the host observes a marker written by the first guest command. "
+                "Neither VMM startup, API Running nor command completion is the stop event.",
             ]
         )
     return "\n".join(

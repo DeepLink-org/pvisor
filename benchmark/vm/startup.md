@@ -10,22 +10,23 @@ PR Conversation 的 **VM startup performance** 和 Actions 的 **VM startup regr
 | 直接启动 | 新 VM | 新 VM | 新 VM，参照 |
 | daemon 预热启动 | 命中一个已停泊的 VM | N/A：不支持延迟挂载根文件系统 | N/A：不由 pvisor-daemon 管理 |
 
-**直接启动（Create → VMM Running）**：从宿主发起 VMM spawn 前，到宿主读到该 VMM 的成功启动事件。
-pVisor 启用启动追踪，取当前 runner 在首次 vCPU resume 成功后发出的 `vm.start_worker` 成功记录；
-不能用仍处于暂停状态的 `on_ready`。Firecracker 取固定版本主线程确认已启动 microVM 的日志。
-使用宿主单调时钟记录完整行到达的时间，不相减两套时钟。随后静态 guest 探针必须确认文件系统类型、
-恰好输出一次 `VM_STARTUP_READY` 并正常退出；这些是样本验收条件，不是停表点。
-pVisor 用 virtio-fs，Firecracker 从 ext4/virtio-blk 启动，并以探针为 PID 1。
+**直接启动（创建 → guest 命令开始执行）**：宿主从发起 VMM spawn 前开始计时，到读到完整的
+`VM_GUEST_COMMAND_STARTED` 行为止。这是首个用户命令进入 `main` 后的第一笔写入，意味着 guest
+内核已经启动且用户态代码正在执行。文件系统校验、完成标记和正常退出是验收条件，不计入延迟。
+pVisor 用 virtio-fs 和 task stdout；Firecracker 从 ext4/virtio-blk 启动同一探针作为 PID 1，
+经串口输出。VMM 启动日志和 vCPU resume 都不是停表点。
 
-**预热启动（Create → sandbox Running）**：从客户端发出 HTTP Create，到完整读完 202 响应；
-只接受 `status.state == "Running"`。不计入后续首条命令、文件校验、删除、daemon 启动和补池。
-复用 [daemon warm pool 的校验](../criterion/src/startup/warm_pool.rs)：请求前记录已停泊槽位，
-要求分配相同 ID、命中时钟有效、命令正确读写私有文件、删除后返回 404 且释放 cgroup。
-池空回退不能替代命中。两行分别是 VM 层 Running 和沙箱 API 层 Running，不能直接相减来推断预热节省量。
+**预热启动（Create → guest 入口命令开始执行）**：向已停泊槽位发出 HTTP Create，指定 `/bin/sh`
+作为该请求的入口命令。shell 的第一条内置 `printf` 向本次独占的 guest 根文件写入试次标记，
+之后才 `exec /bin/sleep`。宿主在 Create 进行期间独立观察该槽位可写层中的完整标记（轮询间隔
+100 µs）。不使用 202/Running 的返回时间，也不等待后续验证命令完成才停表。
+要求实际分配的 VM ID 与被观察槽位相同，并验证服务可用、数据正确和删除后的回收。
+预热不包含提前完成的内核引导或补池。两行都是宿主观察到用户命令开始的延迟，包含各自
+标记的传递开销；不声称是精确的首条 CPU 指令时间。
 
 **门禁与环境**：同机、4 vCPU / 256 MiB，宿主绑定同四个 CPU；每格 10 个 Flat 统计样本。
-两个 pVisor 直接启动项和 Linux 预热项的 Create → Running 均检查 15% 阈值，只有 Firecracker
-作参照。受支持项测量失败、超时或缺基线均不放行；旧首输出/首命令基线不能复用。
+两个 pVisor 直接启动项和 Linux 预热项均检查 15% 阈值，只有 Firecracker
+作参照。受支持项测量失败、超时或缺基线均不放行；旧 VMM/API Running、命令完成基线均不能复用。
 CI 在两个版本间复用同一预先准备的固定 Ubuntu 镜像，不把下载、daemon 启动或补池计入延迟。
 
 ## 本地复现（Linux x86_64 / KVM）
@@ -58,5 +59,6 @@ mise run benchmark-compare -- "$batch/criterion" --suite vm-startup --output "$b
 ```
 
 比较超阈值时仍保留 `comparison.json`；用 `python3 -I scripts/ci/vm_guest_comment.py --startup-summary "$batch/comparison/comparison.json"`
-预览 PR 表格，不发布评论。逐次 `create-to-running.json` 记录直接启动时钟，
-`warm-hits.jsonl` 中的 `sample.create_ns` 是预热时钟；`first_command_ns` 仅作诊断。
+预览 PR 表格，不发布评论。逐次 `timing.json` 的 `ready_ns` 是直接启动时钟；
+`warm-hits.jsonl` 的 `guest_command_start_ns` 是预热时钟。`sample.create_ns`（HTTP）
+和 `sample.first_command_ns`（后续验证命令完成）仅作诊断。

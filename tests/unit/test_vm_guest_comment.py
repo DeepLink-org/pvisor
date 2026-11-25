@@ -48,10 +48,10 @@ def zipped(name, content):
 
 def startup_report():
     names = [
-        "linux-direct-running",
-        "rust-native-direct-running",
-        "firecracker-direct-running",
-        "linux-create-running",
+        "linux-direct-command-start",
+        "rust-native-direct-command-start",
+        "firecracker-direct-command-start",
+        "linux-warm-command-start",
     ]
     return {
         "rows": [
@@ -60,7 +60,7 @@ def startup_report():
                 "baseline_ns_per_op": 1e6,
                 "candidate_ns_per_op": 1.16e6,
                 "change_pct": 16.0,
-                "passed": None if name == "firecracker-direct-running" else False,
+                "passed": None if name == "firecracker-direct-command-start" else False,
             }
             for name in names
         ],
@@ -252,15 +252,15 @@ class VmGuestCommentTests(unittest.TestCase):
         self.assertIn("**FAIL** · 3/3", body)
         self.assertEqual(body.count("N/A:"), 2)
         self.assertEqual(body.count("❌"), 3)
-        self.assertIn("Create → sandbox Running (confirmed pool hit)", body)
+        self.assertIn("Create → guest entrypoint starts (confirmed pool hit)", body)
         self.assertNotIn("first successful command", body)
         self.assertEqual(len([line for line in body.splitlines() if line.startswith("|")]), 4)
 
     def test_startup_rejects_missing_warm_hit_or_unsupportable_measurement(self):
         for missing in (
-            "linux-direct-running",
-            "linux-create-running",
-            "firecracker-direct-running",
+            "linux-direct-command-start",
+            "linux-warm-command-start",
+            "firecracker-direct-command-start",
         ):
             data = startup_report()
             data["rows"] = [r for r in data["rows"] if r["condition"] != missing]
@@ -268,6 +268,17 @@ class VmGuestCommentTests(unittest.TestCase):
                 reporter.render(data, startup=True)
         data = startup_report()
         data["rows"].append({**data["rows"][0], "condition": "rust-native-daemon-hit"})
+        with self.assertRaises(ValueError):
+            reporter.render(data, startup=True)
+
+    def test_running_state_comparison_cannot_be_relabelled_guest_command_start(self):
+        data = startup_report()
+        for row in data["rows"]:
+            row["condition"] = (
+                row["condition"]
+                .replace("direct-command-start", "direct-running")
+                .replace("warm-command-start", "create-running")
+            )
         with self.assertRaises(ValueError):
             reporter.render(data, startup=True)
 

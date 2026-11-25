@@ -74,12 +74,17 @@ fn run(args: Args) -> Result<()> {
                 .collect(),
         ),
         Suite::VmStartup => (
-            "VM startup: Create → Running",
+            "VM startup: Create → guest command start",
             vm_matrix::STARTUP_GROUP,
             vm_matrix::BACKENDS
                 .into_iter()
-                .map(|b| (format!("{b}-direct-running"), b == vm_matrix::REFERENCE))
-                .chain([(vm_matrix::WARM_RUNNING.into(), false)])
+                .map(|b| {
+                    (
+                        format!("{b}-{}", vm_matrix::DIRECT_START),
+                        b == vm_matrix::REFERENCE,
+                    )
+                })
+                .chain([(vm_matrix::WARM_START.into(), false)])
                 .collect(),
         ),
     };
@@ -270,17 +275,17 @@ mod tests {
     #[test]
     fn startup_requires_a_confirmed_hit_stream_without_reading_guest_estimates() {
         let d = tempfile::tempdir().unwrap();
-        let root = d.path().join("vm_create_to_running");
+        let root = d.path().join("vm_guest_command_start");
         for name in [
-            "linux-direct-running",
-            "rust-native-direct-running",
-            "firecracker-direct-running",
-            "linux-create-running",
+            "linux-direct-command-start",
+            "rust-native-direct-command-start",
+            "firecracker-direct-command-start",
+            "linux-warm-command-start",
         ] {
             for arm in ["main", "candidate"] {
                 let dir = root.join(name).join(arm);
                 fs::create_dir_all(&dir).unwrap();
-                let median = if arm == "candidate" && name == "firecracker-direct-running" {
+                let median = if arm == "candidate" && name == "firecracker-direct-command-start" {
                     200
                 } else {
                     100
@@ -303,7 +308,7 @@ mod tests {
             })
         };
         gate("pass").unwrap();
-        let hit = root.join("linux-create-running/candidate/estimates.json");
+        let hit = root.join("linux-warm-command-start/candidate/estimates.json");
         fs::write(&hit, r#"{"median":{"point_estimate":116}}"#).unwrap();
         assert!(gate("slow").is_err());
         fs::remove_file(hit).unwrap();
@@ -311,7 +316,7 @@ mod tests {
             gate("missing")
                 .unwrap_err()
                 .to_string()
-                .contains("linux-create-running")
+                .contains("linux-warm-command-start")
         );
     }
 

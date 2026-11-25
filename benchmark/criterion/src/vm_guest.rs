@@ -3,7 +3,7 @@
 //! Conclusion sought: a per-kernel verdict per workload, with a fixed Firecracker reference.
 //! Design: identical guest probe, fresh writable backing, guest clock and verified results.
 //! Benchmark: B-VM-STARTUP-ENG (benchmark/REGISTRY.md#b-vm-startup-eng), role engineering A/B.
-//! Measure Create → Running; guest output and exit are correctness checks, not stop events.
+//! Measure Create → guest command entry, independent of VMM and control-plane readiness.
 use crate::{
     command::measured_total,
     filesystem::support::{checked, clean, output, required, run, save, sha},
@@ -55,7 +55,7 @@ impl Subjects {
         backend: &str,
         metric: &str,
     ) -> Result<Duration> {
-        let startup = metric == "direct-running";
+        let startup = metric == vm_matrix::DIRECT_START;
         let cpus = if startup { 4 } else { 1 };
         fs::create_dir_all(logs)?;
         let backing = tempfile::tempdir_in(batch)?;
@@ -99,13 +99,7 @@ impl Subjects {
             cmd.args(["--", "/probe", metric]);
         }
         if startup {
-            use crate::startup::DirectVmm;
-            let vmm = if backend == REFERENCE {
-                DirectVmm::Firecracker
-            } else {
-                DirectVmm::Pvisor
-            };
-            return vmm.create_to_running(cmd, logs);
+            return crate::startup::guest_command_start(cmd, logs);
         }
         let (wall, stdout) = run(&mut cmd, logs, Duration::from_secs(30), &[])?;
         let elapsed = duration(&stdout, metric)?;
@@ -180,7 +174,13 @@ pub fn register(c: &mut Criterion, startup: bool) -> Result<()> {
     let cells: Vec<_> = if startup {
         vm_matrix::BACKENDS
             .into_iter()
-            .map(|b| (b, "direct-running", format!("{b}-direct-running")))
+            .map(|b| {
+                (
+                    b,
+                    vm_matrix::DIRECT_START,
+                    format!("{b}-{}", vm_matrix::DIRECT_START),
+                )
+            })
             .collect()
     } else {
         vm_matrix::cells().collect()

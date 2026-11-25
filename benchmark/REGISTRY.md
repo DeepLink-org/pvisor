@@ -1174,9 +1174,9 @@ Design: 负载、对照、控制变量与有效样本判据。
 
 ### B-VM-STARTUP-ENG：直接启动与 daemon 预热启动的独立 PR 专报 {#b-vm-startup-eng}
 
-- **角色与问题：** engineering A/B。候选版本是否延长了 Create → Running 的等待？
-- **实验设计：** 同机 4 vCPU / 256 MiB。直接启动从宿主发起 VMM spawn 至观察到 VMM 成功启动（pVisor 首次恢复 vCPU 成功，Firecracker 确认 microVM 启动）；预热命中从客户端发出 HTTP Create 至收到声明 Running 的完整响应。首条命令、输出和退出只验证正确性，不作停表点。两行分别是 VM 层与沙箱 API 层的 Running，不据此计算预热收益。
-- **判据：** Linux/Rust 直接启动及 Linux daemon 命中的 Create → Running 分别对比本后端基线，阈值 15%。只有 Firecracker 直接启动作参照。Rust native 和 Firecracker 不支持该 daemon 预热路径，明确标 N/A；缺少 Running 证据、基线或预热命中不能通过。
+- **角色与问题：** engineering A/B。从创建到 guest 内核启动完毕、首个用户命令开始执行，调用方要等多久？
+- **实验设计：** 同机 4 vCPU / 256 MiB。直接启动从宿主发起 VMM spawn 至收到首个 guest 命令入口写出的完整标记；daemon 从客户端发出 HTTP Create 至观察到该请求指定的入口命令在已停泊 VM 的独占文件系统中写出本次标记。均用宿主单调时钟；不以 VMM 启动日志、API Running 或命令完成代替入口标记。
+- **判据：** 两个 pVisor 直接启动项和 Linux daemon 预热命中项分别对比本后端基线，阈值 15%；Firecracker 直接启动作参照。Rust native 和 Firecracker 不支持该 daemon 预热路径，明确标 N/A；缺少命令开始证据、基线或预热命中不能通过。
 - **入口：** [`vm/startup`](vm/startup.md)，独立于 `vm/guest` 的 15 项运行时表。
 
 ### B-VM-GUEST-ENG：guest 内部操作的回归门禁 {#b-vm-guest-eng}
