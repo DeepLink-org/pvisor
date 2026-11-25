@@ -290,6 +290,47 @@ mod tests {
     use super::*;
 
     #[test]
+    fn retired_cold_import_collection_resumes_after_reopen() {
+        use pvisor_journal::api::{DurableFiles, Persistence};
+
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("docker");
+        let store = Store::open(root.clone()).unwrap();
+        let id = "b".repeat(64);
+        let directory = store.directory(&id);
+        private_directory(&directory).unwrap();
+        private_directory(&store.retired_root()).unwrap();
+        let plan = RetiredImages {
+            collect_cold_imports: true,
+            projections: Vec::new(),
+        };
+        Persistence::atomic_write(
+            &directory.join(RETIRED_IMAGES),
+            &serde_json::to_vec(&plan).unwrap(),
+            0o600,
+        )
+        .unwrap();
+        let owner = imports(&store).join(uuid());
+        private_directory(&owner).unwrap();
+        let obstructed = imports(&store).join(uuid());
+        fs::write(&obstructed, b"invalid owner fixture").unwrap();
+
+        // End this invocation immediately after the active directory was retired.
+        let retired = store.retired_directory(&id);
+        fs::rename(&directory, &retired).unwrap();
+        drop(store);
+        let store = Store::open(root).unwrap();
+        let error = store.remove_retired(&id).unwrap_err();
+        assert!(format!("{error:#}").contains("invalid cold import owner"));
+        assert!(retired.join(RETIRED_IMAGES).is_file());
+
+        fs::remove_file(obstructed).unwrap();
+        store.remove_retired(&id).unwrap();
+        store.remove_retired(&id).unwrap();
+        assert!(!owner.exists() && !retired.exists());
+    }
+
+    #[test]
     fn recovery_collects_abandoned_imports_and_respects_reader_locks() {
         let tmp = tempfile::tempdir().unwrap();
         let store = Store::open(tmp.path().join("docker")).unwrap();
