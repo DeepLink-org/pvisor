@@ -283,6 +283,19 @@ jobs:
           for cohort in main candidate; do
             src="$RUNNER_TEMP/builds/benchmark-build-$cohort"
             (cd "$src" && sha256sum -c runtime.sha256 && tar -xzf runtime.tgz -C vm pvisor-daemon)
+            # Warm runners re-exec this daemon and need an unprivileged user namespace.
+            preflight="$(command -v unshare)"
+            if [[ "$(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null || true)" == 1 ]]; then
+              install -m 0755 "$preflight" "$src/vm/namespace-check"
+              preflight="$src/vm/namespace-check"
+              sudo apparmor_parser -r <<PROFILE
+          abi <abi/4.0>,
+          profile pvisor-benchmark-$cohort "$src/vm/{pvisor-daemon,namespace-check}" flags=(unconfined) {
+            userns,
+          }
+          PROFILE
+            fi
+            "$preflight" --user --map-root-user --mount --net /bin/true
           done
           "$RUNNER_TEMP/builds/benchmark-build-candidate/vm/pvisor-daemon" prepare-image \
             --name ubuntu --images-dir "$RUNNER_TEMP/images" \
