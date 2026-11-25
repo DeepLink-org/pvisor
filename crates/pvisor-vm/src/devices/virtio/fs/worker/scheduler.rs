@@ -651,28 +651,37 @@ mod tests {
             first.avail.ring[slot].set(0);
         }
         let runtime = runtime(mem.clone(), vec![high.create_queue(), first.create_queue()]);
-        let deadline = Instant::now() + Duration::from_secs(5);
+        // Bound each handoff independently so earlier completions do not consume its budget.
+        let stall_timeout = Duration::from_secs(5);
         thread::scope(|scope| {
             let producer = scope.spawn(|| {
                 for count in 0..5000u16 {
+                    let deadline = Instant::now() + stall_timeout;
                     while mem
                         .load::<u16>(first.used.idx.location, Ordering::Acquire)
                         .unwrap()
                         != count
                     {
-                        assert!(Instant::now() < deadline, "guest completion wait timed out");
+                        assert!(
+                            Instant::now() < deadline,
+                            "guest completion {count} timed out"
+                        );
                         thread::yield_now();
                     }
                     mem.store(count + 1, first.avail.idx.location, Ordering::Release)
                         .unwrap();
                 }
             });
-            for _ in 0..5000 {
+            for count in 1..=5000 {
+                let deadline = Instant::now() + stall_timeout;
                 let request = loop {
                     if let Some(request) = runtime.next(1, &mut 0) {
                         break request;
                     }
-                    assert!(Instant::now() < deadline, "guest publication was lost");
+                    assert!(
+                        Instant::now() < deadline,
+                        "guest publication {count} timed out"
+                    );
                     thread::yield_now();
                 };
                 runtime.publish(request, 16);
