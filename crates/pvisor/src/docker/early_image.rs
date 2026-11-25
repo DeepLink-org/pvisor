@@ -20,6 +20,20 @@ fn event(message: Event) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn require_frontend(pid: libc::pid_t) -> io::Result<()> {
+    if unsafe { libc::getppid() } != pid {
+        return Err(io::Error::from(io::ErrorKind::BrokenPipe));
+    }
+    Ok(())
+}
+
+fn set_parent_death_signal(signal: libc::c_int) -> io::Result<()> {
+    if unsafe { libc::prctl(libc::PR_SET_PDEATHSIG, signal as libc::c_ulong, 0, 0, 0) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
 impl Store {
     /// Prepare an instance for immediate Linux/KVM execution. A verified cold
     /// import stays pinned by the instance while a separate process publishes
@@ -51,6 +65,13 @@ impl Store {
             .stderr(Stdio::null());
         if std::env::var_os("PVISOR_IMAGE_BATCH_DIRECTORY_SYNC").is_none() {
             command.env("PVISOR_IMAGE_BATCH_DIRECTORY_SYNC", "1");
+        }
+        let frontend = unsafe { libc::getpid() };
+        unsafe {
+            command.pre_exec(move || {
+                set_parent_death_signal(libc::SIGKILL)?;
+                require_frontend(frontend)
+            });
         }
         let mut child = command.spawn()?;
         let result = (|| {
@@ -180,7 +201,56 @@ pub(super) fn collect(store: &Store) -> anyhow::Result<()> {
     }
 }
 
+fn prepare(
+    store: &Store,
+    reference: &str,
+    dir: &Path,
+    id: &str,
+) -> anyhow::Result<(Image, Option<PreparedPull>)> {
+    if let Some(image) = store.local_image(reference)? {
+        return Ok((image, None));
+    }
+    let mut write_error = Ok(());
+    let prepared = store.prepare_pull(
+        reference,
+        &native_platform(),
+        &mut |p| {
+            if write_error.is_ok() {
+                write_error = event(Event::Progress(p));
+            }
+        },
+        Some(dir),
+    )?;
+    write_error?;
+    if prepared.cached.is_some()
+        || !crate::image::cache::supports_extracted_run(&prepared.source, &prepared.image.digest)?
+    {
+        return Ok((store.publish_pull(prepared)?, None));
+    }
+    store
+        .images
+        .retain_config(&prepared.image.id, &prepared.config)?;
+    let meta = fs::metadata(&prepared.rootfs)?;
+    let binding = Binding {
+        digest: prepared.image.digest.clone(),
+        config: prepared.image.id.clone(),
+        platform: prepared.image.platform.clone(),
+        boot: fs::read_to_string("/proc/sys/kernel/random/boot_id")?,
+        device: meta.dev(),
+        inode: meta.ino(),
+    };
+    crate::util::write_private_json(&dir.join("binding.json"), &binding)?;
+    let image = prepared.image.clone().map_cache(|()| CachedImage {
+        location: store.images.pool(),
+        handle: format!("{PREFIX}{id}"),
+        repository: None,
+        mirrors: vec![],
+    });
+    Ok((image, Some(prepared)))
+}
+
 pub(super) fn worker(store: &Store) -> anyhow::Result<()> {
+    let frontend = unsafe { libc::getppid() };
     let mut admitted = false;
     let result = (|| {
         let config = serde_json::from_reader(io::stdin().lock())?;
@@ -197,57 +267,17 @@ pub(super) fn worker(store: &Store) -> anyhow::Result<()> {
         };
         let mut publication = None;
         let instance = store.create_resolving(config, None, |reference| {
-            if let Some(image) = store.local_image(reference)? {
-                return Ok(image);
+            let (image, prepared) = prepare(store, reference, &dir, &id)?;
+            // Once admission can change the catalog, use the Created pipe to
+            // roll back a lost handoff instead of dying during the write.
+            if unsafe { libc::setsid() } < 0 {
+                return Err(io::Error::last_os_error().into());
             }
-            let mut write_error = Ok(());
-            let prepared = store.prepare_pull(
-                reference,
-                &native_platform(),
-                &mut |p| {
-                    if write_error.is_ok() {
-                        write_error = event(Event::Progress(p));
-                    }
-                },
-                Some(&dir),
-            )?;
-            write_error?;
-            if prepared.cached.is_some()
-                || !crate::image::cache::supports_extracted_run(
-                    &prepared.source,
-                    &prepared.image.digest,
-                )?
-            {
-                return store.publish_pull(prepared);
-            }
-            store
-                .images
-                .retain_config(&prepared.image.id, &prepared.config)?;
-            let meta = fs::metadata(&prepared.rootfs)?;
-            let binding = Binding {
-                digest: prepared.image.digest.clone(),
-                config: prepared.image.id.clone(),
-                platform: prepared.image.platform.clone(),
-                boot: fs::read_to_string("/proc/sys/kernel/random/boot_id")?,
-                device: meta.dev(),
-                inode: meta.ino(),
-            };
-            crate::util::write_private_json(&dir.join("binding.json"), &binding)?;
-            let image = prepared.image.clone().map_cache(|()| CachedImage {
-                location: store.images.pool(),
-                handle: format!("{PREFIX}{id}"),
-                repository: None,
-                mirrors: vec![],
-            });
-            publication = Some(prepared);
+            set_parent_death_signal(0)?;
+            require_frontend(frontend).context("cold run frontend exited")?;
+            publication = prepared;
             Ok(image)
         })?;
-        // Follow terminal cancellation during preparation; once admitted, the
-        // publisher must survive a detached CLI exit and foreground signals.
-        if unsafe { libc::setsid() } < 0 {
-            store.remove(&instance.id, true)?;
-            return Err(io::Error::last_os_error().into());
-        }
         if let Err(e) = event(Event::Created(instance.id.clone())) {
             store.remove(&instance.id, true)?;
             return Err(e);

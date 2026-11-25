@@ -299,6 +299,9 @@ impl Project {
                     && instance.name == *name),
             "replacement name is already in use"
         );
+        if previous.is_none() {
+            store.finish_replacement_retirement(&self.name, service, previous_id)?;
+        }
         // Keep the admitted candidate's IP while assigning final DNS names.
         let mut config = candidate.config.clone();
         config.ipv4_address = config.peers.as_ref().map(|peer| peer.address);

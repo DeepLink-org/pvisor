@@ -123,3 +123,45 @@ Evidence paths below are relative to those worktree roots.
   acceptance is claimed. The campaign did not approve specifications.
 - Evidence: `target/chaos6h-20261121-002028-3a6cc2/`, with owned temporary
   fixtures under `target/t3a6cc2/`.
+
+## 2026-11-25 — interrupted Docker, Compose, and Host workflows
+
+- Scope: a three-hour Linux x86-64/KVM and Host/FUSE campaign against frozen
+  `705846c8`, seed `98820261125`. Eight scenarios used private stores and
+  exercised same-name reuse, execution receipts, interrupted Compose teardown,
+  image staging leases, and workspace selection. The timer excluded preparation.
+- Baseline: 8,341 iterations in 10,801 seconds; 6,256 passed. An immediate
+  interactive exit lost its result 1,043 times, and a successful Compose retry
+  left a retired directory 1,042 times. The other six scenarios had no failures.
+- Follow-up fault tests also found unretryable Compose volume publication,
+  orphaned cold-image workers that blocked an identical retry, and `last`
+  selecting a foreign Session after the original workspace path was rebound.
+  All five fixes were integrated locally. The final frozen candidate passed
+  230 iterations in a separate five-minute comparison; native regressions also
+  checked retained named-volume data, exact streams and exits, and detached
+  cold-image publication. This was not a three-hour run of the candidate.
+- Cleanup: the baseline audit found no owned live process, populated campaign
+  cgroup, or fixture mount in the inspected namespace. Failed receipts remain
+  available for inspection.
+- Limits: no macOS/Windows, physical storage failure, power loss, or explicit
+  writeback through a rebound workspace path was tested. Specification fixture
+  tests passed without changing approvals.
+- Evidence: `.data/t988/`, especially `findings.md`, `three-hour-audit.json`,
+  `integration-cli.log`, `final-volumes/`, and `final-chaos/`.
+
+## 2026-11-25 — candidate endurance and workspace writeback
+
+- The frozen five-fix candidate completed a separate Linux x86-64/KVM and
+  Host/FUSE three-hour run with seed `98820261126`: 8,217 iterations and 89,372
+  CLI commands, with no oracle or cleanup failures. The audit found no owned
+  live processes, populated cgroup, or fixture mounts in the inspected namespace.
+- A separate native Host/FUSE probe found that explicit `apply` could still write
+  an ordinary stage's changes into a replacement project at the old path, with
+  or without a symlink. Fresh stages now bind writeback to the original
+  directory. Preview and real apply rejected both replacements without writing;
+  restoring the original directory allowed the same stage to apply successfully.
+- The new workspace fix was not in the endurance binary. Older unbound stages
+  still use path-based apply; no concurrent external-writer, macOS, or Windows
+  guarantee is inferred.
+- Evidence: `.data/t988/fixed-three-hour-audit.json` and
+  `.data/t988/apply-target-{before,after}/observations.json`.

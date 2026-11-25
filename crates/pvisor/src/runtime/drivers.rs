@@ -283,7 +283,12 @@ impl SessionDrivers {
 
         if let Some(ref mut rec) = record
             && !preserve_backing
-            && let Err(err) = finalize_overlay(rec, overlay_unmounted, allow_apply)
+            && let Err(err) = finalize_overlay(
+                rec,
+                overlay_unmounted,
+                allow_apply,
+                self.run_record.project_apply_scope.as_ref(),
+            )
         {
             errors.push(format!("finalize OverlayFS staging: {err:#}"));
         }
@@ -379,6 +384,7 @@ fn finalize_overlay(
     record: &mut OverlayRecord,
     unmounted: bool,
     allow_apply: bool,
+    scope: Option<&super::session_service::ProjectApplyScope>,
 ) -> anyhow::Result<()> {
     if !unmounted {
         return Ok(());
@@ -386,7 +392,16 @@ fn finalize_overlay(
     if record.auto_discard {
         discard_overlay(record)?;
     } else if record.auto_apply && allow_apply {
-        apply_overlay(record)?;
+        if let Some(scope) = scope.filter(|_| record.target != Path::new("/")) {
+            let lower = record
+                .baseline_lower
+                .as_ref()
+                .unwrap_or(&record.target)
+                .clone();
+            scope.apply_selected(record, &[lower], &Default::default())?;
+        } else {
+            apply_overlay(record)?;
+        }
     }
     Ok(())
 }
@@ -551,6 +566,7 @@ struct PreparedOverlay {
     hint: OverlayHint,
     record: Option<OverlayRecord>,
     lowers: Vec<std::path::PathBuf>,
+    target_scope: Option<super::session_service::ProjectApplyScope>,
 }
 
 fn initial_run_record(
@@ -713,6 +729,7 @@ pub(crate) fn prepare_execution(
         hint: overlay_hint,
         record: overlay_record,
         lowers: overlay_lowers,
+        target_scope,
     } = prepared_overlay;
 
     let vm_network = opts
@@ -744,6 +761,7 @@ pub(crate) fn prepare_execution(
     run_record.network_policy = Some(serde_json::to_value(&config.network)?);
     run_record.overlay = overlay_record.clone();
     run_record.overlay_lowers = overlay_lowers;
+    run_record.project_apply_scope = target_scope.or(run_record.project_apply_scope);
     let listen = gateway.listen.clone();
     let session = SessionDrivers {
         workspace_overlay: None,
@@ -855,6 +873,7 @@ pub(crate) fn prepare_overlay_execution(
         hint: overlay_hint,
         record: overlay_record,
         lowers: overlay_lowers,
+        target_scope,
     } = prepared_overlay;
     let overlay_record = overlay_record.ok_or_else(|| {
         anyhow::anyhow!("overlay preparation requested without a target or lower directory")
@@ -877,6 +896,7 @@ pub(crate) fn prepare_overlay_execution(
     run_record.network_policy = network_policy;
     run_record.overlay = Some(overlay_record.clone());
     run_record.overlay_lowers = overlay_lowers;
+    run_record.project_apply_scope = target_scope.or(run_record.project_apply_scope);
     let session = SessionDrivers {
         workspace_overlay: None,
         proxy: None,
@@ -1303,6 +1323,7 @@ fn prepare_overlay(
             hint: OverlayHint::default(),
             record: None,
             lowers: Vec::new(),
+            target_scope: None,
         });
     }
     match resolve_overlay_workspace(overlay_cfg, storage, root_session)? {
@@ -1318,6 +1339,18 @@ fn prepare_overlay(
                 crate::util::persistence_step(root_session, "overlay", "lease_prepare", || {
                     RunLease::acquire_new(&record.stage_dir)
                 })?;
+            let target_scope = if record.protect_target || execution_snapshot.is_some() {
+                None
+            } else {
+                if workspace_base.is_none() && !record.target.try_exists()? {
+                    use pvisor_journal::api::{DurableFiles, Persistence};
+                    Persistence::create_dir_all_durable(&record.target)?;
+                }
+                let target = record.target.canonicalize()?;
+                (target != Path::new("/"))
+                    .then(|| super::session_service::ProjectApplyScope::capture(&target))
+                    .transpose()?
+            };
             let lowers = if let Some(owner) = workspace_base {
                 owner.validate_record(&record, storage)?;
                 record.target = owner.target.clone();
@@ -1392,6 +1425,7 @@ fn prepare_overlay(
                 hint,
                 record: Some(record),
                 lowers,
+                target_scope,
             })
         }
         None => Ok(PreparedOverlay {
@@ -1401,6 +1435,7 @@ fn prepare_overlay(
             hint: OverlayHint::default(),
             record: None,
             lowers: Vec::new(),
+            target_scope: None,
         }),
     }
 }
@@ -1893,16 +1928,80 @@ mod tests {
         .unwrap();
         std::fs::write(record.upper.path().join("value"), b"staged").unwrap();
         record.auto_discard = true;
-        super::finalize_overlay(&mut record, false, true).unwrap();
+        super::finalize_overlay(&mut record, false, true, None).unwrap();
         assert!(record.upper.path().join("value").exists());
         record.auto_discard = false;
         record.auto_apply = true;
-        super::finalize_overlay(&mut record, true, false).unwrap();
+        super::finalize_overlay(&mut record, true, false, None).unwrap();
         assert!(!target.join("value").exists());
         assert!(record.upper.path().join("value").exists());
         record.auto_discard = true;
-        super::finalize_overlay(&mut record, true, false).unwrap();
+        super::finalize_overlay(&mut record, true, false, None).unwrap();
         assert!(!record.upper.path().exists());
+    }
+
+    #[test]
+    fn auto_apply_keeps_candidates_when_the_target_is_replaced() {
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path().canonicalize().unwrap();
+        let target = root.join("target");
+        let stage = root.join("stage");
+        let original = root.join("original");
+        std::fs::create_dir(&target).unwrap();
+        let config = pvisor_core::overlay::OverlayConfig {
+            enabled: true,
+            target: Some(target.display().to_string()),
+            stage_dir: Some(stage.display().to_string()),
+            auto_apply: true,
+            ..Default::default()
+        };
+        let prepared = super::prepare_overlay(
+            &config,
+            &root,
+            "auto-apply",
+            true,
+            None,
+            &crate::OverlayHint::default(),
+            None,
+        )
+        .unwrap();
+        let mut record = prepared.record.unwrap();
+        {
+            let core = pvisor_overlay_core::OverlayCore::open_existing_for_layout(
+                pvisor_overlay_core::OverlayLayout::new(vec![target.clone()], target.clone())
+                    .unwrap(),
+                record.upper.upper_dir.clone(),
+                Some(record.upper.work_dir.clone()),
+                Vec::new(),
+                Some(stage.join("preimages")),
+            )
+            .unwrap();
+            use std::io::Write;
+            core.create_file(std::path::Path::new("candidate"), 0o600, libc::O_WRONLY)
+                .unwrap()
+                .write_all(b"staged")
+                .unwrap();
+        }
+        super::stage_overlay_record(&mut record).unwrap();
+        std::fs::rename(&target, &original).unwrap();
+        std::fs::create_dir(&target).unwrap();
+        let scope = prepared.target_scope.as_ref();
+        assert!(
+            super::finalize_overlay(&mut record, true, true, scope)
+                .unwrap_err()
+                .to_string()
+                .contains("project apply root identity changed")
+        );
+        assert!(!target.join("candidate").exists());
+        assert!(!stage.join("apply-ledger.json").exists());
+        assert_eq!(
+            std::fs::read(record.upper.path().join("candidate")).unwrap(),
+            b"staged"
+        );
+        std::fs::remove_dir(&target).unwrap();
+        std::fs::rename(&original, &target).unwrap();
+        super::finalize_overlay(&mut record, true, true, scope).unwrap();
+        assert_eq!(std::fs::read(target.join("candidate")).unwrap(), b"staged");
     }
 
     use super::rewrite_vm_gateway_implant;

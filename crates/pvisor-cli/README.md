@@ -343,7 +343,10 @@ selected default Run home even when storage points elsewhere. `last` remains sco
 launching workspace and works while running and after failure or timeout.
 From a subdirectory, discovery selects the latest Session in the nearest
 registered workspace. The same workspace scope applies when the current
-directory is also the Run home.
+directory is also the Run home. A symlink at a former project path does not
+transfer Session discovery to its new target. If the current directory cannot
+be resolved, implicit selection fails instead of falling back to another Session.
+Older records without the canonical workspace path need an explicit ID or stage path.
 Registration does not replace a conflicting index. If it fails after launch,
 the CLI cancels/drains the accepted workload and reports the explicit stage
 for inspection; partial effects may remain. Use the printed stage path if its
@@ -390,6 +393,10 @@ writeback. A changed directory identity or missing/mismatched binding blocks
 apply. Older rootstages without that launch contract cannot gain project
 authority from the current directory; recreate the stage for project apply.
 Ordinary workspace stages apply only to their owning overlay's recorded target.
+Fresh writable stages also bind that target to its original directory identity:
+preview and apply refuse a replacement directory or a symlink to a different
+target. Restore the original directory to retry. Older ordinary stages without
+the identity retain path-based apply; recreate them if the target has moved.
 Neither that target nor a rootstage's bound project root can be overridden;
 there is no fallback that infers or expands writeback authority.
 

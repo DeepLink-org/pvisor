@@ -942,11 +942,34 @@ pub fn apply_overlay_selected(
     apply_overlay_selected_for_target(record, lower_dirs, selection, None)
 }
 
+/// Apply with a caller-owned target binding check. The check may observe the
+/// target but must not mutate it or acquire another apply lock. It runs after
+/// acquiring the target lock, before recovery, and again before publishing
+/// new intent. It does not serialize unrelated filesystem writers.
+pub fn apply_overlay_selected_checked(
+    record: &mut OverlayRecord,
+    lower_dirs: &[PathBuf],
+    selection: &ApplySelection,
+    check_target: impl Fn(&Path) -> Result<(), OverlayError>,
+) -> Result<ApplyOutcome, OverlayError> {
+    apply_overlay_selected_locked(record, lower_dirs, selection, None, &check_target)
+}
+
 fn apply_overlay_selected_for_target(
     record: &mut OverlayRecord,
     lower_dirs: &[PathBuf],
     selection: &ApplySelection,
     target_kind: Option<ApplyTargetKind>,
+) -> Result<ApplyOutcome, OverlayError> {
+    apply_overlay_selected_locked(record, lower_dirs, selection, target_kind, &|_| Ok(()))
+}
+
+fn apply_overlay_selected_locked(
+    record: &mut OverlayRecord,
+    lower_dirs: &[PathBuf],
+    selection: &ApplySelection,
+    target_kind: Option<ApplyTargetKind>,
+    check_target: &dyn Fn(&Path) -> Result<(), OverlayError>,
 ) -> Result<ApplyOutcome, OverlayError> {
     reconcile_terminal_overlay(record)?;
     crate::stage::require_sealed(&record.stage_dir.join("preimages"))?;
@@ -964,6 +987,7 @@ fn apply_overlay_selected_for_target(
     }
     let target_kind = target_kind.map_or_else(|| ApplyTargetKind::resolve(record), Ok)?;
     let _target_lock = TargetApplyLock::acquire(&record.target)?;
+    check_target(&record.target)?;
     recover_pending_applies_for_target(record, lower_dirs, target_kind)?;
     match record.state {
         OverlayState::Applied if selection.is_all() => {
@@ -988,6 +1012,7 @@ fn apply_overlay_selected_for_target(
         OverlayState::Active | OverlayState::Staged => {}
     }
     let (plan, preimages) = prepare_overlay_apply(record, lower_dirs, selection, target_kind)?;
+    check_target(&record.target)?;
     let apply_id = uuid::Uuid::new_v4().to_string();
     apply_attempt(&apply_id, None, |confirmed| {
         append_apply_record(
@@ -7188,6 +7213,47 @@ mod tests {
         )
         .unwrap();
         (record, plan)
+    }
+
+    #[rstest::rstest]
+    #[case::before_recovery(true, 1)]
+    #[case::before_intent(false, 2)]
+    fn apply_target_check_blocks_recovery_and_new_intent(
+        #[case] pending: bool,
+        #[case] fail_at: usize,
+    ) {
+        let tmp = tempdir().unwrap();
+        let (mut record, _) = interrupted_partial_apply_fixture(tmp.path(), false);
+        let ledger = record.stage_dir.join(APPLY_LEDGER_FILENAME);
+        if !pending {
+            fs::remove_file(&ledger).unwrap();
+        }
+        let saved = fs::read(&ledger).ok();
+        let target = record.target.clone();
+        let checks = std::cell::Cell::new(0);
+        let error = apply_overlay_selected_checked(
+            &mut record,
+            std::slice::from_ref(&target),
+            &ApplySelection::default(),
+            |path| {
+                assert_eq!(path, target);
+                checks.set(checks.get() + 1);
+                if checks.get() == fail_at {
+                    return Err(OverlayError::Apply("target binding rejected".into()));
+                }
+                Ok(())
+            },
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("target binding rejected"));
+        assert_eq!(checks.get(), fail_at);
+        assert_eq!(fs::read(ledger).ok(), saved);
+        assert_eq!(fs::read(target.join("a")).unwrap(), b"old-a");
+        assert_eq!(
+            fs::read(record.upper.path().join("a")).unwrap(),
+            b"staged-a"
+        );
+        assert_eq!(record.state, OverlayState::Staged);
     }
 
     #[test]

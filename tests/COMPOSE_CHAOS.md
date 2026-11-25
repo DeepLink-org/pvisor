@@ -65,6 +65,13 @@ restored, without another frontend. Retrying `up` must release the abandoned
 project lease, reuse the dependency generation and start the admitted dependent.
 Repeated `down` checks cleanup idempotence.
 
+On unprivileged Linux x86-64/KVM, select `-E 'test(compose_native_retirement_)'`
+for the post-rename cleanup fault. Each test uses one running service and a
+private mode-`0500` subdirectory with a file to block deletion. One removes the
+Compose file and repeats `down --project-only` after restoring permissions; the
+other interrupts `up --force-recreate` and retries promotion. Both require the
+exact old retirement to disappear and the named-volume bytes to survive.
+
 ## Safety and evidence
 
 - A new private temporary Docker store and a copied binary are used by each

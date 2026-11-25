@@ -87,6 +87,147 @@ volumes:
     assert_eq!(fs::read(volume.join("sentinel")).unwrap(), b"retain");
 }
 
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[rstest::rstest]
+#[case::pre_rename("prepared")]
+#[case::plan_already_consumed("empty")]
+#[case::directory_deleted_first("deleted")]
+fn project_only_down_recovers_retirement_boundaries(#[case] phase: &str) {
+    let directory = tempfile::tempdir().unwrap();
+    let store = store(directory.path());
+    let project = load(
+        directory.path(),
+        "services: {app: {image: 'fixture:latest'}}",
+    )
+    .unwrap();
+    let member = reconcile(&project, &store).remove(0);
+    let active = store.directory(&member.id);
+    let retired = store.retired_directory(&member.id);
+    private_directory(&store.retired_root()).unwrap();
+    store.prepare_retired_images(&member, &active).unwrap();
+    let receipt = store
+        .prepare_compose_retirement(&member, member.compose.as_ref().unwrap(), &active)
+        .unwrap();
+    if phase != "prepared" {
+        fs::rename(&active, &retired).unwrap();
+        if phase == "empty" {
+            for entry in fs::read_dir(&retired).unwrap() {
+                let entry = entry.unwrap();
+                if entry.file_type().unwrap().is_dir() {
+                    fs::remove_dir_all(entry.path()).unwrap();
+                } else {
+                    fs::remove_file(entry.path()).unwrap();
+                }
+            }
+        } else {
+            fs::remove_dir_all(&retired).unwrap();
+        }
+    }
+    let root = store.root.clone();
+    drop(store);
+    let store = Store::open(root).unwrap();
+    if phase == "prepared" {
+        // A pre-rename receipt does not grant removal authority to a retry.
+        store.finish_project_retirements(&project.name).unwrap();
+        assert_eq!(reconcile(&project, &store).remove(0).id, member.id);
+        assert!(active.is_dir() && receipt.is_file());
+    }
+    Project::down_project_only(&store, &project.name, None).unwrap();
+    assert!(!active.exists() && !retired.exists() && !receipt.exists());
+    Project::down_project_only(&store, &project.name, None).unwrap();
+}
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[test]
+fn compose_down_reaps_only_exact_project_retirements() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = store(directory.path());
+    let project = load(
+        directory.path(),
+        "services: {app: {image: 'fixture:latest'}, orphan: {image: 'fixture:latest'}}",
+    )
+    .unwrap();
+    let members = reconcile(&project, &store);
+    let member = &members[0];
+    let orphan = &members[1];
+    let file = directory.path().join("compose.yaml");
+    let foreign = Project::load(Some(&file), Some("test-foreign")).unwrap();
+    let foreign_members = reconcile(&foreign, &store);
+    let foreign_member = &foreign_members[0];
+    let mut standalone = super::super::tests::request();
+    standalone.image = "fixture:latest".into();
+    standalone.name = Some("test-standalone-1".into());
+    standalone.labels = BTreeMap::from([
+        ("com.docker.compose.project".into(), project.name.clone()),
+        ("com.docker.compose.service".into(), "app".into()),
+    ]);
+    let standalone = store.create(standalone).unwrap();
+    private_directory(&store.retired_root()).unwrap();
+    let retire = |instance: &Instance, record_receipt: bool| {
+        let active = store.directory(&instance.id);
+        store.prepare_retired_images(instance, &active).unwrap();
+        let receipt = record_receipt.then(|| {
+            store
+                .prepare_compose_retirement(instance, instance.compose.as_ref().unwrap(), &active)
+                .unwrap()
+        });
+        let retired = store.retired_directory(&instance.id);
+        fs::rename(active, &retired).unwrap();
+        let record = retired.join(crate::runtime::session_execution::STATE);
+        fs::remove_file(record).unwrap();
+        (retired, receipt)
+    };
+    let (selected_dir, receipt) = retire(member, true);
+    let receipt = receipt.unwrap();
+    let (foreign_dir, foreign_receipt) = retire(foreign_member, true);
+    let (standalone_dir, _) = retire(&standalone, false);
+    // A legacy plan has no project-scoped authority, even if an old record survived.
+    let legacy = &foreign_members[1];
+    let legacy_active = store.directory(&legacy.id);
+    store
+        .prepare_retired_images(legacy, &legacy_active)
+        .unwrap();
+    let legacy_dir = store.retired_directory(&legacy.id);
+    fs::rename(legacy_active, &legacy_dir).unwrap();
+
+    let changed = load(
+        directory.path(),
+        "services: {new: {image: 'fixture:latest'}}",
+    )
+    .unwrap();
+    let original_bytes = fs::read(&receipt).unwrap();
+    fs::write(&receipt, b"{").unwrap();
+    let error = changed.down(&store, None, false, false).unwrap_err();
+    assert!(format!("{error:#}").contains("Compose retirement receipt"));
+    assert!(selected_dir.join(RETIRED_IMAGES).is_file());
+    fs::write(&receipt, original_bytes).unwrap();
+
+    let relocated = directory.path().join("relocated");
+    fs::rename(&selected_dir, &relocated).unwrap();
+    private_directory(&selected_dir).unwrap();
+    let error = changed.down(&store, None, false, false).unwrap_err();
+    assert!(format!("{error:#}").contains("retired directory identity changed"));
+    assert!(selected_dir.is_dir());
+    fs::remove_dir(&selected_dir).unwrap();
+    fs::rename(relocated, &selected_dir).unwrap();
+
+    let error = changed.down(&store, None, false, false).unwrap_err();
+    assert!(format!("{error:#}").contains("network has attached containers"));
+    assert!(!selected_dir.exists() && !receipt.exists());
+    assert!(store.directory(&orphan.id).is_dir());
+    assert!(store.network_instances("test-foreign_default").is_ok());
+    assert!(foreign_dir.join(RETIRED_IMAGES).is_file());
+    assert!(foreign_receipt.unwrap().is_file());
+    assert!(standalone_dir.join(RETIRED_IMAGES).is_file());
+    assert!(legacy_dir.join(RETIRED_IMAGES).is_file());
+    changed.down(&store, None, true, false).unwrap();
+    Project::down_project_only(&store, &foreign.name, None).unwrap();
+    assert!(!foreign_dir.exists());
+    assert!(legacy_dir.is_dir());
+    store.remove_retired(&legacy.id).unwrap();
+    store.remove_retired(&standalone.id).unwrap();
+}
+
 #[test]
 fn compose_empty_stop_signal_inherits_image_and_has_the_unset_config_identity() {
     let directory = tempfile::tempdir().unwrap();

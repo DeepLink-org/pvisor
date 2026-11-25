@@ -488,6 +488,85 @@ impl Drop for Native {
     }
 }
 
+fn native_interactive_run(auto_remove: bool, script: &str, stdin: Option<&[u8]>) -> Output {
+    use std::io::Write;
+
+    let native = Native::new();
+    let mut command = Command::new(&native.binary);
+    command
+        .env("PVISOR_DOCKER_HOME", &native.home)
+        .env_remove("PVISOR_IMAGE_STORE")
+        .arg("run");
+    if auto_remove {
+        command.arg("--rm");
+    }
+    let mut child = command
+        .args([
+            "-i",
+            "--name",
+            "native-test",
+            "--network",
+            "none",
+            "--cpus",
+            "1",
+            "--memory",
+            "128m",
+            "fixture",
+            "sh",
+            "-c",
+            script,
+        ])
+        .stdin(stdin.map_or_else(Stdio::null, |_| Stdio::piped()))
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    if let Some(stdin) = stdin {
+        child.stdin.take().unwrap().write_all(stdin).unwrap();
+    }
+    let deadline = Instant::now() + Duration::from_secs(75);
+    while child.try_wait().unwrap().is_none() {
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let output = child.wait_with_output().unwrap();
+            panic!("interactive run timed out: {command:?}: {output:?}");
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let output = child.wait_with_output().unwrap();
+    assert_eq!(output.status.code(), Some(37), "{command:?}: {output:?}");
+    let listed = native.call(&["ps", "-aq"], None, 0);
+    assert_eq!(listed.stdout.is_empty(), auto_remove, "{listed:?}");
+    output
+}
+
+const IMMEDIATE_EXIT: &str = "printf output; printf error >&2; exit 37";
+
+#[test]
+#[ignore = "requires native virtualization, local sockets and PVISOR_DOCKER_TEST_IMAGE or PVISOR_DOCKER_TEST_ROOTFS"]
+fn docker_native_interactive_immediate_exit_retained() {
+    let output = native_interactive_run(false, IMMEDIATE_EXIT, None);
+    assert_eq!(output.stdout, b"output");
+    assert_eq!(output.stderr, b"error");
+}
+
+#[test]
+#[ignore = "requires native virtualization, local sockets and PVISOR_DOCKER_TEST_IMAGE or PVISOR_DOCKER_TEST_ROOTFS"]
+fn docker_native_interactive_immediate_exit_auto_remove() {
+    let output = native_interactive_run(true, IMMEDIATE_EXIT, None);
+    assert_eq!(output.stdout, b"output");
+    assert_eq!(output.stderr, b"error");
+}
+
+#[test]
+#[ignore = "requires native virtualization, local sockets and PVISOR_DOCKER_TEST_IMAGE or PVISOR_DOCKER_TEST_ROOTFS"]
+fn docker_native_interactive_stdin_forwards_bytes_and_eof() {
+    let input = b"first\0second\n";
+    let output = native_interactive_run(true, "cat; printf error >&2; exit 37", Some(input));
+    assert_eq!(output.stdout, input);
+    assert_eq!(output.stderr, b"error");
+}
+
 #[test]
 #[ignore = "requires native virtualization, local sockets and PVISOR_DOCKER_TEST_IMAGE or PVISOR_DOCKER_TEST_ROOTFS"]
 fn compose_native_command_overrides_and_yaml_fragments() {

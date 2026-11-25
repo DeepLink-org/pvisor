@@ -364,7 +364,12 @@ pub(super) fn review(args: ReviewArgs) -> anyhow::Result<()> {
             );
         }
         if handoff.project_prefix.as_deref() == Some(Path::new(""))
-            || (cfg!(target_os = "linux") && record.project_apply_scope.is_some())
+            || (cfg!(target_os = "linux")
+                && bundle
+                    .filesystem
+                    .as_ref()
+                    .is_some_and(|filesystem| filesystem.target == Path::new("/"))
+                && record.project_apply_scope.is_some())
         {
             println!(
                 "  pvisor apply {} --path <project-relative-path> --dry-run  # preview; omit --dry-run to accept",

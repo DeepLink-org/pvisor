@@ -15,6 +15,9 @@ impl Fixture {
         let root = tempfile::tempdir().unwrap();
         let workspace = root.path().join("project with spaces");
         std::fs::create_dir(&workspace).unwrap();
+        for name in ["tmp", "cache", "data", "runtime", "state"] {
+            std::fs::create_dir(root.path().join(name)).unwrap();
+        }
         let runs = root.path().join("runs");
         Self {
             root,
@@ -24,11 +27,20 @@ impl Fixture {
     }
 
     fn command(&self, cwd: &Path) -> Command {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_pvisor"));
+        self.command_for(cwd, env!("CARGO_BIN_EXE_pvisor"))
+    }
+
+    fn command_for(&self, cwd: &Path, program: &str) -> Command {
+        let mut command = Command::new(program);
         command
             .current_dir(cwd)
             .env("HOME", self.root.path().join("home"))
             .env("XDG_CONFIG_HOME", self.root.path().join("config"))
+            .env("XDG_CACHE_HOME", self.root.path().join("cache"))
+            .env("XDG_DATA_HOME", self.root.path().join("data"))
+            .env("XDG_RUNTIME_DIR", self.root.path().join("runtime"))
+            .env("XDG_STATE_HOME", self.root.path().join("state"))
+            .env("TMPDIR", self.root.path().join("tmp"))
             .env("PVISOR_RUN_HOME", &self.runs)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
@@ -39,6 +51,40 @@ impl Fixture {
         let mut command = self.command(&self.workspace);
         command.args(args);
         finish(command)
+    }
+
+    fn spawn_failed_stage(&self, cwd: &Path, stage: &Path) {
+        let mut command = self.command(cwd);
+        command
+            .args([
+                "spawn",
+                "--executor",
+                "host",
+                "--filesystem",
+                "sandbox",
+                "--overlaynet",
+                "off",
+                "--no-agent-defaults",
+                "--stdio",
+                "capture",
+                "--timeout",
+                "5s",
+                "--stage",
+            ])
+            .arg(stage)
+            .args(["--", "/bin/sh", "-c", "echo staged > candidate; exit 42"]);
+        let output = finish(command);
+        assert_eq!(
+            output.status.code(),
+            Some(42),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(
+            std::fs::read(stage.join("upper/candidate")).unwrap(),
+            b"staged\n"
+        );
+        assert!(!cwd.join("candidate").exists());
     }
 }
 
@@ -297,4 +343,165 @@ fn failed_discovery_registration_drains_and_preserves_the_explicit_stage() {
     assert_eq!(status["live"], false);
     assert_ne!(status["state"], "running");
     assert!(stage.join("completion.json").is_file());
+}
+
+#[test]
+#[cfg_attr(target_os = "macos", ignore = "requires macFUSE")]
+fn implicit_session_selection_does_not_follow_a_rebound_workspace_path() {
+    let f = Fixture::new();
+    let alias = f.root.path().join("launch-alias");
+    let stage = f.root.path().join("external-stage");
+    std::os::unix::fs::symlink(&f.workspace, &alias).unwrap();
+    f.spawn_failed_stage(&alias, &stage);
+
+    let mut command = f.command(&alias);
+    command.args(["status", "last", "--json"]);
+    let original = finish(command);
+    assert!(original.status.success());
+    let status: serde_json::Value = serde_json::from_slice(&original.stdout).unwrap();
+    assert_eq!(status["state"], "failed");
+    let id = status["run"]["run_id"].as_str().unwrap();
+
+    let moved = f.root.path().join("project moved");
+    let sibling = f.root.path().join("project with spaces clone");
+    std::fs::rename(&f.workspace, &moved).unwrap();
+    std::fs::create_dir(&sibling).unwrap();
+    std::os::unix::fs::symlink(&sibling, &f.workspace).unwrap();
+
+    for cwd in [&alias, &sibling, &moved, &stage] {
+        let mut command = f.command(cwd);
+        command.args(["status", "last", "--json"]);
+        let status = finish(command);
+        assert!(
+            !status.status.success(),
+            "selected foreign Session: {status:?}"
+        );
+        assert!(String::from_utf8_lossy(&status.stderr).contains("current workspace"));
+    }
+    assert!(!f.run(&["status", "--json"]).status.success());
+    assert!(!f.run(&["review", "last", "--diff"]).status.success());
+    let preview = f.run(&["apply", "last", "--all", "--dry-run", "--json"]);
+    assert_eq!(preview.status.code(), Some(1), "{preview:?}");
+    let plan: serde_json::Value = serde_json::from_slice(&preview.stdout).unwrap();
+    assert!(plan["source"].is_null());
+
+    let explicit = f.run(&["status", id, "--json"]);
+    assert!(explicit.status.success(), "{explicit:?}");
+    let status: serde_json::Value = serde_json::from_slice(&explicit.stdout).unwrap();
+    assert_eq!(status["run"]["run_id"], id);
+    let review = f.run(&["review", stage.to_str().unwrap(), "--diff"]);
+    assert!(review.status.success(), "{review:?}");
+    assert!(String::from_utf8_lossy(&review.stdout).contains("Added candidate"));
+    assert!(!sibling.join("candidate").exists());
+    assert!(!moved.join("candidate").exists());
+}
+
+#[test]
+#[cfg_attr(target_os = "macos", ignore = "requires macFUSE")]
+fn explicit_apply_refuses_replaced_workspace_and_accepts_restored_directory() {
+    for rebound_as_symlink in [false, true] {
+        let f = Fixture::new();
+        let root = f.root.path();
+        let stage = root.join("external-stage");
+        let moved = root.join("saved-project");
+        let replacement = root.join("replacement-project");
+        std::fs::create_dir(&replacement).unwrap();
+        std::fs::write(replacement.join("sentinel"), b"other checkout").unwrap();
+        f.spawn_failed_stage(&f.workspace, &stage);
+        std::fs::rename(&f.workspace, &moved).unwrap();
+        if rebound_as_symlink {
+            std::os::unix::fs::symlink(&replacement, &f.workspace).unwrap();
+        } else {
+            std::fs::rename(&replacement, &f.workspace).unwrap();
+        }
+        let implicit = f.run(&["status", "last", "--json"]);
+        assert_eq!(implicit.status.code(), Some(1), "{implicit:?}");
+        assert!(
+            String::from_utf8_lossy(&implicit.stderr).contains("current workspace"),
+            "{implicit:?}"
+        );
+
+        let apply = |preview| {
+            let mut command = f.command(root);
+            command
+                .args(["apply"])
+                .arg(&stage)
+                .args(["--path", "candidate", "--json"]);
+            if preview {
+                command.arg("--dry-run");
+            }
+            let output = finish(command);
+            let body = serde_json::from_slice::<serde_json::Value>(&output.stdout).unwrap();
+            (output.status.code(), body)
+        };
+        for preview in [true, false] {
+            let (exit, response) = apply(preview);
+            assert_eq!(exit, Some(3), "{response}");
+            assert_eq!(response["status"], "blocked");
+            let blocker = response["blockers"][0].as_str().unwrap();
+            assert!(
+                blocker.contains("original project directory")
+                    || blocker.contains("project apply root identity changed"),
+                "{blocker}"
+            );
+            assert!(!f.workspace.join("candidate").exists());
+            assert!(!moved.join("candidate").exists());
+            assert_eq!(
+                std::fs::read(f.workspace.join("sentinel")).unwrap(),
+                b"other checkout"
+            );
+            assert_eq!(
+                std::fs::read(stage.join("upper/candidate")).unwrap(),
+                b"staged\n"
+            );
+            assert!(!stage.join("apply-ledger.json").exists());
+        }
+
+        if rebound_as_symlink {
+            std::fs::remove_file(&f.workspace).unwrap();
+        } else {
+            std::fs::rename(&f.workspace, &replacement).unwrap();
+        }
+        std::fs::rename(&moved, &f.workspace).unwrap();
+        assert!(f.run(&["status", "last", "--json"]).status.success());
+        let (exit, preview) = apply(true);
+        assert_eq!(exit, Some(0), "{preview}");
+        assert_eq!(preview["status"], "ready");
+        let (exit, applied) = apply(false);
+        assert_eq!(exit, Some(0), "{applied}");
+        assert_eq!(applied["status"], "applied");
+        assert_eq!(
+            std::fs::read(f.workspace.join("candidate")).unwrap(),
+            b"staged\n"
+        );
+        assert!(!replacement.join("candidate").exists());
+    }
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn apply_preview_does_not_select_a_session_when_cwd_disappears() {
+    let f = Fixture::new();
+    let stage = f.root.path().join("external-stage");
+    f.spawn_failed_stage(&f.workspace, &stage);
+    let unrelated = f.root.path().join("unrelated");
+    std::fs::create_dir(&unrelated).unwrap();
+    let mut command = f.command_for(&unrelated, "/bin/sh");
+    command
+        .args(["-c", "rmdir -- \"$1\" || exit 99; shift; exec \"$@\"", "sh"])
+        .arg(&unrelated)
+        .arg(env!("CARGO_BIN_EXE_pvisor"))
+        .args(["apply", "last", "--all", "--dry-run", "--json"]);
+    let preview = finish(command);
+    assert_eq!(preview.status.code(), Some(1), "{preview:?}");
+    let plan: serde_json::Value = serde_json::from_slice(&preview.stdout).unwrap();
+    assert!(plan["source"].is_null());
+    assert!(
+        plan["blockers"][0]
+            .as_str()
+            .unwrap()
+            .contains("resolve current workspace")
+    );
+    assert!(!unrelated.exists());
+    assert!(!f.workspace.join("candidate").exists());
 }

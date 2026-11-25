@@ -16,7 +16,7 @@ use std::{
 /// Explicit RunSpec metadata opt-in. Ordinary spawn does not set this key.
 pub const PROJECT_APPLY_SCOPE_KEY: &str = "pvisor.project_apply_scope";
 
-/// Versioned project authority captured before launching a root-overlay Execution.
+/// Versioned project directory identity captured before launching an Execution.
 /// Deserialization alone grants no authority: consumers revalidate the directory
 /// identity and completion binding. Symlink components and filesystem root fail.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -55,6 +55,30 @@ impl ProjectApplyScope {
         );
         Ok(())
     }
+
+    pub(crate) fn validate_target(&self, target: &Path) -> anyhow::Result<()> {
+        ensure!(
+            target
+                .canonicalize()
+                .with_context(|| format!("resolve recorded apply target {}", target.display()))?
+                == self.root,
+            "recorded apply target no longer resolves to the original project directory"
+        );
+        self.validate()
+    }
+
+    pub(crate) fn apply_selected(
+        &self,
+        overlay: &mut pvisor_core::overlay::OverlayRecord,
+        lowers: &[PathBuf],
+        selection: &ApplySelection,
+    ) -> Result<pvisor_core::overlay::ApplyOutcome, core::OverlayError> {
+        core::apply_overlay_selected_checked(overlay, lowers, selection, |path| {
+            self.validate_target(path)
+                .map_err(|error| core::OverlayError::Apply(format!("{error:#}")))
+        })
+    }
+
     fn boundary(&self) -> anyhow::Result<core::ProjectApplyBoundary> {
         self.validate()?;
         Ok(core::ProjectApplyBoundary {
@@ -274,10 +298,16 @@ fn command(
         .overlay
         .clone()
         .context("this Session has no OverlayFS workspace")?;
-    if let Some(scope) = &record.project_apply_scope {
+    let rootstage = overlay.target == Path::new("/");
+    if let Some(scope) = &record.project_apply_scope
+        && rootstage
+    {
         scope.validate()?;
     }
-    let rootstage = overlay.target == Path::new("/");
+    let target_scope = record.project_apply_scope.as_ref().filter(|_| !rootstage);
+    if let Some(scope) = target_scope {
+        scope.validate_target(&overlay.target)?;
+    }
     let boundary = if rootstage && !request.rootfs {
         ensure!(
             record.completion_protocol.is_some(),
@@ -470,6 +500,8 @@ fn command(
     response.remaining = ApplyCommandRemaining::default();
     let result = if let Some(boundary) = &boundary {
         core::apply_overlay_selected_scoped(&mut overlay, &lowers, &mapped, boundary)
+    } else if let Some(scope) = target_scope {
+        scope.apply_selected(&mut overlay, &lowers, &mapped)
     } else {
         core::apply_overlay_selected(&mut overlay, &lowers, &mapped)
     };
@@ -1260,7 +1292,10 @@ mod tests {
             teardown.complete(&result).unwrap();
             drop(teardown);
             let record = RunRecord::read(&stage).unwrap();
-            assert_eq!(record.project_apply_scope.is_some(), rootstage);
+            assert_eq!(
+                record.project_apply_scope,
+                Some(ProjectApplyScope::capture(&project).unwrap())
+            );
             if rootstage {
                 seed_execution_session(&record);
             }
