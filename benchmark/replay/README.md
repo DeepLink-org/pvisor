@@ -258,3 +258,36 @@ attribution. Original commands, sleeps, admission and deadlines were retained.
 mise run test-py -- discover -s benchmark/tests -p test_resource_sampler.py
 mise run test-py -- discover -s benchmark/tests -p test_wait_timing.py
 ```
+
+## E3 single-trajectory validation on OpenSandbox
+
+For an opt-in B-SWE-RESIDENT-ENG engineering check, use a non-pooled Kubernetes OpenSandbox deployment with a Kata Firecracker
+handler, the Python OpenSandbox synchronous SDK (tested with opensandbox 1.2.1), and a kubectl context that
+can read RuntimeClasses and sandbox Pods. The registry must serve the original
+prepared OCI manifests used for the AgentENV templates, or the node must have them cached by digest. Save the following
+deployment settings as a JSON file, replacing the example values.
+
+```json
+{"kind":"opensandbox","endpoint":"https://sandbox.example.org",
+ "api_key_env":"OPEN_SANDBOX_API_KEY","kube_context":"benchmark",
+ "namespace":"opensandbox","runtime_class":"kata-fc","fc_handler":"kata-fc",
+ "registry":"registry.example.org/e3","vm_timeout_s":14400}
+```
+
+```sh
+python3 benchmark/replay/e3_one.py --archive "$E3_ARCHIVE" --images "$E3_OCI_CATALOG" \
+  --trajectory ansible-11c1777d56-s12 --backend deployment.json \
+  --execute --output .data/opensandbox-one
+```
+
+The archive contains the historical manifest, plans, task bindings and guest
+timeout helper. The catalog is the images.json produced by the AgentENV OCI
+export. Omit --execute for input verification. This entry runs one selected
+trajectory with its original sleeps and records command output, final diff,
+Pod identity and API cleanup. The physical VM exit and batch admission audits
+belong to the deployment harness.
+
+Set `use_server_proxy` to `true` when the SDK client reaches execd through
+the OpenSandbox server. Use a trusted archive: the wrapper and recorded
+commands execute inside the guest. The workload requests 2 CPUs and 8 GiB.
+Record the actual VM size separately when comparing backends.
