@@ -30,8 +30,11 @@ def inputs(archive, catalog):
     for plan in plans:
         task = plan["task_id"]
         binding, image = bindings[task], images[task]
-        if (plan["image_digest"] != binding["digest"] or binding["rootfs"] != image["source_rootfs"]
-                or binding["base_commit"] != image["base_commit"]):
+        if (
+            plan["image_digest"] != binding["digest"]
+            or binding["rootfs"] != image["source_rootfs"]
+            or binding["base_commit"] != image["base_commit"]
+        ):
             raise ValueError(f"Image binding mismatch for {task}")
     return plans, bindings, images, wrapper
 
@@ -45,8 +48,12 @@ def run(backend, plan, binding, wrapper, output):
         payload = base64.b64encode(json.dumps(dict(command=command, timeout=120)).encode()).decode()
         args = [binding["python"], "-I", "-S", "-c", inline, payload]
         if source:
-            args = ["env", "PATH=" + mini + "/bin:" + env["PATH"],
-                    "PYTHONPATH=" + mini + "/lib/python3.12/site-packages", *args]
+            args = [
+                "env",
+                "PATH=" + mini + "/bin:" + env["PATH"],
+                "PYTHONPATH=" + mini + "/lib/python3.12/site-packages",
+                *args,
+            ]
         transport = backend.exec(shlex.join(args))
         if transport["return_code"]:
             raise RuntimeError("Guest helper failed")
@@ -57,15 +64,26 @@ def run(backend, plan, binding, wrapper, output):
 
     output.mkdir(parents=True, exist_ok=False)
     start = time.monotonic()
-    result = dict(trajectory=plan["trajectory_id"], image=backend.config["image"], replay_completed=False)
+    result = dict(
+        trajectory=plan["trajectory_id"], image=backend.config["image"], replay_completed=False
+    )
     try:
         backend.start()
         result["pod"] = backend.pod
-        checks = [LOCALHOST_INIT, shlex.join([binding["python"], "-c", LOCALHOST_CHECK]),
-                  'test "$(git rev-parse HEAD)" = ' + shlex.quote(binding["base_commit"]),
-                  shlex.join([mini + "/bin/python", "-c", "import sys,yaml,importlib.metadata as m; "
-                              "assert sys.version_info[:3]==(3,12,11) and yaml.__version__=='6.0.3' "
-                              "and m.version('mini-swe-agent')=='2.4.6'"])]
+        checks = [
+            LOCALHOST_INIT,
+            shlex.join([binding["python"], "-c", LOCALHOST_CHECK]),
+            'test "$(git rev-parse HEAD)" = ' + shlex.quote(binding["base_commit"]),
+            shlex.join(
+                [
+                    mini + "/bin/python",
+                    "-c",
+                    "import sys,yaml,importlib.metadata as m; "
+                    "assert sys.version_info[:3]==(3,12,11) and yaml.__version__=='6.0.3' "
+                    "and m.version('mini-swe-agent')=='2.4.6'",
+                ]
+            ),
+        ]
         for check in checks:
             if execute(check, False)["return_code"]:
                 raise RuntimeError("Initial guest check failed: " + check)
@@ -73,7 +91,11 @@ def run(backend, plan, binding, wrapper, output):
         with (output / "steps.jsonl").open("x") as log:
             for i, step in enumerate(plan["steps"]):
                 time.sleep(step["wait_before_s"])
-                row = {"step": i, "skipped": step["skip"], "source_returncode": step["source_returncode"]}
+                row = {
+                    "step": i,
+                    "skipped": step["skip"],
+                    "source_returncode": step["source_returncode"],
+                }
                 if not step["skip"]:
                     row.update(execute(step["command"]))
                 log.write(json.dumps(row) + "\n")
@@ -114,17 +136,32 @@ def main():
     plan = matches[0]
     binding, image = bindings[plan["task_id"]], images[plan["task_id"]]
     reference = image["registry_name"] + "@" + image["descriptor"]["digest"]
-    print(json.dumps(dict(plans=len(plans), tasks=len(bindings), trajectory=args.trajectory,
-                          steps=len(plan["steps"]), prepared_image=reference,
-                          recorded_wait_s=sum(s["wait_before_s"] for s in plan["steps"]))), flush=True)
+    print(
+        json.dumps(
+            dict(
+                plans=len(plans),
+                tasks=len(bindings),
+                trajectory=args.trajectory,
+                steps=len(plan["steps"]),
+                prepared_image=reference,
+                recorded_wait_s=sum(s["wait_before_s"] for s in plan["steps"]),
+            )
+        ),
+        flush=True,
+    )
     if args.execute:
         if not args.backend or not args.output:
             parser.error("Execution requires --backend and --output")
         config = json.loads(args.backend.read_bytes())
         if config.get("kind") != "opensandbox" or config.get("mode", "kata-fc") != "kata-fc":
             parser.error("Expected an OpenSandbox Kata Firecracker deployment")
-        config.update(image=config["registry"].rstrip("/") + "/" + reference, cwd="/app",
-                      vcpus=2, memory="8Gi", env={**binding["image_environment"], **plan["environment"]})
+        config.update(
+            image=config["registry"].rstrip("/") + "/" + reference,
+            cwd="/app",
+            vcpus=2,
+            memory="8Gi",
+            env={**binding["image_environment"], **plan["environment"]},
+        )
         run(OpenSandboxBackend(config), plan, binding, wrapper, args.output)
 
 
