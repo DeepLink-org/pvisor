@@ -18,8 +18,11 @@ Firecracker 的两个读数用来识别宿主波动，不要求 pVisor 快于它
 **VM guest performance** 评论。表格按负载分 15 行，三列并排显示各后端的基线 → 候选
 中位耗时（ms/整项）和变化率；超过阈值的 pVisor 项会标红。若本次测量未产出完整报告，
 评论会给出运行链接而不是显示通过。评论不改变门禁结果。
-[评论工作流](../../.github/workflows/vm-guest-comment.yml) 需先进入默认分支并允许写 PR 评论；
-来自 fork 的 PR 不需要写权限。作业摘要仍显示每项判定；`vm-guest-<run_id>` 制品保留构建
+[benchmark CI](../../.github/workflows/pvisor-benchmark.yml) 在同仓库 PR 的两项 VM 门禁结束后直接调用
+[评论工作流](../../.github/workflows/vm-guest-comment.yml)，不需要先合并 PR。运行时表与启动表由
+`github-actions[bot]` 分别发布，后续提交更新原评论。只有发布作业需要写 PR 评论的权限；
+fork 和 Dependabot 使用默认分支的 `workflow_run` 发布路径，该工作流合入默认分支后生效。
+作业摘要仍显示每项判定；`vm-guest-<run_id>` 制品保留构建
 SHA、制品哈希、逐次命令与日志、Criterion 样本及 `comparison/report.md` 和 `comparison.json`。
 若 CI 在测量阶段失败，先看失败 cell 的 `stderr.log`、`stdout.log` 和 `exit.json`。
 

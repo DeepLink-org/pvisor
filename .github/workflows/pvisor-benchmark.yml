@@ -343,3 +343,16 @@ jobs:
           include-hidden-files: true
           if-no-files-found: warn
           retention-days: 30
+
+  pr-report:
+    name: Publish benchmark reports
+    needs: vm-guest
+    if: >-
+      !cancelled() && github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.id == github.event.repository.id &&
+      github.actor != 'dependabot[bot]'
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: write
+    uses: ./.github/workflows/vm-guest-comment.yml

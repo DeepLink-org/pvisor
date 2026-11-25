@@ -3,15 +3,22 @@
 import importlib.util
 import io
 import json
+import os
 import unittest
 import zipfile
-from unittest.mock import patch
+from unittest.mock import Mock, patch
+
+import yaml
 
 from tests.fixtures import ROOT
 
 SPEC = importlib.util.spec_from_file_location("reporter", ROOT / "scripts/ci/vm_guest_comment.py")
 reporter = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(reporter)
+WORKFLOWS = ROOT / ".github/workflows"
+PUBLISHER = yaml.safe_load((WORKFLOWS / "vm-guest-comment.yml").read_text())
+WRITE_STEP = PUBLISHER["jobs"]["comment"]["steps"][0]
+MARKER = "<!-- pvisor-vm-guest-report"
 
 
 def report(slow=False):
@@ -91,6 +98,57 @@ class VmGuestCommentTests(unittest.TestCase):
             "expired": False,
         }
 
+    def write_comment(self, table, pages, kind="guest"):
+        api = Mock(side_effect=[json.dumps(self.pull), json.dumps(pages), "{}"])
+        env = {
+            "GITHUB_REPOSITORY": "base/pvisor",
+            "GITHUB_SERVER_URL": "https://github.com",
+            "BENCH_RUN": "321",
+            "RUN_NUMBER": "37",
+            "ATTEMPT": "1",
+            "KIND": kind,
+            "PR": "7",
+            "HEAD_SHA": self.run["head_sha"],
+            "TABLE": json.dumps(table),
+        }
+        with patch.dict(os.environ, env), patch("subprocess.check_output", api):
+            try:
+                exec(WRITE_STEP["run"], {})
+            except SystemExit as exit:
+                self.assertEqual(exit.code, 0)
+        return api
+
+    def test_same_repository_pr_calls_publisher_even_after_failed_gate(self):
+        benchmark = yaml.safe_load((WORKFLOWS / "pvisor-benchmark.yml").read_text())
+        job = benchmark["jobs"]["pr-report"]
+        self.assertEqual(job["uses"], "./.github/workflows/vm-guest-comment.yml")
+        self.assertEqual(job["needs"], "vm-guest")
+        self.assertIn("!cancelled()", job["if"])
+        self.assertIn(
+            "github.event.pull_request.head.repo.id == github.event.repository.id", job["if"]
+        )
+        self.assertIn("workflow_call", PUBLISHER[True])
+        self.assertEqual(PUBLISHER["jobs"]["prepare"]["permissions"]["pull-requests"], "read")
+        self.assertEqual(PUBLISHER["jobs"]["comment"]["permissions"], {"pull-requests": "write"})
+        self.assertEqual(len(PUBLISHER["jobs"]["comment"]["steps"]), 1)
+        self.assertEqual(WRITE_STEP["shell"], "python")
+
+    @patch.object(reporter, "comparison")
+    def test_direct_pr_reads_its_own_run_and_attempt(self, comparison):
+        comparison.side_effect = ["guest table", "startup table"]
+        event = {"repository": {"id": 456, "full_name": "base/pvisor"}, "pull_request": self.pull}
+        outputs = reporter.prepare(event, {"GITHUB_RUN_ID": "321", "GITHUB_RUN_ATTEMPT": "2"})
+        self.assertEqual(
+            outputs, {"pr": "7", "guest": '"guest table"', "startup": '"startup table"'}
+        )
+        self.assertEqual(
+            comparison.call_args.args,
+            ("repos/base/pvisor", {"id": 321, "run_attempt": 2}, "startup"),
+        )
+        event["repository"]["id"] = 789
+        with self.assertRaisesRegex(ValueError, "fork reports require"):
+            reporter.prepare(event, {})
+
     def test_table_includes_all_cells_and_highlights_only_product_regressions(self):
         for slow in (False, True):
             text = reporter.render(report(slow))
@@ -120,80 +178,76 @@ class VmGuestCommentTests(unittest.TestCase):
     @patch.object(reporter, "gh")
     def test_fork_updates_only_owned_comment_and_includes_failed_table(self, gh):
         self.run["pull_requests"] = []
-        body = f"{reporter.MARKER} 36:1 -->\nold"
+        body = f"{MARKER} 36:1 -->\nold"
         pages = [
             [{"id": 123, "user": {"login": "human"}, "body": body}],
             [{"id": 124, "user": {"login": "github-actions[bot]"}, "body": body}],
         ]
         gh.side_effect = [
             json.dumps([self.pull]),
-            json.dumps(pages),
             json.dumps({"artifacts": [self.artifact]}),
             zipped("comparison.json", json.dumps(report(slow=True))),
-            b"{}",
+            '{"artifacts":[]}',
         ]
-        reporter.publish(self.event)
+        outputs = reporter.prepare(self.event, {})
+        api = self.write_comment(json.loads(outputs["guest"]), pages)
         self.assertIn("head=fork-owner%3Afeature", gh.call_args_list[0].args[0])
         self.assertEqual(
-            gh.call_args.args, ("repos/base/pvisor/issues/comments/124", "--method", "PATCH")
+            api.call_args.args[0][2:5],
+            ["repos/base/pvisor/issues/comments/124", "--method", "PATCH"],
         )
-        self.assertIn("**FAIL** · 1/30", gh.call_args.kwargs["body"])
-        self.assertIn("actions/runs/321/attempts/1", gh.call_args.kwargs["body"])
+        body = json.loads(api.call_args.kwargs["input"])["body"]
+        self.assertIn("**FAIL** · 1/30", body)
+        self.assertIn("actions/runs/321/attempts/1", body)
 
     @patch.object(reporter, "gh")
     def test_first_run_without_comparison_posts_incomplete_not_pass(self, gh):
-        gh.side_effect = [json.dumps(self.pull), "[[]]", '{"artifacts":[]}', b"{}"]
-        reporter.publish(self.event)
+        gh.side_effect = [json.dumps(self.pull), '{"artifacts":[]}', '{"artifacts":[]}']
+        outputs = reporter.prepare(self.event, {})
+        api = self.write_comment(json.loads(outputs["startup"]), [[]], "startup")
         self.assertEqual(
-            gh.call_args.args, ("repos/base/pvisor/issues/7/comments", "--method", "POST")
+            api.call_args.args[0][2:5], ["repos/base/pvisor/issues/7/comments", "--method", "POST"]
         )
-        self.assertIn("No complete comparison", gh.call_args.kwargs["body"])
+        self.assertIn("No complete comparison", json.loads(api.call_args.kwargs["input"])["body"])
 
-    @patch.object(reporter, "gh")
-    def test_never_posts_for_stale_head_or_supersedes_newer_attempt(self, gh):
+    def test_never_posts_for_stale_head_or_supersedes_newer_attempt(self):
         self.pull["head"]["sha"] = "b" * 40
-        gh.side_effect = [json.dumps(self.pull)]
-        reporter.publish(self.event)
-        self.assertEqual(gh.call_count, 1)
+        self.assertEqual(self.write_comment("guest", [[]]).call_count, 1)
         self.pull["head"]["sha"] = self.run["head_sha"]
-        gh.reset_mock()
-        newer = {"user": {"login": "github-actions[bot]"}, "body": f"{reporter.MARKER} 37:2 -->\n"}
-        gh.side_effect = [json.dumps(self.pull), json.dumps([[newer]])]
-        reporter.publish(self.event)
-        self.assertEqual(gh.call_count, 2)
+        newer = {"user": {"login": "github-actions[bot]"}, "body": f"{MARKER} 37:2 -->\n"}
+        self.assertEqual(self.write_comment("guest", [[newer]]).call_count, 2)
 
     @patch.object(reporter, "gh")
     def test_rejects_unexpected_archive_without_rendering_its_content(self, gh):
         gh.side_effect = [
             json.dumps(self.pull),
-            "[[]]",
             json.dumps({"artifacts": [self.artifact]}),
             zipped("../comparison.json", "@someone"),
-            b"{}",
+            '{"artifacts":[]}',
         ]
-        reporter.publish(self.event)
-        self.assertIn("Invalid comparison artifact", gh.call_args.kwargs["body"])
-        self.assertNotIn("@someone", gh.call_args.kwargs["body"])
+        table = json.loads(reporter.prepare(self.event, {})["guest"])
+        self.assertIn("Invalid comparison artifact", table)
+        self.assertNotIn("@someone", table)
 
     @patch.object(reporter, "gh")
     def test_startup_owns_a_two_row_table_and_does_not_overwrite_guest_comment(self, gh):
         existing = {
             "id": 123,
             "user": {"login": "github-actions[bot]"},
-            "body": f"{reporter.MARKER} 37:1 -->\n## VM guest performance",
+            "body": f"{MARKER} 37:1 -->\n## VM guest performance",
         }
         artifact = {**self.artifact, "name": "vm-startup-table-1"}
         gh.side_effect = [
             json.dumps(self.pull),
-            json.dumps([[existing]]),
+            '{"artifacts":[]}',
             json.dumps({"artifacts": [artifact]}),
             zipped("comparison.json", json.dumps(startup_report())),
-            b"{}",
         ]
-        reporter.publish(self.event, "startup")
+        outputs = reporter.prepare(self.event, {})
+        api = self.write_comment(json.loads(outputs["startup"]), [[existing]], "startup")
         self.assertIn("?name=vm-startup-table-1", gh.call_args_list[2].args[0])
-        self.assertEqual(gh.call_args.args[-1], "POST")
-        body = gh.call_args.kwargs["body"]
+        self.assertIn("POST", api.call_args.args[0])
+        body = json.loads(api.call_args.kwargs["input"])["body"]
         self.assertIn("## VM startup performance", body)
         self.assertIn("**FAIL** · 3/3", body)
         self.assertEqual(body.count("N/A:"), 2)
@@ -222,9 +276,9 @@ class VmGuestCommentTests(unittest.TestCase):
         self.run["run_attempt"] = 2
         gh.side_effect = [
             json.dumps(self.pull),
-            "[[]]",
+            '{"artifacts":[]}',
+            '{"jobs":[{"name":"Process and Run Bundle report"}]}',
             '{"artifacts":[]}',
             '{"jobs":[{"name":"Process and Run Bundle report"}]}',
         ]
-        reporter.publish(self.event)
-        self.assertEqual(gh.call_count, 4)
+        self.assertEqual(reporter.prepare(self.event, {}), {"pr": "7"})

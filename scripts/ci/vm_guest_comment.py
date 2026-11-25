@@ -1,4 +1,4 @@
-"""Publish a read-only benchmark run's comparison as one PR conversation comment."""
+"""Prepare benchmark tables for job summaries and the isolated PR comment job."""
 
 import io
 import json
@@ -13,7 +13,6 @@ from pathlib import Path
 from urllib.parse import urlencode
 
 BACKENDS = ("linux", "rust-native", "firecracker")
-MARKER = "<!-- pvisor-vm-guest-report"
 MAX_REPORT = 64 * 1024
 
 
@@ -98,13 +97,9 @@ def render(report, *, startup=False):
     )
 
 
-def gh(path, *args, body=None):
-    cmd = ["gh", "api", path, *args]
-    if body is not None:
-        cmd += ["--input", "-"]
+def gh(path):
     return subprocess.run(
-        cmd,
-        input=json.dumps({"body": body}).encode() if body is not None else None,
+        ["gh", "api", path],
         check=True,
         stdout=subprocess.PIPE,
         timeout=60,
@@ -166,49 +161,39 @@ def comparison(repo, run, kind):
         return render(json.loads(archive.read(member)), startup=kind == "startup")
 
 
-def publish(event, kind="guest"):
-    if kind not in ("guest", "startup"):
-        raise ValueError("unknown report kind")
-    marker = MARKER if kind == "guest" else "<!-- pvisor-vm-startup-report"
-    run = event["workflow_run"]
+def prepare(event, env):
+    """Missing supported cells produce a notice, never a partial or passing table."""
     repo = "repos/" + event["repository"]["full_name"]
-    pr = pull_number(repo, run)
-    if not pr:
-        return
-    pages = json.loads(gh(f"{repo}/issues/{pr}/comments?per_page=100", "--paginate", "--slurp"))
-    version = (run["run_number"], run["run_attempt"])
-    previous = None
-    for page in pages:
-        for comment in page:
-            match = re.match(rf"^{marker} (\d+):(\d+) -->\n", comment["body"])
-            if match and comment["user"]["login"] == "github-actions[bot]":
-                if tuple(map(int, match.groups())) > version:
-                    return
-                previous = comment["id"]
-                break
-    try:
-        table = comparison(repo, run, kind)
-    except (
-        ValueError,
-        TypeError,
-        KeyError,
-        AttributeError,
-        OverflowError,
-        zipfile.BadZipFile,
-        zlib.error,
-    ):
-        table = "**Invalid comparison artifact.** No table published; inspect the benchmark run."
-    if table is None:
-        return
-    link = f"{run['html_url']}/attempts/{run['run_attempt']}"
-    body = (
-        f"{marker} {version[0]}:{version[1]} -->\n## VM {kind} performance\n\n"
-        f"PR head `{run['head_sha'][:12]}` · [Benchmark run]({link})\n\n{table}"
-    )
-    if previous is None:
-        gh(f"{repo}/issues/{pr}/comments", "--method", "POST", body=body)
+    if "workflow_run" in event:
+        run = event["workflow_run"]
+        pr = pull_number(repo, run)
     else:
-        gh(f"{repo}/issues/comments/{previous}", "--method", "PATCH", body=body)
+        pull = event["pull_request"]
+        if pull["head"]["repo"]["id"] != event["repository"]["id"]:
+            raise ValueError("fork reports require the default-branch publisher")
+        pr = pull["number"]
+        run = {"id": int(env["GITHUB_RUN_ID"]), "run_attempt": int(env["GITHUB_RUN_ATTEMPT"])}
+    if not pr:
+        return {}
+    outputs = {"pr": str(pr)}
+    for kind in ("guest", "startup"):
+        try:
+            table = comparison(repo, run, kind)
+        except (
+            ValueError,
+            TypeError,
+            KeyError,
+            AttributeError,
+            OverflowError,
+            zipfile.BadZipFile,
+            zlib.error,
+        ):
+            table = (
+                "**Invalid comparison artifact.** No table published; inspect the benchmark run."
+            )
+        if table is not None:
+            outputs[kind] = json.dumps(table)
+    return outputs
 
 
 if __name__ == "__main__":
@@ -220,6 +205,7 @@ if __name__ == "__main__":
             )
         )
     else:
-        publish(
-            json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text()), os.environ["REPORT_KIND"]
-        )
+        outputs = prepare(json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text()), os.environ)
+        with Path(os.environ["GITHUB_OUTPUT"]).open("a") as stream:
+            for key, value in outputs.items():
+                print(f"{key}={value}", file=stream)
