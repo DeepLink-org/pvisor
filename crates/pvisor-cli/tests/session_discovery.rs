@@ -125,6 +125,68 @@ fn last_finds_default_and_custom_storage_after_success_failure_and_timeout() {
 
 #[test]
 #[cfg_attr(target_os = "macos", ignore = "requires macFUSE")]
+fn last_prefers_the_nearest_workspace_and_its_latest_session() {
+    let fixture = Fixture::new();
+    let outer = &fixture.workspace;
+    let inner = outer.join("inner");
+    let inner_child = inner.join("src");
+    let outer_child = outer.join("inner-sibling");
+    std::fs::create_dir_all(&inner_child).unwrap();
+    std::fs::create_dir(&outer_child).unwrap();
+
+    let session_id = |cwd: &Path, selector: Option<&Path>| {
+        let mut command = fixture.command(cwd);
+        command.arg("status").args(selector).arg("--json");
+        let output = finish(command);
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let status: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        status["run"]["run_id"].as_str().unwrap().to_owned()
+    };
+    let spawn = |cwd: &Path, stage_name: &str| {
+        let stage = fixture.root.path().join(stage_name);
+        let mut command = fixture.command(cwd);
+        command
+            .args([
+                "spawn",
+                "--filesystem",
+                "host",
+                "--overlaynet",
+                "off",
+                "--no-agent-defaults",
+                "--stdio",
+                "capture",
+                "--stage",
+            ])
+            .arg(&stage)
+            .args(["--", "/bin/sh", "-c", "exit 0"]);
+        let output = finish(command);
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        session_id(cwd, Some(&stage))
+    };
+
+    let older_inner = spawn(&inner, "older inner stage");
+    let newer_inner = spawn(&inner, "newer inner stage");
+    let outer_id = spawn(outer, "outer stage");
+    assert_ne!(older_inner, newer_inner);
+
+    let last = Some(Path::new("last"));
+    assert_eq!(session_id(&inner, last), newer_inner);
+    assert_eq!(session_id(&inner_child, None), newer_inner);
+    assert_eq!(session_id(&outer_child, last), outer_id);
+    assert_eq!(session_id(outer, last), outer_id);
+    assert_eq!(session_id(&inner_child, Some(&fixture.runs)), outer_id);
+}
+
+#[test]
+#[cfg_attr(target_os = "macos", ignore = "requires macFUSE")]
 fn custom_live_session_is_discoverable_and_cancellable_through_last() {
     let fixture = Fixture::new();
     let stage = fixture.root.path().join("custom stage");
