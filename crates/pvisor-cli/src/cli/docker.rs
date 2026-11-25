@@ -146,6 +146,8 @@ pub(super) enum ImageCommand {
     Ls(ListImages),
     #[command(alias = "remove")]
     Rm(RemoveImages),
+    /// Reclaim temporary work left by interrupted local image imports.
+    PruneStaging,
     Inspect(Inspect),
 }
 
@@ -177,9 +179,9 @@ impl DockerCommand {
                 ImageCommand::Push(args) => Self::Push(args),
                 ImageCommand::Ls(args) => Self::Images(args),
                 ImageCommand::Rm(args) => Self::Rmi(args),
-                ImageCommand::Inspect(args) => Self::Image {
-                    command: ImageCommand::Inspect(args),
-                },
+                command @ (ImageCommand::Inspect(_) | ImageCommand::PruneStaging) => {
+                    Self::Image { command }
+                }
             },
             command => command,
         }
@@ -384,6 +386,9 @@ pub(super) struct Stop {
 }
 #[derive(Debug, Args)]
 pub(super) struct Remove {
+    /// Finish an interrupted directory cleanup by full container ID.
+    #[arg(long, conflicts_with_all = ["force", "volumes"])]
+    retired: bool,
     #[arg(short, long)]
     force: bool,
     #[arg(short, long)]
@@ -655,6 +660,14 @@ pub(super) fn run(command: DockerCommand) -> anyhow::Result<i32> {
             _ => {}
         }
     }
+    if let DockerCommand::Image {
+        command: ImageCommand::PruneStaging,
+    } = command
+    {
+        let removed = Store::discover()?.prune_image_staging()?;
+        println!("Removed {removed} interrupted image import directories.");
+        return Ok(0);
+    }
     if matches!(
         command,
         DockerCommand::Container { .. } | DockerCommand::Image { .. } | DockerCommand::Inspect(_)
@@ -848,10 +861,13 @@ pub(super) fn run(command: DockerCommand) -> anyhow::Result<i32> {
         }
         DockerCommand::Rm(args) => {
             return batch(&args.containers, |selector| {
-                if args.force {
-                    store.stop(selector, Duration::ZERO, Some("SIGKILL"))?;
+                if args.retired {
+                    store.remove_retired(selector)?;
+                } else if args.force {
+                    store.force_remove(selector, args.volumes)?;
+                } else {
+                    store.remove(selector, args.volumes)?;
                 }
-                store.remove(selector, args.volumes)?;
                 println!("{selector}");
                 Ok(())
             });

@@ -15,12 +15,15 @@ An explicit Session/cache image-store option takes precedence, followed by `PVIS
 │   ├── format.json
 │   ├── meta/<image-key>/...
 │   └── data/blobs/...
-├── staging/.import-*/
+├── staging/.leased-import-v1-*/
 ├── locks/
 └── projections/
 ```
 
-Download/extraction directories under `staging` are removed on normal success or failure; process crashes can leave residual directories. `configs` retains digest-checked original OCI configuration. New local images use `image-pack-v1`; pinned prerelease V2 images retain their old locations. Docker pull still resolves the registry, but reuses matching shared-pool digests. Build commits each tag independently. `rmi` removes catalog references without reclaiming shared content; active and stopped tasks retain fixed revisions.
+Download and extraction directories under `staging` are normally removed when the import ends.
+After a process crash, `pvisor image prune-staging` removes abandoned staging directories with import leases. Active imports, staging directories from older releases and published images are retained. `configs` retains digest-checked original OCI configuration. New local images use `image-pack-v1`; pinned prerelease V2 images retain their old locations. Docker pull still resolves the registry, but reuses matching shared-pool digests. Build commits each tag independently. `rmi` removes catalog references without reclaiming shared content; active and stopped tasks retain fixed revisions.
+
+If a lease cannot be read or is invalid, the command preserves that directory and keeps checking the others. It exits with an error that reports the number removed and the first affected path.
 
 Short and fully qualified Docker Hub aliases share one canonical catalog identity, including pull/build replacement, create/FROM lookup and rmi. Equivalent build tags publish once. Distinct tags and existing containers retain their pinned revisions. Catalogs containing duplicate canonical identities fail explicitly; rebuild those catalogs in a fresh store.
 

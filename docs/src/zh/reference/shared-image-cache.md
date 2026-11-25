@@ -15,12 +15,14 @@ Docker 兼容命令、未选择远程后端的 spawn 和 cache server 共用一�
 │   ├── format.json
 │   ├── meta/<image-key>/...
 │   └── data/blobs/...
-├── staging/.import-*/
+├── staging/.leased-import-v1-*/
 ├── locks/
 └── projections/
 ```
 
-`staging` 中的下载／解包目录在普通成功或失败后删除，进程崩溃可能留下残余。`configs` 保存按摘要校验的原始 OCI 配置。新本地镜像使用 `image-pack-v1`，已固定的预发布 V2 镜像保留原位置。Docker pull 仍查询 registry，但可复用相同 digest 的共享池内容。build 的各个标签独立提交。`rmi` 只移除 catalog 引用，不回收共享内容；活动和已停止任务保留固定 revision。
+`staging` 中的下载和解包目录通常在导入结束时删除。进程崩溃后，可用 `pvisor image prune-staging` 清理带导入租约的废弃临时目录。正在进行的导入、旧版本创建的临时目录和已发布的镜像均保留。`configs` 保存按摘要校验的原始 OCI 配置。新本地镜像使用 `image-pack-v1`，已固定的预发布 V2 镜像保留原位置。Docker pull 仍查询 registry，但可复用相同 digest 的共享池内容。build 的各个标签独立提交。`rmi` 只移除 catalog 引用，不回收共享内容；活动和已停止任务保留固定 revision。
+
+租约无法读取或无效时，命令保留对应目录并继续检查其他目录，最终以错误状态退出并报告已清理数量和首个出错路径。
 
 Docker Hub 短名和完整名共用一个 canonical catalog 身份，pull/build 替换、create/FROM 查找和 rmi 都按这个身份处理。等价 build 标签只发布一次；不同标签和已有容器保留各自固定的 revision。包含重复 canonical 身份的 catalog 明确报错，需在新存储中重新构建。
 

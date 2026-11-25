@@ -54,6 +54,9 @@ pvisor rm redis
 Unix 容器与任务 Session 使用 schema 4 记录，各有独立存储和命令能力。
 容器 review/apply/drop 选择暂存绑定挂载。
 
+若容器删除报告清理未完成，使用错误消息中的完整 ID 执行 `pvisor rm --retired FULL_ID`。
+此命令拒绝仍有活动记录的容器。完整 ID 已不存在时返回成功，可重复执行。
+
 ### 用 `@root` 运行宿主已安装的工具 {#run-host-tools}
 
 在支持 KVM 的 Linux x86_64 上，把 `@root` 放在镜像名的位置。它不是 OCI 镜像，不会被拉取

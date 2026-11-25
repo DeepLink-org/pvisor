@@ -157,7 +157,7 @@ jobs:
     env:
       PYTHONUTF8: "1"
       # Exact linux/amd64 manifest used in the recorded native WHP acceptance.
-      PVISOR_WINDOWS_TEST_IMAGE: mirror.gcr.io/library/alpine@sha256:0f49f331d9212aff11b932863be4eb01cdf962969aa86dab7d1ee21ac6f5f52b
+      PVISOR_WINDOWS_TEST_IMAGE: registry-1.docker.io/library/alpine@sha256:0f49f331d9212aff11b932863be4eb01cdf962969aa86dab7d1ee21ac6f5f52b
     steps:
       - uses: actions/checkout@v4
       - name: Create fresh WHP evidence directory

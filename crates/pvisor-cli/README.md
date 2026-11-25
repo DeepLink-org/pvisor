@@ -341,6 +341,9 @@ storage and still defaults to `--network bridge`.
 Accepted `spawn`, `stage` and `run @root` launches register discovery in the
 selected default Run home even when storage points elsewhere. `last` remains scoped to the
 launching workspace and works while running and after failure or timeout.
+From a subdirectory, discovery selects the latest Session in the nearest
+registered workspace. The same workspace scope applies when the current
+directory is also the Run home.
 Registration does not replace a conflicting index. If it fails after launch,
 the CLI cancels/drains the accepted workload and reports the explicit stage
 for inspection; partial effects may remain. Use the printed stage path if its
@@ -683,6 +686,11 @@ unsupported. An empty managed volume must first be initialized through a
 writable mount before it can be mounted read-only. Read-only shares reject
 mutation requests in the host adapter as well as in the guest mount. `stop`/`start` retains the instance upper and volumes; `rm` drops
 the upper, `rm -v` also drops anonymous volumes, and named volumes survive.
+A retry of `rm -v` skips anonymous volumes already removed.
+If container cleanup reports a retry command, use `rm --retired FULL_ID`
+to finish deletion. This also resumes pending cleanup of retained image
+projections and cold imports. The command addresses retired data by exact
+ID and refuses active instance directories. An already-absent full ID succeeds.
 `volume rm` refuses references from running **or stopped** containers, validates
 Compose-owned directory identity and reconciles its ownership record after deletion.
 It never removes host binds; there is no force bypass, volume prune or nonlocal driver.
@@ -1703,6 +1711,11 @@ Start preserves private Linux filesystem writes and logs without pulling or
 reapplying the image. A new owner generation fences old attachments. Unknown
 or unconfirmed preparation cannot restart. `rmi -f` untags in-use images without
 deleting container data; blob garbage collection is not yet provided.
+
+Use `pvisor image prune-staging` to reclaim temporary downloads and extracted
+files left by interrupted local image imports. The command checks each import
+lease and leaves active imports, published images and legacy staging directories
+in place.
 
 Unix unit-test builds also compile and test the actual Windows argument parser.
 This checks command/option spelling and literal values, not native pipe I/O or

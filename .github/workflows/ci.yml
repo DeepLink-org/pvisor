@@ -128,7 +128,7 @@ jobs:
           test -x /usr/bin/python3
           {
             echo 'PVISOR_CASE_VM_PYTHON=/usr/bin/python3'
-            echo 'PVISOR_CASE_IMAGE=mirror.gcr.io/library/ubuntu:24.04'
+            echo 'PVISOR_CASE_IMAGE=docker.io/library/ubuntu:24.04'
             echo 'PVISOR_CASE_AGENT=/usr/bin/true'
             echo "PVISOR_CASE_VM_LIBRARY_DIR=$RUNNER_TEMP/feature-runtime"
           } >> "$GITHUB_ENV"
@@ -680,7 +680,7 @@ jobs:
           SUITE: ${{ matrix.suite }}
           PVISOR_GUEST_KERNEL: ${{ matrix.kernel }}
           PVISOR_BINARY: ${{ runner.temp }}/podman-runtime/pvisor
-          PVISOR_TEST_IMAGE: mirror.gcr.io/library/alpine:3.20
+          PVISOR_TEST_IMAGE: docker.io/library/alpine:3.20
           PVISOR_KRUN_LOG: "1"
           RUST_LOG: error
           CONTRACT_LOGS: ${{ runner.temp }}/podman-contracts

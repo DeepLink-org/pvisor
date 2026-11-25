@@ -816,7 +816,7 @@ pub fn resolve_run(selector: Option<&Path>, storage: &Path) -> anyhow::Result<Ru
             return resolve_last(storage, std::env::current_dir().ok().as_deref());
         }
         if selector.exists() || selector.components().count() > 1 {
-            return resolve_path(selector);
+            return resolve_path(selector, RunPathSelector::Explicit);
         }
         let id = selector.to_string_lossy();
         let index = run_index_path(storage, &id);
@@ -824,7 +824,7 @@ pub fn resolve_run(selector: Option<&Path>, storage: &Path) -> anyhow::Result<Ru
             let index: RunIndex = serde_json::from_slice(&fs::read(index)?)?;
             return RunRecord::read(&index.stage_dir);
         }
-        if let Some(record) = default_runs()?
+        if let Some(record) = discover_runs(None)?
             .into_iter()
             .find(|record| record.run_id == id)
         {
@@ -840,40 +840,40 @@ pub fn resolve_run(selector: Option<&Path>, storage: &Path) -> anyhow::Result<Ru
 
 fn resolve_last(storage: &Path, current: Option<&Path>) -> anyhow::Result<RunRecord> {
     if let Some(current) = current {
-        if let Ok(record) = resolve_path(current) {
-            return Ok(record);
-        }
-        if let Ok(record) = latest_workspace_run(current) {
-            return Ok(record);
-        }
-        // Do not silently fall back to the newest Run from another workspace:
-        // `last` would then point `status`/`apply`/`drop` at an unrelated Session,
-        // and `apply` would write that Session's changes back into its own target.
-        anyhow::bail!(
-            "no pVisor Run found for the current workspace ({}); `last` resolves only \
-             Runs registered for this workspace. Pass the Session id or an explicit stage \
-             path, for example `pvisor status --review PATH`",
-            current.display()
-        );
+        return resolve_path(current, RunPathSelector::CurrentWorkspace);
     }
     latest_run(storage).or_else(|_| latest_default_run())
 }
 
-fn default_runs() -> anyhow::Result<Vec<RunRecord>> {
+fn discover_runs(mut local_index: Option<&Path>) -> anyhow::Result<Vec<RunRecord>> {
+    let strict = local_index.is_some();
     let mut records = Vec::new();
     for root in default_run_roots() {
-        if !root.is_dir() {
-            continue;
+        let entries = match fs::read_dir(&root) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(_) if !strict && !root.is_dir() => continue,
+            Err(error) => {
+                return Err(error).with_context(|| format!("read Run home {}", root.display()));
+            }
+        };
+        if local_index.is_some_and(|index| {
+            root == index || root.canonicalize().is_ok_and(|root| root == index)
+        }) {
+            local_index = None;
         }
-        records.extend(all_runs(&root)?);
-        for entry in fs::read_dir(root)? {
+        records.extend(read_run_index(&root, strict)?);
+        for entry in entries {
             let storage = entry?.path();
             if let Ok(record) = RunRecord::read(&storage) {
                 records.push(record);
-            } else {
-                records.extend(all_runs(&storage)?);
+            } else if storage.is_dir() {
+                records.extend(read_run_index(&storage, strict)?);
             }
         }
+    }
+    if let Some(index) = local_index {
+        records.extend(read_run_index(index, strict)?);
     }
     records.sort_by_key(|record| std::cmp::Reverse(record.started_at_unix_ms));
     let mut stages = std::collections::BTreeSet::new();
@@ -882,7 +882,7 @@ fn default_runs() -> anyhow::Result<Vec<RunRecord>> {
 }
 
 fn latest_default_run() -> anyhow::Result<RunRecord> {
-    default_runs()?.into_iter().next().ok_or_else(|| {
+    discover_runs(None)?.into_iter().next().ok_or_else(|| {
         anyhow::anyhow!(
             "no pVisor Runs found under {}",
             default_run_home().display()
@@ -890,26 +890,30 @@ fn latest_default_run() -> anyhow::Result<RunRecord> {
     })
 }
 
-fn latest_workspace_run(workspace: &Path) -> anyhow::Result<RunRecord> {
-    let workspace = workspace
-        .canonicalize()
-        .unwrap_or_else(|_| workspace.to_path_buf());
-    default_runs()?
+fn latest_workspace_run(workspace: &Path, records: Vec<RunRecord>) -> Option<RunRecord> {
+    records
         .into_iter()
-        .find(|record| {
-            record.workspace.as_ref().is_some_and(|root| {
-                let root = root.canonicalize().unwrap_or_else(|_| root.clone());
-                workspace.starts_with(root)
-            })
+        .filter_map(|record| {
+            let root = record.workspace.as_ref()?;
+            let root = root.canonicalize().unwrap_or_else(|_| root.clone());
+            workspace
+                .starts_with(&root)
+                .then(|| (root.components().count(), record))
         })
-        .ok_or_else(|| {
-            anyhow::anyhow!("no pVisor Runs found for workspace {}", workspace.display())
-        })
+        // Runs are sorted newest first. Keep the first run at the greatest depth.
+        .min_by_key(|(depth, _)| std::cmp::Reverse(*depth))
+        .map(|(_, record)| record)
 }
 
-fn resolve_path(path: &Path) -> anyhow::Result<RunRecord> {
+enum RunPathSelector {
+    Explicit,
+    CurrentWorkspace,
+}
+
+fn resolve_path(path: &Path, selector: RunPathSelector) -> anyhow::Result<RunRecord> {
     let absolute = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
-    if absolute.join(".pvisor").join("runs").is_dir() {
+    let implicit = matches!(selector, RunPathSelector::CurrentWorkspace);
+    if !implicit && absolute.join(".pvisor").join("runs").is_dir() {
         return latest_run(&absolute);
     }
     let mut candidates = Vec::new();
@@ -943,7 +947,12 @@ fn resolve_path(path: &Path) -> anyhow::Result<RunRecord> {
         }
     }
 
-    if let Ok(record) = latest_workspace_run(&absolute) {
+    let records = if implicit {
+        discover_runs(Some(&absolute))?
+    } else {
+        discover_runs(None).unwrap_or_default()
+    };
+    if let Some(record) = latest_workspace_run(&absolute, records) {
         return Ok(record);
     }
 
@@ -951,8 +960,8 @@ fn resolve_path(path: &Path) -> anyhow::Result<RunRecord> {
     // nearest project storage and compare canonical roots.
     for ancestor in absolute.ancestors() {
         let storage = ancestor.join(".pvisor").join("capture");
-        if storage.is_dir() {
-            for record in all_runs(&storage)? {
+        if implicit || storage.is_dir() {
+            for record in read_run_index(&storage, implicit)? {
                 if record.overlay.as_ref().is_some_and(|overlay| {
                     path_within(&absolute, &overlay.target)
                         || path_within(&absolute, &overlay.merged_dir)
@@ -963,6 +972,14 @@ fn resolve_path(path: &Path) -> anyhow::Result<RunRecord> {
             }
         }
     }
+    if implicit {
+        anyhow::bail!(
+            "no pVisor Run found for the current workspace ({}); `last` resolves only \
+             Runs registered for this workspace. Pass the Session id or an explicit stage \
+             path, for example `pvisor status --review PATH`",
+            path.display()
+        );
+    }
     anyhow::bail!("no pVisor Run metadata found for {}", path.display())
 }
 
@@ -972,25 +989,53 @@ fn path_within(path: &Path, root: &Path) -> bool {
 }
 
 pub fn all_runs(storage: &Path) -> anyhow::Result<Vec<RunRecord>> {
+    read_run_index(storage, false)
+}
+
+fn read_run_index(storage: &Path, strict: bool) -> anyhow::Result<Vec<RunRecord>> {
     let dir = storage.join(".pvisor").join("runs");
-    if !dir.is_dir() {
-        return Ok(Vec::new());
-    }
+    let entries = match fs::read_dir(&dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(_) if !strict && !dir.is_dir() => return Ok(Vec::new()),
+        Err(error) => {
+            return Err(error).with_context(|| format!("read Run index {}", dir.display()));
+        }
+    };
     let mut records = Vec::new();
-    for entry in fs::read_dir(dir)? {
-        let path = entry?.path();
+    for entry in entries {
+        let path = entry
+            .with_context(|| format!("list Run index {}", dir.display()))?
+            .path();
         if path
             .extension()
             .is_some_and(|extension| extension == "json")
         {
-            let index: RunIndex = match serde_json::from_slice(&fs::read(path)?) {
+            let bytes = match fs::read(&path) {
+                Ok(bytes) => bytes,
+                Err(error) if strict && error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(error) => {
+                    return Err(error)
+                        .with_context(|| format!("read Run index entry {}", path.display()));
+                }
+            };
+            let index: RunIndex = match serde_json::from_slice(&bytes) {
                 Ok(index) => index,
                 Err(_) => continue,
             };
-            if let Ok(record) = RunRecord::read(&index.stage_dir)
-                && record.run_id == index.run_id
-            {
-                records.push(record);
+            match RunRecord::read(&index.stage_dir) {
+                Ok(record) if record.run_id == index.run_id => records.push(record),
+                Err(error)
+                    if strict
+                        && error
+                            .downcast_ref::<std::io::Error>()
+                            .is_some_and(|error| error.kind() != std::io::ErrorKind::NotFound) =>
+                {
+                    return Err(error).with_context(|| {
+                        format!("read Run stage referenced by {}", path.display())
+                    });
+                }
+                _ => {}
             }
         }
     }
@@ -1762,10 +1807,86 @@ mod tests {
                 .run_id,
             "run-test"
         );
-        assert_eq!(resolve_path(&stage).unwrap().run_id, "run-test");
-        assert_eq!(resolve_path(&upper).unwrap().run_id, "run-test");
-        assert_eq!(resolve_path(&storage).unwrap().run_id, "run-test");
+        assert_eq!(
+            resolve_path(&stage, RunPathSelector::Explicit)
+                .unwrap()
+                .run_id,
+            "run-test"
+        );
+        assert_eq!(
+            resolve_path(&upper, RunPathSelector::Explicit)
+                .unwrap()
+                .run_id,
+            "run-test"
+        );
+        assert_eq!(
+            resolve_path(&storage, RunPathSelector::Explicit)
+                .unwrap()
+                .run_id,
+            "run-test"
+        );
         assert_eq!(resolve_last(&storage, None).unwrap().run_id, "run-test");
+    }
+
+    #[test]
+    fn last_scopes_a_local_run_index_to_its_workspace() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = temp.path().join("workspace");
+        let nested = workspace.join("nested");
+        fs::create_dir_all(&nested).unwrap();
+        for (id, launch_dir, started_at) in [
+            ("older-outer", &workspace, 1),
+            ("newer-outer", &workspace, 2),
+            ("nested", &nested, 3),
+        ] {
+            let storage = temp.path().join(id);
+            let stage = storage.join("stage");
+            let upper = stage.join("upper");
+            fs::create_dir_all(&upper).unwrap();
+            let mut run = record(&storage, &stage, &upper);
+            run.run_id = id.into();
+            run.workspace = Some(launch_dir.clone());
+            run.started_at_unix_ms = started_at;
+            run.write().unwrap();
+            run.register_discovery(&workspace).unwrap();
+        }
+        let stale = RunIndex {
+            run_id: "stale".into(),
+            stage_dir: temp.path().join("removed-stage"),
+        };
+        fs::write(
+            run_index_path(&workspace, &stale.run_id),
+            serde_json::to_vec(&stale).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            resolve_last(&workspace, Some(&workspace)).unwrap().run_id,
+            "newer-outer"
+        );
+        assert_eq!(
+            resolve_path(&workspace, RunPathSelector::Explicit)
+                .unwrap()
+                .run_id,
+            "nested"
+        );
+
+        let unreadable = run_index_path(&workspace, "unreadable");
+        fs::create_dir(&unreadable).unwrap();
+        let error = resolve_last(&workspace, Some(&workspace)).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains(&unreadable.display().to_string())
+        );
+        assert_eq!(
+            resolve_path(
+                &temp.path().join("newer-outer/stage"),
+                RunPathSelector::Explicit
+            )
+            .unwrap()
+            .run_id,
+            "newer-outer"
+        );
     }
 
     #[test]
