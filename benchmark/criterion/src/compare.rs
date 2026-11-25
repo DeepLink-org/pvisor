@@ -1,17 +1,26 @@
 //! CI gate over Criterion-produced estimates. No sampling or recomputation of
 //! statistics; this is not a randomized A/B claim or a documentation publisher.
+mod vm_matrix;
 use anyhow::{Context, Result, ensure};
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use serde_json::{Value, json};
 use std::{
     fs,
     path::{Path, PathBuf},
 };
 
+#[derive(Clone, Copy, ValueEnum)]
+enum Suite {
+    Process,
+    VmGuest,
+}
+
 #[derive(Parser)]
 struct Args {
     /// Shared Criterion result root.
     root: PathBuf,
+    #[arg(long, value_enum, default_value = "process")]
+    suite: Suite,
     #[arg(long, default_value = "candidate")]
     candidate: String,
     #[arg(long, default_value = "main")]
@@ -42,25 +51,50 @@ fn run(args: Args) -> Result<()> {
         !args.candidate.contains(['/', '\\']) && !args.baseline.contains(['/', '\\']),
         "baseline names must be single directory names"
     );
+    ensure!(
+        args.candidate != args.baseline,
+        "cannot gate a cohort against itself"
+    );
     fs::create_dir(&args.output).context("comparison output must be fresh")?;
-    let mut report = String::from(
-        "# Process regression gate\n\n\
+    let (title, group, conditions): (_, _, Vec<_>) = match args.suite {
+        Suite::Process => (
+            "Process",
+            "process_smoke",
+            ["native", "host-run", "status", "review"]
+                .into_iter()
+                .map(|name| (name.to_owned(), false))
+                .collect(),
+        ),
+        Suite::VmGuest => (
+            "VM guest",
+            vm_matrix::GROUP,
+            vm_matrix::cells()
+                .map(|(backend, _, name)| (name, backend == vm_matrix::REFERENCE))
+                .collect(),
+        ),
+    };
+    let mut report = format!(
+        "# {title} regression gate\n\n\
 Criterion 0.7.0 median estimates; sequential cohorts, not a causal A/B result.\n\n\
 | Condition | Baseline ns/op | Candidate ns/op | Change | Gate |\n\
 | --- | ---: | ---: | ---: | --- |\n",
     );
     let mut rows = Vec::new();
     let mut passed = true;
-    for condition in ["native", "host-run", "status", "review"] {
-        let root = args.root.join("process_smoke").join(condition);
+    for (condition, reference) in conditions {
+        let root = args.root.join(group).join(&condition);
         let candidate = median(&root.join(&args.candidate).join("estimates.json"))?;
         let baseline = median(&root.join(&args.baseline).join("estimates.json"))?;
         let change = 100.0 * (candidate / baseline - 1.0);
-        let pass = change <= args.threshold;
-        passed &= pass;
+        let pass = (!reference).then(|| candidate <= baseline + baseline * args.threshold / 100.0);
+        passed &= pass.unwrap_or(true);
         report.push_str(&format!(
             "| {condition} | {baseline:.2} | {candidate:.2} | {change:+.2}% | {} |\n",
-            if pass { "PASS" } else { "REGRESSION" }
+            match pass {
+                None => "REFERENCE",
+                Some(true) => "PASS",
+                Some(false) => "REGRESSION",
+            }
         ));
         rows.push(json!({"condition":condition, "baseline_ns_per_op":baseline,
             "candidate_ns_per_op":candidate, "change_pct":change, "passed":pass}));
@@ -75,7 +109,7 @@ Criterion 0.7.0 median estimates; sequential cohorts, not a causal A/B result.\n
     )?;
     ensure!(
         passed,
-        "process regression exceeds {}% threshold",
+        "{title} regression exceeds {}% threshold",
         args.threshold
     );
     Ok(())
@@ -118,6 +152,7 @@ mod tests {
             }
             let output = d.path().join(format!("comparison-{index}"));
             let result = run(Args {
+                suite: Suite::Process,
                 root: d.path().into(),
                 candidate: "new".into(),
                 baseline: "main".into(),
@@ -131,6 +166,97 @@ mod tests {
             assert_eq!(report["passed"], index == 0);
         }
     }
+
+    #[test]
+    fn vm_gate_requires_all_cells_and_never_averages_away_a_tmpfs_regression() {
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path().join(vm_matrix::GROUP);
+        for (backend, _, name) in vm_matrix::cells() {
+            for arm in ["main", "new"] {
+                let cell = root.join(&name).join(arm);
+                fs::create_dir_all(&cell).unwrap();
+                let ns = if backend == vm_matrix::REFERENCE && arm == "new" {
+                    200
+                } else {
+                    100
+                };
+                fs::write(
+                    cell.join("estimates.json"),
+                    json!({"median":{"point_estimate":ns}}).to_string(),
+                )
+                .unwrap();
+            }
+        }
+        let gate = |output: &str| {
+            run(Args {
+                suite: Suite::VmGuest,
+                root: d.path().into(),
+                candidate: "new".into(),
+                baseline: "main".into(),
+                threshold: 15.0,
+                output: d.path().join(output),
+            })
+        };
+        gate("pass").unwrap();
+        let path = root.join("rust-native-tmpfs-metadata/new/estimates.json");
+        fs::write(&path, r#"{"median":{"point_estimate":116}}"#).unwrap();
+        assert!(gate("slow").is_err());
+        assert!(
+            fs::read_to_string(d.path().join("slow/report.md"))
+                .unwrap()
+                .contains("rust-native-tmpfs-metadata | 100.00 | 116.00 | +16.00% | REGRESSION")
+        );
+        fs::write(&path, r#"{"median":{"point_estimate":100}}"#).unwrap();
+        let dirscan = root.join("rust-native-tmpfs-dirscan/new/estimates.json");
+        fs::write(&dirscan, r#"{"median":{"point_estimate":116}}"#).unwrap();
+        assert!(gate("slow-dirscan").is_err());
+        fs::write(dirscan, r#"{"median":{"point_estimate":100}}"#).unwrap();
+        fs::remove_file(root.join("firecracker-cpu-integer/main/estimates.json")).unwrap();
+        assert!(
+            gate("missing")
+                .unwrap_err()
+                .to_string()
+                .contains("firecracker-cpu-integer")
+        );
+    }
+
+    #[test]
+    fn old_guest_baseline_cannot_pass_the_expanded_gate() {
+        let d = tempfile::tempdir().unwrap();
+        let legacy = [
+            "cpu-integer",
+            "memory-copy",
+            "disk-write-fsync",
+            "tmpfs-write",
+            "tmpfs-read",
+            "tmpfs-metadata",
+        ];
+        for (_, metric, name) in vm_matrix::cells() {
+            for arm in ["main", "new"] {
+                if arm == "main" && !legacy.contains(&metric) {
+                    continue;
+                }
+                let cell = d.path().join(vm_matrix::GROUP).join(&name).join(arm);
+                fs::create_dir_all(&cell).unwrap();
+                fs::write(
+                    cell.join("estimates.json"),
+                    r#"{"median":{"point_estimate":100}}"#,
+                )
+                .unwrap();
+            }
+        }
+        let error = run(Args {
+            suite: Suite::VmGuest,
+            root: d.path().into(),
+            candidate: "new".into(),
+            baseline: "main".into(),
+            threshold: 15.0,
+            output: d.path().join("report"),
+        })
+        .unwrap_err();
+        assert!(error.to_string().contains("main/estimates.json"));
+    }
+
     #[test]
     fn invalid_estimates_are_errors_not_zero() {
         let d = tempfile::tempdir().unwrap();

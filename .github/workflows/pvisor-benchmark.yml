@@ -7,6 +7,10 @@ on:
       - 'Cargo.*'
       - '.cargo/**'
       - 'crates/**'
+      - 'fw/**'
+      - 'pvisor-kernel/**'
+      - 'rust-toolchain.toml'
+      - 'scripts/packaging/**'
       - 'vendor/**'
       - 'benchmark/**'
       - 'mise.toml'
@@ -19,22 +23,8 @@ on:
       - '.github/actions/setup-build-env/**'
       - '.github/workflows/pvisor-benchmark.yml'
   pull_request:
+    # A required check must also complete on documentation-only PRs.
     branches: [main, develop, next]
-    paths:
-      - 'Cargo.*'
-      - '.cargo/**'
-      - 'crates/**'
-      - 'vendor/**'
-      - 'benchmark/**'
-      - 'mise.toml'
-      - 'mise.lock'
-      - 'tests/tasks.toml'
-      - 'scripts/tasks/**'
-      - 'tests/tasks/**'
-      - 'pyproject.toml'
-      - 'uv.lock'
-      - '.github/actions/setup-build-env/**'
-      - '.github/workflows/pvisor-benchmark.yml'
   workflow_dispatch:
 
 concurrency:
@@ -48,7 +38,7 @@ jobs:
   build:
     name: Build benchmark / ${{ matrix.cohort }}
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
@@ -99,6 +89,14 @@ jobs:
             cd "$repo"
             export CARGO_TARGET_DIR="$build"
             python3 scripts/packaging/stage_wheel_binaries.py --profile release --target-dir "$build" --all
+            # Reuse this revision's content-addressed firmware builds.
+            fw="$(python3 scripts/packaging/firmware.py --target x86_64-unknown-linux-musl --target-dir "$build")"
+            native="$(uv run --locked --only-group dev python pvisor-kernel/build.py --architecture x86_64 --build-dir "$build/pvisor-kernel")"
+            PVISOR_BUILD_NATIVE_KERNEL_BUNDLE="$native" cargo build --locked --release -p pvisor-vm --example vm_api_case
+            mkdir "$artifact/vm"
+            cp "$fw" "$artifact/vm/libkrunfw.so.5"
+            cp "$build/release/examples/vm_api_case" "$build/release/libkrunfw.SOURCE" "$artifact/vm/"
+            (cd "$artifact/vm" && sha256sum vm_api_case libkrunfw.so.5 libkrunfw.SOURCE > SHA256SUMS)
           )
           # Preserve executable modes and any historical adjacent firmware.
           (
@@ -229,3 +227,84 @@ jobs:
           path: ${{ runner.temp }}/.data/pvisor-benchmark
           retention-days: 30
           if-no-files-found: error
+
+  vm-guest:
+    name: VM guest regression gate
+    needs: build
+    # A failed prerequisite must not turn a required job into a skipped success.
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Require both revision builds
+        run: test '${{ needs.build.result }}' = success
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-build-env
+        with:
+          tools: python rust
+          setup: none
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: benchmark/criterion -> ../../target
+          shared-key: pvisor-benchmark-harness
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: benchmark-build-*
+          path: ${{ runner.temp }}/builds
+      - name: Prepare KVM and pinned Firecracker reference
+        working-directory: ${{ runner.temp }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo chown "$(id -u):$(id -g)" /dev/kvm
+          test -c /dev/kvm && test -r /dev/kvm && test -w /dev/kvm
+          curl -fsSL --retry 3 https://github.com/firecracker-microvm/firecracker/releases/download/v1.13.1/firecracker-v1.13.1-x86_64.tgz -o fc.tgz
+          curl -fsSL --retry 3 https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/v1.13/x86_64/vmlinux-6.1.141 -o vmlinux
+          sha256sum -c <<'HASHES'
+          59450b9171ff2ebdf2f9a25be3a248a7ba79fb6371aec51a9d6d8eefca7b4faf  fc.tgz
+          b36a4a1b10f33b9cfdcde3d1a787d9c090556a3edb211cd06d1f3f9a6c7e8724  vmlinux
+          HASHES
+          tar -xOzf fc.tgz release-v1.13.1-x86_64/firecracker-v1.13.1-x86_64 > firecracker
+          chmod +x firecracker
+          cc -O2 -static -Wall -Wextra -Werror "$GITHUB_WORKSPACE/benchmark/vm/probe.c" -o probe
+      - name: Measure both revisions and enforce the guest gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          data="$RUNNER_TEMP/.data/vm-guest"
+          export PVISOR_BENCH_GUEST="$RUNNER_TEMP/probe"
+          export PVISOR_BENCH_FIRECRACKER="$RUNNER_TEMP/firecracker"
+          export PVISOR_BENCH_FC_KERNEL="$RUNNER_TEMP/vmlinux"
+          for cohort in main candidate; do
+            src="$RUNNER_TEMP/builds/benchmark-build-$cohort"
+            (cd "$src/vm" && sha256sum -c SHA256SUMS)
+            chmod +x "$src/vm/vm_api_case"
+            mkdir -p "$data/builds/$cohort"
+            cp "$src/source.sha" "$src/vm/SHA256SUMS" "$src/vm/libkrunfw.SOURCE" "$data/builds/$cohort/"
+            export PVISOR_BENCH_LINUX_FW="$src/vm/libkrunfw.so.5"
+            mise run benchmark -- vm/guest --binary "$src/vm/vm_api_case" \
+              --output "$data/$cohort" --criterion-output "$data/criterion" -- --save-baseline "$cohort"
+          done
+          status=0
+          mise run benchmark-compare -- "$data/criterion" --suite vm-guest \
+            --output "$data/comparison" || status=$?
+          if [[ -f "$data/comparison/report.md" ]]; then cat "$data/comparison/report.md" >> "$GITHUB_STEP_SUMMARY"; fi
+          exit "$status"
+      - name: Retain compact comparison for the PR conversation
+        if: ${{ !cancelled() && github.event_name == 'pull_request' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: vm-guest-table-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/.data/vm-guest/comparison/comparison.json
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 30
+      - name: Retain guest samples and comparison
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vm-guest-${{ github.run_id }}
+          path: ${{ runner.temp }}/.data/vm-guest
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 30
