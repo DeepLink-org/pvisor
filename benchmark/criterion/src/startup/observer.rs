@@ -110,22 +110,48 @@ pub(super) fn capture(
     timeout: Duration,
 ) -> Result<Observation> {
     ensure!(!argv.is_empty(), "empty subject command");
-    ensure!(!marker.contains(&b'\n'), "marker must exclude newline");
-    fs::write(
-        directory.join("argv.json"),
-        serde_json::to_vec_pretty(argv)?,
-    )?;
     fs::write(
         directory.join("environment.json"),
         serde_json::to_vec_pretty(env)?,
     )?;
+    let mut command = Command::new(&argv[0]);
+    command.args(&argv[1..]).current_dir(cwd).envs(env);
+    observe(command, directory, marker, timeout)
+}
+
+pub(crate) fn guest_command_start(cmd: Command, dir: &Path) -> Result<Duration> {
+    const START: &str = "VM_GUEST_COMMAND_STARTED";
+    const OK: &str = "VM_GUEST_COMMAND_OK";
+    let sample = observe(cmd, dir, START.as_bytes(), Duration::from_secs(30))?;
+    let stdout = fs::read_to_string(dir.join("stdout"))?;
+    ensure!(
+        stdout
+            .lines()
+            .filter(|line| *line == START || *line == OK)
+            .eq([START, OK]),
+        "expected guest command entry followed by successful validation"
+    );
+    Ok(Duration::from_nanos(sample.ready_ns))
+}
+
+fn observe(
+    mut command: Command,
+    directory: &Path,
+    marker: &[u8],
+    timeout: Duration,
+) -> Result<Observation> {
+    ensure!(!marker.contains(&b'\n'), "marker must exclude newline");
+    let argv: Vec<_> = std::iter::once(command.get_program())
+        .chain(command.get_args())
+        .map(|arg| arg.to_string_lossy())
+        .collect();
+    fs::write(
+        directory.join("argv.json"),
+        serde_json::to_vec_pretty(&argv)?,
+    )?;
     let mut outlog = File::create(directory.join("stdout"))?;
     let mut errlog = File::create(directory.join("stderr"))?;
-    let mut command = Command::new(&argv[0]);
     command
-        .args(&argv[1..])
-        .current_dir(cwd)
-        .envs(env)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -307,6 +333,34 @@ mod tests {
         )
         .unwrap();
         assert!(value.ready_ns < value.exit_ns);
+    }
+    #[test]
+    fn command_start_is_between_vmm_ready_and_command_completion() {
+        let launch = |script: String| {
+            let directory = tempfile::tempdir().unwrap();
+            let mut cmd = Command::new("/bin/sh");
+            cmd.args(["-c", &script]);
+            let measured = guest_command_start(cmd, directory.path())?;
+            let timing: serde_json::Value =
+                serde_json::from_slice(&fs::read(directory.path().join("timing.json"))?)?;
+            Ok::<_, anyhow::Error>((
+                measured,
+                Duration::from_nanos(timing["exit_ns"].as_u64().unwrap()),
+            ))
+        };
+        let (entry, exit) = launch("echo 'VMM running'; sleep .1; echo VM_GUEST_COMMAND_STARTED; sleep .1; echo VM_GUEST_COMMAND_OK".into()).unwrap();
+        assert!(entry >= Duration::from_millis(80));
+        assert!(exit - entry >= Duration::from_millis(80));
+        for script in [
+            "echo 'VMM running'; echo VM_GUEST_COMMAND_OK",
+            "echo VM_GUEST_COMMAND_STARTED >&2; echo VM_GUEST_COMMAND_OK",
+            "echo VM_GUEST_COMMAND_STARTED; echo VM_GUEST_COMMAND_STARTED; echo VM_GUEST_COMMAND_OK",
+            "echo VM_GUEST_COMMAND_STARTED",
+            "echo VM_GUEST_COMMAND_OK; echo VM_GUEST_COMMAND_STARTED",
+            "echo VM_GUEST_COMMAND_STARTED; echo VM_GUEST_COMMAND_OK; exit 1",
+        ] {
+            assert!(launch(script.into()).is_err());
+        }
     }
     #[test]
     fn serial_crlf_and_buffered_boot_output_preserve_ready_before_exit() {

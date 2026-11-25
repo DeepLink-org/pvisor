@@ -12,6 +12,9 @@ mod prepared;
 mod subjects;
 mod warm_pool;
 
+#[cfg(target_arch = "x86_64")]
+pub(crate) use {observer::guest_command_start, warm_pool::startup_hits};
+
 use anyhow::{Context, Result, bail};
 use criterion::{Criterion, SamplingMode};
 use std::{env, path::PathBuf, time::Duration};

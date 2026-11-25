@@ -65,8 +65,9 @@ fn scope() -> Result<PathBuf> {
         .and_then(|value| value.to_str())
         .unwrap_or("");
     ensure!(
-        name.starts_with("pvisor-warm-") && name.ends_with(".scope"),
-        "run inside a new pvisor-warm-*.scope; see the startup README"
+        name.starts_with("pvisor-warm-")
+            && (name.ends_with(".scope") || name.ends_with(".service")),
+        "run inside a fresh delegated pvisor-warm-* unit; see the startup README"
     );
     ensure!(
         fs::read_to_string(scope.join("cgroup.procs"))?.trim() == std::process::id().to_string(),
@@ -275,10 +276,32 @@ impl Daemon {
         })
     }
 
+    fn confirmed_hit(&self, image: &str, token: &str) -> Result<Sample> {
+        let parked = self.parked()?;
+        let sample = self.launch(image, token, None)?.finish(token)?;
+        ensure!(
+            sample.hit && sample.id == parked,
+            "serial create did not consume the observed parked slot"
+        );
+        Ok(sample)
+    }
+
     fn launch(&self, image: &str, token: &str, barrier: Option<&Barrier>) -> Result<Trial<'_>> {
+        Ok(self
+            .launch_entrypoint(image, token, barrier, &["/bin/sleep", "120"])?
+            .0)
+    }
+
+    fn launch_entrypoint(
+        &self,
+        image: &str,
+        token: &str,
+        barrier: Option<&Barrier>,
+        argv: &[&str],
+    ) -> Result<(Trial<'_>, Instant)> {
         let payload = json!({
             "image": {"uri": image},
-            "entrypoint": ["/bin/sleep", "120"],
+            "entrypoint": argv,
             "resourceLimits": {"cpu": "4", "memory": "256Mi"},
             "timeout": 120,
         });
@@ -333,7 +356,48 @@ impl Daemon {
             stdout == format!("{token}\n") && complete == 1,
             "command output or exit mismatch: {stdout:?}"
         );
-        Ok(trial)
+        Ok((trial, start))
+    }
+
+    fn guest_command_start(&self, image: &str, token: &str) -> Result<(Sample, Duration)> {
+        let parked = self.parked()?;
+        let tmp = self.state.join(&parked).join("run/tmp");
+        let mut uppers = groups(&tmp)?
+            .into_iter()
+            .map(|path| path.join("root-upper"))
+            .filter(|path| path.is_dir());
+        let upper = uppers
+            .next()
+            .context("parked runner has no writable root")?;
+        ensure!(uppers.next().is_none(), "ambiguous parked runner root");
+        let marker = upper.join(format!(".{token}"));
+        ensure!(!marker.try_exists()?, "stale command-entry marker");
+        let expected = format!("{token}\n");
+        let argv = [
+            "/bin/sh",
+            "-c",
+            r#"printf '%s\n' "$1" > "/.$1" && exec /bin/sleep 120"#,
+            "sh",
+            token,
+        ];
+        let (trial, elapsed) = thread::scope(|scope| -> Result<_> {
+            // Observe the parked slot during Create, not after HTTP 202 arrives.
+            let request = scope.spawn(|| self.launch_entrypoint(image, token, None, &argv));
+            let seen = observe_entry_file(&marker, expected.as_bytes(), LIMIT);
+            let (trial, start) = request.join().expect("Create observer panicked")?;
+            Ok((
+                trial,
+                seen?
+                    .checked_duration_since(start)
+                    .context("marker predates Create")?,
+            ))
+        })?;
+        let sample = trial.finish(token)?;
+        ensure!(
+            sample.hit && sample.id == parked,
+            "entrypoint was not assigned to the observed slot"
+        );
+        Ok((sample, elapsed))
     }
 
     fn stop(&mut self) -> Result<()> {
@@ -372,6 +436,46 @@ struct Trial<'a> {
     ready: Duration,
     finished: Duration,
     events: Vec<Value>,
+}
+
+fn observe_entry_file(path: &Path, expected: &[u8], timeout: Duration) -> Result<Instant> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        ensure!(
+            Instant::now() < deadline,
+            "guest command entry marker timed out"
+        );
+        match fs::read(path) {
+            Ok(bytes) if bytes == expected => return Ok(Instant::now()),
+            Ok(bytes) => ensure!(
+                expected.starts_with(&bytes),
+                "wrong guest command entry marker"
+            ),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e.into()),
+        }
+        thread::sleep(Duration::from_micros(100));
+    }
+}
+
+#[cfg(test)]
+mod entry_marker_tests {
+    use super::*;
+
+    #[test]
+    fn only_the_complete_marker_for_this_request_counts() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join(".trial");
+        let timeout = Duration::from_millis(20);
+        let expected = b"trial-123\n";
+        assert!(observe_entry_file(&path, expected, timeout).is_err());
+        for wrong in [b"trial-".as_slice(), b"trial-122\n", b"trial-123\nextra"] {
+            fs::write(&path, wrong).unwrap();
+            assert!(observe_entry_file(&path, expected, timeout).is_err());
+        }
+        fs::write(&path, expected).unwrap();
+        assert!(observe_entry_file(&path, expected, timeout).is_ok());
+    }
 }
 
 #[derive(Serialize)]
@@ -479,16 +583,7 @@ fn pair(
         let token = t("cold");
         cold.launch(image, &token, None)?.finish(&token)
     };
-    let hit_one = || {
-        let parked = warm.parked()?;
-        let token = t("hit");
-        let sample = warm.launch(image, &token, None)?.finish(&token)?;
-        ensure!(
-            sample.hit && sample.id == parked,
-            "serial create did not consume the observed parked slot"
-        );
-        Ok::<_, anyhow::Error>(sample)
-    };
+    let hit_one = || warm.confirmed_hit(image, &t("hit"));
     let (cold, hit) = if warm_first {
         let hit = hit_one()?;
         (cold_one()?, hit)
@@ -595,8 +690,7 @@ pub(super) fn register(criterion: &mut Criterion) -> Result<()> {
     Ok(())
 }
 
-fn measure(criterion: &mut Criterion, output: &Path) -> Result<()> {
-    let binary = input("PVISOR_BENCH_BINARY")?;
+fn prepared_image() -> Result<(PathBuf, String, PathBuf, Value)> {
     let images = input("PVISOR_BENCH_DAEMON_IMAGES")?;
     let image = env::var("PVISOR_BENCH_DAEMON_IMAGE")?;
     ensure!(
@@ -615,6 +709,61 @@ fn measure(criterion: &mut Criterion, output: &Path) -> Result<()> {
             && image_record["pooled_image"]["cache"]["repository"].is_null(),
         "need a local native OpenSandbox Ubuntu template using default firmware"
     );
+    Ok((images, image, manifest, image_record))
+}
+
+#[cfg(target_arch = "x86_64")]
+pub(crate) fn startup_hits(
+    group: &mut criterion::BenchmarkGroup<'_, criterion::measurement::WallTime>,
+    output: &Path,
+) -> Result<()> {
+    use crate::vm_matrix::WARM_START;
+    let binary = input("PVISOR_BENCH_DAEMON")?;
+    let (images, image, manifest, image_record) = prepared_image()?;
+    let scope = scope()?;
+    let temp = tempfile::Builder::new().prefix("pvd-").tempdir_in("/tmp")?;
+    fs::copy(manifest, output.join("image-manifest.json"))?;
+    save(
+        output.join("warm-inputs.json"),
+        &json!({
+            "daemon_sha256":digest(&binary)?, "profile":PROFILE, "image_digest":image_record["pooled_image"]["digest"],
+            "firmware_sha256":binary.with_file_name("libkrunfw.so.5").is_file()
+                .then(|| digest(&binary.with_file_name("libkrunfw.so.5"))).transpose()?,
+        }),
+    )?;
+    let mut daemon = Daemon::start(&binary, &images, &scope, temp.path(), output, true)?;
+    let before = fs::read(MARKER).ok();
+    let mut raw = File::create(output.join("warm-hits.jsonl"))?;
+    let mut index = 0;
+    group.bench_function(WARM_START, |b| {
+        b.iter_custom(|iters| {
+            crate::command::measured_total(iters, || {
+                index += 1;
+                let token = format!("pvisor-command-start-{index}");
+                let (sample, elapsed) = daemon.guest_command_start(&image, &token)?;
+                oom_free(&scope)?;
+                ensure!(fs::read(MARKER).ok() == before, "host canary changed");
+                ensure!(
+                    sample.create_ns > 0 && sample.create_ns <= sample.first_command_ns,
+                    "invalid daemon startup clocks"
+                );
+                serde_json::to_writer(
+                    &mut raw,
+                    &json!({"metric":WARM_START,"token":token,
+                    "guest_command_start_ns":elapsed.as_nanos(),"sample":sample}),
+                )?;
+                raw.write_all(b"\n")?;
+                Ok(elapsed)
+            })
+            .expect("verified warm startup")
+        })
+    });
+    daemon.stop()
+}
+
+fn measure(criterion: &mut Criterion, output: &Path) -> Result<()> {
+    let binary = input("PVISOR_BENCH_BINARY")?;
+    let (images, image, manifest, image_record) = prepared_image()?;
     let bin_dir = output.join("binaries");
     fs::create_dir(&bin_dir)?;
     let frozen = bin_dir.join("pvisor-daemon");

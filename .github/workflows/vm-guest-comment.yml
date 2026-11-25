@@ -1,0 +1,101 @@
+name: VM benchmark PR reports
+
+on:
+  workflow_call:
+  workflow_run:
+    workflows: [pVisor Benchmark]
+    types: [completed]
+
+permissions: {}
+
+jobs:
+  prepare:
+    # Same-repo PRs call this workflow directly. Read-only PR tokens need the
+    # default-branch workflow_run path instead; never run both publishers.
+    if: >-
+      github.event_name == 'pull_request' ||
+      (github.event.workflow_run.event == 'pull_request' &&
+       github.event.workflow_run.path == '.github/workflows/pvisor-benchmark.yml' &&
+       (github.event.workflow_run.head_repository.id != github.event.repository.id ||
+        github.event.workflow_run.actor.login == 'dependabot[bot]'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: read
+    outputs:
+      pr: ${{ steps.tables.outputs.pr }}
+      guest: ${{ steps.tables.outputs.guest }}
+      startup: ${{ steps.tables.outputs.startup }}
+    steps:
+      # For fork runs github.sha is on the default branch, never the fork.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          sparse-checkout: scripts/ci
+      - id: tables
+        name: Read this attempt's benchmark artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 -I scripts/ci/vm_guest_comment.py
+
+  comment:
+    name: Comment on PR / ${{ matrix.kind }}
+    needs: prepare
+    if: needs.prepare.outputs.pr != ''
+    strategy:
+      fail-fast: false
+      matrix:
+        kind: [guest, startup]
+    concurrency:
+      group: vm-${{ matrix.kind }}-comment-pr-${{ needs.prepare.outputs.pr }}
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      pull-requests: write
+    steps:
+      # No checkout, artifact extraction or PR code in the write-capable job.
+      - name: Create or update the bot's report
+        if: needs.prepare.outputs[matrix.kind] != ''
+        shell: python
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number || needs.prepare.outputs.pr }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.event.workflow_run.head_sha }}
+          BENCH_RUN: ${{ github.event.workflow_run.id || github.run_id }}
+          RUN_NUMBER: ${{ github.event.workflow_run.run_number || github.run_number }}
+          ATTEMPT: ${{ github.event.workflow_run.run_attempt || github.run_attempt }}
+          KIND: ${{ matrix.kind }}
+          TABLE: ${{ needs.prepare.outputs[matrix.kind] }}
+        run: |
+          import json, os, re, subprocess
+          env = os.environ
+          repo = env["GITHUB_REPOSITORY"]
+          def api(path, *args, data=None):
+              return json.loads(subprocess.check_output(
+                  ["gh", "api", f"repos/{repo}/{path}", *args], input=data, timeout=60))
+
+          pr = int(env["PR"])
+          head = env["HEAD_SHA"]
+          pull = api(f"pulls/{pr}")
+          if pull["state"] != "open" or pull["head"]["sha"] != head:
+              raise SystemExit(0)
+          kind = env["KIND"]
+          marker = f"<!-- pvisor-vm-{kind}-report"
+          version = int(env["RUN_NUMBER"]), int(env["ATTEMPT"])
+          link = f"{env['GITHUB_SERVER_URL']}/{repo}/actions/runs/{env['BENCH_RUN']}/attempts/{version[1]}"
+          body = (f"{marker} {version[0]}:{version[1]} -->\n## VM {kind} performance\n\n"
+                  f"PR head `{head[:12]}` · [Benchmark run]({link})\n\n{json.loads(env['TABLE'])}")
+          method, path = "POST", f"issues/{pr}/comments"
+          pages = api(path + "?per_page=100", "--paginate", "--slurp")
+          for comment in (item for page in pages for item in page):
+              match = re.match(rf"^{marker} (\d+):(\d+) -->\n", comment["body"])
+              if match and comment["user"]["login"] == "github-actions[bot]":
+                  if tuple(map(int, match.groups())) > version:
+                      raise SystemExit(0)
+                  method, path = "PATCH", f"issues/comments/{comment['id']}"
+                  break
+          api(path, "--method", method, "--input", "-", data=json.dumps({"body": body}).encode())
