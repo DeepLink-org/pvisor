@@ -42,6 +42,7 @@ tokio-util = { workspace = true, features = ["rt"] }
 toml.workspace = true
 toml_edit.workspace = true
 tracing.workspace = true
+unicode-width = "0.2"
 uuid = { workspace = true, features = ["v4"] }
 
 [target.'cfg(all(unix, not(all(target_os = "macos", target_arch = "x86_64"))))'.dependencies]

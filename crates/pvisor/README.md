@@ -125,7 +125,9 @@ reconnecting, deleting its socket or replacing pool ownership. Pool loss after
 VM entry still terminates dependent runners; it is not automatic recovery.
 Container logs remain cumulative across restarts, while startup errors include
 only the current generation's stderr (up to 32 KiB), not earlier workload or
-pool-loss diagnostics.
+pool-loss diagnostics. Attached start opens log descriptors under launch admission
+before spawning the next generation and stops streaming at that generation's
+completion boundary.
 Container stop-signal names/numbers use `pvisor-guest::control::parse_signal`,
 shared with the Windows frontend; host signal numbering does not select the
 Linux guest signal.

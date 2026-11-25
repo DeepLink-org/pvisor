@@ -45,6 +45,13 @@ pvisor stop redis
 pvisor rm redis
 ```
 
+On Linux and Apple Silicon macOS, `pvisor start -a CONTAINER` starts one stopped
+container, forwards signals, and streams the new execution's stdout and stderr.
+It returns that execution's exit code and does not attach stdin. Default `ps`
+and `images` output is aligned in a terminal; `ps` also shows creation age and
+running time. Redirected output keeps the original tab-separated columns. Use
+`--format` or `-q` to select script output explicitly.
+
 `pull --platform linux/amd64` or `linux/arm64` selects the image architecture;
 `linux/arm64/v8` is an alias. Omission uses the native platform. Foreign-image
 downloads are supported, but `run` and `start` require native images because CPU

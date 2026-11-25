@@ -628,7 +628,7 @@ escalation. Values below `-1` are rejected before contacting a container.
 | `rmi` | Multiple references/IDs, `-f` |
 | `exec` | `-i`, `-t`, `-e`, `--env-file`, `-w`, `-u`, command and arguments |
 | `ps` | `-a`, `-q`, `--no-trunc`, `-f/--filter`, `--format` |
-| `start` | Multiple container names/IDs |
+| `start` | Multiple container names/IDs, or `-a/--attach` with exactly one inactive container |
 | `stop` | Multiple names/IDs, `-t/--timeout`, `-s/--signal` |
 | `rm` | Multiple names/IDs, `-f`, `-v` |
 | `logs` | One container, `-f` |
@@ -743,6 +743,9 @@ For several selectors, `wait` selects all generations before waiting and
 prints their results in argument order. A full container ID takes precedence
 over an identical container name.
 Foreground `run` returns the initial generation's exit status and output.
+`start -a CONTAINER` starts a stopped container, forwards signals and streams
+only that generation's stdout and stderr. It returns the workload's exit status,
+does not attach stdin, and rejects a running or already-starting container.
 `logs` continues to show accumulated output across generations. Use `-d` for
 services whose owner should continue retries independently of the frontend.
 Created/unstarted containers return zero because they are not running; this
@@ -768,6 +771,9 @@ Formatting supports `json`, `{{.Field}}`/nested paths, `{{json .Field}}`,
 List JSON is one object per row. Common container row fields are ID, Image, Command,
 State, Status, Names, Ports, Labels, Mounts, Networks and CreatedAt; image rows
 provide ID, Repository, Tag, Digest and CreatedAt. `-q` takes precedence over format.
+Without `--format`, terminal output is aligned; `ps` also shows creation age and
+running time, when known. Redirected default output retains the original TSV
+columns, without relative times.
 This is not the complete Go-template function language; unsupported expressions
 fail, and unknown fields fail when rendered.
 

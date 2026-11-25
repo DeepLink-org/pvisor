@@ -64,6 +64,90 @@ fn grouped_commands_and_hostname_help_boundary_are_inert() {
 }
 
 #[test]
+fn attached_start_rejects_multiple_selectors_without_initializing_storage() {
+    let directory = tempfile::tempdir().unwrap();
+    let home = directory.path().join("store");
+    for args in [
+        &["start", "-a", "first", "second"][..],
+        &["container", "start", "--attach", "first", "second"][..],
+    ] {
+        let output = command(&home).args(args).output().unwrap();
+        assert_eq!(output.status.code(), Some(1));
+        assert!(output.stdout.is_empty());
+        assert!(String::from_utf8_lossy(&output.stderr).contains("requires exactly one container"));
+        assert!(!home.exists());
+    }
+}
+
+#[test]
+fn redirected_default_lists_retain_their_tab_separated_headers() {
+    let directory = tempfile::tempdir().unwrap();
+    let home = directory.path().join("store");
+    for (args, header) in [
+        (
+            &["container", "ls"][..],
+            "CONTAINER ID\tIMAGE\tCOMMAND\tSTATUS\tPORTS\tNAMES\n",
+        ),
+        (&["image", "ls"][..], "REPOSITORY\tTAG\tIMAGE ID\n"),
+    ] {
+        let output = command(&home).args(args).output().unwrap();
+        assert!(output.status.success(), "{output:?}");
+        assert_eq!(output.stdout, header.as_bytes());
+        assert!(output.stderr.is_empty());
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn terminal_default_lists_use_aligned_headers() {
+    use std::{
+        io::Read,
+        os::fd::{AsRawFd, FromRawFd},
+        ptr::null_mut,
+    };
+
+    let directory = tempfile::tempdir().unwrap();
+    let home = directory.path().join("store");
+    for (args, header) in [
+        (
+            &["ps"][..],
+            "CONTAINER ID  IMAGE  COMMAND  CREATED  STATUS  PORTS  NAMES\r\n",
+        ),
+        (&["images"][..], "REPOSITORY  TAG  IMAGE ID\r\n"),
+    ] {
+        let mut master = -1;
+        let mut slave = -1;
+        assert_eq!(
+            unsafe { libc::openpty(&mut master, &mut slave, null_mut(), null_mut(), null_mut()) },
+            0
+        );
+        // The master stays in the test; neither raw descriptor is inherited.
+        let mut master = unsafe { fs::File::from_raw_fd(master) };
+        let slave = unsafe { fs::File::from_raw_fd(slave) };
+        for fd in [master.as_raw_fd(), slave.as_raw_fd()] {
+            assert_eq!(
+                unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) },
+                0
+            );
+        }
+        assert_eq!(
+            unsafe { libc::fcntl(master.as_raw_fd(), libc::F_SETFL, libc::O_NONBLOCK) },
+            0
+        );
+        let output = command(&home)
+            .args(args)
+            .stdout(Stdio::from(slave))
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        assert!(output.stderr.is_empty());
+        let mut received = vec![0; header.len()];
+        master.read_exact(&mut received).unwrap();
+        assert_eq!(received, header.as_bytes());
+    }
+}
+
+#[test]
 fn grouped_queries_and_failures_match_direct_commands() {
     let directory = tempfile::tempdir().unwrap();
     let home = directory.path().join("store");
@@ -770,6 +854,60 @@ fn session_native_vm_uses_shared_supervision() {
         0,
     );
     Native::new().session("echo session-stderr >&2; exit 7", 7);
+}
+
+#[test]
+#[ignore = "requires native virtualization, local sockets and PVISOR_DOCKER_TEST_IMAGE or PVISOR_DOCKER_TEST_ROOTFS"]
+fn docker_native_attached_start_streams_only_the_new_generation() {
+    let native = Native::new();
+    let args = [
+        "run",
+        "--name",
+        "native-test",
+        "--network",
+        "none",
+        "fixture",
+        "/bin/sh",
+        "-c",
+        "n=$(cat /attempt 2>/dev/null || printf 0); n=$((n+1)); \
+         printf '%s' \"$n\" > /attempt; printf 'out-%s\\n' \"$n\"; \
+         printf 'err-%s\\n' \"$n\" >&2; exit 23",
+    ];
+    let first = native.call(&args, None, 23);
+    assert_eq!(first.stdout, b"out-1\n");
+    assert_eq!(first.stderr, b"err-1\n");
+    for (args, attempt) in [
+        (&["start", "-a", "native-test"][..], 2),
+        (&["container", "start", "--attach", "native-test"][..], 3),
+    ] {
+        let output = native.call(args, None, 23);
+        assert_eq!(output.stdout, format!("out-{attempt}\n").as_bytes());
+        assert_eq!(output.stderr, format!("err-{attempt}\n").as_bytes());
+    }
+    let logs = native.call(&["logs", "native-test"], None, 0);
+    assert_eq!(logs.stdout, b"out-1\nout-2\nout-3\n");
+    assert_eq!(logs.stderr, b"err-1\nerr-2\nerr-3\n");
+
+    native.call(&["rm", "native-test"], None, 0);
+    native.call(
+        &[
+            "run",
+            "-d",
+            "--name",
+            "native-test",
+            "--network",
+            "none",
+            "fixture",
+            "/bin/sleep",
+            "180",
+        ],
+        None,
+        0,
+    );
+    let rejected = native.call(&["start", "-a", "native-test"], None, 1);
+    assert!(rejected.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&rejected.stderr).contains("requires an inactive container"));
+    native.call(&["exec", "native-test", "/bin/true"], None, 0);
 }
 
 #[test]

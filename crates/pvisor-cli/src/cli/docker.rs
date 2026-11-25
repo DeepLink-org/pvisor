@@ -74,7 +74,7 @@ pub(super) enum DockerCommand {
     /// List containers.
     Ps(List),
     /// Start one or more stopped containers, retaining their writable files.
-    Start(Select),
+    Start(Start),
     /// Stop one or more running containers.
     Stop(Stop),
     /// Remove one or more containers.
@@ -123,7 +123,7 @@ pub(super) enum ContainerCommand {
     Exec(Exec),
     #[command(alias = "list", alias = "ps")]
     Ls(List),
-    Start(Select),
+    Start(Start),
     Stop(Stop),
     #[command(alias = "remove")]
     Rm(Remove),
@@ -365,6 +365,14 @@ impl Run {
 pub(super) struct Select {
     #[arg(required = true, num_args = 1..)]
     containers: Vec<String>,
+}
+#[derive(Debug, Args)]
+pub(super) struct Start {
+    /// Stream the new execution's output and return its exit status (one container).
+    #[arg(short, long)]
+    attach: bool,
+    #[command(flatten)]
+    select: Select,
 }
 #[derive(Debug, Args)]
 pub(super) struct Stop {
@@ -796,7 +804,16 @@ pub(super) fn run(command: DockerCommand) -> anyhow::Result<i32> {
             }
         }
         DockerCommand::Start(args) => {
-            return batch(&args.containers, |selector| {
+            if args.attach {
+                let (started, output) = store.start_attached(&args.select.containers[0])?;
+                let _signals = if started.state == "exited" {
+                    None
+                } else {
+                    Some(Signals::forward(store, started.clone())?)
+                };
+                return output.follow(&started.generation, &mut io::stdout(), &mut io::stderr());
+            }
+            return batch(&args.select.containers, |selector| {
                 store.start(selector)?;
                 println!("{selector}");
                 Ok(())
