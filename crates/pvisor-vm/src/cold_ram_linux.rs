@@ -965,6 +965,7 @@ impl<S: ColdRamStore> Pager<S> {
 #[derive(Default)]
 struct BranchScanCadence {
     misses: u8,
+    empty_batches: u8,
     last_start: Option<Instant>,
 }
 
@@ -972,10 +973,15 @@ impl BranchScanCadence {
     fn begin(&mut self, now: Instant) -> bool {
         let gap_ms = match self.misses {
             0..=1 => 0,
-            2..=3 => 8,
-            4..=7 => 64,
-            8..=15 => 512,
-            _ => 4096,
+            2..=3 => 32,
+            4..=7 => 128,
+            8..=15 => 1024,
+            _ => 8192,
+        };
+        let gap_ms = if self.empty_batches >= 2 {
+            gap_ms.max(8000)
+        } else {
+            gap_ms
         };
         if self
             .last_start
@@ -988,9 +994,14 @@ impl BranchScanCadence {
     }
 
     fn observe(&mut self, sampled: usize, merged: bool) {
+        if sampled == 0 {
+            self.empty_batches = self.empty_batches.saturating_add(1);
+            return;
+        }
+        self.empty_batches = 0;
         if merged {
             self.misses = 0;
-        } else if sampled > 0 {
+        } else {
             self.misses = self.misses.saturating_add(1);
         }
     }
@@ -1286,6 +1297,9 @@ pub(crate) fn start<S: ColdRamStore + 'static>(
             let batch = match sampled {
                 Ok(Some(batch)) => batch,
                 Ok(None) => {
+                    if let Some(policy) = &mut cadence {
+                        policy.observe(0, false);
+                    }
                     // Flush deferred store releases and check owner health even
                     // when no RAM is eligible. No pager lock or VM barrier is
                     // held here; release itself performs no publication IPC.
@@ -1376,17 +1390,32 @@ mod tests {
     use std::io::{Read, Write};
     use vm_memory::{Bytes, GuestAddress};
 
+    #[test]
+    fn branch_scan_empty_floor_clears_on_sampling() {
+        let mut policy = BranchScanCadence::default();
+        let start = Instant::now();
+        assert!(policy.begin(start));
+        policy.observe(0, false);
+        assert!(policy.begin(start));
+        policy.observe(0, false);
+        assert!(!policy.begin(start + Duration::from_millis(7999)));
+        let due = start + Duration::from_secs(8);
+        assert!(policy.begin(due));
+        policy.observe(1, false);
+        assert!(policy.begin(due));
+    }
+
     #[rstest::rstest]
     #[case(0, 0)]
     #[case(1, 0)]
-    #[case(2, 8)]
-    #[case(3, 8)]
-    #[case(4, 64)]
-    #[case(7, 64)]
-    #[case(8, 512)]
-    #[case(15, 512)]
-    #[case(16, 4096)]
-    #[case(300, 4096)]
+    #[case(2, 32)]
+    #[case(3, 32)]
+    #[case(4, 128)]
+    #[case(7, 128)]
+    #[case(8, 1024)]
+    #[case(15, 1024)]
+    #[case(16, 8192)]
+    #[case(300, 8192)]
     fn branch_scan_gap_tracks_sampled_misses(#[case] misses: usize, #[case] gap_ms: u64) {
         let mut policy = BranchScanCadence::default();
         let start = Instant::now();
