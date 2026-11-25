@@ -6,8 +6,8 @@ use sha2::{Digest, Sha256};
 use std::fs::{File, OpenOptions};
 use std::os::unix::fs::OpenOptionsExt;
 use std::{
-    fs,
-    os::unix::fs::{DirBuilderExt, MetadataExt},
+    fs, io,
+    os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt},
     path::{Path, PathBuf},
 };
 
@@ -16,30 +16,50 @@ pub(crate) struct LocalStore {
     pub(crate) root: PathBuf,
 }
 
-/// Private import owner. OCI directory modes may prohibit removal, so restore
-/// owner access only during teardown, after every image reader has finished.
-pub(crate) struct ImportDirectory(tempfile::TempDir);
+const MANAGED_IMPORT_PREFIX: &str = ".leased-import-v1-";
+const STAGING_ADMISSION_LOCK: &str = "import-staging-v1.lock";
+
+/// The locked lease survives until cleanup finishes. An interrupted owner
+/// leaves its work and lease available for a later recovery pass.
+pub(crate) struct ImportDirectory {
+    root: PathBuf,
+    work: PathBuf,
+    _lease: File,
+}
+
 impl ImportDirectory {
     pub(crate) fn path(&self) -> &Path {
-        self.0.path()
+        &self.work
     }
 }
+
 impl Drop for ImportDirectory {
     fn drop(&mut self) {
-        if let Err(error) = restore_import_permissions(self.path()) {
-            tracing::warn!(%error, "cannot restore OCI import directory access for cleanup");
+        if let Err(error) = remove_work(&self.root) {
+            tracing::warn!(%error, "cannot clean image import staging");
         }
     }
 }
 
-#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+fn remove_work(root: &Path) -> io::Result<()> {
+    let work = root.join("work");
+    match fs::symlink_metadata(&work) {
+        Ok(metadata) if metadata.is_dir() => remove_import(&work)?,
+        Ok(_) => fs::remove_file(work)?,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
+    }
+    // Remove the lease only after deleting the data, so recovery is retryable.
+    fs::remove_file(root.join("lease"))?;
+    fs::remove_dir(root)
+}
+
 pub(crate) fn remove_import(root: &Path) -> std::io::Result<()> {
     restore_import_permissions(root)?;
     fs::remove_dir_all(root)
 }
 
 fn restore_import_permissions(root: &Path) -> std::io::Result<()> {
-    use std::os::unix::fs::PermissionsExt;
     let mut pending = vec![root.to_owned()];
     while let Some(path) = pending.pop() {
         if fs::symlink_metadata(&path)?.is_dir() {
@@ -53,6 +73,54 @@ fn restore_import_permissions(root: &Path) -> std::io::Result<()> {
         }
     }
     Ok(())
+}
+
+// The opened handle pins the stale inode even if another process renames it.
+fn still_named(path: &Path, opened: &File) -> io::Result<bool> {
+    match path.symlink_metadata() {
+        Ok(visible) => {
+            let expected = opened.metadata()?;
+            Ok((visible.dev(), visible.ino()) == (expected.dev(), expected.ino()))
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error),
+    }
+}
+
+enum StagingClaim {
+    Skip,
+    RemovedEmpty,
+    Abandoned(AbandonedImport),
+}
+
+struct AbandonedImport {
+    root: PathBuf,
+    directory: File,
+    lease: File,
+}
+
+impl AbandonedImport {
+    fn still_named(&self) -> io::Result<bool> {
+        Ok(still_named(&self.root, &self.directory)?
+            && still_named(&self.root.join("lease"), &self.lease)?)
+    }
+
+    fn remove(&self) -> io::Result<bool> {
+        if !self.still_named()? {
+            return Ok(false);
+        }
+        // The wrapper is reserved for the lease and its own work tree.
+        for entry in fs::read_dir(&self.root)? {
+            if !matches!(entry?.file_name().as_encoded_bytes(), b"lease" | b"work") {
+                return Ok(false);
+            }
+        }
+        if !self.still_named()? {
+            return Ok(false);
+        }
+        remove_work(&self.root)?;
+        Ok(true)
+    }
 }
 
 impl LocalStore {
@@ -89,12 +157,144 @@ impl LocalStore {
         self.root.join("projections")
     }
     pub(crate) fn staging(&self) -> anyhow::Result<ImportDirectory> {
-        Ok(ImportDirectory(
-            tempfile::Builder::new()
-                .prefix(".import-")
-                .tempdir_in(self.root.join("staging"))?,
-        ))
+        let _admission = self.lock_file(STAGING_ADMISSION_LOCK)?;
+        let temporary = tempfile::Builder::new()
+            .prefix(MANAGED_IMPORT_PREFIX)
+            .permissions(fs::Permissions::from_mode(0o700))
+            .tempdir_in(self.root.join("staging"))?;
+        let lease = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(temporary.path().join("lease"))?;
+        FileExt::lock_exclusive(&lease)?;
+        let work = temporary.path().join("work");
+        private_directory(&work)?;
+        Ok(ImportDirectory {
+            root: temporary.keep(),
+            work,
+            _lease: lease,
+        })
     }
+
+    pub(crate) fn prune_staging(&self) -> anyhow::Result<usize> {
+        // Snapshot names so deletion does not change an in-progress directory walk.
+        // Only one stage's handles are held during reclamation.
+        let mut roots = Vec::new();
+        for entry in fs::read_dir(self.root.join("staging"))? {
+            let entry = entry?;
+            if entry
+                .file_name()
+                .as_encoded_bytes()
+                .starts_with(MANAGED_IMPORT_PREFIX.as_bytes())
+            {
+                roots.push(entry.path());
+            }
+        }
+        let mut removed = 0;
+        let mut failed = 0;
+        let mut first_error = None;
+        for root in roots {
+            let claim = {
+                // Keep admission only until the lease has been acquired.
+                let _admission = self.lock_file(STAGING_ADMISSION_LOCK)?;
+                self.claim_abandoned_stage(&root)
+            };
+            let result = match claim {
+                Ok(StagingClaim::Skip) => Ok(false),
+                Ok(StagingClaim::RemovedEmpty) => Ok(true),
+                Ok(StagingClaim::Abandoned(stage)) => match stage.remove() {
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+                    result => result.map_err(anyhow::Error::from),
+                },
+                Err(error) => Err(error),
+            };
+            match result {
+                Ok(reclaimed) => removed += usize::from(reclaimed),
+                Err(error) => {
+                    failed += 1;
+                    first_error.get_or_insert_with(|| {
+                        error.context(format!("inspect or clean image import {}", root.display()))
+                    });
+                }
+            }
+        }
+        if let Some(error) = first_error {
+            return Err(error).with_context(|| {
+                format!("removed {removed} interrupted image import directories; cleanup failed for {failed} directories")
+            });
+        }
+        Ok(removed)
+    }
+
+    // The caller holds admission, which the allocator also takes before creating a lease.
+    fn claim_abandoned_stage(&self, root: &Path) -> anyhow::Result<StagingClaim> {
+        let directory = match OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW)
+            .open(root)
+        {
+            Ok(directory) => directory,
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::NotFound | io::ErrorKind::NotADirectory
+                ) || error.raw_os_error() == Some(libc::ELOOP) =>
+            {
+                return Ok(StagingClaim::Skip);
+            }
+            Err(error) => return Err(error.into()),
+        };
+        let metadata = directory.metadata()?;
+        if metadata.uid() != unsafe { libc::geteuid() } || metadata.mode() & 0o077 != 0 {
+            return Ok(StagingClaim::Skip);
+        }
+        let lease = match OpenOptions::new()
+            .read(true)
+            .write(true)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+            .open(root.join("lease"))
+        {
+            Ok(lease) => lease,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                // An interrupted allocation or teardown can leave an empty wrapper.
+                if !still_named(root, &directory)? {
+                    return Ok(StagingClaim::Skip);
+                }
+                return match fs::remove_dir(root) {
+                    Ok(()) => Ok(StagingClaim::RemovedEmpty),
+                    Err(error)
+                        if matches!(
+                            error.kind(),
+                            io::ErrorKind::NotFound | io::ErrorKind::DirectoryNotEmpty
+                        ) =>
+                    {
+                        Ok(StagingClaim::Skip)
+                    }
+                    Err(error) => Err(error.into()),
+                };
+            }
+            Err(error) => return Err(error.into()),
+        };
+        let lease_metadata = lease.metadata()?;
+        ensure!(
+            lease_metadata.is_file()
+                && lease_metadata.uid() == metadata.uid()
+                && lease_metadata.mode() & 0o077 == 0,
+            "import lease must be an owned private regular file"
+        );
+        match FileExt::try_lock_exclusive(&lease) {
+            Ok(()) => Ok(StagingClaim::Abandoned(AbandonedImport {
+                root: root.to_owned(),
+                directory,
+                lease,
+            })),
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => Ok(StagingClaim::Skip),
+            Err(error) => Err(error.into()),
+        }
+    }
+
     pub(crate) fn retain_config(&self, digest: &str, bytes: &[u8]) -> anyhow::Result<()> {
         let hex = super::oci::digest_hex(digest)?;
         ensure!(
@@ -116,6 +316,10 @@ impl LocalStore {
             reference,
             architecture,
         ))?));
+        self.lock_file(&key)
+    }
+
+    fn lock_file(&self, key: &str) -> anyhow::Result<File> {
         let file = OpenOptions::new()
             .read(true)
             .write(true)
@@ -197,6 +401,146 @@ mod tests {
         assert_eq!(fs::metadata(store.pool()).unwrap().mode() & 0o777, 0o700);
         assert_eq!(store.writable_pool().unwrap(), store.pool());
     }
+    #[test]
+    fn staging_reclamation_preserves_replaced_owners_leases_and_unexpected_entries() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = LocalStore::open(temp.path().join("images")).unwrap();
+        let staging = store.root.join("staging");
+        let seed = |name: &str| {
+            let root = staging.join(format!("{MANAGED_IMPORT_PREFIX}{name}"));
+            private_directory(&root).unwrap();
+            fs::create_dir(root.join("work")).unwrap();
+            fs::write(root.join("work/input"), name.as_bytes()).unwrap();
+            OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(root.join("lease"))
+                .unwrap();
+            root
+        };
+        let replaced_owner = seed("owner");
+        let replaced_lease = seed("lease");
+        let unknown_entry = seed("unknown");
+        let stages = [&replaced_owner, &replaced_lease, &unknown_entry].map(|root| {
+            let StagingClaim::Abandoned(stage) = store.claim_abandoned_stage(root).unwrap() else {
+                panic!("fixture stage was not acquired");
+            };
+            stage
+        });
+
+        let previous = temp.path().join("previous");
+        fs::rename(&replaced_owner, &previous).unwrap();
+        assert_eq!(seed("owner"), replaced_owner);
+        fs::write(replaced_owner.join("work/input"), b"replacement").unwrap();
+        fs::rename(replaced_lease.join("lease"), temp.path().join("old-lease")).unwrap();
+        File::create(replaced_lease.join("lease")).unwrap();
+        fs::write(unknown_entry.join("keep"), b"unmanaged").unwrap();
+
+        for stage in stages {
+            assert!(!stage.remove().unwrap());
+        }
+        assert_eq!(fs::read(previous.join("work/input")).unwrap(), b"owner");
+        assert_eq!(
+            fs::read(replaced_owner.join("work/input")).unwrap(),
+            b"replacement"
+        );
+        assert_eq!(
+            fs::read(replaced_lease.join("work/input")).unwrap(),
+            b"lease"
+        );
+        assert!(replaced_lease.join("lease").is_file());
+        assert_eq!(
+            fs::read(unknown_entry.join("work/input")).unwrap(),
+            b"unknown"
+        );
+        assert_eq!(fs::read(unknown_entry.join("keep")).unwrap(), b"unmanaged");
+        assert!(unknown_entry.join("lease").is_file());
+    }
+
+    #[test]
+    fn staging_prune_reports_an_invalid_lease_after_reclaiming_other_imports() {
+        let temporary = tempfile::tempdir().unwrap();
+        let store = LocalStore::open(temporary.path().join("images")).unwrap();
+        let staging = store.root.join("staging");
+        let invalid = staging.join(format!("{MANAGED_IMPORT_PREFIX}invalid"));
+        private_directory(&invalid).unwrap();
+        fs::create_dir(invalid.join("lease")).unwrap();
+        fs::write(invalid.join("recovery-data"), b"keep").unwrap();
+
+        let valid = staging.join(format!("{MANAGED_IMPORT_PREFIX}abandoned"));
+        private_directory(&valid).unwrap();
+        OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(valid.join("lease"))
+            .unwrap();
+        fs::create_dir(valid.join("work")).unwrap();
+
+        let error = store.prune_staging().unwrap_err();
+        assert!(format!("{error:#}").contains(&invalid.display().to_string()));
+        assert!(
+            error
+                .to_string()
+                .contains("removed 1 interrupted image import")
+        );
+        assert!(!valid.exists());
+        assert_eq!(fs::read(invalid.join("recovery-data")).unwrap(), b"keep");
+    }
+
+    #[test]
+    fn staging_prune_preserves_live_and_legacy_imports() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+        let temporary = tempfile::tempdir().unwrap();
+        let store = LocalStore::open(temporary.path().join("images")).unwrap();
+        let staging = store.root.join("staging");
+        let live = store.staging().unwrap();
+        assert_eq!(live.root.metadata().unwrap().mode() & 0o077, 0);
+        fs::write(live.path().join("live"), b"active transaction").unwrap();
+
+        let abandoned = staging.join(format!("{MANAGED_IMPORT_PREFIX}abandoned"));
+        let work = abandoned.join("work");
+        private_directory(&abandoned).unwrap();
+        fs::create_dir_all(work.join("readonly")).unwrap();
+        let legacy = staging.join(".import-legacy");
+        fs::create_dir(&legacy).unwrap();
+        let preserved = legacy.join("partial");
+        fs::write(&preserved, b"legacy version has no lease").unwrap();
+        symlink(&preserved, work.join("outside")).unwrap();
+        OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(abandoned.join("lease"))
+            .unwrap();
+        fs::set_permissions(work.join("readonly"), fs::Permissions::from_mode(0o000)).unwrap();
+        private_directory(&staging.join(format!("{MANAGED_IMPORT_PREFIX}unadmitted"))).unwrap();
+        let unrelated = staging.join(format!("{MANAGED_IMPORT_PREFIX}nonprivate"));
+        fs::create_dir(&unrelated).unwrap();
+        fs::set_permissions(&unrelated, fs::Permissions::from_mode(0o755)).unwrap();
+
+        assert_eq!(store.prune_staging().unwrap(), 2);
+        assert_eq!(store.prune_staging().unwrap(), 0);
+        assert!(unrelated.is_dir());
+        assert_eq!(
+            fs::read(&preserved).unwrap(),
+            b"legacy version has no lease"
+        );
+        assert_eq!(
+            fs::read(live.path().join("live")).unwrap(),
+            b"active transaction"
+        );
+        assert!(!abandoned.exists());
+        drop(live);
+        let mut remaining: Vec<_> = fs::read_dir(staging)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .collect();
+        remaining.sort();
+        assert_eq!(remaining, [legacy, unrelated]);
+    }
+
     #[test]
     fn imports_are_temporary_and_configuration_identity_is_checked() {
         let temp = tempfile::tempdir().unwrap();
