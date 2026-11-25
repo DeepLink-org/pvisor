@@ -390,12 +390,23 @@ mod linux {
         let root = tempfile::tempdir().unwrap();
         let (record, _) = fixture(root.path(), false);
         let stage = record.stage_dir();
+        let foreign = root.path().join("foreign");
+        fs::create_dir(&foreign).unwrap();
+        fs::copy(stage.join("run.json"), foreign.join("run.json")).unwrap();
         for (selector, destination) in [(None, "implicit"), (Some("last"), "explicit")] {
             let mut args = vec!["export"];
             args.extend(selector);
             let destination = root.path().join(destination);
             args.extend(["--output", destination.to_str().unwrap(), "--all", "--json"]);
-            let output = cli(&stage, &args);
+            let refused = cli(&foreign, &args);
+            assert!(!refused.status.success(), "{refused:?}");
+            assert!(!destination.exists());
+            let cwd = if selector.is_some() {
+                stage.join("work")
+            } else {
+                stage.clone()
+            };
+            let output = cli(&cwd, &args);
             assert!(output.status.success(), "{output:?}");
             let response: Value = serde_json::from_slice(&output.stdout).unwrap();
             assert_eq!(response["session_id"], "handoff-session");

@@ -84,6 +84,10 @@ original absence. Entries cannot duplicate or disappear between checkpoints.
 
 ### Selective apply lifecycle
 
+Callers with a durable workspace binding can use `apply_overlay_selected_checked`
+to validate it under the target lock, before recovery and new intent. The lock
+serializes pVisor applies, not unrelated filesystem writers.
+
 `tests/selective_lifecycle.rs` exercises a generated, mount-free acceptance
 lifecycle in private temporary directories with legacy/compact journals and
 checkpoint/strict durability. A host content edit between successful preview and

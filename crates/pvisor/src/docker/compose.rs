@@ -299,7 +299,7 @@ impl Project {
         let mut names = BTreeSet::new();
         for (key, service) in &mut document.services {
             ensure!(
-                dns_name(key) && key == &key.to_ascii_lowercase(),
+                service_name(key),
                 "service name must be a lowercase DNS label: {key}"
             );
             ensure!(
@@ -697,6 +697,8 @@ impl Project {
     /// Historical undeclared and external volumes are never removed, including
     /// with remove_orphans. Current declarations must also match recorded ownership.
     /// Volume removal refuses references from any remaining container.
+    /// Previously retired members of this project are cleaned up even if they
+    /// no longer appear in the file. Active orphans still require remove_orphans.
     /// Attached foreign/orphan containers block network deletion. Partial errors
     /// retain remaining resources; repeat down after reconciling the failure.
     /// None uses recorded stop grace, not the current desired service definition.
@@ -725,6 +727,7 @@ impl Project {
             }));
         }
         Self::remove_members(store, instances.into_iter().rev(), timeout, remove_volumes)?;
+        store.finish_project_retirements(&self.name)?;
         if remove_volumes {
             self.remove_volumes(store)?;
         }
@@ -732,7 +735,8 @@ impl Project {
     }
 
     /// Tear down recorded containers and the owned default network for an explicit project.
-    /// The caller supplies the recorded project name. Volumes are retained.
+    /// The caller supplies the recorded project name. Interrupted cleanup of
+    /// authoritatively recorded retirements is retried. Volumes are retained.
     pub fn down_project_only(
         store: &Store,
         name: &str,
@@ -747,6 +751,7 @@ impl Project {
                 .is_some_and(|member| member.project == name)
         });
         Self::remove_members(store, members, timeout, false)?;
+        store.finish_project_retirements(name)?;
         store.remove_project_network(name)
     }
 
@@ -894,6 +899,10 @@ fn project_name(name: &str) -> bool {
         && name
             .bytes()
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || b"-_".contains(&c))
+}
+
+pub(super) fn service_name(name: &str) -> bool {
+    dns_name(name) && !name.bytes().any(|c| c.is_ascii_uppercase())
 }
 
 fn dns_name(name: &str) -> bool {

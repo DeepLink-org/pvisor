@@ -35,6 +35,9 @@ impl Store {
                 .file_name()
                 .into_string()
                 .map_err(|_| anyhow::anyhow!("invalid volume name"))?;
+            if compose::volumes::is_staged_name(&name) {
+                continue;
+            }
             volumes.push(self.volume_record(&name)?);
         }
         volumes.sort_by(|a, b| a.name.cmp(&b.name));
@@ -64,20 +67,12 @@ impl Store {
 
     /// Remove an unused volume under the catalog lock, including its data.
     /// References from stopped containers also block deletion. Compose ownership
-    /// is reconciled only after identity validation and successful deletion;
-    /// directory substitution/symlinks are refused. No force bypass is provided.
+    /// is cleared only after deletion. Retry an interrupted removal by name
+    /// even if the owned path is now absent; substitutes are never removed.
+    /// No force bypass is provided.
     pub fn remove_volume(&self, name: &str) -> anyhow::Result<()> {
         let _guard = self.lock()?;
-        self.volume_record(name)?;
-        let path = self.root.join("volumes").join(name);
-        ensure!(
-            !self.all()?.iter().any(|instance| instance
-                .config
-                .mounts
-                .iter()
-                .any(|mount| mount.source == path)),
-            "volume is still referenced by a container: {name}"
-        );
-        compose::volumes::remove_unused(self, name)
+        ensure!(valid_name(name), "invalid volume name");
+        compose::volumes::remove(self, name)
     }
 }

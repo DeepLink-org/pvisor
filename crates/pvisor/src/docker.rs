@@ -44,6 +44,7 @@ mod session;
 pub use session::ContainerProfile;
 /// Opt-in host-only native controls for cooperative memory scheduling.
 pub mod managed;
+mod retirement;
 mod staging;
 mod volumes;
 pub use lifecycle::RestartPolicy;
@@ -1839,8 +1840,17 @@ impl Store {
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
             Err(error) => return Err(error.into()),
         }
+        let receipt = instance
+            .compose
+            .as_ref()
+            .map(|member| self.prepare_compose_retirement(instance, member, &directory))
+            .transpose()?;
         fs::rename(directory, &retired)?;
-        self.reap_retired(&retired, &instance.id)
+        self.reap_retired(&retired, &instance.id)?;
+        if let Some(receipt) = receipt {
+            self.finish_compose_retirement(&receipt)?;
+        }
+        Ok(())
     }
 
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
@@ -1892,6 +1902,9 @@ impl Store {
     }
 
     fn reap_retired(&self, directory: &Path, id: &str) -> anyhow::Result<()> {
+        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+        use pvisor_journal::api::{DurableFiles, Persistence};
+
         let retry = || format!("container cleanup incomplete; retry pvisor rm --retired {id}");
         #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
         {
@@ -1910,6 +1923,7 @@ impl Store {
                             fs::remove_file(entry.path())?;
                         }
                     }
+                    Persistence::sync_directory(directory)?;
                     fs::remove_file(directory.join(RETIRED_IMAGES))?;
                 }
                 fs::remove_dir(directory)?;
@@ -1923,6 +1937,43 @@ impl Store {
     /// Reports whether this exact execution has committed its completion.
     pub fn has_completed(&self, instance: &Instance) -> anyhow::Result<bool> {
         Ok(self.completion(instance)?.is_some())
+    }
+
+    /// After transport loss for a ready instance returned by [`Self::start`],
+    /// check whether this exact execution commits a completion. A live VM gets
+    /// one second to release its lease; once it does, the owner gets thirty
+    /// seconds to finish recording the result. Returns false if either deadline
+    /// expires or the generation is no longer active without a receipt; read
+    /// errors propagate. Does not signal the VM, retry the failed request, or
+    /// wait for automatic removal. Do not use after an explicit guest rejection.
+    pub fn wait_for_completion_after_disconnect(
+        &self,
+        instance: &Instance,
+    ) -> anyhow::Result<bool> {
+        let vm_lock = self.directory(&instance.id).join("vm.lock");
+        let vm_deadline = Instant::now() + Duration::from_secs(1);
+        let mut owner_deadline = None;
+        loop {
+            let vm_active = lease_active(&vm_lock);
+            let active = self.generation_active(instance);
+            // Receipt publication precedes owner lease release or replacement.
+            if self.has_completed(instance)? {
+                return Ok(true);
+            }
+            if !active? {
+                return Ok(false);
+            }
+            if owner_deadline.is_none() && !vm_active? {
+                owner_deadline = Some(Instant::now() + Duration::from_secs(30));
+            }
+            let remaining = owner_deadline
+                .unwrap_or(vm_deadline)
+                .saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Ok(false);
+            }
+            std::thread::sleep(remaining.min(Duration::from_millis(20)));
+        }
     }
 
     /// Open one current-generation guest control connection.
@@ -4459,6 +4510,64 @@ mod tests {
             error
                 .to_string()
                 .contains("owner exited without a completion receipt")
+        );
+    }
+
+    #[test]
+    fn docker_disconnect_waits_for_owner_commit_after_vm_exit() {
+        let (_temporary, store, _) = fixture();
+        let mut instance = store.create(request()).unwrap();
+        instance.generation = uuid();
+        instance.state = "running".into();
+        store.save(&instance).unwrap();
+        let directory = store.directory(&instance.id);
+        let _owner = acquire_lease(&directory.join("owner.lock")).unwrap();
+        let vm = acquire_lease(&directory.join("vm.lock")).unwrap();
+        let catalog = store.lock().unwrap();
+        drop(vm);
+        assert!(!store.has_completed(&instance).unwrap());
+
+        std::thread::scope(|scope| {
+            let mut finished = instance.clone();
+            let store = &store;
+            scope.spawn(move || {
+                std::thread::sleep(Duration::from_millis(1_200));
+                drop(catalog);
+                let _catalog = store.lock().unwrap();
+                finish_instance(store, &mut finished, 37, None).unwrap();
+            });
+            assert!(
+                store
+                    .wait_for_completion_after_disconnect(&instance)
+                    .unwrap()
+            );
+        });
+    }
+
+    #[test]
+    fn docker_disconnect_cannot_use_another_generations_receipt() {
+        let (_temporary, store, _) = fixture();
+        let mut instance = store.create(request()).unwrap();
+        instance.generation = uuid();
+        finish_instance(&store, &mut instance, 0, None).unwrap();
+        instance.generation = uuid();
+        instance.state = "running".into();
+        instance.exit_code = None;
+        store.save(&instance).unwrap();
+        let directory = store.directory(&instance.id);
+        let owner = acquire_lease(&directory.join("owner.lock")).unwrap();
+        let vm = acquire_lease(&directory.join("vm.lock")).unwrap();
+        assert!(
+            !store
+                .wait_for_completion_after_disconnect(&instance)
+                .unwrap()
+        );
+        drop(vm);
+        drop(owner);
+        assert!(
+            !store
+                .wait_for_completion_after_disconnect(&instance)
+                .unwrap()
         );
     }
 

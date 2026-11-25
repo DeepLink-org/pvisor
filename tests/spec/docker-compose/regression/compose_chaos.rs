@@ -133,15 +133,20 @@ impl Campaign {
     }
 
     fn spawn(&self, project: &str, args: &[&str]) -> Client {
+        self.spawn_args(
+            [
+                vec!["compose", "-f", self.file.to_str().unwrap(), "-p", project],
+                args.to_vec(),
+            ]
+            .concat(),
+        )
+    }
+
+    fn spawn_args(&self, argv: Vec<&str>) -> Client {
         let sequence = self.sequence.get();
         self.sequence.set(sequence + 1);
         let stdout = self.root().join(format!("{sequence:04}.stdout"));
         let stderr = self.root().join(format!("{sequence:04}.stderr"));
-        let argv = [
-            vec!["compose", "-f", self.file.to_str().unwrap(), "-p", project],
-            args.to_vec(),
-        ]
-        .concat();
         writeln!(
             fs::OpenOptions::new()
                 .create(true)
@@ -315,6 +320,125 @@ fn compose_chaos_frontend_deadline_kills_and_reaps_the_owned_child() {
         std::io::Error::last_os_error().raw_os_error(),
         Some(libc::ECHILD)
     );
+}
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+fn native_retirement_fault(through_replacement: bool) {
+    use std::os::unix::fs::PermissionsExt;
+
+    assert_ne!(unsafe { libc::geteuid() }, 0, "run as an unprivileged user");
+    let campaign = Campaign::new();
+    campaign.write(&serde_json::json!({
+        "services": {
+            "app": {
+                "image": "fixture:latest", "cpus": 1, "mem_limit": "128m",
+                "command": ["sleep", "3600"], "volumes": ["data:/data"]
+            }
+        },
+        "volumes": {"data": {}}
+    }));
+    campaign.up();
+    campaign.exec("printf persistent > /data/sentinel; printf old > /old-upper");
+    let member = campaign.instance(PROJECT, "app");
+    let active = campaign.native.home.join("instances").join(&member.id);
+    let retired = campaign
+        .native
+        .home
+        .join("instances/.retired")
+        .join(&member.id);
+    let volume = campaign.native.home.join(format!("volumes/{PROJECT}_data"));
+
+    struct RetireFault([PathBuf; 2]);
+    impl Drop for RetireFault {
+        fn drop(&mut self) {
+            for path in &self.0 {
+                if let Err(error) = fs::set_permissions(path, fs::Permissions::from_mode(0o700))
+                    && error.kind() != std::io::ErrorKind::NotFound
+                {
+                    eprintln!("restore fixture mode on {}: {error}", path.display());
+                }
+            }
+        }
+    }
+    let blocked = active.join("retire-fault");
+    fs::create_dir(&blocked).unwrap();
+    fs::write(blocked.join("sentinel"), b"block this deletion").unwrap();
+    let fault = RetireFault([blocked.clone(), retired.join("retire-fault")]);
+    fs::set_permissions(&blocked, fs::Permissions::from_mode(0o500)).unwrap();
+    let project_only = || {
+        campaign.spawn_args(vec![
+            "compose",
+            "-p",
+            PROJECT,
+            "down",
+            "--project-only",
+            "-t",
+            "0",
+        ])
+    };
+    let output = if through_replacement {
+        campaign
+            .spawn(PROJECT, &["up", "-d", "--force-recreate", "-t", "0"])
+            .wait()
+    } else {
+        fs::remove_file(&campaign.file).unwrap();
+        project_only().wait()
+    };
+    drop(fault);
+
+    assert!(!output.status.success(), "{output:?}");
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains(&format!("rm --retired {}", member.id)),
+        "{output:?}"
+    );
+    assert!(!active.exists() && retired.join("image-removal.json").is_file());
+    assert_eq!(fs::read(volume.join("sentinel")).unwrap(), b"persistent");
+    if through_replacement {
+        let pending = campaign.store.instances(true).unwrap().remove(0);
+        assert_eq!(pending.state, "created");
+        assert_eq!(
+            pending.compose.unwrap().replaces.as_deref(),
+            Some(member.id.as_str())
+        );
+        campaign.up();
+        assert_eq!(campaign.instance(PROJECT, "app").id, pending.id);
+        assert_eq!(
+            campaign.exec("test ! -e /old-upper && cat /data/sentinel"),
+            b"persistent"
+        );
+        assert!(
+            !retired.exists(),
+            "promotion left old retirement {}",
+            member.id
+        );
+        campaign.call(PROJECT, &["down", "-t", "0"], 0);
+    } else {
+        let output = project_only().wait();
+        assert!(output.status.success(), "{output:?}");
+    }
+    assert!(!retired.exists());
+    assert!(campaign.store.instances(true).unwrap().is_empty());
+    assert!(
+        campaign
+            .store
+            .network_instances(&format!("{PROJECT}_default"))
+            .is_err()
+    );
+    assert_eq!(fs::read(volume.join("sentinel")).unwrap(), b"persistent");
+}
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[test]
+#[ignore = "requires unprivileged Linux/KVM, firmware and a native rootfs"]
+fn compose_native_retirement_project_only_down_retries_post_rename() {
+    native_retirement_fault(false);
+}
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[test]
+#[ignore = "requires unprivileged Linux/KVM, firmware and a native rootfs"]
+fn compose_native_retirement_replacement_retry_finishes_old_cleanup() {
+    native_retirement_fault(true);
 }
 
 #[test]

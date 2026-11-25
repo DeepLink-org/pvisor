@@ -74,10 +74,11 @@ pub struct RunRecord {
     pub started_at_unix_ms: u64,
     pub finished_at_unix_ms: Option<u64>,
     pub storage: PathBuf,
-    /// Reusable project workspace associated with this Run.
+    /// Project path associated with this Run; CLI launches record its canonical path.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace: Option<PathBuf>,
-    /// Explicit launch-time project writeback authority, bound to the completion Bundle.
+    /// Launch-time writeback directory, bound to the completion Bundle. Ordinary
+    /// stages record their target; root stages require explicit project opt-in.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub project_apply_scope: Option<super::session_service::ProjectApplyScope>,
     #[serde(default)]
@@ -808,41 +809,75 @@ fn lookup_run_id_in(
     Ok(matches.into_values().next())
 }
 
-/// Resolve a Run from a run id, stage, upper directory, database, or a path
-/// inside the target/merged workspace.
+/// Resolve a Run from its ID, stage, or view path. `last` and an omitted
+/// selector select the enclosing stage, or the nearest registered workspace.
+/// Both require a current working directory.
 pub fn resolve_run(selector: Option<&Path>, storage: &Path) -> anyhow::Result<RunRecord> {
-    if let Some(selector) = selector {
-        if selector == Path::new("last") {
-            return resolve_last(storage, std::env::current_dir().ok().as_deref());
+    let Some(selector) = selector.filter(|selector| *selector != Path::new("last")) else {
+        let current = std::env::current_dir().context("resolve current workspace for `last`")?;
+        return resolve_last(&current);
+    };
+    if selector.exists() || selector.components().count() > 1 {
+        return resolve_path(selector);
+    }
+    let id = selector.to_string_lossy();
+    let index = run_index_path(storage, &id);
+    if index.exists() {
+        let index: RunIndex = serde_json::from_slice(&fs::read(index)?)?;
+        return RunRecord::read(&index.stage_dir);
+    }
+    if let Some(record) = discover_runs(None)?
+        .into_iter()
+        .find(|record| record.run_id == id)
+    {
+        return Ok(record);
+    }
+    anyhow::bail!("pVisor Run not found: {}", selector.display())
+}
+
+fn resolve_last(current: &Path) -> anyhow::Result<RunRecord> {
+    for stage in current.ancestors() {
+        if stage.join(RUN_META_FILENAME).is_file() {
+            let record = RunRecord::read(stage)?;
+            let recorded_stage = record.stage_dir();
+            anyhow::ensure!(
+                recorded_stage == stage || recorded_stage.starts_with(stage.join("executions")),
+                "Run metadata does not belong to the enclosing stage: {}",
+                stage.display()
+            );
+            return Ok(record);
         }
-        if selector.exists() || selector.components().count() > 1 {
-            return resolve_path(selector, RunPathSelector::Explicit);
+    }
+    let matching_depth = |record: &RunRecord| {
+        let root = record.workspace.as_deref()?;
+        // Resolving a stored root again could follow a replacement symlink.
+        if !root.is_absolute() || !current.starts_with(root) {
+            return None;
         }
-        let id = selector.to_string_lossy();
-        let index = run_index_path(storage, &id);
-        if index.exists() {
-            let index: RunIndex = serde_json::from_slice(&fs::read(index)?)?;
-            return RunRecord::read(&index.stage_dir);
+        if let Some(scope) = &record.project_apply_scope
+            && scope.root == root
+            && scope.validate().is_err()
+        {
+            return None;
         }
-        if let Some(record) = discover_runs(None)?
-            .into_iter()
-            .find(|record| record.run_id == id)
+        Some(root.components().count())
+    };
+    if let Some(record) = latest_workspace_run(discover_runs(Some(current))?, matching_depth) {
+        return Ok(record);
+    }
+    for ancestor in current.ancestors() {
+        let storage = ancestor.join(".pvisor/capture");
+        if let Some(record) = latest_workspace_run(read_run_index(&storage, true)?, matching_depth)
         {
             return Ok(record);
         }
-        anyhow::bail!("pVisor Run not found: {}", selector.display());
     }
-
-    // No explicit selector means "the latest Run for this workspace", with the
-    // same safety as `last`: never silently return another workspace's Session.
-    resolve_last(storage, std::env::current_dir().ok().as_deref())
-}
-
-fn resolve_last(storage: &Path, current: Option<&Path>) -> anyhow::Result<RunRecord> {
-    if let Some(current) = current {
-        return resolve_path(current, RunPathSelector::CurrentWorkspace);
-    }
-    latest_run(storage).or_else(|_| latest_default_run())
+    anyhow::bail!(
+        "no pVisor Run found for the current workspace ({}); `last` requires an enclosing \
+         stage or a Run registered for this workspace. Pass the Session id or an explicit stage \
+         path, for example `pvisor status --review PATH`",
+        current.display()
+    );
 }
 
 fn discover_runs(mut local_index: Option<&Path>) -> anyhow::Result<Vec<RunRecord>> {
@@ -881,39 +916,24 @@ fn discover_runs(mut local_index: Option<&Path>) -> anyhow::Result<Vec<RunRecord
     Ok(records)
 }
 
-fn latest_default_run() -> anyhow::Result<RunRecord> {
-    discover_runs(None)?.into_iter().next().ok_or_else(|| {
-        anyhow::anyhow!(
-            "no pVisor Runs found under {}",
-            default_run_home().display()
-        )
-    })
-}
-
-fn latest_workspace_run(workspace: &Path, records: Vec<RunRecord>) -> Option<RunRecord> {
+fn latest_workspace_run(
+    records: Vec<RunRecord>,
+    matching_depth: impl Fn(&RunRecord) -> Option<usize>,
+) -> Option<RunRecord> {
     records
         .into_iter()
         .filter_map(|record| {
-            let root = record.workspace.as_ref()?;
-            let root = root.canonicalize().unwrap_or_else(|_| root.clone());
-            workspace
-                .starts_with(&root)
-                .then(|| (root.components().count(), record))
+            let depth = matching_depth(&record)?;
+            Some((depth, record))
         })
         // Runs are sorted newest first. Keep the first run at the greatest depth.
         .min_by_key(|(depth, _)| std::cmp::Reverse(*depth))
         .map(|(_, record)| record)
 }
 
-enum RunPathSelector {
-    Explicit,
-    CurrentWorkspace,
-}
-
-fn resolve_path(path: &Path, selector: RunPathSelector) -> anyhow::Result<RunRecord> {
+fn resolve_path(path: &Path) -> anyhow::Result<RunRecord> {
     let absolute = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
-    let implicit = matches!(selector, RunPathSelector::CurrentWorkspace);
-    if !implicit && absolute.join(".pvisor").join("runs").is_dir() {
+    if absolute.join(".pvisor").join("runs").is_dir() {
         return latest_run(&absolute);
     }
     let mut candidates = Vec::new();
@@ -947,12 +967,13 @@ fn resolve_path(path: &Path, selector: RunPathSelector) -> anyhow::Result<RunRec
         }
     }
 
-    let records = if implicit {
-        discover_runs(Some(&absolute))?
-    } else {
-        discover_runs(None).unwrap_or_default()
-    };
-    if let Some(record) = latest_workspace_run(&absolute, records) {
+    if let Some(record) = latest_workspace_run(discover_runs(None).unwrap_or_default(), |record| {
+        let root = record.workspace.as_deref()?;
+        let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+        absolute
+            .starts_with(&root)
+            .then(|| root.components().count())
+    }) {
         return Ok(record);
     }
 
@@ -960,8 +981,8 @@ fn resolve_path(path: &Path, selector: RunPathSelector) -> anyhow::Result<RunRec
     // nearest project storage and compare canonical roots.
     for ancestor in absolute.ancestors() {
         let storage = ancestor.join(".pvisor").join("capture");
-        if implicit || storage.is_dir() {
-            for record in read_run_index(&storage, implicit)? {
+        if storage.is_dir() {
+            for record in all_runs(&storage)? {
                 if record.overlay.as_ref().is_some_and(|overlay| {
                     path_within(&absolute, &overlay.target)
                         || path_within(&absolute, &overlay.merged_dir)
@@ -971,14 +992,6 @@ fn resolve_path(path: &Path, selector: RunPathSelector) -> anyhow::Result<RunRec
                 }
             }
         }
-    }
-    if implicit {
-        anyhow::bail!(
-            "no pVisor Run found for the current workspace ({}); `last` resolves only \
-             Runs registered for this workspace. Pass the Session id or an explicit stage \
-             path, for example `pvisor status --review PATH`",
-            path.display()
-        );
     }
     anyhow::bail!("no pVisor Run metadata found for {}", path.display())
 }
@@ -1807,25 +1820,9 @@ mod tests {
                 .run_id,
             "run-test"
         );
-        assert_eq!(
-            resolve_path(&stage, RunPathSelector::Explicit)
-                .unwrap()
-                .run_id,
-            "run-test"
-        );
-        assert_eq!(
-            resolve_path(&upper, RunPathSelector::Explicit)
-                .unwrap()
-                .run_id,
-            "run-test"
-        );
-        assert_eq!(
-            resolve_path(&storage, RunPathSelector::Explicit)
-                .unwrap()
-                .run_id,
-            "run-test"
-        );
-        assert_eq!(resolve_last(&storage, None).unwrap().run_id, "run-test");
+        assert_eq!(resolve_path(&stage).unwrap().run_id, "run-test");
+        assert_eq!(resolve_path(&upper).unwrap().run_id, "run-test");
+        assert_eq!(resolve_path(&storage).unwrap().run_id, "run-test");
     }
 
     #[test]
@@ -1859,32 +1856,21 @@ mod tests {
             serde_json::to_vec(&stale).unwrap(),
         )
         .unwrap();
-        assert_eq!(
-            resolve_last(&workspace, Some(&workspace)).unwrap().run_id,
-            "newer-outer"
-        );
-        assert_eq!(
-            resolve_path(&workspace, RunPathSelector::Explicit)
-                .unwrap()
-                .run_id,
-            "nested"
-        );
+        assert_eq!(resolve_last(&workspace).unwrap().run_id, "newer-outer");
+        assert_eq!(resolve_path(&workspace).unwrap().run_id, "nested");
 
         let unreadable = run_index_path(&workspace, "unreadable");
         fs::create_dir(&unreadable).unwrap();
-        let error = resolve_last(&workspace, Some(&workspace)).unwrap_err();
+        let error = resolve_last(&workspace).unwrap_err();
         assert!(
             error
                 .to_string()
                 .contains(&unreadable.display().to_string())
         );
         assert_eq!(
-            resolve_path(
-                &temp.path().join("newer-outer/stage"),
-                RunPathSelector::Explicit
-            )
-            .unwrap()
-            .run_id,
+            resolve_path(&temp.path().join("newer-outer/stage"))
+                .unwrap()
+                .run_id,
             "newer-outer"
         );
     }
@@ -1892,16 +1878,12 @@ mod tests {
     #[test]
     fn last_does_not_fall_back_to_a_run_from_another_workspace() {
         let temp = tempfile::tempdir().unwrap();
-        let storage = temp.path().join("store");
-        fs::create_dir_all(&storage).unwrap();
         let workspace = temp.path().join("workspace");
         fs::create_dir_all(&workspace).unwrap();
 
         // No Run is registered for `workspace`; `last` must not silently return
         // a Run that belongs to some other workspace.
-        let error = resolve_last(&storage, Some(&workspace))
-            .unwrap_err()
-            .to_string();
+        let error = resolve_last(&workspace).unwrap_err().to_string();
         assert!(
             error.contains("no pVisor Run found for the current workspace"),
             "{error}"

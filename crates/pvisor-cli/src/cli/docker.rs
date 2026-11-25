@@ -789,13 +789,8 @@ pub(super) fn run(command: DockerCommand) -> anyhow::Result<i32> {
             } else {
                 Some(Signals::forward(store.clone(), started.clone())?)
             };
-            if args.interactive
-                && !args.detach
-                && started.state != "exited"
-                && let Err(error) = forward_guest_stdin(&store, &started)
-                && !store.has_completed(&started)?
-            {
-                return Err(error);
+            if args.interactive && !args.detach && started.state != "exited" {
+                forward_guest_stdin(&store, &started)?;
             }
             if args.detach {
                 println!("{}", instance.id);
@@ -994,17 +989,46 @@ impl Drop for Signals {
 }
 
 fn forward_guest_stdin(store: &Store, started: &docker::Instance) -> anyhow::Result<()> {
-    let mut input = store.connect(started)?;
-    GuestFrameWrite::write_frame(&mut input, &GuestRequest::Input {})?;
-    ensure!(
-        matches!(
-            GuestFrameRead::read_frame::<GuestReply>(&mut input)?,
-            GuestReply::Ready
-        ),
-        "guest stdin unavailable"
-    );
-    input.set_read_timeout(None)?;
-    input.set_write_timeout(None)?;
+    let attach = || -> anyhow::Result<_> {
+        let mut input = store.connect(started)?;
+        GuestFrameWrite::write_frame(&mut input, &GuestRequest::Input {})?;
+        match GuestFrameRead::read_frame::<GuestReply>(&mut input)? {
+            GuestReply::Ready => {}
+            GuestReply::Error { message } | GuestReply::Failure { message, .. } => {
+                bail!("guest stdin unavailable: {message}");
+            }
+            _ => bail!("guest stdin unavailable"),
+        }
+        input.set_read_timeout(None)?;
+        input.set_write_timeout(None)?;
+        Ok(input)
+    };
+    let mut input = match attach() {
+        Ok(attachment) => attachment,
+        Err(error) => {
+            let disconnected = error.downcast_ref::<io::Error>().is_some_and(|error| {
+                matches!(
+                    error.kind(),
+                    io::ErrorKind::ConnectionRefused
+                        | io::ErrorKind::ConnectionReset
+                        | io::ErrorKind::ConnectionAborted
+                        | io::ErrorKind::BrokenPipe
+                        | io::ErrorKind::NotConnected
+                        | io::ErrorKind::NotFound
+                        | io::ErrorKind::UnexpectedEof
+                )
+            });
+            let completed = if disconnected {
+                store.wait_for_completion_after_disconnect(started)?
+            } else {
+                store.has_completed(started)?
+            };
+            if completed {
+                return Ok(());
+            }
+            return Err(error);
+        }
+    };
     std::thread::spawn(move || {
         let _ = send_stdin(&mut input);
         let _ = GuestFrameRead::read_frame::<GuestReply>(&mut input);

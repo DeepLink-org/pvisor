@@ -370,17 +370,17 @@ non-symlink, non-`/` directory plus its device/inode. The runtime validates it a
 Execution preparation, requires its root to match the recorded workspace, persists
 `RunRecord.project_apply_scope` and the same optional
 field in the completion-bound Run Bundle, and compares that binding on reads even
-when Bundle semantic validation was memoized. An absent field means no contract;
-workspace/cwd does not grant rootstage project apply authority. Ordinary spawn
-never adds this contract. A replaced root or symlink ancestor fails closed.
+when Bundle semantic validation was memoized. Workspace/cwd does not grant
+rootstage project apply authority. A replaced root or symlink ancestor fails closed.
 
 Only rootstage project apply uses OverlayCore's scoped boundary API: the original
 `/` overlay, upper, preimages and schema-3 root-coordinate ledger remain in place;
-no subtree is copied into a synthetic stage. Normal workspaces retain the existing
-core apply target contract; they do not require a new launch scope. No caller can
-redirect writeback to an override path, and rootstage records without a
-completion-bound project contract do not gain authority from cwd or workspace
-inference.
+no subtree is copied into a synthetic stage. Fresh writable workspace stages
+automatically record the original directory identity in the same completion-bound
+field, without expanding the overlay scope. Preview checks the binding, and
+explicit and automatic apply recheck it under the target lock. Older ordinary
+stages without the field retain path-based apply; recreate them to get the
+identity check. No caller can redirect writeback to an override path.
 System-root apply still needs explicit `rootfs`, effective UID 0, same-UID Session
 ownership and root-controlled storage; sudo of user stages is not authorized.
 
@@ -1339,6 +1339,12 @@ admitted before stopping old members; pending ownership prevents direct starts
 and lets retry complete interrupted promotion. Named volumes and inherited image
 anonymous mounts survive recreation; container writable uppers do not. Partial
 multi-service failure retains resources rather than attempting rollback.
+Before moving a Compose member out of the active catalog, the runtime durably
+records its project, service, exact container ID and directory identity. Both
+forms of `down` finish that project's already-authorized retirements without
+expanding active orphan selection or volume removal. Replacement retry finishes
+the exact old retirement before promoting the pending candidate. Retirements
+without project authority (including legacy records) still need `rm --retired ID`.
 The private `compose-volumes.json` catalog records project/key ownership and
 source device/inode identity under
 the container catalog lock. Default down retains volumes; explicit down -v
@@ -1416,9 +1422,12 @@ revision. Existing containers retain their pinned image. Each distinct tag commi
 independently; there is no multi-tag filesystem transaction. Container `images.json` remains
 its frontend catalog; `rmi` removes catalog references, not shared pool objects.
 
-On Linux x86-64, a Docker CLI cold run admits its first instance from the verified
-rootfs while publication continues. Instance records pin the private import under
-`cold-imports` in the Docker home. Readers and the publisher hold shared locks;
+On Linux x86-64, losing the Docker CLI frontend during cold image preparation
+terminates its worker and releases the pull lock. Once the image is ready, the
+worker detaches before writing the instance record and rolls back admission if
+the new instance ID cannot be sent to the frontend. A successful `run -d` can
+exit while the worker publishes the image. Instance records pin the private
+import under `cold-imports` in the Docker home. Readers and the publisher hold shared locks;
 instance removal and subsequent runs reclaim unreferenced imports. After a host
 reboot a surviving instance requires its recorded durable revision. A publication
 error is recorded in the import's `publication-error.json`; an explicit pull can
