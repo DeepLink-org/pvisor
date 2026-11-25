@@ -810,7 +810,8 @@ fn lookup_run_id_in(
 }
 
 /// Resolve a Run from its ID, stage, or view path. `last` and an omitted
-/// selector require a current working directory and match registered workspaces.
+/// selector select the enclosing stage, or the nearest registered workspace.
+/// Both require a current working directory.
 pub fn resolve_run(selector: Option<&Path>, storage: &Path) -> anyhow::Result<RunRecord> {
     let Some(selector) = selector.filter(|selector| *selector != Path::new("last")) else {
         let current = std::env::current_dir().context("resolve current workspace for `last`")?;
@@ -835,6 +836,18 @@ pub fn resolve_run(selector: Option<&Path>, storage: &Path) -> anyhow::Result<Ru
 }
 
 fn resolve_last(current: &Path) -> anyhow::Result<RunRecord> {
+    for stage in current.ancestors() {
+        if stage.join(RUN_META_FILENAME).is_file() {
+            let record = RunRecord::read(stage)?;
+            let recorded_stage = record.stage_dir();
+            anyhow::ensure!(
+                recorded_stage == stage || recorded_stage.starts_with(stage.join("executions")),
+                "Run metadata does not belong to the enclosing stage: {}",
+                stage.display()
+            );
+            return Ok(record);
+        }
+    }
     let matching_depth = |record: &RunRecord| {
         let root = record.workspace.as_deref()?;
         // Resolving a stored root again could follow a replacement symlink.
@@ -860,8 +873,8 @@ fn resolve_last(current: &Path) -> anyhow::Result<RunRecord> {
         }
     }
     anyhow::bail!(
-        "no pVisor Run found for the current workspace ({}); `last` resolves only \
-         Runs registered for this workspace. Pass the Session id or an explicit stage \
+        "no pVisor Run found for the current workspace ({}); `last` requires an enclosing \
+         stage or a Run registered for this workspace. Pass the Session id or an explicit stage \
          path, for example `pvisor status --review PATH`",
         current.display()
     );

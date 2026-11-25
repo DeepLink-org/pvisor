@@ -339,14 +339,15 @@ The legacy `pvisor stage` command stays compatible: it uses `--stage PATH` for
 storage and still defaults to `--network bridge`.
 
 Accepted `spawn`, `stage` and `run @root` launches register discovery in the
-selected default Run home even when storage points elsewhere. `last` remains scoped to the
-launching workspace and works while running and after failure or timeout.
-From a subdirectory, discovery selects the latest Session in the nearest
-registered workspace. The same workspace scope applies when the current
+selected default Run home even when storage points elsewhere. `last` selects
+the enclosing stage when invoked inside it. Elsewhere it selects the latest
+Session in the nearest registered workspace. Both apply while running and
+after failure or timeout. The same workspace scope applies when the current
 directory is also the Run home. A symlink at a former project path does not
 transfer Session discovery to its new target. If the current directory cannot
 be resolved, implicit selection fails instead of falling back to another Session.
-Older records without the canonical workspace path need an explicit ID or stage path.
+Outside the stage, older records without a canonical workspace path need an
+explicit ID or stage path.
 Registration does not replace a conflicting index. If it fails after launch,
 the CLI cancels/drains the accepted workload and reports the explicit stage
 for inspection; partial effects may remain. Use the printed stage path if its

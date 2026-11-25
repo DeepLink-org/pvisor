@@ -368,7 +368,7 @@ fn implicit_session_selection_does_not_follow_a_rebound_workspace_path() {
     std::fs::create_dir(&sibling).unwrap();
     std::os::unix::fs::symlink(&sibling, &f.workspace).unwrap();
 
-    for cwd in [&alias, &sibling, &moved, &stage] {
+    for cwd in [&alias, &sibling, &moved] {
         let mut command = f.command(cwd);
         command.args(["status", "last", "--json"]);
         let status = finish(command);
@@ -388,6 +388,12 @@ fn implicit_session_selection_does_not_follow_a_rebound_workspace_path() {
     let explicit = f.run(&["status", id, "--json"]);
     assert!(explicit.status.success(), "{explicit:?}");
     let status: serde_json::Value = serde_json::from_slice(&explicit.stdout).unwrap();
+    assert_eq!(status["run"]["run_id"], id);
+    let mut command = f.command(&stage);
+    command.args(["status", "last", "--json"]);
+    let from_stage = finish(command);
+    assert!(from_stage.status.success(), "{from_stage:?}");
+    let status: serde_json::Value = serde_json::from_slice(&from_stage.stdout).unwrap();
     assert_eq!(status["run"]["run_id"], id);
     let review = f.run(&["review", stage.to_str().unwrap(), "--diff"]);
     assert!(review.status.success(), "{review:?}");
