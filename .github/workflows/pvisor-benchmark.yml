@@ -229,12 +229,18 @@ jobs:
           if-no-files-found: error
 
   vm-guest:
-    name: VM guest regression gate
+    name: VM ${{ matrix.kind }} regression gate
     needs: build
     # A failed prerequisite must not turn a required job into a skipped success.
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        kind: [guest, startup]
+    env:
+      KIND: ${{ matrix.kind }}
     steps:
       - name: Require both revision builds
         run: test '${{ needs.build.result }}' = success
@@ -266,12 +272,27 @@ jobs:
           HASHES
           tar -xOzf fc.tgz release-v1.13.1-x86_64/firecracker-v1.13.1-x86_64 > firecracker
           chmod +x firecracker
-          cc -O2 -static -Wall -Wextra -Werror "$GITHUB_WORKSPACE/benchmark/vm/probe.c" -o probe
-      - name: Measure both revisions and enforce the guest gate
+          probe=probe.c
+          if [[ "$KIND" == startup ]]; then probe=startup_probe.c; fi
+          cc -O2 -static -Wall -Wextra -Werror "$GITHUB_WORKSPACE/benchmark/vm/$probe" -o probe
+      - name: Prepare shared Ubuntu template and startup harness
+        if: matrix.kind == 'startup'
         shell: bash
         run: |
           set -euo pipefail
-          data="$RUNNER_TEMP/.data/vm-guest"
+          for cohort in main candidate; do
+            src="$RUNNER_TEMP/builds/benchmark-build-$cohort"
+            (cd "$src" && sha256sum -c runtime.sha256 && tar -xzf runtime.tgz -C vm pvisor-daemon)
+          done
+          "$RUNNER_TEMP/builds/benchmark-build-candidate/vm/pvisor-daemon" prepare-image \
+            --name ubuntu --images-dir "$RUNNER_TEMP/images" \
+            --image mirror.gcr.io/library/ubuntu@sha256:9a04f13b3f80ef056361e30868593b1cfd2279fe19e4081cb93a90bf56819d6a
+          mise exec -- cargo build --locked --release --manifest-path benchmark/criterion/Cargo.toml --bin pvisor-benchmarks
+      - name: Measure both revisions and enforce the selected gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          data="$RUNNER_TEMP/.data/vm-$KIND"
           export PVISOR_BENCH_GUEST="$RUNNER_TEMP/probe"
           export PVISOR_BENCH_FIRECRACKER="$RUNNER_TEMP/firecracker"
           export PVISOR_BENCH_FC_KERNEL="$RUNNER_TEMP/vmlinux"
@@ -282,20 +303,34 @@ jobs:
             mkdir -p "$data/builds/$cohort"
             cp "$src/source.sha" "$src/vm/SHA256SUMS" "$src/vm/libkrunfw.SOURCE" "$data/builds/$cohort/"
             export PVISOR_BENCH_LINUX_FW="$src/vm/libkrunfw.so.5"
-            mise run benchmark -- vm/guest --binary "$src/vm/vm_api_case" \
-              --output "$data/$cohort" --criterion-output "$data/criterion" -- --save-baseline "$cohort"
+            args=("vm/$KIND" --binary "$src/vm/vm_api_case" --output "$data/$cohort"
+                  --criterion-output "$data/criterion" -- --save-baseline "$cohort")
+            if [[ "$KIND" == guest ]]; then
+              mise run benchmark -- "${args[@]}"
+            else
+              cpus="$(python3 -c 'import os; print(",".join(map(str, sorted(os.sched_getaffinity(0))[:4])))')"
+              sudo systemd-run --wait --pipe --collect --unit="pvisor-warm-$cohort-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" \
+                -p User="$(id -un)" -p Group="$(id -gn)" -p Delegate=yes -p CPUQuota=400% \
+                -p MemoryMax=2G -p MemorySwapMax=0 -p AllowedCPUs="${cpus//,/ }" \
+                /usr/bin/env PVISOR_BENCH_GUEST="$PVISOR_BENCH_GUEST" PVISOR_BENCH_FIRECRACKER="$PVISOR_BENCH_FIRECRACKER" \
+                PVISOR_BENCH_FC_KERNEL="$PVISOR_BENCH_FC_KERNEL" PVISOR_BENCH_LINUX_FW="$PVISOR_BENCH_LINUX_FW" \
+                PVISOR_BENCH_DAEMON="$src/vm/pvisor-daemon" PVISOR_BENCH_DAEMON_IMAGES="$RUNNER_TEMP/images" \
+                PVISOR_BENCH_DAEMON_IMAGE=ubuntu "$GITHUB_WORKSPACE/target/release/pvisor-benchmarks" "${args[@]}"
+            fi
           done
           status=0
-          mise run benchmark-compare -- "$data/criterion" --suite vm-guest \
+          mise run benchmark-compare -- "$data/criterion" --suite "vm-$KIND" \
             --output "$data/comparison" || status=$?
-          if [[ -f "$data/comparison/report.md" ]]; then cat "$data/comparison/report.md" >> "$GITHUB_STEP_SUMMARY"; fi
+          if [[ -f "$data/comparison/comparison.json" ]]; then
+            python3 -I scripts/ci/vm_guest_comment.py "--$KIND-summary" "$data/comparison/comparison.json" >> "$GITHUB_STEP_SUMMARY"
+          fi
           exit "$status"
       - name: Retain compact comparison for the PR conversation
         if: ${{ !cancelled() && github.event_name == 'pull_request' }}
         uses: actions/upload-artifact@v4
         with:
-          name: vm-guest-table-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/.data/vm-guest/comparison/comparison.json
+          name: vm-${{ matrix.kind }}-table-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/.data/vm-${{ matrix.kind }}/comparison/comparison.json
           include-hidden-files: true
           if-no-files-found: ignore
           retention-days: 30
@@ -303,8 +338,8 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: vm-guest-${{ github.run_id }}
-          path: ${{ runner.temp }}/.data/vm-guest
+          name: vm-${{ matrix.kind }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/.data/vm-${{ matrix.kind }}
           include-hidden-files: true
           if-no-files-found: warn
           retention-days: 30

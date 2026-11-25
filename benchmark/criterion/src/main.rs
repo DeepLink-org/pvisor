@@ -212,7 +212,7 @@ fn run() -> Result<()> {
         }
         "vm" => {
             #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-            vm_guest::register(&mut c)?;
+            vm_guest::register(&mut c, entry == "vm/startup.md")?;
             #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
             bail!("VM guest regression measurements require Linux x86_64/KVM");
         }

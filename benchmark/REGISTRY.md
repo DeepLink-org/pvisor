@@ -1172,6 +1172,13 @@ Design: 负载、对照、控制变量与有效样本判据。
 - **实验设计：** 同机同套件；smoke 至少2次正确性预热、nightly至少10次，两者均为50个统计样本、每条件5秒目标测量预算。Criterion额外预热仍为100ms。保留所有慢样本与失败，不重测择优；默认15%中位数阈值不变。
 - **入口：** `mise run benchmark -- smoke` / `nightly` 通过 Rust/Criterion 测量四种条件；设计见 `benchmark/process/smoke.md` 与 `nightly.md`。准备与正确性检查不计入返回的耗时，逐操作证据与 Criterion 统计分别保存。
 
+### B-VM-STARTUP-ENG：直接启动与 daemon 预热启动的独立 PR 专报 {#b-vm-startup-eng}
+
+- **角色与问题：** engineering A/B。候选版本是否延长了 Create → Running 的等待？
+- **实验设计：** 同机 4 vCPU / 256 MiB。直接启动从宿主发起 VMM spawn 至观察到 VMM 成功启动（pVisor 首次恢复 vCPU 成功，Firecracker 确认 microVM 启动）；预热命中从客户端发出 HTTP Create 至收到声明 Running 的完整响应。首条命令、输出和退出只验证正确性，不作停表点。两行分别是 VM 层与沙箱 API 层的 Running，不据此计算预热收益。
+- **判据：** Linux/Rust 直接启动及 Linux daemon 命中的 Create → Running 分别对比本后端基线，阈值 15%。只有 Firecracker 直接启动作参照。Rust native 和 Firecracker 不支持该 daemon 预热路径，明确标 N/A；缺少 Running 证据、基线或预热命中不能通过。
+- **入口：** [`vm/startup`](vm/startup.md)，独立于 `vm/guest` 的 15 项运行时表。
+
 ### B-VM-GUEST-ENG：guest 内部操作的回归门禁 {#b-vm-guest-eng}
 
 - **角色与问题：** engineering A/B。候选版本是否使 Linux 固件或 Rust native guest 的计算、系统调用、进程间通信、内存、磁盘文件或 tmpfs 操作变慢？

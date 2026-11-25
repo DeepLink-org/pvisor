@@ -19,6 +19,7 @@ use std::{
 
 #[derive(Debug, Serialize)]
 pub(super) struct Observation {
+    pub pid: u32,
     pub ready_ns: u64,
     pub exit_ns: u64,
     pub exit_code: i32,
@@ -110,22 +111,102 @@ pub(super) fn capture(
     timeout: Duration,
 ) -> Result<Observation> {
     ensure!(!argv.is_empty(), "empty subject command");
-    ensure!(!marker.contains(&b'\n'), "marker must exclude newline");
-    fs::write(
-        directory.join("argv.json"),
-        serde_json::to_vec_pretty(argv)?,
-    )?;
     fs::write(
         directory.join("environment.json"),
         serde_json::to_vec_pretty(env)?,
     )?;
+    let mut command = Command::new(&argv[0]);
+    command.args(&argv[1..]).current_dir(cwd).envs(env);
+    observe(command, directory, marker, timeout)
+}
+
+pub(crate) enum DirectVmm {
+    Pvisor,
+    Firecracker,
+}
+
+impl DirectVmm {
+    fn running_record(&self, line: &[u8], pid: u32) -> Result<bool> {
+        match self {
+            Self::Pvisor => {
+                let Some(payload) = line.strip_prefix(b"pvisor-startup-profile ") else {
+                    return Ok(false);
+                };
+                let span: serde_json::Value = serde_json::from_slice(payload)?;
+                Ok(span["stage"] == "vm.start_worker" && span["outcome"] == "ok"
+                    && span["pid"] == pid && span["role"] == "runner" && span["schema"] == 1
+                    && span["epoch"] == "vm-runtime" && span["clock"] == "host_monotonic_process_relative")
+            }
+            Self::Firecracker => Ok(line.splitn(2, |&b| b == b' ').nth(1) == Some(
+                b"[anonymous-instance:main] Successfully started microvm that was configured from one single json".as_slice()
+            )),
+        }
+    }
+
+    pub(crate) fn create_to_running(&self, mut cmd: Command, dir: &Path) -> Result<Duration> {
+        let stream = match self {
+            Self::Pvisor => {
+                // The success span closes after initial resume; on_ready is still paused.
+                cmd.env("PVISOR_STARTUP_PROFILE", "1");
+                "stderr"
+            }
+            Self::Firecracker => "stdout",
+        };
+        let observation = observe(cmd, dir, b"VM_STARTUP_READY", Duration::from_secs(30))?;
+        // Use the host read containing the complete Running line, not a child clock
+        // or the time spent waiting for the subsequent correctness probe and exit.
+        let log = fs::read(dir.join(stream))?;
+        let mut offset = 0;
+        let mut running = None;
+        for line in log.split_inclusive(|&b| b == b'\n') {
+            offset += line.len();
+            if let Some(line) = line.strip_suffix(b"\n")
+                && self.running_record(line.strip_suffix(b"\r").unwrap_or(line), observation.pid)?
+            {
+                ensure!(running.is_none(), "duplicate VMM Running event");
+                let event = observation
+                    .events
+                    .iter()
+                    .find(|e| {
+                        e.stream == stream && e.offset < offset && offset <= e.offset + e.bytes
+                    })
+                    .context("missing host read timestamp")?;
+                running = Some(event.observed_ns);
+            }
+        }
+        let ns = running.context("no successful VMM Running transition")?;
+        ensure!(
+            0 < ns && ns <= observation.ready_ns,
+            "Running observed after guest validation"
+        );
+        fs::write(
+            dir.join("create-to-running.json"),
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "create_to_running_ns":ns,"stream":stream,"guest_validation_ns":observation.ready_ns,
+            }))?,
+        )?;
+        Ok(Duration::from_nanos(ns))
+    }
+}
+
+fn observe(
+    mut command: Command,
+    directory: &Path,
+    marker: &[u8],
+    timeout: Duration,
+) -> Result<Observation> {
+    ensure!(!marker.contains(&b'\n'), "marker must exclude newline");
+    let argv: Vec<_> = std::iter::once(command.get_program())
+        .chain(command.get_args())
+        .map(|arg| arg.to_string_lossy())
+        .collect();
+    fs::write(
+        directory.join("argv.json"),
+        serde_json::to_vec_pretty(&argv)?,
+    )?;
     let mut outlog = File::create(directory.join("stdout"))?;
     let mut errlog = File::create(directory.join("stderr"))?;
-    let mut command = Command::new(&argv[0]);
     command
-        .args(&argv[1..])
-        .current_dir(cwd)
-        .envs(env)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -256,6 +337,7 @@ pub(super) fn capture(
             "Ready was not observed before Exit"
         );
         Ok(Observation {
+            pid: process.0.id(),
             ready_ns,
             exit_ns,
             exit_code: 0,
@@ -307,6 +389,52 @@ mod tests {
         )
         .unwrap();
         assert!(value.ready_ns < value.exit_ns);
+    }
+    #[test]
+    fn running_stops_before_guest_validation_and_rejects_missing_or_duplicate_event() {
+        let started = "[anonymous-instance:main] Successfully started microvm that was configured from one single json";
+        let launch = |script: String| {
+            let directory = tempfile::tempdir().unwrap();
+            let mut cmd = Command::new("/bin/sh");
+            cmd.args(["-c", &script]);
+            let measured = DirectVmm::Firecracker.create_to_running(cmd, directory.path())?;
+            let timing: serde_json::Value =
+                serde_json::from_slice(&fs::read(directory.path().join("timing.json"))?)?;
+            Ok::<_, anyhow::Error>((
+                measured,
+                Duration::from_nanos(timing["ready_ns"].as_u64().unwrap()),
+            ))
+        };
+        let (running, guest) = launch(format!(
+            "echo 'T {started}'; sleep .1; echo VM_STARTUP_READY"
+        ))
+        .unwrap();
+        assert!(guest - running >= Duration::from_millis(80));
+        for script in [
+            "echo VM_STARTUP_READY".into(),
+            format!("echo 'T {started}' >&2; echo VM_STARTUP_READY"),
+            format!("echo 'T {started}'; echo 'T {started}'; echo VM_STARTUP_READY"),
+            format!("echo 'T {started}'; exit 0"),
+        ] {
+            assert!(launch(script).is_err());
+        }
+    }
+    #[test]
+    fn paused_callback_or_foreign_runner_is_not_running() {
+        let mut span = serde_json::json!({"stage":"vm.start_worker", "pid":17, "outcome":"ok",
+            "role":"runner","schema":1,"epoch":"vm-runtime","clock":"host_monotonic_process_relative"});
+        let matches = |s: &serde_json::Value, pid| {
+            DirectVmm::Pvisor
+                .running_record(format!("pvisor-startup-profile {s}").as_bytes(), pid)
+                .unwrap()
+        };
+        assert!(matches(&span, 17));
+        assert!(!matches(&span, 18));
+        span["outcome"] = "unknown".into();
+        assert!(!matches(&span, 17));
+        span["outcome"] = "ok".into();
+        span["stage"] = "vm.ready_callback".into();
+        assert!(!matches(&span, 17));
     }
     #[test]
     fn serial_crlf_and_buffered_boot_output_preserve_ready_before_exit() {

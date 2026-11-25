@@ -65,8 +65,9 @@ fn scope() -> Result<PathBuf> {
         .and_then(|value| value.to_str())
         .unwrap_or("");
     ensure!(
-        name.starts_with("pvisor-warm-") && name.ends_with(".scope"),
-        "run inside a new pvisor-warm-*.scope; see the startup README"
+        name.starts_with("pvisor-warm-")
+            && (name.ends_with(".scope") || name.ends_with(".service")),
+        "run inside a fresh delegated pvisor-warm-* unit; see the startup README"
     );
     ensure!(
         fs::read_to_string(scope.join("cgroup.procs"))?.trim() == std::process::id().to_string(),
@@ -275,6 +276,16 @@ impl Daemon {
         })
     }
 
+    fn confirmed_hit(&self, image: &str, token: &str) -> Result<Sample> {
+        let parked = self.parked()?;
+        let sample = self.launch(image, token, None)?.finish(token)?;
+        ensure!(
+            sample.hit && sample.id == parked,
+            "serial create did not consume the observed parked slot"
+        );
+        Ok(sample)
+    }
+
     fn launch(&self, image: &str, token: &str, barrier: Option<&Barrier>) -> Result<Trial<'_>> {
         let payload = json!({
             "image": {"uri": image},
@@ -479,16 +490,7 @@ fn pair(
         let token = t("cold");
         cold.launch(image, &token, None)?.finish(&token)
     };
-    let hit_one = || {
-        let parked = warm.parked()?;
-        let token = t("hit");
-        let sample = warm.launch(image, &token, None)?.finish(&token)?;
-        ensure!(
-            sample.hit && sample.id == parked,
-            "serial create did not consume the observed parked slot"
-        );
-        Ok::<_, anyhow::Error>(sample)
-    };
+    let hit_one = || warm.confirmed_hit(image, &t("hit"));
     let (cold, hit) = if warm_first {
         let hit = hit_one()?;
         (cold_one()?, hit)
@@ -595,8 +597,7 @@ pub(super) fn register(criterion: &mut Criterion) -> Result<()> {
     Ok(())
 }
 
-fn measure(criterion: &mut Criterion, output: &Path) -> Result<()> {
-    let binary = input("PVISOR_BENCH_BINARY")?;
+fn prepared_image() -> Result<(PathBuf, String, PathBuf, Value)> {
     let images = input("PVISOR_BENCH_DAEMON_IMAGES")?;
     let image = env::var("PVISOR_BENCH_DAEMON_IMAGE")?;
     ensure!(
@@ -615,6 +616,57 @@ fn measure(criterion: &mut Criterion, output: &Path) -> Result<()> {
             && image_record["pooled_image"]["cache"]["repository"].is_null(),
         "need a local native OpenSandbox Ubuntu template using default firmware"
     );
+    Ok((images, image, manifest, image_record))
+}
+
+#[cfg(target_arch = "x86_64")]
+pub(crate) fn startup_hits(
+    group: &mut criterion::BenchmarkGroup<'_, criterion::measurement::WallTime>,
+    output: &Path,
+) -> Result<()> {
+    use crate::vm_matrix::WARM_RUNNING;
+    let binary = input("PVISOR_BENCH_DAEMON")?;
+    let (images, image, manifest, image_record) = prepared_image()?;
+    let scope = scope()?;
+    let temp = tempfile::Builder::new().prefix("pvd-").tempdir_in("/tmp")?;
+    fs::copy(manifest, output.join("image-manifest.json"))?;
+    save(
+        output.join("warm-inputs.json"),
+        &json!({
+            "daemon_sha256":digest(&binary)?, "profile":PROFILE, "image_digest":image_record["pooled_image"]["digest"],
+            "firmware_sha256":binary.with_file_name("libkrunfw.so.5").is_file()
+                .then(|| digest(&binary.with_file_name("libkrunfw.so.5"))).transpose()?,
+        }),
+    )?;
+    let mut daemon = Daemon::start(&binary, &images, &scope, temp.path(), output, true)?;
+    let before = fs::read(MARKER).ok();
+    let mut raw = File::create(output.join("warm-hits.jsonl"))?;
+    let mut index = 0;
+    group.bench_function(WARM_RUNNING, |b| {
+        b.iter_custom(|iters| {
+            crate::command::measured_total(iters, || {
+                index += 1;
+                let sample = daemon.confirmed_hit(&image, &format!("startup-{index}"))?;
+                oom_free(&scope)?;
+                ensure!(fs::read(MARKER).ok() == before, "host canary changed");
+                ensure!(
+                    sample.create_ns > 0 && sample.create_ns <= sample.first_command_ns,
+                    "invalid daemon startup clocks"
+                );
+                let ns = sample.create_ns;
+                serde_json::to_writer(&mut raw, &json!({"metric":WARM_RUNNING,"sample":sample}))?;
+                raw.write_all(b"\n")?;
+                Ok(Duration::from_nanos(ns))
+            })
+            .expect("verified warm startup")
+        })
+    });
+    daemon.stop()
+}
+
+fn measure(criterion: &mut Criterion, output: &Path) -> Result<()> {
+    let binary = input("PVISOR_BENCH_BINARY")?;
+    let (images, image, manifest, image_record) = prepared_image()?;
     let bin_dir = output.join("binaries");
     fs::create_dir(&bin_dir)?;
     let frozen = bin_dir.join("pvisor-daemon");

@@ -17,6 +17,7 @@ JSON 仅为非执行的定位信息，Markdown 仅说明设计；不再通过 Ma
 | --- | ---: | --- |
 | Process smoke/nightly | 2 | [`process.rs`](criterion/src/process.rs)、[smoke](process/smoke.md) |
 | VM guest 回归门禁 | 新增 | [`vm_guest.rs`](criterion/src/vm_guest.rs)、[三后端矩阵与阈值](vm/guest.md) |
+| VM 启动专报 | 新增 | [直接启动与 daemon 预热的独立 PR 表格](vm/startup.md) |
 | Ready/Exit、镜像对照与 daemon 预热池 | 12 | [`startup/`](criterion/src/startup/mod.rs)、[startup README](startup/README.md) |
 | 原生文件、九运行时与 DAX | 3 | [`filesystem/`](criterion/src/filesystem/mod.rs)、[filesystem README](filesystem/README.md) |
 | 网络 profile A/B | 1 | [`network/`](criterion/src/network/mod.rs)、[network README](network/README.md) |

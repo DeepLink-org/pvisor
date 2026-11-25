@@ -39,6 +39,29 @@ def zipped(name, content):
     return data.getvalue()
 
 
+def startup_report():
+    names = [
+        "linux-direct-running",
+        "rust-native-direct-running",
+        "firecracker-direct-running",
+        "linux-create-running",
+    ]
+    return {
+        "rows": [
+            {
+                "condition": name,
+                "baseline_ns_per_op": 1e6,
+                "candidate_ns_per_op": 1.16e6,
+                "change_pct": 16.0,
+                "passed": None if name == "firecracker-direct-running" else False,
+            }
+            for name in names
+        ],
+        "threshold_pct": 15,
+        "passed": False,
+    }
+
+
 class VmGuestCommentTests(unittest.TestCase):
     def setUp(self):
         self.run = dict(
@@ -151,6 +174,48 @@ class VmGuestCommentTests(unittest.TestCase):
         reporter.publish(self.event)
         self.assertIn("Invalid comparison artifact", gh.call_args.kwargs["body"])
         self.assertNotIn("@someone", gh.call_args.kwargs["body"])
+
+    @patch.object(reporter, "gh")
+    def test_startup_owns_a_two_row_table_and_does_not_overwrite_guest_comment(self, gh):
+        existing = {
+            "id": 123,
+            "user": {"login": "github-actions[bot]"},
+            "body": f"{reporter.MARKER} 37:1 -->\n## VM guest performance",
+        }
+        artifact = {**self.artifact, "name": "vm-startup-table-1"}
+        gh.side_effect = [
+            json.dumps(self.pull),
+            json.dumps([[existing]]),
+            json.dumps({"artifacts": [artifact]}),
+            zipped("comparison.json", json.dumps(startup_report())),
+            b"{}",
+        ]
+        reporter.publish(self.event, "startup")
+        self.assertIn("?name=vm-startup-table-1", gh.call_args_list[2].args[0])
+        self.assertEqual(gh.call_args.args[-1], "POST")
+        body = gh.call_args.kwargs["body"]
+        self.assertIn("## VM startup performance", body)
+        self.assertIn("**FAIL** · 3/3", body)
+        self.assertEqual(body.count("N/A:"), 2)
+        self.assertEqual(body.count("❌"), 3)
+        self.assertIn("Create → sandbox Running (confirmed pool hit)", body)
+        self.assertNotIn("first successful command", body)
+        self.assertEqual(len([line for line in body.splitlines() if line.startswith("|")]), 4)
+
+    def test_startup_rejects_missing_warm_hit_or_unsupportable_measurement(self):
+        for missing in (
+            "linux-direct-running",
+            "linux-create-running",
+            "firecracker-direct-running",
+        ):
+            data = startup_report()
+            data["rows"] = [r for r in data["rows"] if r["condition"] != missing]
+            with self.subTest(missing=missing), self.assertRaises(ValueError):
+                reporter.render(data, startup=True)
+        data = startup_report()
+        data["rows"].append({**data["rows"][0], "condition": "rust-native-daemon-hit"})
+        with self.assertRaises(ValueError):
+            reporter.render(data, startup=True)
 
     @patch.object(reporter, "gh")
     def test_rerunning_other_jobs_preserves_original_table(self, gh):

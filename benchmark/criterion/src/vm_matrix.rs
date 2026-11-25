@@ -1,4 +1,6 @@
 pub const GROUP: &str = "vm_guest";
+pub const STARTUP_GROUP: &str = "vm_create_to_running";
+pub const WARM_RUNNING: &str = "linux-create-running";
 pub const REFERENCE: &str = "firecracker";
 pub const BACKENDS: [&str; 3] = ["linux", "rust-native", REFERENCE];
 pub const METRICS: [&str; 15] = [

@@ -2,6 +2,8 @@
 //! Motivation: catch guest CPU, memory, storage and tmpfs regressions.
 //! Conclusion sought: a per-kernel verdict per workload, with a fixed Firecracker reference.
 //! Design: identical guest probe, fresh writable backing, guest clock and verified results.
+//! Benchmark: B-VM-STARTUP-ENG (benchmark/REGISTRY.md#b-vm-startup-eng), role engineering A/B.
+//! Measure Create → Running; guest output and exit are correctness checks, not stop events.
 use crate::{
     command::measured_total,
     filesystem::support::{checked, clean, output, required, run, save, sha},
@@ -53,6 +55,8 @@ impl Subjects {
         backend: &str,
         metric: &str,
     ) -> Result<Duration> {
+        let startup = metric == "direct-running";
+        let cpus = if startup { 4 } else { 1 };
         fs::create_dir_all(logs)?;
         let backing = tempfile::tempdir_in(batch)?;
         let root = backing.path().join("root");
@@ -71,7 +75,7 @@ impl Subjects {
                 &json!({
                     "boot-source":{"kernel_image_path":self.kernel, "boot_args":format!(
                         "console=ttyS0 reboot=k panic=1 quiet pci=off rw root=/dev/vda init=/probe BENCH_METRIC={metric}")},
-                    "machine-config":{"vcpu_count":1,"mem_size_mib":256},
+                    "machine-config":{"vcpu_count":cpus,"mem_size_mib":256},
                     "drives":[{"drive_id":"rootfs","path_on_host":image,
                         "is_root_device":true,"is_read_only":false,"cache_type":"Writeback"}],
                 }),
@@ -86,11 +90,22 @@ impl Subjects {
             cmd.env("PVISOR_GUEST_KERNEL", backend)
                 .arg("--rootfs")
                 .arg(&root)
-                .args(["--cpus", "1", "--memory", "256", "--task-stdio"]);
+                .arg("--cpus")
+                .arg(cpus.to_string())
+                .args(["--memory", "256", "--task-stdio"]);
             if backend == "linux" {
                 cmd.arg("--firmware").arg(&self.firmware);
             }
             cmd.args(["--", "/probe", metric]);
+        }
+        if startup {
+            use crate::startup::DirectVmm;
+            let vmm = if backend == REFERENCE {
+                DirectVmm::Firecracker
+            } else {
+                DirectVmm::Pvisor
+            };
+            return vmm.create_to_running(cmd, logs);
         }
         let (wall, stdout) = run(&mut cmd, logs, Duration::from_secs(30), &[])?;
         let elapsed = duration(&stdout, metric)?;
@@ -103,7 +118,7 @@ impl Subjects {
     }
 }
 
-pub fn register(c: &mut Criterion) -> Result<()> {
+pub fn register(c: &mut Criterion, startup: bool) -> Result<()> {
     let batch = output()?;
     let subjects = Subjects {
         vm: required("PVISOR_BENCH_BINARY")?,
@@ -121,7 +136,8 @@ pub fn register(c: &mut Criterion) -> Result<()> {
     save(
         batch.join("manifest.json"),
         &json!({
-            "benchmark":"B-VM-GUEST-ENG","vcpus":1,"memory_mib":256,
+            "benchmark":if startup {"B-VM-STARTUP-ENG"} else {"B-VM-GUEST-ENG"},
+            "vcpus":if startup {4} else {1},"memory_mib":256,
             "backing_fs":backing_fs.trim(),"host":checked(Command::new("uname").arg("-a"))?.trim(),
             "affinity":status.lines().find(|s| s.starts_with("Cpus_allowed_list:")),
             "harness_sha256":sha(&std::env::current_exe()?)?,
@@ -130,7 +146,14 @@ pub fn register(c: &mut Criterion) -> Result<()> {
             "fc_kernel_sha256":sha(&subjects.kernel)?
         }),
     )?;
-    fs::write(batch.join("probe.c"), include_str!("../../vm/probe.c"))?;
+    fs::write(
+        batch.join("probe.c"),
+        if startup {
+            include_str!("../../vm/startup_probe.c")
+        } else {
+            include_str!("../../vm/probe.c")
+        },
+    )?;
     fs::write(batch.join("vm_guest.rs"), include_str!("vm_guest.rs"))?;
     let template = batch.join("template.ext4");
     let seed = tempfile::tempdir_in(&batch)?;
@@ -144,13 +167,25 @@ pub fn register(c: &mut Criterion) -> Result<()> {
             .arg(&template),
     )?;
 
-    let mut group = c.benchmark_group(GROUP);
+    let mut group = c.benchmark_group(if startup {
+        vm_matrix::STARTUP_GROUP
+    } else {
+        GROUP
+    });
     group
         .sample_size(10)
         .sampling_mode(SamplingMode::Flat)
         .warm_up_time(Duration::from_millis(100))
         .measurement_time(Duration::from_secs(1));
-    for (backend, metric, name) in vm_matrix::cells() {
+    let cells: Vec<_> = if startup {
+        vm_matrix::BACKENDS
+            .into_iter()
+            .map(|b| (b, "direct-running", format!("{b}-direct-running")))
+            .collect()
+    } else {
+        vm_matrix::cells().collect()
+    };
+    for (backend, metric, name) in cells {
         let logs = batch.join(&name);
         let mut index = 0u64;
         group.bench_function(name, |b| {
@@ -165,6 +200,9 @@ pub fn register(c: &mut Criterion) -> Result<()> {
                 .expect("valid guest measurements")
             })
         });
+    }
+    if startup {
+        crate::startup::startup_hits(&mut group, &batch)?;
     }
     Ok(())
 }

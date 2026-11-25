@@ -28,15 +28,15 @@ class CriterionRegistrationContracts(unittest.TestCase):
     def test_all_registered_ids_entries_and_readiness_remain_explicit(self):
         fields, rows = registry()
         self.assertEqual(fields, ["benchmark_id", "role", "entry", "status", "implementation"])
-        self.assertEqual(len(rows), 65)
-        self.assertEqual(len({row["entry"] for row in rows}), 65)
+        self.assertEqual(len(rows), 66)
+        self.assertEqual(len({row["entry"] for row in rows}), 66)
         expected_ids = {
             line.split("：")[0].removeprefix("### ")
             for line in (ROOT / "REGISTRY.md").read_text().splitlines()
             if line.startswith("### B-")
         } - {"B-OVERVIEW / B-METHOD", "B-COMPARE", "B-CLUSTER"}
         self.assertEqual({row["benchmark_id"] for row in rows}, expected_ids)
-        self.assertEqual(sum(row["status"] == "criterion-rust" for row in rows), 32)
+        self.assertEqual(sum(row["status"] == "criterion-rust" for row in rows), 33)
         self.assertEqual(
             sum(row["status"] == "requires-single-condition-command" for row in rows), 33
         )

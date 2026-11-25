@@ -13,6 +13,7 @@ use std::{
 enum Suite {
     Process,
     VmGuest,
+    VmStartup,
 }
 
 #[derive(Parser)]
@@ -70,6 +71,15 @@ fn run(args: Args) -> Result<()> {
             vm_matrix::GROUP,
             vm_matrix::cells()
                 .map(|(backend, _, name)| (name, backend == vm_matrix::REFERENCE))
+                .collect(),
+        ),
+        Suite::VmStartup => (
+            "VM startup: Create → Running",
+            vm_matrix::STARTUP_GROUP,
+            vm_matrix::BACKENDS
+                .into_iter()
+                .map(|b| (format!("{b}-direct-running"), b == vm_matrix::REFERENCE))
+                .chain([(vm_matrix::WARM_RUNNING.into(), false)])
                 .collect(),
         ),
     };
@@ -255,6 +265,54 @@ mod tests {
         })
         .unwrap_err();
         assert!(error.to_string().contains("main/estimates.json"));
+    }
+
+    #[test]
+    fn startup_requires_a_confirmed_hit_stream_without_reading_guest_estimates() {
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path().join("vm_create_to_running");
+        for name in [
+            "linux-direct-running",
+            "rust-native-direct-running",
+            "firecracker-direct-running",
+            "linux-create-running",
+        ] {
+            for arm in ["main", "candidate"] {
+                let dir = root.join(name).join(arm);
+                fs::create_dir_all(&dir).unwrap();
+                let median = if arm == "candidate" && name == "firecracker-direct-running" {
+                    200
+                } else {
+                    100
+                };
+                fs::write(
+                    dir.join("estimates.json"),
+                    json!({"median":{"point_estimate":median}}).to_string(),
+                )
+                .unwrap();
+            }
+        }
+        let gate = |out: &str| {
+            run(Args {
+                suite: Suite::VmStartup,
+                root: d.path().into(),
+                baseline: "main".into(),
+                candidate: "candidate".into(),
+                threshold: 15.0,
+                output: d.path().join(out),
+            })
+        };
+        gate("pass").unwrap();
+        let hit = root.join("linux-create-running/candidate/estimates.json");
+        fs::write(&hit, r#"{"median":{"point_estimate":116}}"#).unwrap();
+        assert!(gate("slow").is_err());
+        fs::remove_file(hit).unwrap();
+        assert!(
+            gate("missing")
+                .unwrap_err()
+                .to_string()
+                .contains("linux-create-running")
+        );
     }
 
     #[test]

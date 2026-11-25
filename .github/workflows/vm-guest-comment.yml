@@ -14,12 +14,16 @@ jobs:
       github.event.workflow_run.path == '.github/workflows/pvisor-benchmark.yml'
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    strategy:
+      fail-fast: false
+      matrix:
+        kind: [guest, startup]
     permissions:
       contents: read
       actions: read
       pull-requests: write
     concurrency:
-      group: vm-guest-comment-${{ github.event.workflow_run.head_repository.id }}-${{ github.event.workflow_run.head_branch }}
+      group: vm-${{ matrix.kind }}-comment-${{ github.event.workflow_run.head_repository.id }}-${{ github.event.workflow_run.head_branch }}
       cancel-in-progress: false
     steps:
       # workflow_run uses the default branch. Never check out the triggering PR.
@@ -31,4 +35,5 @@ jobs:
       - name: Update the benchmark comment
         env:
           GH_TOKEN: ${{ github.token }}
+          REPORT_KIND: ${{ matrix.kind }}
         run: python3 -I scripts/ci/vm_guest_comment.py
