@@ -40,6 +40,11 @@ pvisor stop redis
 pvisor rm redis
 ```
 
+在 Linux 和 Apple Silicon macOS 上，`pvisor start -a CONTAINER` 启动一个已停止的容器，
+转发信号并实时显示本次运行的 stdout 和 stderr。命令返回本次运行的退出码，不接入 stdin。
+`ps` 和 `images` 默认在终端对齐显示，`ps` 还显示创建至今和持续运行的时长。重定向输出时保留
+原有的制表符分隔列；脚本可用 `--format` 或 `-q` 明确选择输出。
+
 `pull --platform linux/amd64` 或 `linux/arm64` 选择镜像架构，`linux/arm64/v8` 是别名。
 省略时使用原生架构。可以下载异构镜像，但尚未实现 CPU 模拟，`run` 和 `start` 只能运行原生镜像。
 私有 registry 返回 Bearer challenge 时，可用 `--username` 搭配

@@ -35,6 +35,32 @@ pub(crate) struct PsRow<'a> {
     pub name: &'a str,
 }
 
+impl<'a> PsRow<'a> {
+    fn display_id(&self, no_trunc: bool) -> &'a str {
+        if no_trunc {
+            self.id
+        } else {
+            &self.id[..self.id.len().min(12)]
+        }
+    }
+
+    pub(crate) fn cells(&self, no_trunc: bool) -> [String; 6] {
+        let status = match self.state {
+            "exited" => format!("Exited ({})", self.exit_code.unwrap_or(125)),
+            "running" => "Up".into(),
+            state => state.into(),
+        };
+        [
+            self.display_id(no_trunc).into(),
+            self.image.into(),
+            format!("{:?}", self.command.join(" ")),
+            status,
+            self.ports.into(),
+            self.name.into(),
+        ]
+    }
+}
+
 pub(crate) fn ps_header(output: &mut impl Write, quiet: bool) -> std::io::Result<()> {
     if !quiet {
         writeln!(output, "CONTAINER ID\tIMAGE\tCOMMAND\tSTATUS\tPORTS\tNAMES")?;
@@ -48,27 +74,10 @@ pub(crate) fn ps_row(
     quiet: bool,
     no_trunc: bool,
 ) -> std::io::Result<()> {
-    let id = if no_trunc {
-        row.id
-    } else {
-        &row.id[..row.id.len().min(12)]
-    };
     if quiet {
-        return writeln!(output, "{id}");
+        return writeln!(output, "{}", row.display_id(no_trunc));
     }
-    let status = match row.state {
-        "exited" => format!("Exited ({})", row.exit_code.unwrap_or(125)),
-        "running" => "Up".into(),
-        state => state.into(),
-    };
-    writeln!(
-        output,
-        "{id}\t{}\t{:?}\t{status}\t{}\t{}",
-        row.image,
-        row.command.join(" "),
-        row.ports,
-        row.name
-    )
+    writeln!(output, "{}", row.cells(no_trunc).join("\t"))
 }
 
 #[cfg(any(windows, test))]

@@ -2,6 +2,8 @@
 use super::*;
 use pvisor_daemon::api::{PreparedCatalog, PreparedCatalogService};
 use serde_json::{Value, json};
+use std::io::IsTerminal;
+use unicode_width::UnicodeWidthStr;
 
 pub(super) fn labels(entries: &[String]) -> anyhow::Result<BTreeMap<String, String>> {
     let mut result = BTreeMap::new();
@@ -281,6 +283,12 @@ pub(super) fn validate(command: &DockerCommand) -> anyhow::Result<()> {
             Filters::parse(&args.filters, false)?;
             args.format.as_deref().map(Format::parse).transpose()?;
         }
+        DockerCommand::Start(args) if args.attach => {
+            ensure!(
+                args.select.containers.len() == 1,
+                "start --attach requires exactly one container"
+            );
+        }
         DockerCommand::Run(args) => {
             labels(&args.labels)?;
             args.stop_signal
@@ -428,16 +436,66 @@ pub(super) fn kill(args: Kill) -> anyhow::Result<i32> {
     })
 }
 
+fn write_table<const N: usize>(output: &mut impl Write, rows: &[[String; N]]) -> io::Result<()> {
+    let mut widths = [0; N];
+    for row in rows {
+        for (width, cell) in widths.iter_mut().zip(row) {
+            *width = (*width).max(cell.width());
+        }
+    }
+    for row in rows {
+        for (index, cell) in row.iter().enumerate() {
+            write!(output, "{cell}")?;
+            if index + 1 < N {
+                write!(
+                    output,
+                    "{:width$}",
+                    "",
+                    width = widths[index] - cell.width() + 2
+                )?;
+            }
+        }
+        writeln!(output)?;
+    }
+    Ok(())
+}
+
+fn elapsed(now_ms: u64, since_ms: u64) -> String {
+    let seconds = now_ms.saturating_sub(since_ms) / 1000;
+    let (value, unit) = [(86_400, "day"), (3_600, "hour"), (60, "minute")]
+        .into_iter()
+        .find_map(|(scale, unit)| (seconds >= scale).then_some((seconds / scale, unit)))
+        .unwrap_or((seconds, "second"));
+    format!("{value} {unit}{}", if value == 1 { "" } else { "s" })
+}
+
 pub(super) fn containers(store: &Store, args: List) -> anyhow::Result<i32> {
     let mut filters = Filters::parse(&args.filters, false)?;
     filters.resolve_ancestors(store)?;
     let format = args.format.as_deref().map(Format::parse).transpose()?;
+    let mut table = (!args.quiet && format.is_none() && io::stdout().is_terminal()).then(|| {
+        vec![
+            [
+                "CONTAINER ID",
+                "IMAGE",
+                "COMMAND",
+                "CREATED",
+                "STATUS",
+                "PORTS",
+                "NAMES",
+            ]
+            .map(str::to_owned),
+        ]
+    });
+    let now_ms = std::time::UNIX_EPOCH.elapsed().map_or(0, |duration| {
+        u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
+    });
     if !args.quiet {
         if let Some(format) = &format {
             if let Some(header) = format.header() {
                 println!("{header}");
             }
-        } else {
+        } else if table.is_none() {
             ps_header(&mut io::stdout(), false)?;
         }
     }
@@ -480,21 +538,33 @@ pub(super) fn containers(store: &Store, args: List) -> anyhow::Result<i32> {
             });
             println!("{}", format.render(&row)?);
         } else {
-            ps_row(
-                &mut io::stdout(),
-                PsRow {
-                    id: &instance.id,
-                    image: &instance.image.reference,
-                    command: &instance.argv,
-                    state: &instance.state,
-                    exit_code: instance.exit_code,
-                    ports: &ports,
-                    name: &instance.name,
-                },
-                false,
-                args.no_trunc,
-            )?;
+            let row = PsRow {
+                id: &instance.id,
+                image: &instance.image.reference,
+                command: &instance.argv,
+                state: &instance.state,
+                exit_code: instance.exit_code,
+                ports: &ports,
+                name: &instance.name,
+            };
+            if let Some(table) = &mut table {
+                let [id, image, command, mut status, ports, name] = row.cells(args.no_trunc);
+                if instance.state == "running" && instance.started_ms != 0 {
+                    status = format!("Up {}", elapsed(now_ms, instance.started_ms));
+                }
+                let created = if instance.created_ms == 0 {
+                    String::new()
+                } else {
+                    format!("{} ago", elapsed(now_ms, instance.created_ms))
+                };
+                table.push([id, image, command, created, status, ports, name]);
+            } else {
+                ps_row(&mut io::stdout(), row, false, args.no_trunc)?;
+            }
         }
+    }
+    if let Some(table) = table {
+        write_table(&mut io::stdout().lock(), &table)?;
     }
     Ok(0)
 }
@@ -511,12 +581,14 @@ pub(super) fn images(args: ListImages) -> anyhow::Result<i32> {
             .map(|image| (image.reference.clone(), image))
             .collect()
     };
+    let mut table = (!args.quiet && format.is_none() && io::stdout().is_terminal())
+        .then(|| vec![["REPOSITORY", "TAG", "IMAGE ID"].map(str::to_owned)]);
     if !args.quiet {
         if let Some(format) = &format {
             if let Some(header) = format.header() {
                 println!("{header}");
             }
-        } else {
+        } else if table.is_none() {
             println!("REPOSITORY\tTAG\tIMAGE ID");
         }
     }
@@ -559,9 +631,14 @@ pub(super) fn images(args: ListImages) -> anyhow::Result<i32> {
                     "CreatedAt": metadata["Created"]
                 }))?
             );
+        } else if let Some(table) = &mut table {
+            table.push([repository, tag, id].map(str::to_owned));
         } else {
             println!("{repository}\t{tag}\t{id}");
         }
+    }
+    if let Some(table) = table {
+        write_table(&mut io::stdout().lock(), &table)?;
     }
     Ok(0)
 }
@@ -569,6 +646,30 @@ pub(super) fn images(args: ListImages) -> anyhow::Result<i32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn terminal_table_uses_display_width_without_tabs_or_trailing_padding() {
+        let rows = [["NAME", "STATE"], ["两字", "up"], ["box", "stopped"]]
+            .map(|row| row.map(str::to_owned));
+        let mut output = Vec::new();
+        write_table(&mut output, &rows).unwrap();
+        assert_eq!(output, "NAME  STATE\n两字  up\nbox   stopped\n".as_bytes());
+    }
+
+    #[test]
+    fn elapsed_time_uses_known_creation_or_start_times() {
+        for (age_ms, expected) in [
+            (0, "0 seconds"),
+            (1_000, "1 second"),
+            (120_000, "2 minutes"),
+            (3_600_000, "1 hour"),
+            (172_800_000, "2 days"),
+        ] {
+            assert_eq!(elapsed(1_000 + age_ms, 1_000), expected);
+        }
+        assert_eq!(elapsed(1_000, 2_000), "0 seconds");
+    }
+
     #[test]
     fn formatting_is_data_only_and_rejects_unsupported_expressions() {
         let row = json!({"State":{"ExitCode":23},"Config":{"Labels":{"app.role":"worker"}}});

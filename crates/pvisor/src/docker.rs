@@ -1335,7 +1335,28 @@ impl Store {
     /// An active automatic restart returns its current restarting projection
     /// without launching a second owner; readiness still needs observation.
     pub fn start(&self, selector: &str) -> anyhow::Result<Instance> {
+        self.start_generation(selector, false)
+            .map(|(instance, _)| instance)
+    }
+
+    /// Start an inactive container with output positioned at the new generation.
+    /// Reject active or starting containers without attaching or starting again.
+    /// Keep both log descriptors open across fast exit and automatic removal.
+    pub fn start_attached(&self, selector: &str) -> anyhow::Result<(Instance, Output)> {
+        let (instance, output) = self.start_generation(selector, true)?;
+        Ok((
+            instance,
+            output.context("attached start did not open logs")?,
+        ))
+    }
+
+    fn start_generation(
+        &self,
+        selector: &str,
+        attach: bool,
+    ) -> anyhow::Result<(Instance, Option<Output>)> {
         let mut instance;
+        let mut output = None;
         {
             let _guard = self.lock()?;
             instance = self.resolve(selector)?;
@@ -1350,16 +1371,16 @@ impl Store {
             staging::validate_mounts(&mut instance.config)?;
             require_native_platform(&instance.image.platform)?;
             self.validate_network_attachment(&instance)?;
-            if self.active(&instance)?
-                && matches!(instance.state.as_str(), "running" | "restarting")
-            {
-                return Ok(instance);
+            let active = self.active(&instance)?;
+            ensure!(
+                !attach || (!active && instance.state != "starting"),
+                "attached start requires an inactive container"
+            );
+            if active && matches!(instance.state.as_str(), "running" | "restarting") {
+                return Ok((instance, None));
             }
             if instance.state != "starting" {
-                ensure!(
-                    !self.active(&instance)?,
-                    "container is already running or starting"
-                );
+                ensure!(!active, "container is already running or starting");
                 ensure!(
                     !self.directory(&instance.id).join("fork.json").is_file(),
                     "a stopped live-fork child requires a new fork from its source"
@@ -1371,6 +1392,9 @@ impl Store {
                 // Transfer this open description through stdin across self-exec.
                 let owner_lease = lease_file(&self.directory(&instance.id).join("owner.lock"))?;
                 owner_lease.lock_exclusive()?;
+                if attach {
+                    output = Some(self.output(&instance)?);
+                }
                 instance.generation = uuid();
                 instance.owner_epoch = instance.generation.clone();
                 instance.started_ms = crate::unix_now_ms();
@@ -1391,7 +1415,7 @@ impl Store {
                 }
             }
         }
-        self.wait_for_start(instance)
+        Ok((self.wait_for_start(instance)?, output))
     }
 
     fn spawn_owner(
