@@ -156,13 +156,9 @@ impl FuseWaiter {
 
 impl IoCompletion for FuseWaiter {
     fn wait(&self) -> Result<(), IoError> {
-        // TODO: Preserve the number of bytes accepted by a short write for
-        // callers that need partial-write semantics.
         match self.wait() {
-            FuseCompletion::Complete(_) | FuseCompletion::ShortWrite { .. } => Ok(()),
-            FuseCompletion::MalformedResponse | FuseCompletion::RemoteError(_) => {
-                Err(IoError::Failed)
-            }
+            FuseCompletion::Complete(_) => Ok(()),
+            _ => Err(IoError::Failed),
         }
     }
 }

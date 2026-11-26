@@ -24,7 +24,8 @@ virtio-MMIO、virtio-fs `/dev/root` 和 guest supervisor；启动时仅补充
 实验 x86 内核需要的 ACPI CPU/IRQ/reset 描述。原有 Linux 启动路径不写入这些表。
 aarch64 沿用既有 FDT、GICv3、timer 和 PSCI；镜像从 `0x80200000`
 的 ARM64 Image 头启动，FDT 仍通过 `x0` 传入，并避免内核覆盖 RAM 尾部的 FDT。
-ARM KVM 不为实验内核回退到 GICv2。ARM64 内核已交叉编译，真实 KVM/HVF 启动尚未验收。
+ARM KVM 不为实验内核回退到 GICv2。Apple Silicon/HVF 已验证单 vCPU 下共享根目录、
+独立任务 stdio 和认证退出。ARM KVM 的负载验收独立进行。
 bundle 元数据、物理地址、长度和 SHA-256 在编译嵌入前验证；摘要检测损坏，
 不证明来源可信，构建者仍须信任本地构建输入。内核在进程内按需解包并共享。
 

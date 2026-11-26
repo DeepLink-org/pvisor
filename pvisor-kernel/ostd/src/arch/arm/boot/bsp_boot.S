@@ -26,6 +26,7 @@ MAIR_1DEVICE           = (0x00 << 8)  // Attr1: Device-nGnRnE memory
 SCTLR_I                = 1 << 12      // Instruction access cacheability: Cacheable
 SCTLR_C                = 1 <<  2      // Data access cacheability: Cacheable
 SCTLR_M                = 1 <<  0      // MMU state: Enabled
+SCTLR_SPAN             = 1 << 23      // Preserve PAN on exception entry
 
 # PTE flags
 PTE_VALID              = 1 <<  0      // Valid
@@ -102,7 +103,7 @@ die_exception_level:
     dsb     nsh
 
     # Enable MMU and cache.
-    mov     x4, #(SCTLR_I | SCTLR_C | SCTLR_M)
+    ldr     x4, =(SCTLR_I | SCTLR_C | SCTLR_M | SCTLR_SPAN)
     msr     sctlr_el1, x4
     isb
 

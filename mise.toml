@@ -579,8 +579,7 @@ if [[ "$(uname -s)" == Darwin ]]; then
 else
   auditwheel repair -w "$2" "$1"
 fi
-mkdir -p "$(dirname "$PVISOR_FW_SOURCE_ARCHIVE")"
-mise run fw -- build --source-output "$CARGO_TARGET_DIR/libkrunfw.SOURCE" --source-archive "$PVISOR_FW_SOURCE_ARCHIVE"
+mise run fw -- build --wheel "$1" --source-archive "$PVISOR_FW_SOURCE_ARCHIVE"
 '''
 
 [tasks.set-nightly-version]

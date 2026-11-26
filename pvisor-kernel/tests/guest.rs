@@ -28,7 +28,9 @@ unsafe extern "C" {
     fn sched_getaffinity(pid: i32, len: usize, mask: *mut u64) -> i32;
     fn sched_getcpu() -> i32;
     fn mmap(addr: *mut u8, len: usize, prot: i32, flags: i32, fd: i32, offset: i64) -> *mut u8;
+    fn msync(addr: *mut u8, len: usize, flags: i32) -> i32;
     fn munmap(addr: *mut u8, len: usize) -> i32;
+    fn syncfs(fd: i32) -> i32;
     fn capget(header: *mut CapHeader, data: *mut CapData) -> i32;
     fn capset(header: *const CapHeader, data: *const CapData) -> i32;
     fn fsetxattr(fd: i32, name: *const i8, value: *const u8, size: usize, flags: i32) -> i32;
@@ -128,6 +130,34 @@ fn check_write_cache() {
         expected[8192..].copy_from_slice(b"x\0\0");
         assert_eq!(fs::read(path).unwrap(), expected);
     }
+}
+
+fn check_mapped_sync(use_msync: bool, expect_error: bool) {
+    let file = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open("/mapped-sync")
+        .unwrap();
+    let ptr = unsafe { mmap(std::ptr::null_mut(), 8192, 3, 1, file.as_raw_fd(), 0) };
+    assert_ne!(ptr as isize, -1);
+    unsafe { ptr.add(4097).write_volatile(b'x') };
+    let result = if use_msync {
+        unsafe { msync(ptr, 8192, 4) }
+    } else {
+        unsafe { syncfs(file.as_raw_fd()) }
+    };
+    assert_eq!(result, if expect_error { -1 } else { 0 });
+    if expect_error {
+        assert_eq!(std::io::Error::last_os_error().raw_os_error(), Some(5));
+        assert_eq!(unsafe { msync(ptr, 8192, 4) }, -1);
+        assert_eq!(std::io::Error::last_os_error().raw_os_error(), Some(5));
+    }
+    println!("MAPPED_SYNC_OK");
+    std::io::stdout().flush().unwrap();
+    let mut ack = [0];
+    std::io::stdin().read_exact(&mut ack).unwrap();
+    assert_eq!(ack, [1]);
+    assert_eq!(unsafe { munmap(ptr, 8192) }, 0);
 }
 
 fn check_keep_cache_copy_up() {
@@ -253,6 +283,9 @@ fn main() {
                 check_setid_writes();
             }
             "--check-keep-cache-copy-up" => check_keep_cache_copy_up(),
+            "--mapped-syncfs" => check_mapped_sync(false, false),
+            "--mapped-msync" => check_mapped_sync(true, false),
+            "--mapped-msync-error" => check_mapped_sync(true, true),
             "--check-read-fixture" => {
                 let file = fs::File::open("/read-fixture").unwrap();
                 // A preexisting fixture avoids warming the guest cache by writing the data.

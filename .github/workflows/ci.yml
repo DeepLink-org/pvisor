@@ -457,6 +457,7 @@ jobs:
           PVISOR_BUILD_NATIVE_KERNEL_BUNDLE="$native_bundle" mise exec -- cargo build --locked -p pvisor-vm --example vm_api_case
           mise exec -- rustc --edition=2021 --target x86_64-unknown-linux-musl -C linker=rust-lld pvisor-kernel/tests/guest.rs -o "$RUNNER_TEMP/native-stdio-guest"
           python3 pvisor-kernel/tests/task_stdio.py --binary target/debug/examples/vm_api_case --guest "$RUNNER_TEMP/native-stdio-guest"
+          python3 pvisor-kernel/tests/mapped_sync.py --binary target/debug/examples/vm_api_case --guest "$RUNNER_TEMP/native-stdio-guest"
 
       - name: Rust guest metadata defaults and seeded filesystem stress / KVM
         if: runner.os == 'Linux' && matrix.shard == 'pvisor'
@@ -583,6 +584,32 @@ jobs:
           PY
           tar -C target/x86_64-unknown-linux-musl/debug -czf "$RUNNER_TEMP/podman-runtime.tgz" \
             pvisor pvisor-replay pvisor-daemon libkrunfw.so.5 libkrunfw.SOURCE
+      - name: Verify corresponding sources for both embedded kernels
+        if: github.event_name == 'pull_request'
+        run: |
+          mise exec -- python3 - <<'PY'
+          import os
+          import sys
+          import tempfile
+          from pathlib import Path
+          from zipfile import ZipFile
+
+          sys.path.insert(0, "scripts/packaging")
+          import firmware
+
+          target = "x86_64-unknown-linux-musl"
+          target_dir = Path(os.environ["CARGO_TARGET_DIR"])
+          receipt = target_dir / target / "debug/libkrunfw.SOURCE"
+          with tempfile.TemporaryDirectory(dir=os.environ["RUNNER_TEMP"]) as directory:
+              root = Path(directory)
+              wheel = root / "firmware-receipt.whl"
+              sources = root / "pvisor-firmware-source-linux-x86_64.tar.gz"
+              with ZipFile(wheel, "w") as bundle:
+                  bundle.write(receipt, "pvisor.data/scripts/libkrunfw.SOURCE")
+              firmware.export_wheel_sources(wheel, sources, target_dir=str(target_dir), offline=False)
+              firmware.validate_product_sources(wheel, sources, target)
+              print("Verified Linux, Rust native, and vDSO source files against the product receipt")
+          PY
       - uses: actions/upload-artifact@v4
         with:
           name: podman-runtime

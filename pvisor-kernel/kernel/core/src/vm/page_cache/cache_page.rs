@@ -151,6 +151,17 @@ pub(crate) trait CachePageExt: Sized {
         self.wait_queue().wake_all();
     }
 
+    /// Finishes failed writeback without taking the page lock in the completion callback.
+    fn fail_writeback(&self) {
+        let _ = self.metadata().state.compare_exchange(
+            PageState::UpToDate,
+            PageState::Dirty,
+            Ordering::Release,
+            Ordering::Relaxed,
+        );
+        self.clear_writing_back();
+    }
+
     /// Allocates a new cache page which content and state are uninitialized.
     fn alloc_uninit() -> Result<CachePage> {
         let meta = CachePageMeta::default();

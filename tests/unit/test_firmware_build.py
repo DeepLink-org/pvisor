@@ -10,6 +10,7 @@ import subprocess
 import sys
 import tarfile
 import unittest
+import zipfile
 from contextlib import redirect_stdout
 from pathlib import Path
 from types import SimpleNamespace
@@ -835,5 +836,76 @@ class FirmwareBuildTests(unittest.TestCase):
 
                     with self.assertRaises(RuntimeError):
                         firmware.module.source_archive(output, destination)
-
                     assert not destination.exists()
+
+    def test_wheel_source_export_checks_embedded_receipts_and_archives_both_payloads(self):
+        with workspace() as (tmp_path, resources):
+            fixture = _make_firmware(tmp_path, resources)
+            firmware = fixture.module
+            linux = fixture.build()
+            native_sources = {
+                "Cargo.lock": b"lock",
+                "LICENSE-MPL": b"license",
+                "IMPORT.md": b"import",
+                "provenance.json": b"{}",
+                "vdso/vdso_x86_64.so": b"x86",
+                "vdso/vdso_aarch64.so": b"arm",
+            }
+            identity = {
+                "inputs": {
+                    name: hashlib.sha256(data).hexdigest() for name, data in native_sources.items()
+                },
+                "toolchain": "fixture",
+                "profile": "rust-native-virtiofs-x86_64-v1",
+            }
+            key = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
+            work = fixture.target_dir / "pvisor-kernel" / key
+            bundle = work / "bundle"
+            bundle.mkdir(parents=True)
+            for name, data in native_sources.items():
+                path = tmp_path / "pvisor-kernel" / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(data)
+            for name in ("kernel.bin", "kernel.json"):
+                (bundle / name).write_text(name)
+            lockfile = work / "target/osdk/pvisor-kernel-run-base/Cargo.lock"
+            lockfile.parent.mkdir(parents=True)
+            lockfile.write_bytes(b"resolved kernel dependencies")
+            native = {
+                **identity,
+                "kernel_lock_sha256": firmware.sha256(lockfile),
+                "artifacts": {
+                    name: firmware.sha256(bundle / name) for name in ("kernel.bin", "kernel.json")
+                },
+            }
+            (bundle / "pvisor-kernel.SOURCE").write_text(json.dumps(native))
+            resources.enter_context(
+                mock.patch.object(
+                    firmware, "VDSO_SOURCES", {"linux-fixture": firmware.sha256(fixture.kernel)}
+                )
+            )
+            wheelfile = tmp_path / "fixture.whl"
+            record = {**json.loads(firmware.source_record(linux)), "rust_native_kernel": native}
+            with zipfile.ZipFile(wheelfile, "w") as wheel:
+                wheel.writestr("fixture.data/scripts/libkrunfw.SOURCE", json.dumps(record))
+            destination = tmp_path / "export" / "sources.tar.gz"
+            firmware.export_wheel_sources(
+                wheelfile, destination, target_dir=str(fixture.target_dir), offline=True
+            )
+            firmware.validate_product_sources(wheelfile, destination, TARGET)
+            with self.assertRaisesRegex(ValueError, "incomplete firmware source receipt"):
+                firmware.validate_product_sources(wheelfile, destination, "aarch64-apple-darwin")
+            with tarfile.open(destination) as archive:
+                for name, data in native_sources.items():
+                    self.assertEqual(archive.extractfile(f"pvisor-kernel/{name}").read(), data)
+                self.assertEqual(
+                    archive.extractfile("pvisor-kernel/actual.Cargo.lock").read(),
+                    lockfile.read_bytes(),
+                )
+                self.assertIn("pvisor-kernel/vdso/source/linux-fixture.tar.xz", archive.getnames())
+            (tmp_path / "pvisor-kernel" / "Cargo.lock").write_bytes(b"drift")
+            with self.assertRaisesRegex(RuntimeError, "Rust kernel source snapshot changed"):
+                firmware.export_wheel_sources(
+                    wheelfile, destination, target_dir=str(fixture.target_dir), offline=True
+                )
+            firmware.validate_product_sources(wheelfile, destination, TARGET)

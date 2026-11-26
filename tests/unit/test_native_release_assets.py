@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import hashlib
 import importlib.util
+import io
 import json
 import sys
 import tarfile
@@ -21,7 +23,7 @@ with mock.patch.object(sys, "path", [str(SCRIPTS), *sys.path]):
     checker = sys.modules["check_release_artifacts"]
 
 
-def wheel(root, platform, *, missing=None, version="0.3.0"):
+def wheel(root, platform, *, missing=None, version="0.3.0", receipt=None):
     tag = "macosx_11_0_arm64" if platform == "macos-arm64" else "manylinux_2_28_x86_64"
     path = root / f"pvisor_sandbox-{version}-py3-none-{tag}.whl"
     with zipfile.ZipFile(path, "w") as archive:
@@ -32,15 +34,70 @@ def wheel(root, platform, *, missing=None, version="0.3.0"):
         names = [*assets.BINARIES, "libkrunfw.SOURCE"]
         for name in names:
             if name != missing:
-                archive.writestr(f"pvisor_sandbox-{version}.data/scripts/{name}", f"payload {name}")
+                content = (
+                    json.dumps(receipt)
+                    if name == "libkrunfw.SOURCE" and receipt is not None
+                    else f"payload {name}"
+                )
+                archive.writestr(f"pvisor_sandbox-{version}.data/scripts/{name}", content)
         archive.writestr("../../unexpected", "must not be extracted")
     return path
 
 
+def wheel_and_sources(root, platform, *, version="0.3.0", omit=None):
+    linux_inputs = {"Makefile": b"firmware build"}
+    native_inputs = {
+        name: name.encode()
+        for name in (
+            "IMPORT.md",
+            "LICENSE-MPL",
+            "Cargo.lock",
+            "provenance.json",
+            "vdso/vdso_x86_64.so",
+            "vdso/vdso_aarch64.so",
+        )
+    }
+
+    def digest(data):
+        return hashlib.sha256(data).hexdigest()
+
+    arch = "aarch64" if platform == "macos-arm64" else "x86_64"
+    receipt = {
+        "origin": "pvisor/fw",
+        "target": "aarch64-apple-darwin" if arch == "aarch64" else "x86_64-unknown-linux-musl",
+        "inputs": {name: digest(data) for name, data in linux_inputs.items()},
+        "kernel_version": "linux-fixture",
+        "kernel_source_sha256": digest(b"linux"),
+        "actual_config_sha256": digest(b"config"),
+        "builder_sha256": digest(b"builder"),
+        "rust_native_kernel": {
+            "profile": f"rust-native-virtiofs-{arch}-v1",
+            "inputs": {name: digest(data) for name, data in native_inputs.items()},
+            "kernel_lock_sha256": digest(b"resolved dependencies"),
+        },
+    }
+    wheel(root, platform, version=version, receipt=receipt)
+    files = {
+        **{f"fw/{name}": data for name, data in linux_inputs.items()},
+        "fw/tarballs/linux-fixture.tar.xz": b"linux",
+        "actual.config": b"config",
+        "build/firmware.py": b"builder",
+        "libkrunfw.SOURCE": json.dumps(receipt).encode(),
+        **{f"pvisor-kernel/{name}": data for name, data in native_inputs.items()},
+        "pvisor-kernel/actual.Cargo.lock": b"resolved dependencies",
+        "pvisor-kernel/vdso/source/vdso-fixture.tar.xz": b"vdso",
+    }
+    with tarfile.open(root / f"pvisor-firmware-source-{platform}.tar.gz", "w:gz") as bundle:
+        for name, data in files.items():
+            if name != omit:
+                entry = tarfile.TarInfo(name)
+                entry.size = len(data)
+                bundle.addfile(entry, io.BytesIO(data))
+
+
 def published_set(root):
     for platform in ("linux-x86_64", "macos-arm64"):
-        wheel(root, platform)
-        (root / f"pvisor-firmware-source-{platform}.tar.gz").write_bytes(b"source")
+        wheel_and_sources(root, platform)
     assets.build_assets(root, "0.3.0", "owner/repo", stable=True)
 
 
@@ -58,6 +115,15 @@ def accepted_run():
 
 
 class NativeReleaseTests(unittest.TestCase):
+    def setUp(self):
+        self.enterContext(
+            mock.patch.object(
+                assets.firmware,
+                "VDSO_SOURCES",
+                {"vdso-fixture": hashlib.sha256(b"vdso").hexdigest()},
+            )
+        )
+
     def test_acceptance_receipts_bind_each_wheel_and_its_platform_coverage(self):
         with workspace() as (root, _):
             wheels = {platform: wheel(root, platform) for platform in checker.PLATFORM_PATTERNS}
@@ -367,8 +433,7 @@ class NativeReleaseTests(unittest.TestCase):
     def test_release_checksums_cover_all_channels_and_sources(self):
         with workspace() as (root, _):
             for platform in ("linux-x86_64", "macos-arm64"):
-                wheel(root, platform)
-                (root / f"pvisor-firmware-source-{platform}.tar.gz").write_bytes(b"source")
+                wheel_and_sources(root, platform)
             assets.build_assets(root, "0.3.0", "owner/repo", stable=True)
             manifest = (root / "SHA256SUMS").read_text().splitlines()
             self.assertEqual(len(manifest), 7)
@@ -395,12 +460,19 @@ class NativeReleaseTests(unittest.TestCase):
                 assets.build_assets(root, "0.3.0", "owner/repo", stable=True)
             self.assertFalse((root / "SHA256SUMS").exists())
 
+    def test_missing_native_source_license_prevents_release_generation(self):
+        with workspace() as (root, _):
+            wheel_and_sources(root, "linux-x86_64", omit="pvisor-kernel/LICENSE-MPL")
+            wheel_and_sources(root, "macos-arm64")
+            with self.assertRaisesRegex(ValueError, "missing firmware source"):
+                assets.build_assets(root, "0.3.0", "owner/repo", stable=True)
+            self.assertFalse((root / "SHA256SUMS").exists())
+
     def test_nightly_set_has_matching_versions_and_sources_without_a_formula(self):
         version = "0.3.0+g42.abcdef0"
         with workspace() as (root, _):
             for platform in ("linux-x86_64", "macos-arm64"):
-                wheel(root, platform, version=version)
-                (root / f"pvisor-firmware-source-{platform}.tar.gz").write_bytes(b"source")
+                wheel_and_sources(root, platform, version=version)
             assets.build_assets(root, version, "owner/repo", stable=False)
             self.assertFalse((root / "pvisor.rb").exists())
             manifest = (root / "SHA256SUMS").read_text().splitlines()

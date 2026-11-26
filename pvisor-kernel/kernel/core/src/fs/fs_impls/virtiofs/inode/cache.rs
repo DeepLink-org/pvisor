@@ -22,6 +22,14 @@ impl InodeCache {
         Self { inodes }
     }
 
+    pub(in virtiofs) fn live_inodes(&self) -> Vec<Arc<VirtioFsInode>> {
+        self.inodes
+            .read()
+            .values()
+            .filter_map(Weak::upgrade)
+            .collect()
+    }
+
     /// Looks up an inode by FUSE node ID and validates its generation.
     pub(in virtiofs) fn lookup_inode(
         &self,
