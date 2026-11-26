@@ -458,6 +458,19 @@ jobs:
           mise exec -- rustc --edition=2021 --target x86_64-unknown-linux-musl -C linker=rust-lld pvisor-kernel/tests/guest.rs -o "$RUNNER_TEMP/native-stdio-guest"
           python3 pvisor-kernel/tests/task_stdio.py --binary target/debug/examples/vm_api_case --guest "$RUNNER_TEMP/native-stdio-guest"
 
+      - name: Rust guest tmpfs sparse reads and concurrent truncate / KVM
+        if: runner.os == 'Linux' && matrix.shard == 'pvisor'
+        env:
+          PVISOR_GUEST_KERNEL: rust-native
+        shell: bash
+        run: |
+          root="$(mktemp -d "$RUNNER_TEMP/tmpfs-read.XXXXXX")"
+          cp "$RUNNER_TEMP/native-stdio-guest" "$root/probe"
+          status=0
+          timeout 30 target/debug/examples/vm_api_case --rootfs "$root" --cpus 2 --memory 64 \
+            -- /probe 7 --check-tmpfs-read || status=$?
+          test "$status" = 7
+
       - name: Rust guest metadata defaults and seeded filesystem stress / KVM
         if: runner.os == 'Linux' && matrix.shard == 'pvisor'
         env:

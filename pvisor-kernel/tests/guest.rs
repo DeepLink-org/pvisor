@@ -29,6 +29,7 @@ unsafe extern "C" {
     fn sched_getcpu() -> i32;
     fn mmap(addr: *mut u8, len: usize, prot: i32, flags: i32, fd: i32, offset: i64) -> *mut u8;
     fn munmap(addr: *mut u8, len: usize) -> i32;
+    fn fallocate(fd: i32, mode: i32, offset: i64, len: i64) -> i32;
     fn capget(header: *mut CapHeader, data: *mut CapData) -> i32;
     fn capset(header: *const CapHeader, data: *const CapData) -> i32;
     fn fsetxattr(fd: i32, name: *const i8, value: *const u8, size: usize, flags: i32) -> i32;
@@ -127,6 +128,92 @@ fn check_write_cache() {
         writer.sync_all().unwrap();
         expected[8192..].copy_from_slice(b"x\0\0");
         assert_eq!(fs::read(path).unwrap(), expected);
+    }
+}
+
+fn check_tmpfs_read() {
+    const PAGE: usize = 4096;
+    let file = fs::File::create_new("/dev/shm/read-contract").unwrap();
+    file.set_len((2 * PAGE + 7) as u64).unwrap();
+    file.write_all_at(b"abcd", PAGE as u64).unwrap();
+
+    let mut buf = vec![0xa5; PAGE + 32];
+    let n = file.read_at(&mut buf, (PAGE - 3) as u64).unwrap();
+    assert_eq!(n, PAGE + 10);
+    assert_eq!(&buf[..7], b"\0\0\0abcd");
+    assert!(buf[7..n].iter().all(|&b| b == 0));
+    assert!(buf[n..].iter().all(|&b| b == 0xa5));
+
+    file.set_len((PAGE + 1) as u64).unwrap();
+    buf.fill(0xa5);
+    assert_eq!(file.read_at(&mut buf, (PAGE + 1) as u64).unwrap(), 0);
+    assert_eq!(file.read_at(&mut buf, (PAGE + 9) as u64).unwrap(), 0);
+    assert!(buf.iter().all(|&b| b == 0xa5));
+    assert_eq!(file.read_at(&mut buf, PAGE as u64).unwrap(), 1);
+    assert_eq!(buf[0], b'a');
+    assert!(buf[1..].iter().all(|&b| b == 0xa5));
+
+    file.write_all_at(&[0x31; 8], (3 * PAGE - 4) as u64)
+        .unwrap();
+    // FALLOC_FL_PUNCH_HOLE | FALLOC_FL_KEEP_SIZE: span data, a hole, and more data.
+    assert_eq!(
+        unsafe { fallocate(file.as_raw_fd(), 3, PAGE as i64, (2 * PAGE) as i64) },
+        0
+    );
+    assert_eq!(file.metadata().unwrap().len(), (3 * PAGE + 4) as u64);
+    let mut punched = vec![0xa5; 2 * PAGE + 4];
+    file.read_exact_at(&mut punched, PAGE as u64).unwrap();
+    assert!(punched[..2 * PAGE].iter().all(|&b| b == 0));
+    assert_eq!(&punched[2 * PAGE..], &[0x31; 4]);
+
+    file.set_len(1).unwrap();
+    let mapping = unsafe { mmap(std::ptr::null_mut(), PAGE, 3, 1, file.as_raw_fd(), 0) };
+    assert_ne!(mapping as isize, -1);
+    // Stores in the mapped final page past EOF must not become file data on growth.
+    unsafe { mapping.add(10).write_volatile(0x55) };
+    file.write_all_at(b"x", 11).unwrap();
+    assert_eq!(unsafe { munmap(mapping, PAGE) }, 0);
+    let mut gap = [0xff; 2];
+    file.read_exact_at(&mut gap, 10).unwrap();
+    assert_eq!(&gap, b"\0x");
+
+    // Each reader must observe the length and contents of the same resize epoch.
+    let short = PAGE - 3;
+    let long = 2 * PAGE + 11;
+    file.set_len(0).unwrap();
+    file.set_len(short as u64).unwrap();
+    file.write_all_at(b"q", 0).unwrap();
+    let start = std::sync::Barrier::new(3);
+    thread::scope(|scope| {
+        for _ in 0..2 {
+            scope.spawn(|| {
+                let mut buf = vec![0; long + 1];
+                start.wait();
+                for _ in 0..512 {
+                    buf.fill(0xa5);
+                    let n = file.read_at(&mut buf, 0).unwrap();
+                    assert!(n == short || n == long);
+                    assert_eq!(buf[0], b'q');
+                    assert!(buf[1..n].iter().all(|&b| b == 0));
+                    assert!(buf[n..].iter().all(|&b| b == 0xa5));
+                }
+            });
+        }
+        start.wait();
+        for _ in 0..256 {
+            file.set_len(long as u64).unwrap();
+            file.set_len(short as u64).unwrap();
+        }
+    });
+
+    // Larger than the 64 MiB CI guest. Reading every hole must not require a frame per page.
+    let sparse_len = 96 * 1024 * 1024;
+    file.set_len(0).unwrap();
+    file.set_len(sparse_len as u64).unwrap();
+    for offset in (0..sparse_len).step_by(PAGE) {
+        let mut byte = [0xa5];
+        file.read_exact_at(&mut byte, offset as u64).unwrap();
+        assert_eq!(byte, [0]);
     }
 }
 
@@ -248,6 +335,7 @@ fn main() {
                 std::io::copy(&mut std::io::stdin().lock(), &mut std::io::stdout().lock()).unwrap();
             }
             "--smp" => check_smp(args.next().unwrap().parse().unwrap()),
+            "--check-tmpfs-read" => check_tmpfs_read(),
             "--check-write-cache" => {
                 check_write_cache();
                 check_setid_writes();

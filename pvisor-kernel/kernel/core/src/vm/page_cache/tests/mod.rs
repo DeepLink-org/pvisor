@@ -23,6 +23,21 @@ fn new_backend_page_cache(backend: &Arc<MockPageCacheBackend>, num_pages: usize)
 }
 
 #[ktest]
+fn anonymous_reads_and_zeroing_leave_holes_uncommitted() {
+    let cache = PageCache::new_anon(3 * PAGE_SIZE).unwrap();
+    cache.write_bytes(PAGE_SIZE, &[0x27, 0x13]).unwrap();
+    cache.fill_zeros(PAGE_SIZE + 1..3 * PAGE_SIZE).unwrap();
+    let mut bytes = vec![0xff; PAGE_SIZE + 2];
+    cache.read_bytes(PAGE_SIZE - 1, &mut bytes).unwrap();
+    assert_eq!(&bytes[..2], &[0, 0x27]);
+    assert!(bytes[2..].iter().all(|b| *b == 0));
+    let pages = cache.as_vmo().pages.lock();
+    assert!(pages.load(0).is_none());
+    assert!(pages.load(1).is_some());
+    assert!(pages.load(2).is_none());
+}
+
+#[ktest]
 fn demand_read_stops_runs_at_cached_pages_and_at_the_requested_end() {
     let backend = MockPageCacheBackend::new(6);
     let cache = new_backend_page_cache(&backend, 6);
