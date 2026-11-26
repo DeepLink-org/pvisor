@@ -24,6 +24,73 @@ const MANIFEST_ACCEPT: &str = concat!(
     "application/vnd.oci.image.manifest.v1+json, ",
     "application/vnd.docker.distribution.manifest.v2+json"
 );
+const MAX_REDIRECTS: usize = 12;
+
+/// Build the registry HTTP client. `relaxed_redirects` selects the blob-only
+/// client; every other request keeps the strict HTTPS-only client.
+fn registry_client(relaxed_redirects: bool) -> anyhow::Result<Client> {
+    let mut client = Client::builder()
+        .connect_timeout(Duration::from_secs(10))
+        // Blocking reqwest bounds response-body reads as well as requests;
+        // retries restart a failed blob with a fresh file and hasher.
+        .timeout(Duration::from_secs(30))
+        .user_agent(concat!("pvisor/", env!("CARGO_PKG_VERSION")));
+    client = if relaxed_redirects {
+        client.redirect(registry_redirect_policy())
+    } else {
+        client.https_only(true)
+    };
+    if let Some(path) = std::env::var_os("SSL_CERT_FILE") {
+        let pem = fs::read(path).context("read registry SSL_CERT_FILE")?;
+        let certificates =
+            reqwest::Certificate::from_pem_bundle(&pem).context("parse registry SSL_CERT_FILE")?;
+        anyhow::ensure!(
+            !certificates.is_empty(),
+            "registry SSL_CERT_FILE contains no certificates"
+        );
+        for certificate in certificates {
+            client = client.add_root_certificate(certificate);
+        }
+    }
+    client.build().context("build OCI registry client")
+}
+
+/// Blob storage backends may redirect downloads to a plain-HTTP endpoint.
+/// Only blob downloads may leave HTTPS, the target must use a different host
+/// or port so the HTTP client drops credentials, and the bytes remain
+/// digest-verified. Every other redirect must stay on HTTPS.
+fn registry_redirect_policy() -> reqwest::redirect::Policy {
+    reqwest::redirect::Policy::custom(|attempt| {
+        let hops = attempt.previous().len().saturating_sub(1);
+        let allowed = attempt.previous().first().is_some_and(|origin| {
+            hops < MAX_REDIRECTS && redirect_target_allowed(origin, attempt.url())
+        });
+        if allowed {
+            if attempt.url().scheme() == "http" {
+                tracing::warn!(
+                    host = attempt.url().host_str().unwrap_or(""),
+                    "OCI registry blob redirect uses plain HTTP"
+                );
+            }
+            attempt.follow()
+        } else {
+            attempt.error("OCI registry redirect is not allowed")
+        }
+    })
+}
+
+fn redirect_target_allowed(origin: &reqwest::Url, target: &reqwest::Url) -> bool {
+    match target.scheme() {
+        "https" => true,
+        "http" => {
+            let blob = origin.scheme() == "https" && origin.path().contains("/blobs/");
+            let same_endpoint = target.host_str() == origin.host_str()
+                && target.port_or_known_default() == origin.port_or_known_default();
+            blob && !same_endpoint
+        }
+        _ => false,
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ImageReference {
@@ -65,6 +132,10 @@ impl ResolvedImage {
 pub struct ImageStore {
     pub(crate) root: PathBuf,
     client: Client,
+    /// Blob downloads only: follows storage-backend redirects, including a
+    /// plain-HTTP one to another host or port. Every other request uses the
+    /// strict client above.
+    blob_client: Client,
     credentials: Option<RegistryCredentials>,
     seeded_blobs: Option<PathBuf>,
 }
@@ -205,29 +276,12 @@ impl ImageStore {
         fs::create_dir_all(root.join("rootfs-v3/sha256"))?;
         fs::create_dir_all(root.join("metadata/sha256"))?;
         fs::create_dir_all(root.join("locks"))?;
-        let mut client = Client::builder()
-            .https_only(true)
-            .connect_timeout(Duration::from_secs(10))
-            // Blocking reqwest bounds response-body reads as well as requests;
-            // retries restart a failed blob with a fresh file and hasher.
-            .timeout(Duration::from_secs(30))
-            .user_agent(concat!("pvisor/", env!("CARGO_PKG_VERSION")));
-        if let Some(path) = std::env::var_os("SSL_CERT_FILE") {
-            let pem = fs::read(path).context("read registry SSL_CERT_FILE")?;
-            let certificates = reqwest::Certificate::from_pem_bundle(&pem)
-                .context("parse registry SSL_CERT_FILE")?;
-            anyhow::ensure!(
-                !certificates.is_empty(),
-                "registry SSL_CERT_FILE contains no certificates"
-            );
-            for certificate in certificates {
-                client = client.add_root_certificate(certificate);
-            }
-        }
-        let client = client.build().context("build OCI registry client")?;
+        let client = registry_client(false)?;
+        let blob_client = registry_client(true)?;
         Ok(Self {
             root,
             client,
+            blob_client,
             credentials: None,
             seeded_blobs: None,
         })
@@ -388,8 +442,12 @@ impl ImageStore {
     ) -> anyhow::Result<ResolvedImage> {
         let image_ref = ImageReference::parse(image)?;
         progress(PullProgress::Resolving);
-        let mut registry =
-            RegistryClient::new(&self.client, image_ref.clone(), self.credentials.as_ref());
+        let mut registry = RegistryClient::new(
+            &self.client,
+            &self.blob_client,
+            image_ref.clone(),
+            self.credentials.as_ref(),
+        );
         let (mut body, mut manifest_digest) = registry.fetch_manifest(&image_ref.reference)?;
         let value: serde_json::Value = serde_json::from_slice(&body)
             .with_context(|| format!("decode OCI manifest for {image}"))?;
@@ -447,6 +505,7 @@ impl ImageStore {
         let image = resolved.reference.as_str();
         let mut registry = RegistryClient::new(
             &self.client,
+            &self.blob_client,
             resolved.image_ref.clone(),
             self.credentials.as_ref(),
         );
@@ -545,13 +604,10 @@ impl ImageStore {
                 downloaded: 0,
                 total: descriptor.size,
             });
-            let mut response = registry.get(
-                &format!(
-                    "/v2/{}/blobs/{}",
-                    registry.image.repository, descriptor.digest
-                ),
-                None,
-            )?;
+            let mut response = registry.get_blob(&format!(
+                "/v2/{}/blobs/{}",
+                registry.image.repository, descriptor.digest
+            ))?;
             let total = descriptor.size.or(response.content_length());
             // Each execution owns its temporary file and hasher. Failed partial
             // bytes are discarded; only a complete verified blob is published.
@@ -685,6 +741,7 @@ fn retry_throttled_registry_get(
 
 struct RegistryClient<'a> {
     client: &'a Client,
+    blobs: &'a Client,
     image: ImageReference,
     credentials: Option<&'a RegistryCredentials>,
     token: Option<String>,
@@ -693,11 +750,13 @@ struct RegistryClient<'a> {
 impl<'a> RegistryClient<'a> {
     fn new(
         client: &'a Client,
+        blobs: &'a Client,
         image: ImageReference,
         credentials: Option<&'a RegistryCredentials>,
     ) -> Self {
         Self {
             client,
+            blobs,
             image,
             credentials,
             token: None,
@@ -717,8 +776,20 @@ impl<'a> RegistryClient<'a> {
     }
 
     fn get(&mut self, path: &str, accept: Option<&str>) -> anyhow::Result<Response> {
+        self.get_with(self.client, path, accept)
+    }
+
+    fn get_blob(&mut self, path: &str) -> anyhow::Result<Response> {
+        self.get_with(self.blobs, path, None)
+    }
+
+    fn get_with(
+        &mut self,
+        client: &Client,
+        path: &str,
+        accept: Option<&str>,
+    ) -> anyhow::Result<Response> {
         let url = format!("https://{}{}", self.image.registry, path);
-        let client = self.client;
         let send = |token: Option<&str>| {
             let mut request = client.get(&url);
             if let Some(accept) = accept {
@@ -1652,6 +1723,7 @@ mod tests {
         assert_eq!(fs::read(&path).unwrap(), payload);
         let mut registry = RegistryClient::new(
             &store.client,
+            &store.blob_client,
             ImageReference::parse("example.invalid/repo:tag").unwrap(),
             None,
         );
@@ -1754,6 +1826,48 @@ mod tests {
         assert_eq!(fs::read(temp.path().join("sentinel")).unwrap(), b"keep");
     }
     use super::*;
+
+    #[rstest::rstest]
+    #[case::https_target(
+        "https://registry.example/v2/app/blobs/sha256:aa",
+        "https://storage.example/x",
+        true
+    )]
+    #[case::blob_to_other_host_over_http(
+        "https://registry.example/v2/app/blobs/sha256:aa",
+        "http://ssd1.example:8060/x",
+        true
+    )]
+    #[case::blob_to_other_port_over_http(
+        "https://registry.example/v2/app/blobs/sha256:aa",
+        "http://registry.example:8060/x",
+        true
+    )]
+    #[case::manifest_to_other_host_over_http(
+        "https://registry.example/v2/app/manifests/v1",
+        "http://ssd1.example/x",
+        false
+    )]
+    #[case::blob_downgrade_on_same_endpoint(
+        "https://registry.example:5000/v2/app/blobs/sha256:aa",
+        "http://registry.example:5000/x",
+        false
+    )]
+    #[case::blob_http_origin(
+        "http://registry.example/v2/app/blobs/sha256:aa",
+        "http://storage.example/x",
+        false
+    )]
+    #[case::unsupported_scheme(
+        "https://registry.example/v2/app/blobs/sha256:aa",
+        "ftp://storage.example/x",
+        false
+    )]
+    fn registry_redirect_targets(#[case] origin: &str, #[case] target: &str, #[case] follow: bool) {
+        let origin = reqwest::Url::parse(origin).unwrap();
+        let target = reqwest::Url::parse(target).unwrap();
+        assert_eq!(redirect_target_allowed(&origin, &target), follow);
+    }
 
     #[test]
     fn prepared_cache_coalesces_requests_and_honors_refresh_expiry_and_architecture() {
@@ -1918,6 +2032,7 @@ mod tests {
         };
         let registry = RegistryClient::new(
             &store.client,
+            &store.blob_client,
             ImageReference::parse("example.com/team/app:tag").unwrap(),
             Some(&credentials),
         );
@@ -1951,7 +2066,12 @@ mod tests {
         let query: BTreeMap<_, _> = request.url().query_pairs().into_owned().collect();
         assert_eq!(query["scope"], "repository:team/app:pull");
         assert_eq!(query["service"], "registry.example.com");
-        let anonymous = RegistryClient::new(&store.client, registry.image.clone(), None);
+        let anonymous = RegistryClient::new(
+            &store.client,
+            &store.blob_client,
+            registry.image.clone(),
+            None,
+        );
         assert!(
             !anonymous
                 .token_request("Bearer realm=\"https://auth.example.com/token\"")
@@ -1990,7 +2110,7 @@ mod tests {
         fn generated_plaintext_token_realms_are_rejected(host in "[a-z]{1,16}", port in 1u16..=u16::MAX) {
             static CLIENT: std::sync::LazyLock<Client> = std::sync::LazyLock::new(|| Client::builder().https_only(true).build().unwrap());
             let credentials = RegistryCredentials { username: "reader".into(), password: "secret".into() };
-            let registry = RegistryClient::new(&CLIENT, ImageReference::parse("example.com/app").unwrap(), Some(&credentials));
+            let registry = RegistryClient::new(&CLIENT, &CLIENT, ImageReference::parse("example.com/app").unwrap(), Some(&credentials));
             let result = registry.token_request(&format!("Bearer realm=\"http://{host}.example:{port}/token\""));
             proptest::prop_assert!(result.is_err());
         }
