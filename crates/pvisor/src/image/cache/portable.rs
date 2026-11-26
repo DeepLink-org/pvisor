@@ -448,27 +448,26 @@ impl PortableCache {
                 };
                 ensure!(kind == "file", "only regular files can be read");
                 let end = offset.saturating_add(length as u64).min(*size);
-                let mut body = Vec::new();
+                let mut body = Vec::with_capacity(end.saturating_sub(offset) as usize);
+                let mut full_slot_digest = None;
                 if offset < end {
                     match entry.content.context("file lacks content")? {
                         binary::Content::Empty => bail!("nonempty file has empty content"),
                         binary::Content::Packed(packed) => {
-                            body = self.read_packed(
-                                &packed,
-                                &entry.digest.context("file lacks digest")?,
-                                *size,
-                                offset,
-                                end,
-                            )?;
+                            let digest = entry.digest.context("file lacks digest")?;
+                            let slot = self.read_packed(&packed, &digest, *size, offset, end)?;
+                            body.extend_from_slice(&slot);
+                            if offset == 0 && end == *size {
+                                full_slot_digest = Some(digest);
+                            }
                         }
                         binary::Content::PackedFrame(packed) => {
-                            body = self.read_v1_packed(
-                                &packed,
-                                &entry.digest.context("file lacks digest")?,
-                                *size,
-                                offset,
-                                end,
-                            )?;
+                            let digest = entry.digest.context("file lacks digest")?;
+                            let slot = self.read_v1_packed(&packed, &digest, *size, offset, end)?;
+                            body.extend_from_slice(&slot);
+                            if offset == 0 && end == *size {
+                                full_slot_digest = Some(digest);
+                            }
                         }
                         binary::Content::Chunks(root) => {
                             let chunk_bytes = u64::from(CHUNK_BYTES);
@@ -483,17 +482,21 @@ impl PortableCache {
                                 binary::check_chunk_len(len, *size, ordinal)?;
                                 let start = offset.saturating_sub(position);
                                 let stop = end.min(position + len as u64) - position;
-                                body.extend(match chunk {
-                                    binary::LocatedChunk::Legacy(digest, len) => self.read_chunk(
-                                        &digest,
-                                        len,
-                                        start as usize,
-                                        stop as usize,
-                                    )?,
-                                    binary::LocatedChunk::V1(chunk) => {
-                                        self.read_v1_chunk(&chunk, start, stop)?
+                                match chunk {
+                                    binary::LocatedChunk::Legacy(digest, len) => {
+                                        let bytes = self.read_chunk(
+                                            &digest,
+                                            len,
+                                            start as usize,
+                                            stop as usize,
+                                        )?;
+                                        body.extend_from_slice(&bytes);
                                     }
-                                });
+                                    binary::LocatedChunk::V1(chunk) => {
+                                        let slot = self.read_v1_chunk(&chunk, start, stop)?;
+                                        body.extend_from_slice(&slot);
+                                    }
+                                }
                             }
                         }
                     }
@@ -502,10 +505,15 @@ impl PortableCache {
                     body.len() as u64 == end.saturating_sub(offset),
                     "incomplete cache file"
                 );
+                // A full-slot read is already covered by the slot digest.
+                let sha256 = match full_slot_digest {
+                    Some(digest) => frames::digest_string(&digest),
+                    None => hash(&body),
+                };
                 Ok((
                     Response::Data {
                         length: body.len() as u32,
-                        sha256: hash(&body),
+                        sha256,
                     },
                     body,
                 ))
@@ -633,9 +641,9 @@ impl PortableCache {
         self.publish_observed(&store, &prepared, architecture, &canonical, observed)
     }
     fn observe(&self, canonical: &str, platform: &str) -> anyhow::Result<Option<StoredObject>> {
-        let object = self
-            .storage
-            .read(&head_key(canonical, platform), None, MAX_CONTROL)?;
+        let object =
+            self.storage
+                .read_versioned(&head_key(canonical, platform), None, MAX_CONTROL)?;
         if let Some(object) = &object {
             decode_head(&object.bytes, &image_key(canonical), platform)?;
             ensure!(

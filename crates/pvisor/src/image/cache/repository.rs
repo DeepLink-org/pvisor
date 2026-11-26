@@ -136,7 +136,7 @@ impl<'a> PublicationReference<'a> {
         validate_name(name)?;
         let storage = Repository::parse(destination)?.open(false)?;
         let key = format!("refs/{name}.json");
-        let previous = storage.read(&key, None, 4096)?;
+        let previous = storage.read_versioned(&key, None, 4096)?;
         if let Some(previous) = &previous {
             ensure!(
                 previous.version.e_tag.is_some() || previous.version.version.is_some(),

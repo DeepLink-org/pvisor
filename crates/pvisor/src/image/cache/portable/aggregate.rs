@@ -1,7 +1,7 @@
 //! Canonical Image Pack V1 content placement.
 use super::binary::{SourceContent, SourceEntry};
 use super::content::{
-    DATA_FRAME_BYTES, Data, MAX_PACK_FRAME_RAW, SMALL_FILE_BYTES, validate_slots,
+    DATA_FRAME_BYTES, Data, MAX_PACK_FRAME_RAW, SMALL_FILE_BYTES, Slot, validate_slots,
 };
 use super::frames::{self, Digest, FrameRef};
 use super::*;
@@ -326,7 +326,7 @@ impl PortableCache {
         size: u64,
         offset: u64,
         end: u64,
-    ) -> anyhow::Result<Vec<u8>> {
+    ) -> anyhow::Result<Slot> {
         self.read_v1_slot(
             &packed.blob,
             &packed.frame,
@@ -344,7 +344,7 @@ impl PortableCache {
         chunk: &Chunk,
         offset: u64,
         end: u64,
-    ) -> anyhow::Result<Vec<u8>> {
+    ) -> anyhow::Result<Slot> {
         ensure!(
             chunk.frame.count == 1,
             "invalid large-file frame slot count"
@@ -372,23 +372,26 @@ impl PortableCache {
         offset: u64,
         end: u64,
         limit: usize,
-    ) -> anyhow::Result<Vec<u8>> {
+    ) -> anyhow::Result<Slot> {
         let decoded = self.load_data_frame(&blob.key(), blob.bytes, frame, limit)?;
+        let range = slot_range(&decoded.value, slot)?;
         let value = slot_bytes(&decoded.value, slot)?;
-        ensure!(
-            value.len() as u64 == size && frames::digest(value) == *digest,
-            "blob slot digest or length mismatch"
-        );
+        ensure!(value.len() as u64 == size, "blob slot length mismatch");
+        decoded.verify_slot(slot, digest, value)?;
         ensure!(
             offset <= end && end <= size,
             "blob slot range out of bounds"
         );
-        Ok(value[offset as usize..end as usize].to_vec())
+        Ok(Slot::new(
+            decoded,
+            range.start + offset as usize,
+            range.start + end as usize,
+        ))
     }
 }
 
-fn slot_bytes(data: &Data, slot: u32) -> anyhow::Result<&[u8]> {
-    let Data::Slots { offsets, bytes } = data else {
+fn slot_range(data: &Data, slot: u32) -> anyhow::Result<std::ops::Range<usize>> {
+    let Data::Slots { offsets, .. } = data else {
         bail!("invalid Image Pack slot frame")
     };
     let slot = slot as usize;
@@ -396,7 +399,14 @@ fn slot_bytes(data: &Data, slot: u32) -> anyhow::Result<&[u8]> {
         slot < offsets.len().saturating_sub(1),
         "blob slot out of range"
     );
-    Ok(&bytes[offsets[slot] as usize..offsets[slot + 1] as usize])
+    Ok(offsets[slot] as usize..offsets[slot + 1] as usize)
+}
+
+fn slot_bytes(data: &Data, slot: u32) -> anyhow::Result<&[u8]> {
+    let Data::Slots { bytes, .. } = data else {
+        bail!("invalid Image Pack slot frame")
+    };
+    Ok(&bytes[slot_range(data, slot)?])
 }
 
 #[derive(Default)]

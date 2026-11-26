@@ -382,7 +382,7 @@ impl LoadedImage {
             }
             bytes
         };
-        let body: Body = frames::unpack(reference, &encoded)?;
+        let body: Body = frames::unpack_verified(reference, &encoded)?;
         let mut node = Node {
             body,
             reference: reference.clone(),

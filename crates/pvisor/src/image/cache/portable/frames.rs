@@ -2,6 +2,7 @@
 //! The root authenticates encoded bytes before decoding; all sizes are bounded.
 use super::*;
 use bincode::{Decode, Encode};
+use std::cell::RefCell;
 
 pub(super) const PAGE_BYTES: usize = 64 * 1024;
 pub(super) const MAX_FRAME_RAW: usize = CHUNK_BYTES as usize + 128;
@@ -194,6 +195,19 @@ pub(super) fn unpack<T: Decode<()>>(reference: &FrameRef, encoded: &[u8]) -> any
         encoded.len() == reference.encoded as usize && digest(encoded) == reference.digest,
         "cache metadata page digest mismatch"
     );
+    unpack_verified(reference, encoded)
+}
+
+/// Decode a frame whose encoded bytes the caller already authenticated against
+/// `reference.digest`. Bounds and the decoded length are still checked.
+pub(super) fn unpack_verified<T: Decode<()>>(
+    reference: &FrameRef,
+    encoded: &[u8],
+) -> anyhow::Result<T> {
+    ensure!(
+        encoded.len() == reference.encoded as usize,
+        "frame encoded length mismatch"
+    );
     let raw = decompress(encoded, reference.decoded as usize)?;
     ensure!(
         raw.len() == reference.decoded as usize,
@@ -202,11 +216,25 @@ pub(super) fn unpack<T: Decode<()>>(reference: &FrameRef, encoded: &[u8]) -> any
     decode(&raw)
 }
 
+thread_local! {
+    static DECOMPRESSOR: RefCell<Option<zstd::bulk::Decompressor<'static>>> =
+        const { RefCell::new(None) };
+}
+
 pub(super) fn decompress(encoded: &[u8], limit: usize) -> anyhow::Result<Vec<u8>> {
     ensure!(limit <= MAX_FRAME_RAW, "decompression exceeds frame limit");
-    let mut decoder = zstd::bulk::Decompressor::new()?;
-    decoder.set_parameter(zstd::zstd_safe::DParameter::WindowLogMax(21))?;
-    Ok(decoder.decompress(encoded, limit)?)
+    DECOMPRESSOR.with(|cell| {
+        let mut slot = cell.borrow_mut();
+        if slot.is_none() {
+            let mut decoder = zstd::bulk::Decompressor::new()?;
+            decoder.set_parameter(zstd::zstd_safe::DParameter::WindowLogMax(21))?;
+            *slot = Some(decoder);
+        }
+        Ok(slot
+            .as_mut()
+            .expect("decompressor initialized")
+            .decompress(encoded, limit)?)
+    })
 }
 
 #[cfg(test)]
