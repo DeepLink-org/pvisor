@@ -78,14 +78,22 @@ def main():
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=False)
 
-    for inline, label in ((None, "inline-default"), (0, "inline-disabled")):
+    for cpus, workers, inline, label in (
+        (1, 1, None, "inline-default"),
+        (1, 1, 0, "inline-disabled"),
+        (1, 4, None, "inline-multiqueue"),
+        (2, 4, None, "smp-multiqueue"),
+    ):
         profile = stat_visibility.run(
             args.vm_api.resolve(strict=True),
             args.stat_guest.resolve(strict=True),
             inline,
             output / f"{label}.stderr.log",
+            workers=workers,
+            cpus=cpus,
         )
-        expect_counter(profile, "virtio-fs-dispatch", "vcpu_inline_metadata", inline is None, "units")
+        enabled = inline is None and (cpus == 1 or workers == 1)
+        expect_counter(profile, "virtio-fs-dispatch", "vcpu_inline_metadata", enabled, "units")
         expect_counter(profile, "virtio-fs-protocol", "READINDEX", False)
 
     case = args.metadata_case.resolve(strict=True)

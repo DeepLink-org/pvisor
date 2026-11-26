@@ -35,7 +35,7 @@ const MAX_SHIFT: usize = 12;
 const N_CLASSES: usize = MAX_SHIFT - MIN_SHIFT + 1;
 
 /// The largest buffer size served by a pooled DMA segment.
-const MAX_CLASS_SIZE: usize = 1 << MAX_SHIFT;
+pub(super) const MAX_CLASS_SIZE: usize = 1 << MAX_SHIFT;
 
 /// Preallocate a few segments per size class to avoid frequent allocation under
 /// light concurrency.

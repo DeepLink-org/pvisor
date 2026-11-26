@@ -36,7 +36,7 @@ pub(super) fn sys_getdents(
     }
     let user_space = ctx.user_space();
     let writer = user_space.writer(buf_addr, buf_len)?;
-    let mut reader = DirentBufferReader::<Dirent>::new(writer); // Use the non-64-bit reader
+    let mut reader = DirentBufferReader::<Dirent>::new(writer);
     let _ = inode_handle.readdir(&mut reader)?;
     let read_len = reader.read_len();
     fs::vfs::notify::on_access(&file);
@@ -69,28 +69,22 @@ pub(super) fn sys_getdents64(
     Ok(SyscallReturn::Return(read_len as _))
 }
 
-/// The DirentSerializer can decide how to serialize the data.
-trait DirentSerializer {
-    /// Create a DirentSerializer.
-    fn new(ino: u64, offset: u64, type_: InodeType, name: CString) -> Self;
-    /// Get the length of a directory entry.
-    fn len(&self) -> usize;
-    /// Try to serialize a directory entry into buffer.
-    fn serialize(&self, writer: &mut VmWriter) -> Result<()>;
+trait DirentHeader: Pod {
+    fn new(ino: u64, offset: u64, reclen: u16, type_: InodeType) -> Self;
 }
 
-/// The Buffered DirentReader to visit the dir entry.
-/// The DirentSerializer T decides how to serialize the data.
-struct DirentBufferReader<'a, T: DirentSerializer> {
+struct DirentBufferReader<'a, T: DirentHeader> {
     writer: VmWriter<'a>,
+    record: Vec<u8>,
     read_len: usize,
     phantom: PhantomData<T>,
 }
 
-impl<'a, T: DirentSerializer> DirentBufferReader<'a, T> {
+impl<'a, T: DirentHeader> DirentBufferReader<'a, T> {
     pub(crate) fn new(writer: VmWriter<'a>) -> Self {
         Self {
             writer,
+            record: Vec::new(),
             read_len: 0,
             phantom: PhantomData,
         }
@@ -101,14 +95,17 @@ impl<'a, T: DirentSerializer> DirentBufferReader<'a, T> {
     }
 }
 
-impl<T: DirentSerializer> DirentVisitor for DirentBufferReader<'_, T> {
+impl<T: DirentHeader> DirentVisitor for DirentBufferReader<'_, T> {
     fn remaining_bytes(&self) -> Option<usize> {
         Some(self.writer.avail())
     }
 
     fn visit(&mut self, name: &str, ino: u64, type_: InodeType, offset: usize) -> Result<()> {
-        let dirent_serializer = T::new(ino, offset as u64, type_, CString::new(name)?);
-        let len = dirent_serializer.len();
+        if name.as_bytes().contains(&0) {
+            return_errno_with_message!(Errno::E2BIG, "directory entry contains NUL");
+        }
+        let len = (size_of::<T>() + name.len() + 1).align_up(8);
+        let reclen = u16::try_from(len).map_err(|_| Error::new(Errno::EOVERFLOW))?;
         if self.writer.avail() < len {
             return_errno_with_message!(
                 Errno::EINVAL,
@@ -116,111 +113,55 @@ impl<T: DirentSerializer> DirentVisitor for DirentBufferReader<'_, T> {
             );
         }
 
-        dirent_serializer.serialize(&mut self.writer)?;
+        self.record.clear();
+        self.record.reserve(len);
+        let header = T::new(ino, offset as u64, reclen, type_);
+        self.record.extend_from_slice(header.as_bytes());
+        self.record.extend_from_slice(name.as_bytes());
+        self.record.resize(len, 0);
+        self.writer
+            .write_fallible(&mut VmReader::from(self.record.as_slice()))?;
         self.read_len += len;
 
         Ok(())
     }
 }
 
-#[derive(Debug)]
-struct Dirent {
-    inner: DirentInner,
-    name: CString,
-}
-
 #[repr(C, packed)]
 #[derive(Clone, Copy, Debug, Pod)]
-struct DirentInner {
+struct Dirent {
     d_ino: u64,
     d_off: u64,
     d_reclen: u16,
 }
 
-impl DirentSerializer for Dirent {
-    fn new(ino: u64, offset: u64, _type_: InodeType, name: CString) -> Self {
-        let d_reclen = {
-            let len = size_of::<DirentInner>() + name.as_c_str().to_bytes_with_nul().len();
-            len.align_up(8) as u16
-        };
+impl DirentHeader for Dirent {
+    fn new(ino: u64, offset: u64, reclen: u16, _type_: InodeType) -> Self {
         Self {
-            inner: DirentInner {
-                d_ino: ino,
-                d_off: offset,
-                d_reclen,
-            },
-            name,
+            d_ino: ino,
+            d_off: offset,
+            d_reclen: reclen,
         }
     }
-
-    fn len(&self) -> usize {
-        self.inner.d_reclen as usize
-    }
-
-    fn serialize(&self, writer: &mut VmWriter) -> Result<()> {
-        writer.write_val(&self.inner)?;
-
-        let name_bytes = self.name.as_c_str().to_bytes_with_nul();
-        let mut reader = VmReader::from(name_bytes);
-        writer.write_fallible(&mut reader)?;
-
-        let written_len = size_of::<DirentInner>() + name_bytes.len();
-        let padding_len = self.len() - written_len;
-        writer.fill_zeros(padding_len)?;
-
-        Ok(())
-    }
-}
-
-#[derive(Debug)]
-struct Dirent64 {
-    inner: Dirent64Inner,
-    name: CString,
 }
 
 #[repr(C, packed)]
 #[derive(Clone, Copy, Debug, Pod)]
-struct Dirent64Inner {
+struct Dirent64 {
     d_ino: u64,
     d_off: u64,
     d_reclen: u16,
     d_type: u8,
 }
 
-impl DirentSerializer for Dirent64 {
-    fn new(ino: u64, offset: u64, type_: InodeType, name: CString) -> Self {
-        let d_reclen = {
-            let len = size_of::<Dirent64Inner>() + name.as_c_str().to_bytes_with_nul().len();
-            len.align_up(8) as u16
-        };
-        let d_type = DirentType::from(type_) as u8;
+impl DirentHeader for Dirent64 {
+    fn new(ino: u64, offset: u64, reclen: u16, type_: InodeType) -> Self {
         Self {
-            inner: Dirent64Inner {
-                d_ino: ino,
-                d_off: offset,
-                d_reclen,
-                d_type,
-            },
-            name,
+            d_ino: ino,
+            d_off: offset,
+            d_reclen: reclen,
+            d_type: DirentType::from(type_) as u8,
         }
-    }
-
-    fn len(&self) -> usize {
-        self.inner.d_reclen as usize
-    }
-
-    fn serialize(&self, writer: &mut VmWriter) -> Result<()> {
-        writer.write_val(&self.inner)?;
-
-        let name_bytes = self.name.as_c_str().to_bytes_with_nul();
-        let mut reader = VmReader::from(name_bytes);
-        writer.write_fallible(&mut reader)?;
-
-        let written_len = size_of::<Dirent64Inner>() + name_bytes.len();
-        let padding_len = self.len() - written_len;
-        writer.fill_zeros(padding_len)?;
-
-        Ok(())
     }
 }
 

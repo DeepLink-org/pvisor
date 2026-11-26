@@ -15,7 +15,7 @@ use aster_fuse::{
     WriteReply,
 };
 use ostd::{
-    mm::io::util::HasVmReaderWriter,
+    mm::{Infallible, VmReader, io::util::HasVmReaderWriter},
     sync::{LocalIrqDisabled, SpinLock},
 };
 use smallvec::SmallVec;
@@ -146,32 +146,49 @@ impl FuseRequest {
         let Ok(reply_header_buf) = reply_bufs.reply_header_buf() else {
             return FuseCompletion::MalformedResponse;
         };
+        Self::classify_reply(
+            self.unique,
+            self.reply_expectation,
+            reply_len,
+            &mut reply_header_buf.reader().unwrap(),
+        )
+    }
 
-        let mut reader = reply_header_buf.reader().unwrap();
+    fn classify_reply(
+        unique: FuseUnique,
+        expectation: ReplyExpectation,
+        reply_len: usize,
+        reader: &mut VmReader<'_, Infallible>,
+    ) -> FuseCompletion {
         let Ok(reply_header) = reader.read_val::<ReplyHeader>() else {
             return FuseCompletion::MalformedResponse;
         };
-
-        if reply_header.unique() != self.unique {
+        if reply_header.unique() != unique || reply_header.len() as usize != reply_len {
             return FuseCompletion::MalformedResponse;
         }
-
-        if !self.is_reply_shape_valid(&reply_header, reply_len) {
+        let Some(payload_len) = reply_len.checked_sub(size_of::<ReplyHeader>()) else {
             return FuseCompletion::MalformedResponse;
-        }
+        };
 
         if reply_header.error() != 0 {
-            return FuseCompletion::RemoteError(reply_header.error());
+            return if payload_len == 0 {
+                FuseCompletion::RemoteError(reply_header.error())
+            } else {
+                FuseCompletion::MalformedResponse
+            };
         }
 
-        let payload_len = reply_header.len() as usize - size_of::<ReplyHeader>();
-
-        match self.reply_expectation {
-            ReplyExpectation::WritePayload { requested_size } => {
-                let Some(payload_buf) = reply_bufs.payload_bufs().first() else {
-                    return FuseCompletion::MalformedResponse;
-                };
-                let mut reader = payload_buf.reader().unwrap();
+        match expectation {
+            ReplyExpectation::HeaderOnly if payload_len == 0 => FuseCompletion::Complete(0),
+            ReplyExpectation::FixedPayload(size) if payload_len == size.get() => {
+                FuseCompletion::Complete(payload_len)
+            }
+            ReplyExpectation::VariablePayload(max) if payload_len <= max.get() => {
+                FuseCompletion::Complete(payload_len)
+            }
+            ReplyExpectation::WritePayload { requested_size }
+                if payload_len == size_of::<WriteReply>() =>
+            {
                 let Ok(write_reply) = reader.read_val::<WriteReply>() else {
                     return FuseCompletion::MalformedResponse;
                 };
@@ -187,39 +204,63 @@ impl FuseRequest {
                     FuseCompletion::Complete(payload_len)
                 }
             }
-            _ => FuseCompletion::Complete(payload_len),
+            _ => FuseCompletion::MalformedResponse,
         }
     }
+}
 
-    fn is_reply_shape_valid(&self, reply_header: &ReplyHeader, reply_len: usize) -> bool {
-        let reply_header_len = reply_header.len() as usize;
+#[cfg(ktest)]
+mod tests {
+    use ostd::prelude::ktest;
 
-        if reply_header_len != reply_len {
-            return false;
+    use super::*;
+
+    fn write_ack(len: u32, error: i32, unique: u64, written: u32, used: usize) -> FuseCompletion {
+        let mut bytes = [0xff; 24];
+        bytes[..4].copy_from_slice(&len.to_ne_bytes());
+        bytes[4..8].copy_from_slice(&error.to_ne_bytes());
+        bytes[8..16].copy_from_slice(&unique.to_ne_bytes());
+        bytes[16..20].copy_from_slice(&written.to_ne_bytes());
+        FuseRequest::classify_reply(
+            FuseUnique::new(17),
+            ReplyExpectation::WritePayload {
+                requested_size: 4096,
+            },
+            used,
+            &mut VmReader::from(&bytes[..]),
+        )
+    }
+
+    #[ktest]
+    fn packed_write_reply_preserves_host_result() {
+        assert_eq!(write_ack(24, 0, 17, 4096, 24), FuseCompletion::Complete(8));
+        for written in [0, 1, 4095] {
+            assert_eq!(
+                write_ack(24, 0, 17, written, 24),
+                FuseCompletion::ShortWrite {
+                    payload_len: 8,
+                    written: written as usize
+                }
+            );
         }
+        // Only the error header is returned; the rest of the allocation is stale.
+        assert_eq!(
+            write_ack(16, -28, 17, u32::MAX, 16),
+            FuseCompletion::RemoteError(-28)
+        );
+    }
 
-        let declared_payload_len = reply_header_len - size_of::<ReplyHeader>();
-
-        // A request error reply contains only the common reply header.
-        // Reference: <https://elixir.bootlin.com/linux/v6.18/source/fs/fuse/dev.c#L2250-L2253>
-        if reply_header.error() != 0 {
-            return declared_payload_len == 0;
-        }
-
-        match self.reply_expectation {
-            // No-reply requests return before parsing a reply header, so reaching this arm
-            // indicates inconsistent request state.
-            ReplyExpectation::None => false,
-            ReplyExpectation::HeaderOnly => declared_payload_len == 0,
-            ReplyExpectation::FixedPayload(expected_payload_len) => {
-                declared_payload_len == expected_payload_len.get()
-            }
-            ReplyExpectation::VariablePayload(max_payload_len) => {
-                declared_payload_len <= max_payload_len.get()
-            }
-            ReplyExpectation::WritePayload { .. } => {
-                declared_payload_len == size_of::<WriteReply>()
-            }
+    #[ktest]
+    fn packed_write_reply_rejects_malformed_counts_and_framing() {
+        for reply in [
+            write_ack(24, 0, 17, 4097, 24),
+            write_ack(24, 0, 16, 4096, 24),
+            write_ack(24, 0, 17, 4096, 23),
+            write_ack(23, 0, 17, 4096, 23),
+            write_ack(16, 0, 17, 4096, 16),
+            write_ack(24, -28, 17, 4096, 24),
+        ] {
+            assert_eq!(reply, FuseCompletion::MalformedResponse);
         }
     }
 }

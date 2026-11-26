@@ -185,14 +185,15 @@ pub trait VirtioDevice: AsAny + Send {
 
     /// Acknowledges that this set of features should be enabled.
     fn ack_features_by_page(&mut self, page: u32, value: u32) {
-        let mut v = match page {
-            0 => u64::from(value),
-            1 => u64::from(value) << 32,
+        let shift = match page {
+            0 => 0,
+            1 => 32,
             _ => {
                 warn!("Cannot acknowledge unknown features page: {page}");
-                0u64
+                return;
             }
         };
+        let mut v = u64::from(value) << shift;
 
         // Check if the guest is ACK'ing a feature that we didn't claim to have.
         let avail_features = self.avail_features();
@@ -202,7 +203,8 @@ pub trait VirtioDevice: AsAny + Send {
             // Don't count these features as acked.
             v &= !unrequested_features;
         }
-        self.set_acked_features(self.acked_features() | v);
+        let other_page = self.acked_features() & !(u64::from(u32::MAX) << shift);
+        self.set_acked_features(other_page | v);
     }
 
     /// Reads this device configuration space at `offset`.

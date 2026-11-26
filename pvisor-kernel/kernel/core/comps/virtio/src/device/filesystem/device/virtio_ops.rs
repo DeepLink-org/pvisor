@@ -47,8 +47,6 @@ impl FileSystemDevice {
             device_transport.read_device_features(),
         ));
         let notify_supported = negotiated_features.contains(FileSystemFeatures::NOTIFICATION);
-        let inline_metadata =
-            negotiated_features.contains(FileSystemFeatures::PVISOR_INLINE_METADATA);
         // Queue layout:
         // - Queue 0: high-priority queue (always present);
         // - Queue 1: notification queue (present only if notifications were negotiated);
@@ -70,6 +68,10 @@ impl FileSystemDevice {
             return Err(VirtioDeviceError::UnsupportedConfig);
         }
 
+        // Concurrent MMIO kicks serialize on the host device lock. Keep SMP's parallel lanes.
+        let inline_metadata = negotiated_features
+            .contains(FileSystemFeatures::PVISOR_INLINE_METADATA)
+            && (request_queue_count == 1 || ostd::cpu::num_cpus() == 1);
         let device = {
             let hiprio_queue = FsRequestQueue::new(
                 Self::new_queue(HIPRIO_QUEUE_INDEX, device_transport.as_mut())?,
@@ -81,7 +83,7 @@ impl FileSystemDevice {
                 let queue_index = request_queue_start_idx + idx as u16;
                 request_queues.push(FsRequestQueue::new(
                     Self::new_queue(queue_index, device_transport.as_mut())?,
-                    inline_metadata && queue_index == 1 && request_queue_count == 1,
+                    inline_metadata,
                 ));
             }
 

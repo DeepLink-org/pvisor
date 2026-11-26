@@ -40,6 +40,11 @@ pub(crate) trait VirtioTransport: Sync + Send + Debug {
     /// Get device features.
     fn read_device_features(&self) -> u64;
 
+    /// Select additional device features whose protocol is specific to this transport.
+    fn select_transport_features(&self, _offered: u64) -> u64 {
+        0
+    }
+
     /// Set driver features.
     fn write_driver_features(&mut self, features: u64) -> Result<(), VirtioTransportError>;
 

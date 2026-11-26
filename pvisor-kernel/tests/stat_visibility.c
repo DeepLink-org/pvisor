@@ -1,10 +1,11 @@
 /* SPDX-License-Identifier: MPL-2.0 */
-/* Hardware probe for newfstatat through the native virtio-fs root. */
+/* Hardware probe for host mutations through the native virtio-fs root. */
 #define _GNU_SOURCE
 #include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <sys/stat.h>
 #include <sys/syscall.h>
 #include <unistd.h>
@@ -23,6 +24,23 @@ static void expect_stat(int dirfd, const char *path, int flags, off_t size,
     exit(19);
 }
 
+static void expect_read(int fd, off_t offset, const char *expected)
+{
+    unsigned char bytes[16], want[sizeof(bytes)];
+    size_t len = strlen(expected);
+    if (len > sizeof(bytes))
+        abort();
+    memset(bytes, 0xa5, sizeof(bytes));
+    memset(want, 0xa5, sizeof(want));
+    memcpy(want, expected, len);
+    ssize_t got = pread(fd, bytes, sizeof(bytes), offset);
+    if (got != (ssize_t)len || memcmp(want, bytes, sizeof(bytes))) {
+        fprintf(stderr, "unexpected pread (fd=%d, offset=%ld, got=%zd, want=%zu)\n",
+                fd, (long)offset, got, len);
+        exit(23);
+    }
+}
+
 static void await_host(const char *step)
 {
     puts(step);
@@ -37,8 +55,26 @@ int main(void)
     expect_stat(AT_FDCWD, "/link", AT_SYMLINK_NOFOLLOW, 7, S_IFLNK | 0777);
     expect_stat(AT_FDCWD, "/link", 0, 3, S_IFREG | 0644);
 
+    int reader = open("/subject", O_RDONLY);
+    int updater = open("/subject", O_RDWR);
+    int writer = open("/subject", O_WRONLY);
+    if (reader < 0 || updater < 0 || writer < 0)
+        return 21;
+    expect_read(reader, 0, "old");
+    expect_read(updater, 1, "ld");
+    char byte;
+    if (pread(writer, &byte, 1, 0) != -1 || errno != EBADF)
+        return 24;
+    await_host("rewrite");
+    expect_read(updater, 0, "hot");
+    expect_read(reader, 1, "ot");
     await_host("resize");
+    expect_read(reader, 3, "rgrown");
+    expect_read(updater, 9, "");
     expect_stat(AT_FDCWD, "/subject", 0, 9, S_IFREG | 0600);
+    await_host("truncate");
+    expect_read(updater, 2, "");
+    expect_read(reader, 0, "ok");
     await_host("remove");
     expect_stat(AT_FDCWD, "/subject", 0, -1, 0);
     expect_stat(AT_FDCWD, "/link", 0, -1, 0);
@@ -47,9 +83,11 @@ int main(void)
     expect_stat(AT_FDCWD, "/subject", 0, 4, S_IFREG | 0640);
     expect_stat(AT_FDCWD, "/link", 0, 4, S_IFREG | 0640);
 
+    expect_read(reader, 0, "ok");
     int fd = open("/subject", O_RDONLY);
     if (fd < 0)
         return 21;
+    expect_read(fd, 0, "new!");
     expect_stat(fd, "", AT_EMPTY_PATH, 4, S_IFREG | 0640);
-    return close(fd) < 0 ? 22 : 7;
+    return close(fd) || close(reader) || close(updater) || close(writer) ? 22 : 7;
 }

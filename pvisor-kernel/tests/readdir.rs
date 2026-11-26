@@ -43,6 +43,8 @@ fn scan(dir: &File, buf: &mut [u8]) -> (usize, u64, Vec<String>) {
             assert!(record_len >= 24 && record_len % 8 == 0);
             let name = &bytes[19..record_len];
             let end = name.iter().position(|&b| b == 0).unwrap();
+            assert_eq!(record_len, (19 + end + 1).next_multiple_of(8));
+            assert!(name[end..].iter().all(|&byte| byte == 0));
             first_cookie.get_or_insert(cookie);
             names.push(std::str::from_utf8(&name[..end]).unwrap().to_owned());
             assert!(names.len() <= ENTRY_COUNT + 2, "too many directory entries");

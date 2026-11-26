@@ -23,6 +23,11 @@ use vm_memory::{Bytes, GuestAddress, GuestMemoryMmap};
 //TODO crosvm uses 0 here, but IIRC virtio specified some other vendor id that should be used
 const VENDOR_ID: u32 = 0;
 
+pub(super) const FS_IRQ_READ_ACK: u64 = 1 << 22;
+const PVISOR_VENDOR_ID: u32 = u32::from_le_bytes(*b"pVis");
+// Private virtio-fs configuration word, not a standard transport register.
+const FS_IRQ_TAKE: u64 = 0x1fc;
+
 //required by the virtio mmio device register layout at offset 0 from base
 const MMIO_MAGIC_VALUE: u32 = 0x7472_6976;
 
@@ -321,6 +326,7 @@ pub struct MmioTransport {
     queue_config: Vec<QueueConfig>,
     shm_region_select: u32,
     interrupt: InterruptTransport,
+    fs_irq_read_ack_offered: bool,
 }
 
 struct InterruptTransportInner {
@@ -593,6 +599,11 @@ impl MmioTransport {
 
         let debug_log_target = format!("{}[{}]", module_path!(), locked.device_name());
         let queue_config: Vec<QueueConfig> = locked.queue_config().to_vec();
+        #[cfg(not(any(feature = "tee", feature = "aws-nitro")))]
+        let fs_irq_read_ack_offered =
+            locked.device_type() == fs::TYPE_FS && locked.avail_features() & FS_IRQ_READ_ACK != 0;
+        #[cfg(any(feature = "tee", feature = "aws-nitro"))]
+        let fs_irq_read_ack_offered = false;
         drop(locked);
 
         let queues = Self::create_queues(&queue_config);
@@ -613,6 +624,7 @@ impl MmioTransport {
             queue_evts,
             queue_config,
             shm_region_select: 0,
+            fs_irq_read_ack_offered,
         })
     }
 
@@ -705,6 +717,7 @@ impl MmioTransport {
         if self.locked_device().is_activated() {
             debug!("reset device while it's still in active state");
         }
+        self.locked_device().set_acked_features(0);
         self.features_select = 0;
         self.acked_features_select = 0;
         self.queue_select = 0;
@@ -778,11 +791,7 @@ impl MmioTransport {
             _ if status == 0 => {
                 if self.locked_device().is_activated() && !self.locked_device().reset() {
                     self.device_status |= FAILED;
-                }
-
-                // If the backend device driver doesn't support reset,
-                // just leave the device marked as FAILED.
-                if self.device_status & FAILED == 0 {
+                } else {
                     self.reset();
                 }
             }
@@ -804,6 +813,7 @@ impl BusDevice for MmioTransport {
                     0x0 => MMIO_MAGIC_VALUE,
                     0x04 => MMIO_VERSION,
                     0x08 => self.locked_device().device_type(),
+                    0x0c if self.fs_irq_read_ack_offered => PVISOR_VENDOR_ID,
                     0x0c => VENDOR_ID, // vendor id
                     0x10 => {
                         let mut features = self
@@ -851,6 +861,18 @@ impl BusDevice for MmioTransport {
                     }
                 };
                 byte_order::write_le_u32(data, v);
+            }
+            FS_IRQ_TAKE if self.fs_irq_read_ack_offered && data.len() == 4 => {
+                let causes = if self.check_device_status(
+                    device_status::FEATURES_OK | device_status::DRIVER_OK,
+                    device_status::FAILED,
+                ) && self.locked_device().acked_features() & FS_IRQ_READ_ACK != 0
+                {
+                    self.interrupt.status().swap(0, Ordering::SeqCst) as u32
+                } else {
+                    0
+                };
+                byte_order::write_le_u32(data, causes);
             }
             0x100..=0xfff => self.locked_device().read_config(offset - 0x100, data),
             _ => {
@@ -1011,7 +1033,7 @@ pub(crate) mod tests {
         }
 
         fn read_config(&self, offset: u64, data: &mut [u8]) {
-            data.copy_from_slice(&self.config_bytes[offset as usize..]);
+            device::read_config_space(&self.config_bytes, offset, data);
         }
 
         fn write_config(&mut self, offset: u64, data: &[u8]) {
@@ -1137,12 +1159,12 @@ pub(crate) mod tests {
     #[test]
     fn test_bus_device_read() {
         let m = GuestMemoryMmap::from_ranges(&[(GuestAddress(0), 0x1000)]).unwrap();
-        let mut d = MmioTransport::new(
-            m,
-            DummyIrqChip::new().into(),
-            Arc::new(Mutex::new(DummyDevice::new())),
-        )
-        .unwrap();
+        // The same device-specific bit on another device does not redefine its config space.
+        let mut dummy = DummyDevice::new();
+        dummy.set_avail_features(FS_IRQ_READ_ACK);
+        dummy.config_bytes[0xfc..0x100].copy_from_slice(b"test");
+        let mut d =
+            MmioTransport::new(m, DummyIrqChip::new().into(), Arc::new(Mutex::new(dummy))).unwrap();
 
         let mut buf = vec![0xff, 0, 0xfe, 0];
         let buf_copy = buf.to_vec();
@@ -1177,7 +1199,7 @@ pub(crate) mod tests {
         d.read(0, 0x10, &mut buf[..]);
         assert_eq!(
             read_le_u32(&buf[..]),
-            d.locked_device().avail_features_by_page(0) | 0x1
+            d.locked_device().avail_features_by_page(1) | 0x1
         );
 
         d.read(0, 0x34, &mut buf[..]);
@@ -1187,6 +1209,8 @@ pub(crate) mod tests {
         assert_eq!(read_le_u32(&buf[..]), false as u32);
 
         d.interrupt.status().store(111, Ordering::SeqCst);
+        d.read(0, FS_IRQ_TAKE, &mut buf);
+        assert_eq!(&buf, b"test");
         d.read(0, 0x60, &mut buf[..]);
         assert_eq!(read_le_u32(&buf[..]), 111);
 
@@ -1533,9 +1557,110 @@ pub(crate) mod tests {
     #[test]
     fn test_ack_features_by_page() {
         let mut dummy_dev = DummyDevice::new();
-        dummy_dev.set_acked_features(16);
-        dummy_dev.set_avail_features(8);
+        dummy_dev.set_avail_features((1 << 32) | 24);
+        dummy_dev.ack_features_by_page(1, 1);
+        dummy_dev.ack_features_by_page(0, 16);
         dummy_dev.ack_features_by_page(0, 8);
-        assert_eq!(dummy_dev.acked_features(), 24);
+        dummy_dev.ack_features_by_page(2, 0);
+        assert_eq!(dummy_dev.acked_features(), (1 << 32) | 8);
+    }
+
+    #[cfg(not(any(feature = "tee", feature = "aws-nitro")))]
+    #[rstest::rstest]
+    #[case::native_default(true, None)]
+    #[case::native_disabled(true, Some("0"))]
+    #[case::native_enabled(true, Some("1"))]
+    #[case::linux_snapshot_offer(false, Some("1"))]
+    fn fs_irq_read_ack_lifecycle(#[case] native: bool, #[case] setting: Option<&str>) {
+        use crate::env::fs::{FsProfile, IRQ_READ_ACK};
+        use crate::vmm::vmm_config::fs::FsDeviceConfig;
+        use device_status::{ACKNOWLEDGE, DRIVER, DRIVER_OK, FAILED, FEATURES_OK};
+        fn read(d: &mut MmioTransport, reg: u64) -> u32 {
+            let mut data = [0; 4];
+            d.read(0, reg, &mut data);
+            u32::from_le_bytes(data)
+        }
+
+        let offer = cfg!(all(target_os = "linux", target_arch = "x86_64"))
+            && native
+            && setting != Some("0");
+        let profile = FsProfile::parse(|key| match key {
+            IRQ_READ_ACK => setting.map(Into::into),
+            crate::env::fs::WORKERS => Some("1".into()),
+            _ => None,
+        })
+        .unwrap();
+        let fs = Fs::new_with_profile(
+            &FsDeviceConfig {
+                fs_id: "irq".into(),
+                semantics: crate::api::PermissionSemantics::LinuxComplete,
+                shared_dir: None,
+                shm_size: None,
+                read_only: false,
+                managed: false,
+                virtual_entries: vec![],
+                overlay: None,
+            },
+            Arc::new(0.into()),
+            Arc::new(profile),
+            native,
+        )
+        .unwrap();
+        let mem = GuestMemoryMmap::from_ranges(&[(GuestAddress(0), 4096)]).unwrap();
+        let mut d =
+            MmioTransport::new(mem, DummyIrqChip::new().into(), Arc::new(Mutex::new(fs))).unwrap();
+        assert_eq!(read(&mut d, 0x10) & FS_IRQ_READ_ACK as u32 != 0, offer);
+        assert_eq!(read(&mut d, 0x0c) == PVISOR_VENDOR_ID, offer);
+        let running = ACKNOWLEDGE | DRIVER | FEATURES_OK | DRIVER_OK;
+        for select in [true, false] {
+            set_device_status(&mut d, ACKNOWLEDGE);
+            set_device_status(&mut d, ACKNOWLEDGE | DRIVER);
+            if select {
+                d.write(0, 0x20, &(FS_IRQ_READ_ACK as u32).to_le_bytes());
+            }
+            set_device_status(&mut d, running & !DRIVER_OK);
+            d.interrupt.try_signal_config_change().unwrap();
+            assert_eq!(read(&mut d, FS_IRQ_TAKE), 0);
+            set_device_status(&mut d, running);
+            // Publishing a newer used ring entry while CONFIG is pending.
+            d.interrupt.try_signal_used_queue().unwrap();
+            assert_eq!(read(&mut d, 0x60), 3);
+            let mut short = [0; 2];
+            d.read(0, FS_IRQ_TAKE, &mut short);
+            assert_eq!(read(&mut d, 0x60), 3);
+            if offer && select {
+                assert_eq!(read(&mut d, FS_IRQ_TAKE), 3);
+                assert_eq!(read(&mut d, FS_IRQ_TAKE), 0);
+                d.interrupt(VIRTIO_MMIO_INT_CONFIG).unwrap();
+                assert_eq!(read(&mut d, FS_IRQ_TAKE), 2);
+                d.interrupt.try_signal_used_queue().unwrap();
+                assert_eq!(read(&mut d, FS_IRQ_TAKE), 1);
+                let interrupt = d.interrupt.clone();
+                d.interrupt.try_signal_used_queue().unwrap();
+                let first = std::thread::scope(|scope| {
+                    scope.spawn(|| interrupt.try_signal_config_change().unwrap());
+                    read(&mut d, FS_IRQ_TAKE)
+                });
+                assert!(matches!(
+                    (first, read(&mut d, FS_IRQ_TAKE)),
+                    (3, 0) | (1, 2)
+                ));
+            } else {
+                assert_eq!(read(&mut d, FS_IRQ_TAKE), 0);
+                assert_eq!(read(&mut d, 0x60), 3);
+                d.write(0, 0x64, &1u32.to_le_bytes());
+                assert_eq!(read(&mut d, 0x60), 2);
+                d.write(0, 0x64, &2u32.to_le_bytes());
+            }
+            assert_eq!(read(&mut d, 0x60), 0);
+            set_device_status(&mut d, running | FAILED);
+            d.interrupt.try_signal_config_change().unwrap();
+            assert_eq!(read(&mut d, FS_IRQ_TAKE), 0);
+            assert_eq!(read(&mut d, 0x60), 2);
+            set_device_status(&mut d, 0);
+            assert_eq!(read(&mut d, 0x70), 0);
+            assert_eq!(read(&mut d, 0x60), 0);
+            assert_eq!(d.locked_device().acked_features(), 0);
+        }
     }
 }

@@ -1,4 +1,4 @@
-"""Check host metadata changes through virtio-fs. Requires x86_64 KVM."""
+"""Check host metadata and data changes through virtio-fs. Requires x86_64 KVM."""
 
 import argparse
 import os
@@ -10,20 +10,21 @@ import time
 from pathlib import Path
 
 
-def run(binary, guest, inline, log=None):
+def run(binary, guest, inline, log=None, workers=1, cpus=1):
     with tempfile.TemporaryDirectory() as directory:
         root = Path(directory)
         shutil.copy2(guest, root / "probe")
         subject = root / "subject"
         subject.write_bytes(b"old")
         subject.chmod(0o644)
+        os.utime(subject, (1, 1))
         (root / "link").symlink_to("subject")
         command = [
             binary,
             "--rootfs",
             root,
             "--cpus",
-            "1",
+            str(cpus),
             "--memory",
             "512",
             "--task-stdio",
@@ -32,7 +33,7 @@ def run(binary, guest, inline, log=None):
         ]
         env = os.environ | {
             "PVISOR_GUEST_KERNEL": "rust-native",
-            "PVISOR_VM_FS_WORKERS": "1",
+            "PVISOR_VM_FS_WORKERS": str(workers),
             "PVISOR_FS_PROFILE": "1",
         }
         env.pop("PVISOR_VM_FS_INLINE_METADATA", None)
@@ -50,7 +51,7 @@ def run(binary, guest, inline, log=None):
             try:
                 with selectors.DefaultSelector() as selector:
                     selector.register(process.stdout, selectors.EVENT_READ)
-                    for step in (b"resize", b"remove", b"recreate"):
+                    for step in (b"rewrite", b"resize", b"truncate", b"remove", b"recreate"):
                         while b"\n" not in pending:
                             remaining = deadline - time.monotonic()
                             if remaining <= 0 or not selector.select(remaining):
@@ -64,7 +65,13 @@ def run(binary, guest, inline, log=None):
                         line, pending = pending.split(b"\n", 1)
                         if line != step:
                             raise RuntimeError(f"expected {step!r}, got {line!r}")
-                        if step == b"remove":
+                        if step == b"rewrite":
+                            with subject.open("r+b") as file:
+                                file.write(b"hot")
+                            os.utime(subject, (2, 2))
+                        elif step == b"truncate":
+                            subject.write_bytes(b"ok")
+                        elif step == b"remove":
                             subject.rename(root / "old-subject")
                         else:
                             subject.write_bytes(b"overgrown" if step == b"resize" else b"new!")
@@ -85,7 +92,7 @@ def run(binary, guest, inline, log=None):
                 profile = errors.read().decode(errors="replace")
                 if log is not None:
                     log.write_text(profile)
-        print(f"PASS: inline={inline}, chmod/resize, rename/recreate, symlink and fd stat")
+        print(f"PASS: cpus={cpus}, workers={workers}, inline={inline}: host stat and data changes visible")
         return profile
 
 
@@ -96,8 +103,9 @@ def main():
     args = parser.parse_args()
     binary = args.binary.resolve(strict=True)
     guest = args.guest.resolve(strict=True)
-    for inline in (None, 0):
-        run(binary, guest, inline)
+    for workers in (1, 4):
+        for inline in (None, 0):
+            run(binary, guest, inline, workers=workers)
 
 
 if __name__ == "__main__":

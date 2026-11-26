@@ -9,7 +9,7 @@ use ostd::{
     io::IoMem,
     irq::IrqCallbackFunction,
     mm::{HasDaddr, PAGE_SIZE, dma::DmaCoherent},
-    sync::RwLock,
+    sync::{RwLock, WriteIrqDisabled},
     warn,
 };
 
@@ -27,6 +27,9 @@ use crate::{
     transport::{ConfigManager, DeviceStatus, VirtioTransport, VirtioTransportError},
 };
 
+const FS_IRQ_READ_ACK: u64 = 1 << 22;
+const FS_IRQ_TAKE: usize = 0x1fc;
+
 #[derive(Debug)]
 pub(super) struct VirtioMmioDevice {
     device_id: u32,
@@ -37,7 +40,8 @@ pub(crate) struct VirtioMmioTransport {
     layout: SafePtr<VirtioMmioLayout, IoMem>,
     device: Arc<VirtioMmioDevice>,
     common_device: MmioCommonDevice,
-    multiplex: Arc<RwLock<MultiplexIrq>>,
+    multiplex: Arc<RwLock<MultiplexIrq, WriteIrqDisabled>>,
+    fs_irq_read_ack_selected: bool,
 }
 
 impl MmioDevice for VirtioMmioDevice {
@@ -78,6 +82,7 @@ impl VirtioMmioTransport {
             device: Arc::new(VirtioMmioDevice { device_id }),
             common_device: device,
             multiplex: MultiplexIrq::new(irq, interrupt_ack, interrupt_status),
+            fs_irq_read_ack_selected: false,
         };
         if device.common_device.read_version().unwrap() == VirtioMmioVersion::Legacy {
             field_ptr!(&device.layout, VirtioMmioLayout, legacy_guest_page_size)
@@ -227,7 +232,25 @@ impl VirtioTransport for VirtioMmioTransport {
         (device_feature_high << 32) | device_feature_low as u64
     }
 
+    fn select_transport_features(&self, offered: u64) -> u64 {
+        if cfg!(target_arch = "x86_64")
+            && offered & FS_IRQ_READ_ACK != 0
+            && self.device_type() == VirtioDeviceType::FileSystem
+            && !self.is_legacy_version()
+            && field_ptr!(&self.layout, VirtioMmioLayout, vendor_id)
+                .read_once()
+                .unwrap()
+                == u32::from_le_bytes(*b"pVis")
+        {
+            FS_IRQ_READ_ACK
+        } else {
+            0
+        }
+    }
+
     fn write_driver_features(&mut self, features: u64) -> Result<(), VirtioTransportError> {
+        self.fs_irq_read_ack_selected =
+            self.device_type() == VirtioDeviceType::FileSystem && features & FS_IRQ_READ_ACK != 0;
         let low = features as u32;
         let high = (features >> 32) as u32;
         field_ptr!(&self.layout, VirtioMmioLayout, driver_features_select)
@@ -255,9 +278,25 @@ impl VirtioTransport for VirtioMmioTransport {
     }
 
     fn write_device_status(&mut self, status: DeviceStatus) -> Result<(), VirtioTransportError> {
+        // Serialize changing the ISR operation with handlers on every vCPU.
+        let mut irq = self.multiplex.write();
         field_ptr!(&self.layout, VirtioMmioLayout, status)
             .write_once(&(status.bits() as u32))
             .unwrap();
+        if status.is_empty() || status.contains(DeviceStatus::FAILED) {
+            self.fs_irq_read_ack_selected = false;
+        }
+        let ready = DeviceStatus::FEATURES_OK | DeviceStatus::DRIVER_OK;
+        irq.read_ack = if self.fs_irq_read_ack_selected
+            && status.contains(ready)
+            && (self.read_device_status() & (ready | DeviceStatus::FAILED)) == ready
+        {
+            Some(
+                SafePtr::new(self.common_device.io_mem().clone(), FS_IRQ_TAKE).restrict::<ReadOp>(),
+            )
+        } else {
+            None
+        };
         Ok(())
     }
 

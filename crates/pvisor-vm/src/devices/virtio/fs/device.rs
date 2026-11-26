@@ -50,6 +50,7 @@ unsafe impl ByteValued for VirtioFsConfig {}
 
 pub struct Fs {
     profile: Arc<crate::env::fs::FsProfile>,
+    rust_native_kernel: bool,
     avail_features: u64,
     acked_features: u64,
     device_state: DeviceState,
@@ -97,6 +98,7 @@ impl Fs {
             },
             exit_code,
             Arc::new(profile),
+            false,
         )
     }
 
@@ -104,8 +106,15 @@ impl Fs {
         device_config: &crate::vmm::vmm_config::fs::FsDeviceConfig,
         exit_code: Arc<AtomicI32>,
         profile: Arc<crate::env::fs::FsProfile>,
+        rust_native_kernel: bool,
     ) -> super::Result<Fs> {
-        let avail_features = (1u64 << VIRTIO_F_VERSION_1) | (1u64 << VIRTIO_RING_F_EVENT_IDX);
+        let mut avail_features = (1u64 << VIRTIO_F_VERSION_1) | (1u64 << VIRTIO_RING_F_EVENT_IDX);
+        if cfg!(all(target_os = "linux", target_arch = "x86_64"))
+            && rust_native_kernel
+            && profile.irq_read_ack
+        {
+            avail_features |= super::super::FS_IRQ_READ_ACK;
+        }
 
         let tag = device_config.fs_id.as_bytes();
         let mut config = VirtioFsConfig::default();
@@ -130,7 +139,7 @@ impl Fs {
 
         let inline_dispatch = (cfg!(all(target_os = "linux", target_arch = "x86_64"))
             && profile.inline_metadata
-            && profile.workers == 1
+            && (rust_native_kernel || profile.workers == 1)
             && !device_config.managed
             && device_config.overlay.is_none()
             && device_config.shm_size.is_none()
@@ -139,6 +148,7 @@ impl Fs {
 
         Ok(Fs {
             profile,
+            rust_native_kernel,
             avail_features,
             acked_features: 0,
             device_state: DeviceState::Inactive,
@@ -207,7 +217,7 @@ impl Fs {
 
 impl VirtioDevice for Fs {
     fn inline_queue_kick(&self, queue: usize) -> Option<bool> {
-        if queue != REQ_INDEX
+        if !(REQ_INDEX..self.queue_config.len()).contains(&queue)
             || self.acked_features & self.avail_features() & INLINE_METADATA_FEATURE == 0
         {
             return None;
@@ -297,7 +307,7 @@ impl VirtioDevice for Fs {
 
     fn avail_features(&self) -> u64 {
         let inline = self.inline_dispatch.is_some()
-            && self.queue_config.len() == REQ_INDEX + 1
+            && (self.rust_native_kernel || self.queue_config.len() == REQ_INDEX + 1)
             && self.shm_region.is_none()
             && self
                 .passthrough_cfg
@@ -470,6 +480,49 @@ mod tests {
         }
     }
 
+    #[rstest::rstest]
+    #[case::linux_one(false, 1, 1, true)]
+    #[case::linux_multi(false, 4, 4, false)]
+    #[case::restored_linux_multi(false, 1, 4, false)]
+    #[case::native_multi(true, 4, 4, true)]
+    fn inline_feature_offer(
+        #[case] native: bool,
+        #[case] workers: usize,
+        #[case] queues: usize,
+        #[case] inline: bool,
+    ) {
+        let profile = crate::env::fs::FsProfile::parse(|key| {
+            (key == crate::env::fs::WORKERS).then(|| workers.to_string().into())
+        })
+        .unwrap();
+        let mut fs = Fs::new_with_profile(
+            &crate::vmm::vmm_config::fs::FsDeviceConfig {
+                fs_id: "shared".into(),
+                semantics: PermissionSemantics::LinuxComplete,
+                shared_dir: Some("/shared".into()),
+                shm_size: None,
+                read_only: false,
+                managed: false,
+                virtual_entries: vec![],
+                overlay: None,
+            },
+            Arc::new(AtomicI32::new(0)),
+            Arc::new(profile),
+            native,
+        )
+        .unwrap();
+        fs.configure_request_queues(queues).unwrap();
+        let kvm = cfg!(all(target_os = "linux", target_arch = "x86_64"));
+        assert_eq!(
+            fs.avail_features() & INLINE_METADATA_FEATURE != 0,
+            kvm && inline
+        );
+        assert_eq!(
+            fs.avail_features() & crate::devices::virtio::FS_IRQ_READ_ACK != 0,
+            kvm && native
+        );
+    }
+
     #[test]
     fn request_queue_configuration_preserves_hiprio_and_rejects_invalid_counts() {
         let profile = Arc::new(
@@ -491,6 +544,7 @@ mod tests {
             },
             Arc::new(AtomicI32::new(0)),
             profile.clone(),
+            false,
         )
         .unwrap();
         assert_eq!(fs.queue_config().len(), 9);
