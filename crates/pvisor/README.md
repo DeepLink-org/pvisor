@@ -1436,6 +1436,15 @@ reboot a surviving instance requires its recorded durable revision. A publicatio
 error is recorded in the import's `publication-error.json`; an explicit pull can
 retry publication.
 
+On Linux x86-64, set `PVISOR_OCI_EPHEMERAL=1` on `pvisor run` for a
+one-shot cold OCI import. The worker admits an eligible verified root and
+skips background Image Pack publication. Each instance and its forks pin the
+import until removal. Recreate the instance from OCI after a host reboot.
+Published images are still usable, and an explicit `pvisor pull` still
+publishes an image. A cold miss requiring synchronous conversion or explicit
+in-process registry credentials returns an error in this mode. Leave the
+setting unset or use `0` for the usual background publication.
+
 Published `Image` records require `CachedImage`, binding the pool location and
 immutable handle. There is no directory-root field or fallback. Private builds
 use a distinct backing type in `Image<BuildSource>`/`Instance<BuildSource>`;

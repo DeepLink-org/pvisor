@@ -7,7 +7,7 @@ const CANCELLATION: &str = r#"
 import ctypes, os, signal, socket, subprocess, sys, time
 from pathlib import Path
 
-binary, root, sig = sys.argv[1:]
+binary, root, sig, mode = sys.argv[1:]
 root = Path(root)
 sig = getattr(signal, sig)
 PR_SET_CHILD_SUBREAPER = 36
@@ -50,6 +50,8 @@ with socket.socket() as proxy:
         "PVISOR_IMAGE_STORE": str(root / "images"),
         "HTTPS_PROXY": f"http://127.0.0.1:{proxy.getsockname()[1]}",
     }
+    if mode == "ephemeral":
+        env["PVISOR_OCI_EPHEMERAL"] = "1"
     command = [binary, "run", "--rm", "--name", "retry", "--network", "none",
         "--cpus", "1", "--memory", "128m", "registry.invalid/example:latest", "true"]
     def run():
@@ -82,12 +84,13 @@ with socket.socket() as proxy:
         reap_workers()
 "#;
 
-fn assert_cold_run_retry(signal: &str) {
+fn assert_cold_run_retry(signal: &str, mode: &str) {
     let root = tempfile::tempdir().unwrap();
     let result = Command::new("python3")
         .args(["-c", CANCELLATION, env!("CARGO_BIN_EXE_pvisor")])
         .arg(root.path())
         .arg(signal)
+        .arg(mode)
         .output()
         .unwrap();
     assert!(
@@ -99,10 +102,20 @@ fn assert_cold_run_retry(signal: &str) {
 
 #[test]
 fn cold_run_frontend_sigterm_releases_the_image_for_retry() {
-    assert_cold_run_retry("SIGTERM");
+    assert_cold_run_retry("SIGTERM", "default");
 }
 
 #[test]
 fn cold_run_frontend_sigkill_releases_the_image_for_retry() {
-    assert_cold_run_retry("SIGKILL");
+    assert_cold_run_retry("SIGKILL", "default");
+}
+
+#[test]
+fn ephemeral_cold_run_frontend_sigterm_releases_the_image_for_retry() {
+    assert_cold_run_retry("SIGTERM", "ephemeral");
+}
+
+#[test]
+fn ephemeral_cold_run_frontend_sigkill_releases_the_image_for_retry() {
+    assert_cold_run_retry("SIGKILL", "ephemeral");
 }

@@ -1,4 +1,4 @@
-//! Admit a cold run from its verified import while a separate process publishes the image.
+//! Admit Linux cold runs from a leased, verified OCI import.
 use super::*;
 use std::io::{BufRead, BufReader};
 use std::os::unix::fs::DirBuilderExt;
@@ -36,10 +36,9 @@ fn set_parent_death_signal(signal: libc::c_int) -> io::Result<()> {
 
 impl Store {
     /// Prepare an instance for immediate Linux/KVM execution. A verified cold
-    /// import stays pinned by the instance while a separate process publishes
-    /// the durable catalog. A publication failure leaves the instance usable.
-    /// A local hit or a caller with explicit registry credentials uses the
-    /// ordinary create path. No credentials are serialized to another process.
+    /// import stays pinned by the instance. A separate process publishes the
+    /// durable image unless the caller sets `PVISOR_OCI_EPHEMERAL=1` for a
+    /// one-shot run. One-shot instances require the import on the current boot.
     pub fn create_for_run(
         &self,
         config: Create,
@@ -49,12 +48,20 @@ impl Store {
             let _guard = self.lock()?;
             collect(self)?;
         }
-        if self.registry_credentials.is_some() {
+        let ephemeral = crate::env::cache::experiment_setting(
+            "PVISOR_OCI_EPHEMERAL",
+            crate::env::os("PVISOR_OCI_EPHEMERAL").as_deref(),
+        )?;
+        if self.registry_credentials.is_some() && !ephemeral {
             return self.create_with_progress(config, progress);
         }
         if let Some(image) = self.local_image(&config.image)? {
             return self.create_pinned_member(config, progress, None, Some(image));
         }
+        ensure!(
+            self.registry_credentials.is_none(),
+            "ephemeral cold run requires a local image or a registry accessible to the cold-run worker"
+        );
         let mut command = Command::new(std::env::current_exe()?);
         command
             .arg("--pvisor-internal-cold-run")
@@ -77,7 +84,7 @@ impl Store {
         let result = (|| {
             serde_json::to_writer(
                 child.stdin.take().context("missing cold run input")?,
-                &config,
+                &(&config, ephemeral),
             )?;
             let output = BufReader::new(child.stdout.take().context("missing cold run output")?);
             for line in output.lines() {
@@ -112,6 +119,8 @@ struct Binding {
     boot: String,
     device: u64,
     inode: u64,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    ephemeral: bool,
 }
 
 pub(super) fn open(store: &Store, image: &Image) -> anyhow::Result<ImageRoot> {
@@ -137,6 +146,10 @@ pub(super) fn open(store: &Store, image: &Image) -> anyhow::Result<ImageRoot> {
         "cold import identity mismatch"
     );
     if binding.boot != fs::read_to_string("/proc/sys/kernel/random/boot_id")? {
+        ensure!(
+            !binding.ephemeral,
+            "ephemeral OCI import expired after reboot; run the OCI image again"
+        );
         // The extracted files are only verified for this boot. Reopen the
         // exact durable revision after a host restart, even if the tag moved.
         let handle: String = serde_json::from_reader(
@@ -206,6 +219,7 @@ fn prepare(
     reference: &str,
     dir: &Path,
     id: &str,
+    ephemeral: bool,
 ) -> anyhow::Result<(Image, Option<PreparedPull>)> {
     if let Some(image) = store.local_image(reference)? {
         return Ok((image, None));
@@ -222,9 +236,14 @@ fn prepare(
         Some(dir),
     )?;
     write_error?;
-    if prepared.cached.is_some()
-        || !crate::image::cache::supports_extracted_run(&prepared.source, &prepared.image.digest)?
-    {
+    if prepared.cached.is_some() {
+        return Ok((store.publish_pull(prepared)?, None));
+    }
+    if !crate::image::cache::supports_extracted_run(&prepared.source, &prepared.image.digest)? {
+        ensure!(
+            !ephemeral,
+            "image is ineligible for an ephemeral run from its extracted root"
+        );
         return Ok((store.publish_pull(prepared)?, None));
     }
     store
@@ -238,6 +257,7 @@ fn prepare(
         boot: fs::read_to_string("/proc/sys/kernel/random/boot_id")?,
         device: meta.dev(),
         inode: meta.ino(),
+        ephemeral,
     };
     crate::util::write_private_json(&dir.join("binding.json"), &binding)?;
     let image = prepared.image.clone().map_cache(|()| CachedImage {
@@ -246,6 +266,10 @@ fn prepare(
         repository: None,
         mirrors: vec![],
     });
+    if ephemeral {
+        fs::remove_dir_all(dir.join("blobs"))?;
+        return Ok((image, None));
+    }
     Ok((image, Some(prepared)))
 }
 
@@ -253,7 +277,7 @@ pub(super) fn worker(store: &Store) -> anyhow::Result<()> {
     let frontend = unsafe { libc::getppid() };
     let mut admitted = false;
     let result = (|| {
-        let config = serde_json::from_reader(io::stdin().lock())?;
+        let (config, ephemeral): (Create, bool) = serde_json::from_reader(io::stdin().lock())?;
         let id = uuid();
         let dir = imports(store).join(&id);
         let lease = {
@@ -267,7 +291,7 @@ pub(super) fn worker(store: &Store) -> anyhow::Result<()> {
         };
         let mut publication = None;
         let instance = store.create_resolving(config, None, |reference| {
-            let (image, prepared) = prepare(store, reference, &dir, &id)?;
+            let (image, prepared) = prepare(store, reference, &dir, &id, ephemeral)?;
             // Once admission can change the catalog, use the Created pipe to
             // roll back a lost handoff instead of dying during the write.
             if unsafe { libc::setsid() } < 0 {
@@ -415,9 +439,11 @@ mod tests {
             boot: fs::read_to_string("/proc/sys/kernel/random/boot_id").unwrap(),
             device: meta.dev(),
             inode: meta.ino(),
+            ephemeral: false,
         };
         let path = dir.join("binding.json");
         crate::util::write_private_json(&path, &binding).unwrap();
+        assert!(!fs::read_to_string(&path).unwrap().contains("ephemeral"));
         assert!(open(&store, &image).is_ok());
         binding.boot = "previous boot".into();
         crate::util::write_private_json(&path, &binding).unwrap();
@@ -427,6 +453,15 @@ mod tests {
                 .unwrap()
                 .to_string()
                 .contains("before reboot")
+        );
+        binding.ephemeral = true;
+        crate::util::write_private_json(&path, &binding).unwrap();
+        assert!(
+            open(&store, &image)
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("ephemeral OCI import expired")
         );
     }
 }
