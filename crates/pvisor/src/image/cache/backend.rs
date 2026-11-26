@@ -68,6 +68,9 @@ struct DirectoryPage {
     // The key in RemoteFs::directories is a local ordinal, never a wire cursor.
     cursor: usize,
     response: Response,
+    // Listed children indexed by full path. prepare_directory looks up every
+    // child once; scanning and rebuilding each name per lookup is quadratic.
+    children: HashMap<Vec<u8>, Response>,
 }
 
 fn lazy_image_v2(value: Option<&OsStr>) -> bool {
@@ -271,23 +274,9 @@ impl RemoteFs {
     }
 
     fn listed_metadata(&self, path: &[u8]) -> Option<Response> {
-        self.directories.iter().find_map(|((ino, _), page)| {
-            let parent = self.nodes.get(ino)?;
-            let Response::Entries {
-                names, metadata, ..
-            } = &page.response
-            else {
-                return None;
-            };
-            names.iter().zip(metadata).find_map(|(name, attr)| {
-                let mut child = parent.path.clone();
-                if !child.is_empty() {
-                    child.push(b'/');
-                }
-                child.extend_from_slice(name);
-                (child == path).then(|| attr.clone())
-            })
-        })
+        self.directories
+            .values()
+            .find_map(|page| page.children.get(path).cloned())
     }
 
     pub(super) fn lookup_path(&mut self, path: Vec<u8>) -> anyhow::Result<Node> {
@@ -645,6 +634,7 @@ impl RemoteFs {
                 .is_none_or(|first| self.directory_name_order(last, first).is_lt())),
             "unordered cache directory continuation"
         );
+        let mut children = HashMap::with_capacity(names.len());
         for (name, attr) in names.iter().zip(metadata) {
             ensure!(
                 !name.is_empty()
@@ -663,6 +653,7 @@ impl RemoteFs {
                 path.push(b'/');
             }
             path.extend_from_slice(name);
+            children.insert(path.clone(), attr.clone());
             // Validate attributes before admitting an inventory as absence proof.
             self.make_node(path, attr.clone(), false)?;
         }
@@ -670,7 +661,11 @@ impl RemoteFs {
             self.directories
                 .remove(&self.directory_order.pop_front().unwrap());
         }
-        let page = DirectoryPage { cursor, response };
+        let page = DirectoryPage {
+            cursor,
+            response,
+            children,
+        };
         self.directory_order.push_back(key);
         self.directories.insert(key, page.clone());
         Ok(page)
