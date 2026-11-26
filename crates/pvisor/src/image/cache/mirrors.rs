@@ -112,6 +112,50 @@ impl Mirrors {
         }
         anyhow::bail!("all pinned mirrors failed for {key}: {}", errors.join("; "))
     }
+
+    pub(super) fn read_versioned(
+        &self,
+        key: &str,
+        range: Option<Range<u64>>,
+        limit: usize,
+    ) -> anyhow::Result<Option<StoredObject>> {
+        ensure!(
+            self.pid == std::process::id(),
+            "reopen mirror client after fork"
+        );
+        let deadline = Instant::now() + TOTAL;
+        let mut errors = Vec::new();
+        for (location, slot) in &self.sources {
+            let budget = deadline
+                .saturating_duration_since(Instant::now())
+                .min(EXECUTION);
+            if budget.is_zero() {
+                break;
+            }
+            let result = (|| {
+                let storage = {
+                    let mut slot = slot
+                        .lock()
+                        .map_err(|_| anyhow::anyhow!("mirror initialization lock poisoned"))?;
+                    if slot.is_none() {
+                        *slot = Some(open(location)?);
+                    }
+                    slot.as_ref().unwrap().clone()
+                };
+                storage.read_versioned(key, range.clone(), limit)
+            })();
+            match result {
+                Ok(Some(object)) => return Ok(Some(object)),
+                Ok(None) => {}
+                Err(error) => errors.push(format!("{location}: {error:#}")),
+            }
+        }
+        if errors.is_empty() {
+            Ok(None)
+        } else {
+            anyhow::bail!("all pinned mirrors failed for {key}: {}", errors.join("; "))
+        }
+    }
 }
 
 #[cfg(test)]

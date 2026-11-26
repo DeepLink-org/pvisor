@@ -104,15 +104,7 @@ impl Projection {
         }
         Ok(node)
     }
-    fn project(&self, relative: &Path) -> io::Result<Node> {
-        let node = self.node(relative)?;
-        if self.projected.lock().unwrap().contains(relative) {
-            return Ok(node);
-        }
-        if let Some(parent) = relative.parent().filter(|p| !p.as_os_str().is_empty()) {
-            self.project(parent)?;
-        }
-        let path = self.root.join(relative);
+    fn projection_lock(&self) -> io::Result<fs::File> {
         let lock = OpenOptions::new()
             .read(true)
             .write(true)
@@ -122,6 +114,24 @@ impl Projection {
             .custom_flags(libc::O_NOFOLLOW)
             .open(self.objects.join("projection.lock"))?;
         lock.lock_exclusive()?;
+        Ok(lock)
+    }
+    fn project(&self, relative: &Path) -> io::Result<Node> {
+        let node = self.node(relative)?;
+        if self.projected.lock().unwrap().contains(relative) {
+            return Ok(node);
+        }
+        if let Some(parent) = relative.parent().filter(|p| !p.as_os_str().is_empty()) {
+            self.project(parent)?;
+        }
+        let lock = self.projection_lock()?;
+        self.project_locked(relative, node, &lock)
+    }
+    fn project_locked(&self, relative: &Path, node: Node, _lock: &fs::File) -> io::Result<Node> {
+        if self.projected.lock().unwrap().contains(relative) {
+            return Ok(node);
+        }
+        let path = self.root.join(relative);
         let missing = match fs::symlink_metadata(&path) {
             Ok(_) => false,
             Err(e) if e.kind() == io::ErrorKind::NotFound => true,
@@ -230,9 +240,19 @@ impl ReadOnlyBackend for Projection {
             .entries(node.attr.ino)
             .map_err(io_error)?
             .clone();
+        let mut children = Vec::with_capacity(entries.len());
         for (_, _, name) in entries {
             if name != "." && name != ".." {
-                self.project(&relative.join(name))?;
+                let child = relative.join(name);
+                let child_node = self.node(&child)?;
+                children.push((child, child_node));
+            }
+        }
+        if !children.is_empty() {
+            // One lock for the whole directory instead of one per child.
+            let lock = self.projection_lock()?;
+            for (child, child_node) in children {
+                self.project_locked(&child, child_node, &lock)?;
             }
         }
         // Creating children must not change the immutable directory's guest mtime.

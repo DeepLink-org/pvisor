@@ -3,7 +3,8 @@
 use super::frames::{self, Digest, FrameRef};
 use super::*;
 use bincode::{Decode, Encode};
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
+use std::sync::Mutex;
 
 pub(super) const SMALL_FILE_BYTES: u64 = 64 * 1024;
 pub(super) const DATA_FRAME_BYTES: usize = 16 * 1024;
@@ -91,6 +92,31 @@ pub(super) enum Data {
 pub(super) struct Cached {
     pub(super) value: Data,
     reference: Option<FrameRef>,
+    /// Slot digests already checked against this immutable frame. Large-file
+    /// reads can touch one slot many times; hash it once per frame load.
+    verified_slots: Mutex<HashMap<u32, Digest>>,
+}
+
+/// Byte range inside an authenticated slot frame. The `Arc` keeps the decoded
+/// frame alive while the caller copies the range into its response body.
+pub(super) struct Slot {
+    frame: Arc<Cached>,
+    start: usize,
+    end: usize,
+}
+impl Slot {
+    pub(super) fn new(frame: Arc<Cached>, start: usize, end: usize) -> Self {
+        Self { frame, start, end }
+    }
+}
+impl std::ops::Deref for Slot {
+    type Target = [u8];
+    fn deref(&self) -> &[u8] {
+        let Data::Slots { bytes, .. } = &self.frame.value else {
+            unreachable!("slot range always references a slot frame")
+        };
+        &bytes[self.start..self.end]
+    }
 }
 pub(super) struct DataCache {
     entries: LruCache<String, Arc<Cached>>,
@@ -136,6 +162,36 @@ impl Cached {
                 Data::Slots { offsets, bytes } => offsets.capacity() * 4 + bytes.capacity(),
                 Data::Directory(frames) => frames.capacity() * std::mem::size_of::<FrameRef>(),
             }
+            + self
+                .verified_slots
+                .lock()
+                .map(|slots| {
+                    slots.capacity() * (std::mem::size_of::<u32>() + std::mem::size_of::<Digest>())
+                })
+                .unwrap_or(0)
+    }
+
+    pub(super) fn verify_slot(
+        &self,
+        slot: u32,
+        digest: &Digest,
+        value: &[u8],
+    ) -> anyhow::Result<()> {
+        if let Some(seen) = self.verified_slots.lock().unwrap().get(&slot) {
+            ensure!(seen == digest, "cached slot digest changed");
+            return Ok(());
+        }
+        ensure!(
+            frames::digest(value) == *digest,
+            "blob slot digest or length mismatch"
+        );
+        let mut verified = self.verified_slots.lock().unwrap();
+        if let Some(seen) = verified.get(&slot) {
+            ensure!(seen == digest, "cached slot digest changed");
+            return Ok(());
+        }
+        verified.insert(slot, *digest);
+        Ok(())
     }
 }
 
@@ -272,7 +328,7 @@ impl PortableCache {
             }
             bytes
         };
-        let value: Data = frames::unpack(reference, &encoded)?;
+        let value: Data = frames::unpack_verified(reference, &encoded)?;
         match &value {
             Data::Directory(children) => {
                 ensure!(
@@ -296,6 +352,7 @@ impl PortableCache {
             Cached {
                 value,
                 reference: Some(reference.clone()),
+                verified_slots: Mutex::new(HashMap::new()),
             },
         ))
     }
@@ -306,7 +363,7 @@ impl PortableCache {
         size: u64,
         offset: u64,
         end: u64,
-    ) -> anyhow::Result<Vec<u8>> {
+    ) -> anyhow::Result<Slot> {
         let layout = self.data_frame(&packed.blob, &packed.blob.layout)?;
         let Data::Directory(children) = &layout.value else {
             bail!("invalid pack directory")
@@ -320,12 +377,16 @@ impl PortableCache {
         };
         let slot = packed.slot as usize;
         ensure!(slot + 1 < offsets.len(), "pack slot out of range");
-        let value = &bytes[offsets[slot] as usize..offsets[slot + 1] as usize];
-        ensure!(
-            value.len() as u64 == size && frames::digest(value) == *digest,
-            "pack file digest or length mismatch"
-        );
-        Ok(value[offset as usize..end as usize].to_vec())
+        let start = offsets[slot] as usize;
+        let stop = offsets[slot + 1] as usize;
+        let value = &bytes[start..stop];
+        ensure!(value.len() as u64 == size, "pack file length mismatch");
+        frame.verify_slot(packed.slot, digest, value)?;
+        Ok(Slot::new(
+            frame.clone(),
+            start + offset as usize,
+            start + end as usize,
+        ))
     }
     pub(super) fn read_chunk(
         &self,
@@ -375,6 +436,7 @@ impl PortableCache {
                 Cached {
                     value,
                     reference: None,
+                    verified_slots: Mutex::new(HashMap::new()),
                 },
             )
         };

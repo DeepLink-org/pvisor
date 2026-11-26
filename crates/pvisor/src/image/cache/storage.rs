@@ -267,7 +267,38 @@ impl Storage {
     }
 
     pub(super) fn get_versioned(&self, key: &str) -> anyhow::Result<Option<StoredObject>> {
-        self.read(key, None, MAX_OBJECT)
+        self.read_versioned(key, None, MAX_OBJECT)
+    }
+
+    /// Read an object with a conditional-write token. Content reads never need
+    /// one, so only this path hashes local bytes; remote backends keep the
+    /// token returned by the service.
+    pub(super) fn read_versioned(
+        &self,
+        key: &str,
+        range: Option<Range<u64>>,
+        limit: usize,
+    ) -> anyhow::Result<Option<StoredObject>> {
+        validate_key(key)?;
+        if let Some(range) = &range {
+            ensure!(
+                range.end > range.start && range.end - range.start <= limit as u64,
+                "invalid versioned range"
+            );
+        }
+        match self {
+            Self::Filesystem(_) | Self::Pool(_) => {
+                let Some(mut object) = self.read(key, range, limit)? else {
+                    return Ok(None);
+                };
+                if object.version.e_tag.is_none() {
+                    object.version.e_tag = Some(super::hash(&object.bytes));
+                }
+                Ok(Some(object))
+            }
+            Self::Mirrors(mirrors) => mirrors.read_versioned(key, range, limit),
+            _ => self.read(key, range, limit),
+        }
     }
 
     pub(super) fn range(&self, key: &str, range: Range<u64>) -> anyhow::Result<Vec<u8>> {
@@ -326,16 +357,18 @@ impl Storage {
                     file.metadata()?.len()
                 };
                 ensure!(length <= limit as u64, "cache object exceeds size limit");
-                let mut bytes = Vec::new();
+                let mut bytes = Vec::with_capacity(length as usize);
                 file.take(length).read_to_end(&mut bytes)?;
                 // A range read must not include the following byte.
                 bytes.truncate(length as usize);
                 ensure!(bytes.len() == length as usize, "truncated cache object");
-                let version = UpdateVersion {
-                    e_tag: Some(super::hash(&bytes)),
-                    version: None,
-                };
-                Ok(Some(StoredObject { bytes, version }))
+                Ok(Some(StoredObject {
+                    bytes,
+                    version: UpdateVersion {
+                        e_tag: None,
+                        version: None,
+                    },
+                }))
             }
         }
     }

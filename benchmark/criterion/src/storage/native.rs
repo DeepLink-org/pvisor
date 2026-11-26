@@ -1,4 +1,5 @@
-//! Native Docker / V2 inventories and complete-product resource experiments.
+//! Native Docker / compressed image pool inventories and complete-product
+//! resource experiments.
 use super::evidence::*;
 use anyhow::{Context, Result, ensure};
 use serde_json::{Value, json};
@@ -224,40 +225,60 @@ pub(super) fn import(
     }
     Ok(())
 }
+// Directory, handle prefix and content subdirectory of each pool an inventory
+// accepts. A store holding both is not measured.
+const POOLS: [(&str, &str, &str); 2] = [
+    ("image-pack-v1", "pvisor-image-pack:v1:", "blobs"),
+    ("pool-v2", "pvisor-v2:", "packs"),
+];
 pub(super) fn pool_details(store: &Path) -> Result<Value> {
-    let pool = store.join("images/pool-v2");
-    let marker = load(&pool.join("format.json"))?;
-    ensure!(
-        marker["format_version"] == 2 && marker["encoding"] == "zstd-seekable",
-        "not V2 pool"
-    );
     let images = load(&store.join("images.json"))?;
-    ensure!(
-        images
-            .as_array()
-            .context("images")?
-            .iter()
-            .all(|i| i["rootfs"] == ""
-                && i["cache"]["handle"]
-                    .as_str()
-                    .is_some_and(|h| h.starts_with("pvisor-v2:"))),
-        "uncompressed image store"
-    );
     for name in ["blobs", "rootfs-v3", "built"] {
         ensure!(
             !store.join("images").join(name).exists(),
             "unexpected image tree"
         );
     }
-    let objects = walk(&pool.join("data"))?
-        .into_iter()
-        .filter(|p| p.is_file())
-        .count();
-    let packs = walk(&pool.join("data/packs"))?
-        .into_iter()
-        .filter(|p| p.is_file())
-        .count();
-    Ok(json!({"objects":objects,"packs":packs}))
+    let mut pools = Vec::new();
+    for pool in POOLS {
+        let root = store.join("images").join(pool.0);
+        if root.join("format.json").exists() {
+            pools.push((pool, root));
+        }
+    }
+    ensure!(
+        pools.len() == 1,
+        "expected one compressed image pool, found {}",
+        pools.len()
+    );
+    let (pool, root) = &pools[0];
+    let marker = load(&root.join("format.json"))?;
+    let supported = match pool.0 {
+        "image-pack-v1" => marker["format"] == "pvisor-image-pack" && marker["format_version"] == 1,
+        _ => marker["format_version"] == 2 && marker["encoding"] == "zstd-seekable",
+    };
+    ensure!(supported, "unsupported {} pool marker", pool.0);
+    let bound = |image: &Value| {
+        image.get("rootfs").is_none_or(|r| r == "")
+            && image["cache"]["handle"]
+                .as_str()
+                .is_some_and(|h| h.starts_with(pool.1))
+    };
+    ensure!(
+        images.as_array().context("images")?.iter().all(bound),
+        "uncompressed image store"
+    );
+    let files = |directory: &Path| {
+        walk(directory).map(|paths| paths.into_iter().filter(|p| p.is_file()).count())
+    };
+    let (objects, content) = (
+        files(&root.join("data"))?,
+        files(&root.join("data").join(pool.2))?,
+    );
+    Ok(match pool.0 {
+        "image-pack-v1" => json!({"format":pool.0,"objects":objects,"blobs":content,"packs":0}),
+        _ => json!({"format":pool.0,"objects":objects,"blobs":0,"packs":content}),
+    })
 }
 pub(super) fn disk(
     e: &mut Evidence,
@@ -998,5 +1019,98 @@ mod tests {
     fn median_preserves_fractional_bytes() {
         assert_eq!(median(&[1., 2.]), 1.5);
         assert_eq!(median(&[1., 2., 3.]), 2.);
+    }
+    const PACK: &str = r#"{"format":"pvisor-image-pack","format_version":1,"packing":{"blob_target_bytes":33554432}}"#;
+    const LEGACY: &str = r#"{"format_version":2,"encoding":"zstd-seekable"}"#;
+    fn pooled(handle: &str) -> Value {
+        json!({"cache": {"handle": handle}})
+    }
+    fn pool_store(root: &Path, name: &str, pool: &str, marker: &str, image: Value) -> PathBuf {
+        let store = root.join(name);
+        let content =
+            store
+                .join("images")
+                .join(pool)
+                .join("data")
+                .join(if pool == "image-pack-v1" {
+                    "blobs"
+                } else {
+                    "packs"
+                });
+        fs::create_dir_all(content.join("aa/bb")).unwrap();
+        fs::write(store.join("images").join(pool).join("format.json"), marker).unwrap();
+        fs::write(content.join("aa/bb/object"), b"encoded").unwrap();
+        save(&store.join("images.json"), &json!([image])).unwrap();
+        store
+    }
+    #[test]
+    fn pool_details_reads_image_pack_v1_and_a_retained_v2_pool() {
+        let root = tempfile::tempdir().unwrap();
+        let pack = pool_store(
+            root.path(),
+            "pack",
+            "image-pack-v1",
+            PACK,
+            pooled("pvisor-image-pack:v1:k:linux-amd64:r"),
+        );
+        assert_eq!(
+            pool_details(&pack).unwrap(),
+            json!({"format":"image-pack-v1","objects":1,"blobs":1,"packs":0})
+        );
+        let legacy = pool_store(
+            root.path(),
+            "legacy",
+            "pool-v2",
+            LEGACY,
+            json!({"rootfs":"","cache":{"handle":"pvisor-v2:k:linux-amd64:r"}}),
+        );
+        assert_eq!(
+            pool_details(&legacy).unwrap(),
+            json!({"format":"pool-v2","objects":1,"blobs":0,"packs":1})
+        );
+    }
+    #[test]
+    fn pool_details_rejects_unsupported_pools() {
+        let root = tempfile::tempdir().unwrap();
+        let message = |store: &Path| pool_details(store).unwrap_err().to_string();
+        let handle = "pvisor-image-pack:v1:k:linux-amd64:r";
+        assert!(
+            message(&pool_store(
+                root.path(),
+                "marker",
+                "image-pack-v1",
+                LEGACY,
+                pooled(handle)
+            ))
+            .contains("marker")
+        );
+        assert!(
+            message(&pool_store(
+                root.path(),
+                "handle",
+                "image-pack-v1",
+                PACK,
+                pooled("pvisor-v2:k:linux-amd64:r")
+            ))
+            .contains("uncompressed")
+        );
+        assert!(
+            message(&pool_store(
+                root.path(),
+                "rootfs",
+                "image-pack-v1",
+                PACK,
+                json!({"rootfs":"/tree","cache":{"handle":handle}})
+            ))
+            .contains("uncompressed")
+        );
+        let none = root.path().join("none");
+        fs::create_dir_all(none.join("images")).unwrap();
+        save(&none.join("images.json"), &json!([])).unwrap();
+        assert!(message(&none).contains("found 0"));
+        let both = pool_store(root.path(), "both", "image-pack-v1", PACK, pooled(handle));
+        fs::create_dir_all(both.join("images/pool-v2")).unwrap();
+        fs::write(both.join("images/pool-v2/format.json"), LEGACY).unwrap();
+        assert!(message(&both).contains("found 2"));
     }
 }

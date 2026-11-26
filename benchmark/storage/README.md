@@ -19,6 +19,14 @@ fixtures use the default `storage-tls` feature; static guest workers use
 | `storage/lazy_remote.json` | Paired cold then warm supply for both products | `pvisor-cold.requests`, `docker-cold.ready_ns` |
 | `storage/image_format.json` | New-process storage-reader pair | `candidate.open_ns`, `baseline.scan_ns` |
 
+## Engineering read-path and metadata A/B
+
+[LAZY_READ_PATH_REPORT.md](LAZY_READ_PATH_REPORT.md) records the 2026-11-25/26
+engineering A/B for the Image Pack V1 read path and metadata projection:
+duplicate SHA-256 passes, per-read slot re-verification, temporary copies, zstd
+context reuse, directory-child indexing and batched projection locks. It is
+not a user-facing benchmark and does not update the tables above.
+
 ## Configuration {#lazy-image-user-decisions}
 
 Set `PVISOR_STORAGE_CONFIG` to an absolute JSON file:

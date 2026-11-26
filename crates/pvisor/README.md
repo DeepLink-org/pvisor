@@ -1,7 +1,10 @@
 # PolicyVisor (pVisor)
 
-OCI registry requests and token realms require HTTPS, including redirects.
-Unsafe realms are rejected before attaching credentials or dispatching a request.
+OCI registry requests and token realms require HTTPS. A blob download may
+follow a plain-HTTP redirect to a different host and port; the HTTP client
+drops credentials on cross-host redirects and the bytes are digest-verified.
+Unsafe token realms are rejected before attaching credentials or dispatching a
+request.
 
 Workspace snapshots distinguish Run storage by a versioned lease marker, not
 by the `lease.lock` filename. Acquisition writes the marker before native work;
