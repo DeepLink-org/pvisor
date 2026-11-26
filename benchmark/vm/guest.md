@@ -105,3 +105,10 @@ mise run benchmark-compare -- "$batch/criterion" --suite vm-guest --output "$bat
 不要沿用旧的六项基线：用新探针对目标提交重新测量，否则缺失的基线项会使比较失败。
 不要在测量机上同时构建或执行另一个 benchmark。顺序 cohort 中的百分比仅用于门禁，
 不能当作随机配对的因果结论。失败后保留证据，不反复执行择优。
+
+CI 在原 runner 上额外诊断未通过的 pVisor 项和固定的 guest 本地对照
+`linux-tmpfs-shuffled-overwrite`。`vm/guest --diagnose "$batch"` 校验探针、两版
+VMM 和固件哈希，在新 VM 中交替执行 16 对试次；先后顺序在每四对内平衡。
+`PVISOR_BENCH_REVISION_BUILDS` 指向 CI 下载的两个 `benchmark-build-*` 目录，
+其他输入路径与测量相同。`paired-diagnostic/` 单独保存全部原始试次及组内变化中位数，
+不写 Criterion 数据、不重算或覆盖门禁判定。
