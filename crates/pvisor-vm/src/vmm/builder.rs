@@ -2231,7 +2231,6 @@ fn attach_fs_devices(
                 config,
                 exit_code.clone(),
                 profile.clone(),
-                resources.rust_native_kernel,
             )
             .map_err(|error| StartMicrovmError::CreateFsDevice(format!("{error:?}")))?,
         ));
@@ -2242,15 +2241,15 @@ fn attach_fs_devices(
             all(target_os = "linux", target_arch = "x86_64")
         ))]
         if let Some(restore) = &resources.machine_restore {
-            let mut saved_count = None;
+            let mut saved_transport = None;
             for mapping in &restore.state.devices {
                 if let crate::devices::snapshot::BusDeviceSnapshot::Virtio(state) = &mapping.device
                 {
-                    if let Some(count) = state
-                        .filesystem_request_queues(config.fs_id.as_bytes())
+                    if let Some(transport) = state
+                        .filesystem_transport(config.fs_id.as_bytes())
                         .map_err(StartMicrovmError::GuestMemoryMmap)?
                     {
-                        if saved_count.replace(count).is_some() {
+                        if saved_transport.replace(transport).is_some() {
                             return Err(StartMicrovmError::GuestMemoryMmap(
                                 "duplicate filesystem snapshot tag".into(),
                             ));
@@ -2258,10 +2257,10 @@ fn attach_fs_devices(
                     }
                 }
             }
-            if let Some(count) = saved_count {
+            if let Some((count, offered)) = saved_transport {
                 fs.lock()
                     .unwrap()
-                    .configure_request_queues(count)
+                    .restore_transport(count, offered)
                     .map_err(StartMicrovmError::GuestMemoryMmap)?;
             }
         }

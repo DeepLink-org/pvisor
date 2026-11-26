@@ -446,6 +446,9 @@ jobs:
           api_firmware="$(mise run fw -- build --target x86_64-unknown-linux-musl)"
           mise exec -- cargo build --locked -p pvisor-vm --example vm_api_case
           python3 tests/vm_api_contract.py --binary target/debug/examples/vm_api_case --guest "$RUNNER_TEMP/vm-guest" --firmware "$api_firmware" --output "$RUNNER_TEMP/vm-api-${{ runner.os }}"
+          cc -static -O2 -Wall -Wextra -Werror pvisor-kernel/tests/stat_visibility.c -o "$RUNNER_TEMP/linux-stat"
+          python3 pvisor-kernel/tests/stat_visibility.py --binary target/debug/examples/vm_api_case \
+            --firmware "$api_firmware" --guest "$RUNNER_TEMP/linux-stat"
 
       - name: Rust guest named stdio and authenticated exit / KVM
         id: native-stdio

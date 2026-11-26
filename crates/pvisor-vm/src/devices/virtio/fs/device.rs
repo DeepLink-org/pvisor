@@ -50,7 +50,6 @@ unsafe impl ByteValued for VirtioFsConfig {}
 
 pub struct Fs {
     profile: Arc<crate::env::fs::FsProfile>,
-    rust_native_kernel: bool,
     avail_features: u64,
     acked_features: u64,
     device_state: DeviceState,
@@ -98,7 +97,6 @@ impl Fs {
             },
             exit_code,
             Arc::new(profile),
-            false,
         )
     }
 
@@ -106,13 +104,9 @@ impl Fs {
         device_config: &crate::vmm::vmm_config::fs::FsDeviceConfig,
         exit_code: Arc<AtomicI32>,
         profile: Arc<crate::env::fs::FsProfile>,
-        rust_native_kernel: bool,
     ) -> super::Result<Fs> {
         let mut avail_features = (1u64 << VIRTIO_F_VERSION_1) | (1u64 << VIRTIO_RING_F_EVENT_IDX);
-        if cfg!(all(target_os = "linux", target_arch = "x86_64"))
-            && rust_native_kernel
-            && profile.irq_read_ack
-        {
+        if cfg!(all(target_os = "linux", target_arch = "x86_64")) && profile.irq_read_ack {
             avail_features |= super::super::FS_IRQ_READ_ACK;
         }
 
@@ -139,7 +133,6 @@ impl Fs {
 
         let inline_dispatch = (cfg!(all(target_os = "linux", target_arch = "x86_64"))
             && profile.inline_metadata
-            && (rust_native_kernel || profile.workers == 1)
             && !device_config.managed
             && device_config.overlay.is_none()
             && device_config.shm_size.is_none()
@@ -148,7 +141,6 @@ impl Fs {
 
         Ok(Fs {
             profile,
-            rust_native_kernel,
             avail_features,
             acked_features: 0,
             device_state: DeviceState::Inactive,
@@ -182,6 +174,17 @@ impl Fs {
         }
         self.config.num_request_queues = count as u32;
         self.queue_config = vec![QueueConfig::new(defs::QUEUE_SIZE); count + 1];
+        Ok(())
+    }
+
+    pub(crate) fn restore_transport(&mut self, count: usize, offered: u64) -> Result<(), String> {
+        self.configure_request_queues(count)?;
+        // Preserve the source's optional doorbells and vendor ID even before DRIVER_OK.
+        // Never add a capability disallowed by this host; MMIO checks exact equality.
+        self.avail_features &= offered | !super::super::FS_IRQ_READ_ACK;
+        if offered & INLINE_METADATA_FEATURE == 0 {
+            self.inline_dispatch = None;
+        }
         Ok(())
     }
 
@@ -307,7 +310,6 @@ impl VirtioDevice for Fs {
 
     fn avail_features(&self) -> u64 {
         let inline = self.inline_dispatch.is_some()
-            && (self.rust_native_kernel || self.queue_config.len() == REQ_INDEX + 1)
             && self.shm_region.is_none()
             && self
                 .passthrough_cfg
@@ -481,18 +483,24 @@ mod tests {
     }
 
     #[rstest::rstest]
-    #[case::linux_one(false, 1, 1, true)]
-    #[case::linux_multi(false, 4, 4, false)]
-    #[case::restored_linux_multi(false, 1, 4, false)]
-    #[case::native_multi(true, 4, 4, true)]
-    fn inline_feature_offer(
-        #[case] native: bool,
-        #[case] workers: usize,
+    #[case::new_multiqueue(4, None, true, true, true)]
+    #[case::old_single_queue(1, Some(INLINE_METADATA_FEATURE), true, true, false)]
+    #[case::old_multiqueue(4, Some(0), true, false, false)]
+    #[case::saved_irq_only(4, Some(crate::devices::virtio::FS_IRQ_READ_ACK), true, false, true)]
+    #[case::cannot_restore_disabled_inline(1, Some(INLINE_METADATA_FEATURE), false, false, false)]
+    fn transport_feature_offer(
         #[case] queues: usize,
+        #[case] saved: Option<u64>,
+        #[case] enabled: bool,
         #[case] inline: bool,
+        #[case] irq: bool,
     ) {
-        let profile = crate::env::fs::FsProfile::parse(|key| {
-            (key == crate::env::fs::WORKERS).then(|| workers.to_string().into())
+        use crate::env::fs;
+
+        let profile = fs::FsProfile::parse(|key| match key {
+            fs::WORKERS => Some("4".into()),
+            fs::INLINE_METADATA if !enabled => Some("0".into()),
+            _ => None,
         })
         .unwrap();
         let mut fs = Fs::new_with_profile(
@@ -508,10 +516,12 @@ mod tests {
             },
             Arc::new(AtomicI32::new(0)),
             Arc::new(profile),
-            native,
         )
         .unwrap();
-        fs.configure_request_queues(queues).unwrap();
+        if let Some(offered) = saved {
+            fs.restore_transport(queues, offered).unwrap();
+        }
+        assert_eq!(fs.queue_config.len(), queues + 1);
         let kvm = cfg!(all(target_os = "linux", target_arch = "x86_64"));
         assert_eq!(
             fs.avail_features() & INLINE_METADATA_FEATURE != 0,
@@ -519,7 +529,7 @@ mod tests {
         );
         assert_eq!(
             fs.avail_features() & crate::devices::virtio::FS_IRQ_READ_ACK != 0,
-            kvm && native
+            kvm && irq
         );
     }
 
@@ -544,7 +554,6 @@ mod tests {
             },
             Arc::new(AtomicI32::new(0)),
             profile.clone(),
-            false,
         )
         .unwrap();
         assert_eq!(fs.queue_config().len(), 9);

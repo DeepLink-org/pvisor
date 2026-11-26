@@ -1,8 +1,9 @@
 /* SPDX-License-Identifier: MPL-2.0 */
-/* Hardware probe for host mutations through the native virtio-fs root. */
+/* Hardware probe for host mutations through a virtio-fs root. */
 #define _GNU_SOURCE
 #include <errno.h>
 #include <fcntl.h>
+#include <glob.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -49,8 +50,29 @@ static void await_host(const char *step)
         exit(20);
 }
 
-int main(void)
+static void expect_linux_transport(const char *expected)
 {
+    glob_t paths = {0};
+    if (glob("/sys/bus/virtio/drivers/virtiofs/virtio*/features", 0, NULL, &paths) ||
+        paths.gl_pathc != 1) {
+        fprintf(stderr, "expected one bound Linux virtio-fs device\n");
+        exit(25);
+    }
+    FILE *f = fopen(paths.gl_pathv[0], "r");
+    char bits[80];
+    if (!f || !fgets(bits, sizeof(bits), f) || strlen(bits) < 24 ||
+        strlen(expected) != 2 || strncmp(bits + 22, expected, 2)) {
+        fprintf(stderr, "expected negotiated virtio-fs bits 22,23 = %s\n", expected);
+        exit(25);
+    }
+    fclose(f);
+    globfree(&paths);
+}
+
+int main(int argc, char **argv)
+{
+    if (argc == 2)
+        expect_linux_transport(argv[1]);
     expect_stat(AT_FDCWD, "/subject", 0, 3, S_IFREG | 0644);
     expect_stat(AT_FDCWD, "/link", AT_SYMLINK_NOFOLLOW, 7, S_IFLNK | 0777);
     expect_stat(AT_FDCWD, "/link", 0, 3, S_IFREG | 0644);

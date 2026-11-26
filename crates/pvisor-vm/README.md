@@ -1457,11 +1457,13 @@ Linux x86_64/KVM 的普通非托管、非 DAX 目录共享支持内联 `LOOKUP` 
 不重新提交请求。宿主 I/O 或锁等待会停住发起请求的 vCPU。共享文件的属性仍按
 原 TTL 校验；打开的 fd 不构成独占权。
 
-Linux x86_64/KVM 上，Rust native 的 virtio-fs 还可协商一次 MMIO 读取同时获取
-并确认中断原因。`PVISOR_VM_FS_IRQ_READ_ACK=0` 切回标准的读状态、写确认；
-两种模式都会等待实际的 `WRITE` / `FSYNC` 完成。Linux 固件仍使用原来的设备标识
-和特性集合。[工程对照](../../benchmark/evidence/native-guest-file-io.md)区分了请求数、
-KVM 退出次数和 guest 耗时。
+Linux 固件也在 `pVis` MMIO 设备上协商 bit 23。只在一个在线 guest CPU、目标队列
+空闲且前台同步 `GETATTR` 需要通知时使用；不改宿主队列数或共享文件可见性。
+两种 guest 都可协商 bit 22，一次读取并确认中断原因。`PVISOR_VM_FS_IRQ_READ_ACK=0`
+恢复标准中断协议和 vendor ID；Linux 此时也不使用专用 metadata kick。`WRITE` /
+`FSYNC` 始终等待实际完成。恢复快照时按保存的 offer 重建设备，旧快照不必改环境。
+见[固件验证步骤](../../fw/README.md#linux-virtio-fs-notifications)和
+[Rust native 工程对照](../../benchmark/evidence/native-guest-file-io.md)。
 
 OverlayFs 的普通 READ/不变更权限的 WRITE/FLUSH/FSYNC 直接在 handle map 和
 I/O admission 短锁内取得原生 Arc lease，不取得 namespace operation guard。

@@ -20,11 +20,9 @@ use crate::devices::legacy::IrqChip;
 use crate::utils::{byte_order, eventfd::EventFd};
 use vm_memory::{Bytes, GuestAddress, GuestMemoryMmap};
 
-//TODO crosvm uses 0 here, but IIRC virtio specified some other vendor id that should be used
 const VENDOR_ID: u32 = 0;
-
-pub(super) const FS_IRQ_READ_ACK: u64 = 1 << 22;
 const PVISOR_VENDOR_ID: u32 = u32::from_le_bytes(*b"pVis");
+pub(super) const FS_IRQ_READ_ACK: u64 = 1 << 22;
 // Private virtio-fs configuration word, not a standard transport register.
 const FS_IRQ_TAKE: u64 = 0x1fc;
 
@@ -95,12 +93,12 @@ impl MmioSnapshot {
             Ok(false)
         }
     }
-    /// Restore filesystem topology before registering queue kick eventfds.
+    /// Recreate the queue layout and optional feature offer before registering kick eventfds.
     #[cfg(not(any(feature = "tee", feature = "aws-nitro")))]
-    pub(crate) fn filesystem_request_queues(
+    pub(crate) fn filesystem_transport(
         &self,
         expected_tag: &[u8],
-    ) -> Result<Option<usize>, String> {
+    ) -> Result<Option<(usize, u64)>, String> {
         let DeviceSnapshotState::Fs { tag, .. } = &self.device.state else {
             return Ok(None);
         };
@@ -117,7 +115,7 @@ impl MmioSnapshot {
         if !(2..=9).contains(&queues.len()) {
             return Err("invalid filesystem snapshot queue count".into());
         }
-        Ok(Some(queues.len() - 1))
+        Ok(Some((queues.len() - 1, self.avail_features)))
     }
 
     #[cfg(not(any(feature = "tee", feature = "aws-nitro")))]
@@ -814,7 +812,7 @@ impl BusDevice for MmioTransport {
                     0x04 => MMIO_VERSION,
                     0x08 => self.locked_device().device_type(),
                     0x0c if self.fs_irq_read_ack_offered => PVISOR_VENDOR_ID,
-                    0x0c => VENDOR_ID, // vendor id
+                    0x0c => VENDOR_ID,
                     0x10 => {
                         let mut features = self
                             .locked_device()
@@ -1567,11 +1565,17 @@ pub(crate) mod tests {
 
     #[cfg(not(any(feature = "tee", feature = "aws-nitro")))]
     #[rstest::rstest]
-    #[case::native_default(true, None)]
-    #[case::native_disabled(true, Some("0"))]
-    #[case::native_enabled(true, Some("1"))]
-    #[case::linux_snapshot_offer(false, Some("1"))]
-    fn fs_irq_read_ack_lifecycle(#[case] native: bool, #[case] setting: Option<&str>) {
+    #[case::default(None, None, true)]
+    #[case::disabled(Some("0"), None, false)]
+    #[case::enabled(Some("1"), None, true)]
+    #[case::legacy_single_queue(None, Some(1 << 23), false)]
+    #[case::legacy_multiqueue(None, Some(0), false)]
+    #[case::restored(None, Some(FS_IRQ_READ_ACK), true)]
+    fn fs_irq_read_ack_lifecycle(
+        #[case] irq_ack: Option<&str>,
+        #[case] saved: Option<u64>,
+        #[case] offer: bool,
+    ) {
         use crate::env::fs::{FsProfile, IRQ_READ_ACK};
         use crate::vmm::vmm_config::fs::FsDeviceConfig;
         use device_status::{ACKNOWLEDGE, DRIVER, DRIVER_OK, FAILED, FEATURES_OK};
@@ -1581,20 +1585,20 @@ pub(crate) mod tests {
             u32::from_le_bytes(data)
         }
 
-        let offer = cfg!(all(target_os = "linux", target_arch = "x86_64"))
-            && native
-            && setting != Some("0");
+        let kvm = cfg!(all(target_os = "linux", target_arch = "x86_64"));
+        let offer = kvm && offer;
         let profile = FsProfile::parse(|key| match key {
-            IRQ_READ_ACK => setting.map(Into::into),
+            IRQ_READ_ACK => irq_ack.map(Into::into),
             crate::env::fs::WORKERS => Some("1".into()),
             _ => None,
         })
         .unwrap();
-        let fs = Fs::new_with_profile(
+        let share = tempfile::tempdir().unwrap();
+        let mut fs = Fs::new_with_profile(
             &FsDeviceConfig {
                 fs_id: "irq".into(),
                 semantics: crate::api::PermissionSemantics::LinuxComplete,
-                shared_dir: None,
+                shared_dir: Some(share.path().to_str().unwrap().into()),
                 shm_size: None,
                 read_only: false,
                 managed: false,
@@ -1603,14 +1607,20 @@ pub(crate) mod tests {
             },
             Arc::new(0.into()),
             Arc::new(profile),
-            native,
         )
         .unwrap();
+        if let Some(features) = saved {
+            fs.restore_transport(if features == 0 { 4 } else { 1 }, features)
+                .unwrap();
+        }
         let mem = GuestMemoryMmap::from_ranges(&[(GuestAddress(0), 4096)]).unwrap();
         let mut d =
             MmioTransport::new(mem, DummyIrqChip::new().into(), Arc::new(Mutex::new(fs))).unwrap();
         assert_eq!(read(&mut d, 0x10) & FS_IRQ_READ_ACK as u32 != 0, offer);
-        assert_eq!(read(&mut d, 0x0c) == PVISOR_VENDOR_ID, offer);
+        assert_eq!(
+            read(&mut d, 0x0c),
+            if offer { PVISOR_VENDOR_ID } else { VENDOR_ID }
+        );
         let running = ACKNOWLEDGE | DRIVER | FEATURES_OK | DRIVER_OK;
         for select in [true, false] {
             set_device_status(&mut d, ACKNOWLEDGE);

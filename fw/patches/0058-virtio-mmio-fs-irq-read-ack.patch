@@ -1,0 +1,166 @@
+Subject: [PATCH] virtio-mmio: negotiate pVisor virtio-fs IRQ read-to-ack
+
+On a matching transport, select the offered device-specific bit without
+adding it to the filesystem driver's feature table (which includes PCI).
+Serialize status transitions with taking causes, not with their dispatch.
+
+diff --git a/drivers/virtio/virtio_mmio.c b/drivers/virtio/virtio_mmio.c
+--- a/drivers/virtio/virtio_mmio.c
++++ b/drivers/virtio/virtio_mmio.c
+@@ -68,6 +68,7 @@
+ #include <linux/spinlock.h>
+ #include <linux/virtio.h>
+ #include <linux/virtio_config.h>
++#include <linux/virtio_ids.h>
+ #include <uapi/linux/virtio_mmio.h>
+ #include <linux/virtio_ring.h>
+ 
+@@ -78,6 +79,9 @@
+ #define VIRTIO_MMIO_VRING_ALIGN		PAGE_SIZE
+ 
+ 
++#define PVISOR_VENDOR_ID		0x73695670 /* "pVis", little endian */
++#define PVISOR_FS_F_IRQ_READ_ACK		22
++#define PVISOR_FS_IRQ_TAKE		0x1fc
+ 
+ #define to_virtio_mmio_device(_plat_dev) \
+ 	container_of(_plat_dev, struct virtio_mmio_device, vdev)
+@@ -88,6 +92,8 @@ struct virtio_mmio_device {
+ 
+ 	void __iomem *base;
+ 	unsigned long version;
++	bool pvisor_fs_mmio;
++	bool fs_irq_read_ack; /* protected by lock */
+ 
+ 	/* a list of queues so we can dispatch IRQs */
+ 	spinlock_t lock;
+@@ -135,6 +141,13 @@ static int vm_finalize_features(struct virtio_device *vdev)
+ 		return -EINVAL;
+ 	}
+ 
++	if (vm_dev->pvisor_fs_mmio) {
++		if (vm_get_features(vdev) & BIT_ULL(PVISOR_FS_F_IRQ_READ_ACK))
++			__virtio_set_bit(vdev, PVISOR_FS_F_IRQ_READ_ACK);
++		else
++			__virtio_clear_bit(vdev, PVISOR_FS_F_IRQ_READ_ACK);
++	}
++
+ 	writel(1, vm_dev->base + VIRTIO_MMIO_DRIVER_FEATURES_SEL);
+ 	writel((u32)(vdev->features >> 32),
+ 			vm_dev->base + VIRTIO_MMIO_DRIVER_FEATURES);
+@@ -248,28 +261,43 @@ static u8 vm_get_status(struct virtio_device *vdev)
+ 	return readl(vm_dev->base + VIRTIO_MMIO_STATUS) & 0xff;
+ }
+ 
+-static void vm_set_status(struct virtio_device *vdev, u8 status)
++static void vm_write_status(struct virtio_device *vdev, u8 status)
+ {
+ 	struct virtio_mmio_device *vm_dev = to_virtio_mmio_device(vdev);
++	const u8 ready = VIRTIO_CONFIG_S_FEATURES_OK | VIRTIO_CONFIG_S_DRIVER_OK;
++	const u8 mask = ready | VIRTIO_CONFIG_S_FAILED;
++	unsigned long flags;
+ 
+-	/* We should never be setting status to 0. */
+-	BUG_ON(status == 0);
+-
+ 	/*
+ 	 * Per memory-barriers.txt, wmb() is not needed to guarantee
+ 	 * that the cache coherent memory writes have completed
+ 	 * before writing to the MMIO region.
+ 	 */
++	if (!vm_dev->pvisor_fs_mmio) {
++		writel(status, vm_dev->base + VIRTIO_MMIO_STATUS);
++		return;
++	}
++
++	spin_lock_irqsave(&vm_dev->lock, flags);
+ 	writel(status, vm_dev->base + VIRTIO_MMIO_STATUS);
++	vm_dev->fs_irq_read_ack = (status & mask) == ready &&
++		__virtio_test_bit(vdev, PVISOR_FS_F_IRQ_READ_ACK) &&
++		(vm_get_status(vdev) & mask) == ready;
++	spin_unlock_irqrestore(&vm_dev->lock, flags);
+ }
+ 
+-static void vm_reset(struct virtio_device *vdev)
++static void vm_set_status(struct virtio_device *vdev, u8 status)
+ {
+-	struct virtio_mmio_device *vm_dev = to_virtio_mmio_device(vdev);
++	/* We should never be setting status to 0. */
++	BUG_ON(status == 0);
++	vm_write_status(vdev, status);
++}
+ 
++static void vm_reset(struct virtio_device *vdev)
++{
+ 	/* 0 status means a reset. */
+-	writel(0, vm_dev->base + VIRTIO_MMIO_STATUS);
++	vm_write_status(vdev, 0);
+ }
+ 
+ 
+ 
+@@ -296,6 +324,18 @@ static bool vm_notify_with_data(struct virtqueue *vq)
+ 	return true;
+ }
+ 
++static u32 vm_ack_interrupt(struct virtio_mmio_device *vm_dev, bool take)
++{
++	u32 status;
++
++	if (take)
++		return readl(vm_dev->base + PVISOR_FS_IRQ_TAKE);
++
++	status = readl(vm_dev->base + VIRTIO_MMIO_INTERRUPT_STATUS);
++	writel(status, vm_dev->base + VIRTIO_MMIO_INTERRUPT_ACK);
++	return status;
++}
++
+ /* Notify all virtqueues on an interrupt. */
+ static irqreturn_t vm_interrupt(int irq, void *opaque)
+ {
+@@ -305,9 +345,13 @@ static irqreturn_t vm_interrupt(int irq, void *opaque)
+ 	unsigned long flags;
+ 	irqreturn_t ret = IRQ_NONE;
+ 
+-	/* Read and acknowledge interrupts */
+-	status = readl(vm_dev->base + VIRTIO_MMIO_INTERRUPT_STATUS);
+-	writel(status, vm_dev->base + VIRTIO_MMIO_INTERRUPT_ACK);
++	if (vm_dev->pvisor_fs_mmio) {
++		spin_lock_irqsave(&vm_dev->lock, flags);
++		status = vm_ack_interrupt(vm_dev, vm_dev->fs_irq_read_ack);
++		spin_unlock_irqrestore(&vm_dev->lock, flags);
++	} else {
++		status = vm_ack_interrupt(vm_dev, false);
++	}
+ 
+ 	if (unlikely(status & VIRTIO_MMIO_INT_CONFIG)) {
+ 		virtio_config_changed(&vm_dev->vdev);
+@@ -616,6 +660,7 @@ static void virtio_mmio_release_dev(struct device *_d)
+ static int virtio_mmio_probe(struct platform_device *pdev)
+ {
+ 	struct virtio_mmio_device *vm_dev;
++	struct resource *res;
+ 	unsigned long magic;
+ 	int rc;
+ 
+@@ -630,7 +675,7 @@ static int virtio_mmio_probe(struct platform_device *pdev)
+ 	INIT_LIST_HEAD(&vm_dev->virtqueues);
+ 	spin_lock_init(&vm_dev->lock);
+ 
+-	vm_dev->base = devm_platform_ioremap_resource(pdev, 0);
++	vm_dev->base = devm_platform_get_and_ioremap_resource(pdev, 0, &res);
+ 	if (IS_ERR(vm_dev->base)) {
+ 		rc = PTR_ERR(vm_dev->base);
+ 		goto free_vm_dev;
+@@ -663,6 +708,11 @@ static int virtio_mmio_probe(struct platform_device *pdev)
+ 		goto free_vm_dev;
+ 	}
+ 	vm_dev->vdev.id.vendor = readl(vm_dev->base + VIRTIO_MMIO_VENDOR_ID);
++	vm_dev->pvisor_fs_mmio = IS_ENABLED(CONFIG_X86_64) &&
++		vm_dev->version == 2 &&
++		vm_dev->vdev.id.device == VIRTIO_ID_FS &&
++		vm_dev->vdev.id.vendor == PVISOR_VENDOR_ID &&
++		resource_size(res) >= PVISOR_FS_IRQ_TAKE + sizeof(u32);
+ 
+ 	if (vm_dev->version == 1) {
+ 		writel(PAGE_SIZE, vm_dev->base + VIRTIO_MMIO_GUEST_PAGE_SIZE);

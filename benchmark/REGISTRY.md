@@ -1187,6 +1187,7 @@ Design: 负载、对照、控制变量与有效样本判据。
 - **入口：** `mise run benchmark -- vm/guest`；[复现与门禁](vm/guest.md)。这是顺序测量的工程门禁，不发布跨后端加速结论。
 - **机制诊断：** [Rust guest 共享文件 I/O](evidence/native-guest-file-io.md) 分开验证热读的属性校验、同步写的确认、tmpfs 目录遍历和新文件分阶段发布。
 - **tmpfs 对照：** [匿名页、文件空洞和并发读](evidence/native-guest-tmpfs.md) 用上一轮制品与 PR #209 为独立基线，区分共享文件同步成本和 guest 内存文件的访问成本。
+- **Linux 固件：** [virtio-fs 往返与目录发布](evidence/linux-fw-file-io.md) 记录同固件 tmpfs 配对、传输层消融、完整门禁和新目录的分阶段发布边界。
 
 ## 检查清单 {#checklist}
 

@@ -120,8 +120,8 @@ offers private virtio-fs feature bit 22 under the MMIO vendor ID `pVis`
 Only a modern x86 MMIO filesystem
 driver that selects the bit and completes `FEATURES_OK` and `DRIVER_OK` uses
 the private register. Other devices, PCI, and older hosts/guests keep their
-normal interrupt protocol. Linux firmware keeps its original vendor ID and
-feature offer for snapshot compatibility; native-kernel snapshots remain unsupported.
+normal interrupt protocol. [Linux firmware](../fw/README.md#linux-virtio-fs-notifications)
+negotiates the same transport. Native-kernel snapshots remain unsupported.
 
 One aligned 32-bit read at MMIO offset `0x1fc` atomically takes the pending
 causes before callbacks: bit 0 drains used rings, bit 1 signals a config

@@ -1,32 +1,13 @@
 """Check Rust native metadata routes and bounded namespace stress on Linux KVM."""
 
 import argparse
-import json
 import os
 import subprocess
 import tempfile
 from pathlib import Path
 
 import stat_visibility
-
-
-def expect_counter(profile, component, name, enabled, unit="calls"):
-    records = [
-        json.loads(line.removeprefix("pvisor-fs-profile "))
-        for line in profile.splitlines()
-        if line.startswith("pvisor-fs-profile ")
-    ]
-    final = [
-        record["measurements"]
-        for record in records
-        if record["component"] == component and record["final_record"]
-    ]
-    if not final:
-        raise RuntimeError(f"missing final {component} profile")
-    count = sum(m.get(name, {}).get(unit, 0) for m in final)
-    if bool(count) != enabled:
-        raise RuntimeError(f"expected {name} {'> 0' if enabled else '= 0'}, got {count}")
-    print(f"{name}={count}", flush=True)
+from stat_visibility import expect_counter
 
 
 def run_staged(binary, guest, output, enabled, seed=None):
