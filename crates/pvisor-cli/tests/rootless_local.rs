@@ -161,6 +161,88 @@ fn ordinary_shell_writes_lower_and_safe_shell_stages_home_and_workspace() {
 }
 
 #[test]
+fn safe_spawn_default_run_home_under_home() {
+    require_rootless_runtime();
+    let temporary = tempfile::tempdir().unwrap();
+    let home = temporary.path().join("home");
+    let workspace = temporary.path().join("workspace");
+    let runtime = home.join("runtime");
+    fs::create_dir_all(&runtime).unwrap();
+    fs::create_dir_all(&workspace).unwrap();
+    let output = Command::new("timeout")
+        .args(["--kill-after=2s", "30s", env!("CARGO_BIN_EXE_pvisor")])
+        .env_clear()
+        .env("PATH", "/usr/bin:/bin")
+        .env("HOME", &home)
+        .env("TMPDIR", temporary.path())
+        .env("XDG_RUNTIME_DIR", &runtime)
+        .current_dir(&workspace)
+        .stdin(Stdio::null())
+        .args([
+            "spawn",
+            "--safe",
+            "--overlaynet-deny-all",
+            "--stdio",
+            "capture",
+            "--",
+            "/bin/sh",
+            "-c",
+            "printf 'Hello from pVisor\\n' > hello.txt",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "safe spawn under HOME storage failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        !workspace.join("hello.txt").exists(),
+        "workspace received the staged file"
+    );
+    assert!(
+        staged_upper_contains(&home.join(".pvisor"), "hello.txt", b"Hello from pVisor\n"),
+        "staged hello.txt missing under {}",
+        home.join(".pvisor").display()
+    );
+}
+
+fn staged_upper_contains(root: &Path, name: &str, bytes: &[u8]) -> bool {
+    let mut stack = vec![(root.to_path_buf(), 0u8)];
+    while let Some((dir, depth)) = stack.pop() {
+        if depth > 8 {
+            continue;
+        }
+        let Ok(entries) = fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path
+                .file_name()
+                .is_some_and(|entry_name| entry_name == "merged")
+            {
+                continue;
+            }
+            if path.is_file()
+                && path
+                    .file_name()
+                    .is_some_and(|entry_name| entry_name == name)
+                && path
+                    .components()
+                    .any(|component| component.as_os_str() == "upper")
+            {
+                return fs::read(&path).ok().as_deref() == Some(bytes);
+            }
+            if path.is_dir() {
+                stack.push((path, depth + 1));
+            }
+        }
+    }
+    false
+}
+
+#[test]
 fn safe_shell_supports_nested_stages_without_exposing_their_backing() {
     require_rootless_runtime();
     for (name, nested_stage, nested_home) in [

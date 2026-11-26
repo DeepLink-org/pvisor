@@ -180,8 +180,9 @@ pub(super) fn status(args: StatusArgs) -> anyhow::Result<()> {
         return Ok(());
     }
     let record = &response.record;
-    println!("session: {}", record.run_id);
-    println!("session: {}", record.session_id);
+    for line in session_identity_lines(&record.run_id, &record.session_id) {
+        println!("{line}");
+    }
     println!("state: {}", response.state.as_str());
     if let Some(execution) = &response.live_execution {
         println!("execution: {:?}", execution.state);
@@ -639,6 +640,14 @@ pub(super) fn selected(selector: Option<&Path>, output_dir: &Path) -> anyhow::Re
     Ok(record)
 }
 
+fn session_identity_lines(run_id: &str, session_id: &str) -> Vec<String> {
+    let mut lines = vec![format!("session: {run_id}")];
+    if session_id != run_id {
+        lines.push(format!("recorded session: {session_id}"));
+    }
+    lines
+}
+
 fn shell_join(parts: &[String]) -> String {
     parts
         .iter()
@@ -712,6 +721,21 @@ mod tests {
         ] {
             assert!(help.contains(warning), "{help}");
         }
+    }
+
+    #[test]
+    fn status_identity_omits_duplicate_session_line() {
+        assert_eq!(
+            session_identity_lines("run-1", "run-1"),
+            vec!["session: run-1".to_string()]
+        );
+        assert_eq!(
+            session_identity_lines("run-1", "child"),
+            vec![
+                "session: run-1".to_string(),
+                "recorded session: child".to_string(),
+            ]
+        );
     }
 
     #[test]

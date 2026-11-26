@@ -393,6 +393,95 @@ fn copy_tree(source: &Path, destination: &Path, excluded: &Path) -> std::io::Res
     Ok(())
 }
 
+/// Directories the rootless sandbox copy-on-writes. Keep this list aligned with
+/// `projected_state_roots`.
+const HOST_STATE_ROOT_KEYS: [&str; 6] = [
+    "HOME",
+    "CODEX_HOME",
+    "XDG_CONFIG_HOME",
+    "XDG_DATA_HOME",
+    "XDG_STATE_HOME",
+    "XDG_CACHE_HOME",
+];
+
+fn session_mount_component(session_id: &str) -> bool {
+    !session_id.is_empty()
+        && !session_id.contains(['/', '\\', '\0'])
+        && session_id != "."
+        && session_id != ".."
+}
+
+fn host_state_roots_from_env() -> Vec<PathBuf> {
+    HOST_STATE_ROOT_KEYS
+        .into_iter()
+        .filter_map(|key| std::env::var_os(key).map(PathBuf::from))
+        .filter_map(|path| path.canonicalize().ok())
+        .filter(|path| path.is_dir() && path != Path::new("/"))
+        .collect()
+}
+
+/// Choose a merged mountpoint that is not inside a rootless state root.
+///
+/// The FUSE server is this process, and the sandbox mounts OverlayFS over
+/// those roots from `mount(2)`. Walking into the live mount returns `EINVAL`;
+/// a mount that succeeded would hide it. An absolute base that is not itself
+/// inside a state root is usable even when a state root lives under that base.
+pub(crate) fn merged_mount_outside_state_roots(
+    merged: &Path,
+    session_id: &str,
+    state_roots: &[PathBuf],
+    runtime_dir: Option<&Path>,
+    temp_dir: &Path,
+) -> PathBuf {
+    let covered = state_roots
+        .iter()
+        .any(|root| root.is_absolute() && root != Path::new("/") && merged.starts_with(root));
+    if !covered || !session_mount_component(session_id) {
+        return merged.to_path_buf();
+    }
+    for candidate in runtime_dir.into_iter().chain(std::iter::once(temp_dir)) {
+        if !candidate.is_absolute() || candidate == Path::new("/") {
+            continue;
+        }
+        if state_roots.iter().any(|root| candidate.starts_with(root)) {
+            continue;
+        }
+        let mounted = candidate
+            .join("pvisor-mounts")
+            .join(session_id)
+            .join("merged");
+        if state_roots.iter().any(|root| mounted.starts_with(root)) {
+            continue;
+        }
+        return mounted;
+    }
+    merged.to_path_buf()
+}
+
+/// Move the live workspace mount outside directories the rootless sandbox will
+/// copy-on-write. See [`merged_mount_outside_state_roots`].
+#[cfg(target_os = "linux")]
+pub(crate) fn relocate_merged_for_host_sandbox(record: &mut OverlayRecord, session_id: &str) {
+    let runtime = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from);
+    let relocated = merged_mount_outside_state_roots(
+        &record.merged_dir,
+        session_id,
+        &host_state_roots_from_env(),
+        runtime.as_deref(),
+        &std::env::temp_dir(),
+    );
+    if relocated == record.merged_dir {
+        return;
+    }
+    record.merged_dir = relocated;
+    if let Some(parent) = record.merged_dir.parent()
+        && fs::create_dir_all(parent).is_ok()
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(parent, fs::Permissions::from_mode(0o700));
+    }
+}
+
 /// FSKit creates its own mount directory under /Volumes. Backing state stays in
 /// the private stage; every mount (including inspect) receives a distinct name.
 pub(crate) fn host_mountpoint(requested: &Path) -> PathBuf {
@@ -1032,6 +1121,73 @@ mod tests {
             PathBuf::from("/unused/.overlay-mounts/run-one/merged")
         );
         assert!(!record.merged_dir.starts_with(&record.target));
+    }
+
+    #[test]
+    fn merged_mount_outside_state_roots_prefers_runtime_then_temp() {
+        let merged = Path::new("/home/user/.pvisor/runs/run-1/merged");
+        let roots = [PathBuf::from("/home/user")];
+        assert_eq!(
+            merged_mount_outside_state_roots(
+                merged,
+                "run-1",
+                &roots,
+                Some(Path::new("/run/user/1000")),
+                Path::new("/tmp"),
+            ),
+            PathBuf::from("/run/user/1000/pvisor-mounts/run-1/merged")
+        );
+        assert_eq!(
+            merged_mount_outside_state_roots(
+                merged,
+                "run-1",
+                &roots,
+                Some(Path::new("/home/user/runtime")),
+                Path::new("/tmp"),
+            ),
+            PathBuf::from("/tmp/pvisor-mounts/run-1/merged")
+        );
+        assert_eq!(
+            merged_mount_outside_state_roots(
+                merged,
+                "run-1",
+                &roots,
+                Some(Path::new("/home/user/runtime")),
+                Path::new("/home/user/tmp"),
+            ),
+            merged
+        );
+        let nested_home = PathBuf::from("/tmp/job/home");
+        assert_eq!(
+            merged_mount_outside_state_roots(
+                Path::new("/tmp/job/home/.pvisor/runs/run-1/merged"),
+                "run-1",
+                &[nested_home],
+                Some(Path::new("/tmp/job/home/runtime")),
+                Path::new("/tmp/job"),
+            ),
+            PathBuf::from("/tmp/job/pvisor-mounts/run-1/merged")
+        );
+        assert_eq!(
+            merged_mount_outside_state_roots(
+                Path::new("/var/stage/merged"),
+                "run-1",
+                &roots,
+                Some(Path::new("/run/user/1000")),
+                Path::new("/tmp"),
+            ),
+            PathBuf::from("/var/stage/merged")
+        );
+        assert_eq!(
+            merged_mount_outside_state_roots(
+                merged,
+                "../run",
+                &roots,
+                Some(Path::new("/run/user/1000")),
+                Path::new("/tmp"),
+            ),
+            merged
+        );
     }
 
     #[test]
