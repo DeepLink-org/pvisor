@@ -233,7 +233,10 @@ fn prepare(
                 write_error = event(Event::Progress(p));
             }
         },
-        Some(dir),
+        Some(ColdImport {
+            directory: dir,
+            ephemeral,
+        }),
     )?;
     write_error?;
     if prepared.cached.is_some() {

@@ -91,12 +91,21 @@ def digest(data):
 
 raw = buffer.getvalue()
 layer = gzip.compress(raw, mtime=0)
+imports = root.parent / "watched-imports"
+layers = [layer]
+diff_ids = [digest(raw)]
+if imports.is_symlink():
+    # The final request observes the preceding layer after its last use.
+    empty_tar = bytes(1024)
+    empty_layer = gzip.compress(empty_tar, mtime=0)
+    layers = [empty_layer, empty_layer, layer]
+    diff_ids = [digest(empty_tar), digest(empty_tar), digest(raw)]
 config = json.dumps(
     {
         "architecture": architecture,
         "os": "linux",
         "config": {"Env": ["EXAMPLE=value"], "Entrypoint": ["/bin/sh"], "Cmd": ["-c"]},
-        "rootfs": {"type": "layers", "diff_ids": [digest(raw)]},
+        "rootfs": {"type": "layers", "diff_ids": diff_ids},
     }
 ).encode()
 manifest = json.dumps(
@@ -111,18 +120,20 @@ manifest = json.dumps(
         "layers": [
             {
                 "mediaType": "application/vnd.oci.image.layer.v1.tar+gzip",
-                "digest": digest(layer),
-                "size": len(layer),
+                "digest": digest(data),
+                "size": len(data),
             }
+            for data in layers
         ],
     }
 ).encode()
 objects = {f"/v2/example/manifests/{tag}": manifest for tag in ("test", digest(manifest))}
-objects.update({f"/v2/example/blobs/{digest(data)}": data for data in (layer, config)})
+objects.update({f"/v2/example/blobs/{digest(data)}": data for data in (*layers, config)})
+layer_paths = [f"/v2/example/blobs/{digest(data)}" for data in layers]
 
 blobs = root / "blobs"
 blobs.mkdir()
-for data in (layer, config):
+for data in (*layers, config):
     (blobs / digest(data).removeprefix("sha256:")).write_bytes(data)
 
 
@@ -131,6 +142,14 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
     def do_GET(self):
+        if imports.is_symlink() and self.path in layer_paths:
+            tag = "download"
+            if self.path == layer_paths[-1]:
+                blob = digest(layers[0]).removeprefix("sha256:")
+                retained = any(imports.glob(f"*/blobs/sha256/{blob}"))
+                tag = "retained" if retained else "released"
+            with (root / "layer-events").open("a") as events:
+                print(tag, file=events)
         if "/blobs/" in self.path and (root / "deny-blobs").exists():
             self.send_error(403)
             return

@@ -95,6 +95,11 @@ fn cold_run_ephemeral_preserves_reader_leases_and_skips_durable_publication() {
 
     let tmp = tempfile::tempdir().unwrap();
     let docker = tmp.path().join("docker");
+    std::os::unix::fs::symlink(
+        docker.join("cold-imports"),
+        tmp.path().join("watched-imports"),
+    )
+    .unwrap();
     let registry = source_fixture(&docker);
     let store = Store::open(docker.clone()).unwrap();
     // A reserved port stops the owner after OCI admission and before VMM launch.
@@ -146,6 +151,8 @@ fn cold_run_ephemeral_preserves_reader_leases_and_skips_durable_publication() {
     };
 
     let (ephemeral, first_import) = admit("once", true);
+    let events = tmp.path().join("registry/layer-events");
+    assert_eq!(fs::read_to_string(&events).unwrap(), "download\nreleased\n");
     assert!(store.images().unwrap().is_empty());
     assert!(!store.image_pool_location().exists());
     assert!(!first_import.join("published.json").exists());
@@ -158,6 +165,10 @@ fn cold_run_ephemeral_preserves_reader_leases_and_skips_durable_publication() {
     drop(reader);
 
     let (durable, next_import) = admit("default", false);
+    assert_eq!(
+        fs::read_to_string(events).unwrap(),
+        "download\nreleased\ndownload\nretained\n"
+    );
     assert!(!first_import.exists());
     let catalog = store.images().unwrap();
     assert_eq!(catalog.len(), 1);

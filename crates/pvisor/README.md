@@ -1445,6 +1445,11 @@ publishes an image. A cold miss requiring synchronous conversion or explicit
 in-process registry credentials returns an error in this mode. Leave the
 setting unset or use `0` for the usual background publication.
 
+In a one-shot import, the importer unlinks each private layer download once
+the final occurrence of that digest has a verified archive ready to unpack.
+Repeated layers reuse the same download. An uncompressed private tar stays
+open through extraction. The VM and its forks retain the extracted root.
+
 Published `Image` records require `CachedImage`, binding the pool location and
 immutable handle. There is no directory-root field or fallback. Private builds
 use a distinct backing type in `Image<BuildSource>`/`Instance<BuildSource>`;

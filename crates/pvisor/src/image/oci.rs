@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
-use std::io::{Read, Write};
+use std::io::{Read, Seek, Write};
 use std::path::{Component, Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -430,7 +430,7 @@ impl ImageStore {
         progress: &mut dyn FnMut(PullProgress),
     ) -> anyhow::Result<PreparedImage> {
         let resolved = self.resolve_with_progress(image, architecture, progress)?;
-        self.extract_resolved(&resolved, progress)?;
+        self.extract_resolved(&resolved, progress, false)?;
         Ok(resolved.prepared)
     }
 
@@ -500,6 +500,7 @@ impl ImageStore {
         &self,
         resolved: &ResolvedImage,
         progress: &mut dyn FnMut(PullProgress),
+        retire_downloads: bool,
     ) -> anyhow::Result<()> {
         let manifest_digest = &resolved.prepared.digest;
         let image = resolved.reference.as_str();
@@ -527,12 +528,28 @@ impl ImageStore {
                 .join(format!(".{digest_hex}.partial-{}", uuid::Uuid::new_v4()));
             fs::create_dir(&partial)?;
             let extraction = (|| -> anyhow::Result<()> {
-                for layer in &resolved.layers {
+                // Seeded blobs belong to the caller. The config is read again after extraction.
+                let private = retire_downloads && self.seeded_blobs.is_none();
+                let mut last_use = BTreeMap::new();
+                if private {
+                    for (index, layer) in resolved.layers.iter().enumerate() {
+                        if layer.digest != resolved.config_digest {
+                            last_use.insert(layer.digest.as_str(), index);
+                        }
+                    }
+                }
+                for (index, layer) in resolved.layers.iter().enumerate() {
                     let blob = self.fetch_blob(&mut registry, layer, progress)?;
                     progress(PullProgress::Extracting {
                         digest: layer.digest.clone(),
                     });
-                    apply_layer(&blob, &layer.media_type, &partial)?;
+                    let archive = open_layer(&blob, &layer.media_type, private)?;
+                    if last_use.get(layer.digest.as_str()) == Some(&index) {
+                        fs::remove_file(&blob).with_context(|| {
+                            format!("release private OCI input {}", blob.display())
+                        })?;
+                    }
+                    unpack_layer(archive, &partial)?;
                     progress(PullProgress::LayerReady {
                         digest: layer.digest.clone(),
                         cached: false,
@@ -1042,31 +1059,40 @@ fn verify_file_digest(expected: &str, path: &Path) -> anyhow::Result<()> {
 }
 
 pub(crate) fn apply_layer(blob: &Path, media_type: &str, rootfs: &Path) -> anyhow::Result<()> {
-    let tar_file = tempfile::NamedTempFile::new()?;
-    {
-        let input = File::open(blob)?;
-        let mut output = tar_file.reopen()?;
-        if media_type.ends_with("+gzip")
-            || matches!(
-                media_type,
-                "application/vnd.docker.image.rootfs.diff.tar.gzip"
-                    | "application/vnd.docker.image.rootfs.foreign.diff.tar.gzip"
-            )
-        {
-            std::io::copy(&mut GzDecoder::new(input), &mut output)?;
-        } else if media_type.ends_with("+zstd") {
-            std::io::copy(&mut zstd::stream::read::Decoder::new(input)?, &mut output)?;
-        } else if media_type.ends_with(".tar")
-            || media_type == "application/octet-stream"
-            || media_type.is_empty()
-        {
-            std::io::copy(&mut std::io::BufReader::new(input), &mut output)?;
-        } else {
-            bail!("unsupported OCI layer media type `{media_type}`");
-        }
-    }
+    unpack_layer(open_layer(blob, media_type, false)?, rootfs)
+}
 
-    let mut archive = tar::Archive::new(tar_file.reopen()?);
+fn open_layer(blob: &Path, media_type: &str, private: bool) -> anyhow::Result<File> {
+    let input = File::open(blob)?;
+    let raw = media_type.ends_with(".tar")
+        || media_type == "application/octet-stream"
+        || media_type.is_empty();
+    if raw && private {
+        // The import owns the verified bytes. Its last reader may unlink the name.
+        return Ok(input);
+    }
+    let mut output = tempfile::tempfile()?;
+    if media_type.ends_with("+gzip")
+        || matches!(
+            media_type,
+            "application/vnd.docker.image.rootfs.diff.tar.gzip"
+                | "application/vnd.docker.image.rootfs.foreign.diff.tar.gzip"
+        )
+    {
+        std::io::copy(&mut GzDecoder::new(input), &mut output)?;
+    } else if media_type.ends_with("+zstd") {
+        std::io::copy(&mut zstd::stream::read::Decoder::new(input)?, &mut output)?;
+    } else if raw {
+        std::io::copy(&mut std::io::BufReader::new(input), &mut output)?;
+    } else {
+        bail!("unsupported OCI layer media type `{media_type}`");
+    }
+    output.rewind()?;
+    Ok(output)
+}
+
+fn unpack_layer(mut file: File, rootfs: &Path) -> anyhow::Result<()> {
+    let mut archive = tar::Archive::new(&mut file);
     for entry in archive.entries()? {
         let entry = entry?;
         let relative = clean_relative(&entry.path()?)?;
@@ -1078,7 +1104,8 @@ pub(crate) fn apply_layer(blob: &Path, media_type: &str, rootfs: &Path) -> anyho
         }
     }
 
-    let mut archive = tar::Archive::new(tar_file.reopen()?);
+    file.rewind()?;
+    let mut archive = tar::Archive::new(file);
     archive.set_preserve_permissions(true);
     #[cfg(unix)]
     let mut deferred_directory_modes = BTreeMap::new();
@@ -2280,6 +2307,39 @@ mod tests {
         .unwrap();
         assert!(!root.path().join("etc/old").exists());
         assert_eq!(fs::read(root.path().join("etc/new")).unwrap(), b"new");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn only_a_private_raw_layer_keeps_the_input_inode() {
+        use std::os::unix::fs::MetadataExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("layer");
+        let mut archive = tar::Builder::new(File::create(&path).unwrap());
+        let mut header = tar::Header::new_gnu();
+        header.set_mode(0o644);
+        header.set_size(1);
+        header.set_cksum();
+        archive
+            .append_data(&mut header, "data", b"x".as_slice())
+            .unwrap();
+        archive.into_inner().unwrap();
+        let media = "application/vnd.oci.image.layer.v1.tar";
+        let owned = open_layer(&path, media, true).unwrap();
+        let copied = open_layer(&path, media, false).unwrap();
+        let inode = |st: fs::Metadata| (st.dev(), st.ino());
+        assert_eq!(
+            inode(owned.metadata().unwrap()),
+            inode(fs::metadata(&path).unwrap())
+        );
+        assert_ne!(
+            inode(copied.metadata().unwrap()),
+            inode(owned.metadata().unwrap())
+        );
+        fs::remove_file(path).unwrap();
+        unpack_layer(owned, dir.path()).unwrap();
+        assert_eq!(fs::read(dir.path().join("data")).unwrap(), b"x");
     }
 
     #[test]
