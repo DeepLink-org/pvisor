@@ -79,7 +79,8 @@ def run(binary, guest, inline, log=None, workers=1, cpus=1, firmware=None, irq_a
             try:
                 with selectors.DefaultSelector() as selector:
                     selector.register(process.stdout, selectors.EVENT_READ)
-                    for step in (b"rewrite", b"resize", b"truncate", b"remove", b"recreate"):
+                    for step in (b"rewrite", b"rewrite-scatter", b"resize", b"grow-seek",
+                                 b"truncate", b"remove", b"recreate"):
                         while b"\n" not in pending:
                             remaining = deadline - time.monotonic()
                             if remaining <= 0 or not selector.select(remaining):
@@ -93,10 +94,13 @@ def run(binary, guest, inline, log=None, workers=1, cpus=1, firmware=None, irq_a
                         line, pending = pending.split(b"\n", 1)
                         if line != step:
                             raise RuntimeError(f"expected {step!r}, got {line!r}")
-                        if step == b"rewrite":
+                        if step in (b"rewrite", b"rewrite-scatter"):
                             with subject.open("r+b") as file:
-                                file.write(b"hot")
-                            os.utime(subject, (2, 2))
+                                file.write(b"hot" if step == b"rewrite" else b"iov")
+                            stamp = 2 if step == b"rewrite" else 3
+                            os.utime(subject, (stamp, stamp))
+                        elif step == b"grow-seek":
+                            os.truncate(subject, 12)
                         elif step == b"truncate":
                             subject.write_bytes(b"ok")
                         elif step == b"remove":

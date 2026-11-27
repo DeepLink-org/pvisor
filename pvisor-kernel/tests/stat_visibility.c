@@ -9,6 +9,7 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/syscall.h>
+#include <sys/uio.h>
 #include <unistd.h>
 
 static void expect_stat(int dirfd, const char *path, int flags, off_t size,
@@ -90,13 +91,23 @@ int main(int argc, char **argv)
     await_host("rewrite");
     expect_read(updater, 0, "hot");
     expect_read(reader, 1, "ot");
+    await_host("rewrite-scatter");
+    char first = 0, rest[4] = {0};
+    struct iovec v[] = {{&first, 1}, {rest, sizeof(rest)}};
+    if (preadv(reader, v, 2, 0) != 3 || first != 'i' || memcmp(rest, "ov\0", 4))
+        return 26;
     await_host("resize");
     expect_read(reader, 3, "rgrown");
     expect_read(updater, 9, "");
     expect_stat(AT_FDCWD, "/subject", 0, 9, S_IFREG | 0600);
+    await_host("grow-seek");
+    if (lseek(reader, -1, SEEK_END) != 11)
+        return 27;
     await_host("truncate");
     expect_read(updater, 2, "");
     expect_read(reader, 0, "ok");
+    if (lseek(reader, 0, SEEK_CUR) != 11 || lseek(reader, 0, SEEK_END) != 2)
+        return 27;
     await_host("remove");
     expect_stat(AT_FDCWD, "/subject", 0, -1, 0);
     expect_stat(AT_FDCWD, "/link", 0, -1, 0);

@@ -91,23 +91,29 @@ impl<'a> DescriptorChainConsumer<'a> {
     where
         F: FnOnce(&[VolatileSlice]) -> io::Result<usize>,
     {
-        let mut buflen = 0;
-        let mut bufs = Vec::with_capacity(self.buffers.len());
-        for &vs in &self.buffers {
-            if buflen >= count {
-                break;
-            }
-
-            let len = (count - buflen).min(vs.len());
-            bufs.push(vs.subslice(0, len).map_err(io::Error::other)?);
-            buflen += len;
-        }
-
-        if bufs.is_empty() {
+        let Some(first) = self.buffers.front() else {
+            return Ok(0);
+        };
+        if count == 0 {
             return Ok(0);
         }
-
-        let bytes_consumed = f(&bufs)?;
+        let (buflen, bytes_consumed) = if count <= first.len() || self.buffers.len() == 1 {
+            let len = count.min(first.len());
+            let slice = first.subslice(0, len).map_err(io::Error::other)?;
+            (len, f(&[slice])?)
+        } else {
+            let mut buflen = 0;
+            let mut bufs = Vec::with_capacity(self.buffers.len());
+            for vs in &self.buffers {
+                let len = (count - buflen).min(vs.len());
+                bufs.push(vs.subslice(0, len).map_err(io::Error::other)?);
+                buflen += len;
+                if buflen == count {
+                    break;
+                }
+            }
+            (buflen, f(&bufs)?)
+        };
         if bytes_consumed > buflen {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -776,6 +782,63 @@ pub fn create_descriptor_chain(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[rstest::rstest]
+    #[case::partial_first(&[8, 4], 3, &[3])]
+    #[case::exact_first(&[8, 4], 8, &[8])]
+    #[case::short_chain(&[3], 8, &[3])]
+    #[case::fragmented(&[2, 0, 8], 6, &[2, 0, 4])]
+    #[case::empty_descriptor(&[0], 1, &[0])]
+    #[case::empty_chain(&[], 1, &[])]
+    #[case::empty_request(&[8], 0, &[])]
+    fn consumer_only_advances_by_accepted_bytes(
+        #[case] lengths: &[usize],
+        #[case] count: usize,
+        #[case] offered: &[usize],
+    ) {
+        let mem = GuestMemoryMmap::<()>::from_ranges(&[(GuestAddress(0), 4096)]).unwrap();
+        let mut input = Vec::new();
+        let mut buffers = VecDeque::new();
+        for (index, &len) in lengths.iter().enumerate() {
+            let addr = GuestAddress(index as u64 * 16);
+            let bytes: Vec<_> = (input.len() as u8..).take(len).collect();
+            mem.write_slice(&bytes, addr).unwrap();
+            buffers.push_back(mem.get_slice(addr, len).unwrap());
+            input.extend(bytes);
+        }
+        let mut consumer = DescriptorChainConsumer {
+            memory_access: None,
+            buffers,
+            bytes_consumed: 0,
+        };
+        if offered.is_empty() {
+            assert_eq!(
+                consumer
+                    .consume(count, |_| panic!("nothing offered"))
+                    .unwrap(),
+                0
+            );
+            assert_eq!(consumer.available_bytes(), input.len());
+            return;
+        }
+        let total = offered.iter().sum::<usize>();
+        let result = consumer.consume(count, |slices| {
+            assert!(slices.iter().map(|s| s.len()).eq(offered.iter().copied()));
+            Err(io::ErrorKind::Interrupted.into())
+        });
+        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::Interrupted);
+        let result = consumer.consume(count, |_| Ok(total + 1));
+        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::InvalidData);
+        assert_eq!(consumer.bytes_consumed(), 0);
+        let accepted = total.saturating_sub(1);
+        assert_eq!(consumer.consume(count, |_| Ok(accepted)).unwrap(), accepted);
+        assert_eq!(consumer.bytes_consumed(), accepted);
+        let mut remaining = Vec::new();
+        Reader { buffer: consumer }
+            .read_to_end(&mut remaining)
+            .unwrap();
+        assert_eq!(remaining, input[accepted..]);
+    }
 
     #[test]
     fn file_read_completion_excludes_header_and_partial_tail_and_retains_lease() {

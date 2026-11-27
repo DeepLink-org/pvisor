@@ -88,8 +88,8 @@ jobs:
         run: |
           set -euo pipefail
           exec > >(tee "$RUNNER_TEMP/feature-evidence/namespaces.log") 2>&1
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq --no-install-recommends util-linux
+          bash scripts/ci/ubuntu-apt-get.sh update -qq
+          bash scripts/ci/ubuntu-apt-get.sh install -y -qq --no-install-recommends util-linux
           if sysctl kernel.unprivileged_userns_clone >/dev/null 2>&1; then
             sudo sysctl -w kernel.unprivileged_userns_clone=1
           fi
@@ -103,7 +103,7 @@ jobs:
         run: |
           set -euo pipefail
           exec > >(tee "$RUNNER_TEMP/feature-evidence/fuse.log") 2>&1
-          sudo apt-get install -y -qq --no-install-recommends fuse3
+          bash scripts/ci/ubuntu-apt-get.sh install -y -qq --no-install-recommends fuse3
           test -c /dev/fuse
           [[ -r /dev/fuse && -w /dev/fuse ]]
           command -v fusermount3
@@ -141,7 +141,7 @@ jobs:
         run: |
           set -euo pipefail
           exec > >(tee "$RUNNER_TEMP/feature-evidence/oci-prerequisites.log") 2>&1
-          sudo apt-get install -y -qq --no-install-recommends crun runc
+          bash scripts/ci/ubuntu-apt-get.sh install -y -qq --no-install-recommends crun runc
           crun --version
           runc --version
           {
@@ -317,7 +317,7 @@ jobs:
           tools: python uv
           setup: python
       - name: Install firmware test compiler
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends build-essential
+        run: bash scripts/ci/ubuntu-apt-get.sh update -qq && bash scripts/ci/ubuntu-apt-get.sh install -y -qq --no-install-recommends build-essential
       - run: mise run fw -- test
 
   native-components:
@@ -417,8 +417,8 @@ jobs:
         if: runner.os == 'Linux' && matrix.prepare_pvisor
         shell: bash
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq --no-install-recommends fuse3 util-linux
+          bash scripts/ci/ubuntu-apt-get.sh update -qq
+          bash scripts/ci/ubuntu-apt-get.sh install -y -qq --no-install-recommends fuse3 util-linux
           if sysctl kernel.unprivileged_userns_clone >/dev/null 2>&1; then
             sudo sysctl -w kernel.unprivileged_userns_clone=1
           fi
@@ -473,6 +473,50 @@ jobs:
           timeout 30 target/debug/examples/vm_api_case --rootfs "$root" --cpus 2 --memory 64 \
             -- /probe 7 --check-tmpfs-read || status=$?
           test "$status" = 7
+
+      - name: Rust guest shared reads and acknowledged writes / KVM
+        if: runner.os == 'Linux' && matrix.shard == 'pvisor'
+        env:
+          PVISOR_GUEST_KERNEL: rust-native
+        shell: bash
+        run: |
+          vm=target/debug/examples/vm_api_case
+          cc -static -O2 -Wall -Wextra -Werror pvisor-kernel/tests/readv.c -o "$RUNNER_TEMP/readv"
+          mise exec -- rustc --edition=2021 --target x86_64-unknown-linux-musl -C linker=rust-lld \
+            pvisor-kernel/tests/write_ack.rs -o "$RUNNER_TEMP/write-ack"
+          for handoff in 0 auto 1; do
+            export PVISOR_VM_FS_QUEUE_HANDOFF=$handoff
+            root="$(mktemp -d "$RUNNER_TEMP/shared-read.XXXXXX")"
+            cp "$RUNNER_TEMP/readv" "$root/probe"
+            profile="$RUNNER_TEMP/shared-read-$handoff.log"
+            PVISOR_FS_PROFILE=1 timeout 30 "$vm" --rootfs "$root" --cpus 1 --memory 256 \
+              -- /probe check /records 2>"$profile" || { cat "$profile"; exit 1; }
+            grep -q '"component":"virtio-fs-dispatch".*"final_record":true' "$profile"
+            if grep -Eq '"handoff_(auto|forced)_queues"' "$profile"; then
+              case "$handoff" in
+                auto) grep -q '"handoff_auto_queues"' "$profile" ;;
+                1) grep -q '"handoff_forced_queues"' "$profile" ;;
+                *) exit 1 ;;
+              esac
+              echo "Verified shared reads with negotiated $handoff handoff policy."
+            elif [[ "$handoff" != 0 ]]; then
+              echo "::notice::Queue handoff was requested but not exercised on this runner; verified fallback only."
+            fi
+            python3 pvisor-kernel/tests/warm_write.py --binary "$vm" --guest "$RUNNER_TEMP/write-ack"
+          done
+          root="$(mktemp -d "$RUNNER_TEMP/mapped-write.XXXXXX")"
+          cp "$RUNNER_TEMP/native-stdio-guest" "$root/probe"
+          status=0
+          timeout 30 "$vm" --rootfs "$root" --cpus 2 --memory 256 \
+            -- /probe 7 --check-write-cache || status=$?
+          test "$status" = 7
+          printf WM | cmp - "$root/write-map-race"
+          python3 -c 'import pathlib, sys; assert pathlib.Path(sys.argv[1]).read_bytes() == bytes(8192) + b"x\0\0"' "$root/mapped"
+          root="$(mktemp -d "$RUNNER_TEMP/read-handles.XXXXXX")"
+          mise exec -- rustc --edition=2021 --target x86_64-unknown-linux-musl -C linker=rust-lld -O \
+            pvisor-kernel/tests/read_handles.rs -o "$root/probe"
+          python3 -c 'import pathlib, sys; pathlib.Path(sys.argv[1]).write_bytes(bytes((i // 4096 + i % 251) % 256 for i in range(1027 * 4096)))' "$root/subject"
+          timeout 30 "$vm" --rootfs "$root" --cpus 1 --memory 256 -- /probe 256
 
       - name: Rust guest metadata defaults and seeded filesystem stress / KVM
         if: runner.os == 'Linux' && matrix.shard == 'pvisor'
@@ -622,8 +666,8 @@ jobs:
       - name: Enable Linux runtime test prerequisites
         shell: bash
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq --no-install-recommends fuse3 util-linux
+          bash scripts/ci/ubuntu-apt-get.sh update -qq
+          bash scripts/ci/ubuntu-apt-get.sh install -y -qq --no-install-recommends fuse3 util-linux
           if sysctl kernel.unprivileged_userns_clone >/dev/null 2>&1; then
             sudo sysctl -w kernel.unprivileged_userns_clone=1
           fi
@@ -690,7 +734,7 @@ jobs:
           cache: false
       - name: Install Bats
         if: matrix.suite == 'bats'
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends bats
+        run: bash scripts/ci/ubuntu-apt-get.sh update -qq && bash scripts/ci/ubuntu-apt-get.sh install -y -qq --no-install-recommends bats
       - name: Run contract shard
         env:
           SUITE: ${{ matrix.suite }}
@@ -740,8 +784,8 @@ jobs:
       - name: Enable Linux runtime test prerequisites
         if: runner.os == 'Linux'
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq --no-install-recommends fuse3 util-linux
+          bash scripts/ci/ubuntu-apt-get.sh update -qq
+          bash scripts/ci/ubuntu-apt-get.sh install -y -qq --no-install-recommends fuse3 util-linux
           if sysctl kernel.unprivileged_userns_clone >/dev/null 2>&1; then
             sudo sysctl -w kernel.unprivileged_userns_clone=1
           fi
@@ -776,8 +820,8 @@ jobs:
       - name: Enable rootless isolation primitives
         shell: bash
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq --no-install-recommends fuse3 util-linux
+          bash scripts/ci/ubuntu-apt-get.sh update -qq
+          bash scripts/ci/ubuntu-apt-get.sh install -y -qq --no-install-recommends fuse3 util-linux
           if sysctl kernel.unprivileged_userns_clone >/dev/null 2>&1; then
             sudo sysctl -w kernel.unprivileged_userns_clone=1
           fi

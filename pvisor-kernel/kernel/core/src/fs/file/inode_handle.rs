@@ -22,7 +22,7 @@ use crate::{
     },
     prelude::*,
     process::signal::{PollHandle, Pollable},
-    util::ioctl::RawIoctl,
+    util::{ioctl::RawIoctl, read_segments},
     vm::vmar::FileMmapRequest,
 };
 
@@ -129,6 +129,29 @@ impl InodeHandle {
             );
         }
         Ok(inode.as_ref())
+    }
+
+    /// `read` receives `None` for streams, whose segments have no file position.
+    fn with_read_position(
+        &self,
+        position: Option<usize>,
+        read: impl FnOnce(&dyn FileOps, Option<usize>, StatusFlags) -> Result<usize>,
+    ) -> Result<usize> {
+        let (ops, use_file_position) = match position {
+            Some(_) => (self.file_ops_for_positional_io()?, false),
+            None => self.file_ops_and_is_offset_aware(),
+        };
+        let flags = self.status_flags();
+        if flags.contains(StatusFlags::O_PATH) || !self.access_mode().is_readable() {
+            return_errno_with_message!(Errno::EBADF, "the file is not opened readable");
+        }
+        if !use_file_position {
+            return read(ops, position, flags);
+        }
+        let mut offset = self.offset.lock();
+        let len = read(ops, Some(*offset), flags)?;
+        *offset += len;
+        Ok(len)
     }
 
     pub(crate) fn readdir(&self, visitor: &mut dyn DirentVisitor) -> Result<usize> {
@@ -281,23 +304,9 @@ impl Pollable for InodeHandle {
 
 impl FileLike for InodeHandle {
     fn read(&self, writer: &mut VmWriter) -> Result<usize> {
-        if self.status_flags().contains(StatusFlags::O_PATH) || !self.access_mode().is_readable() {
-            return_errno_with_message!(Errno::EBADF, "the file is not opened readable");
-        }
-
-        let (file_ops, is_offset_aware) = self.file_ops_and_is_offset_aware();
-        let status_flags = self.status_flags();
-
-        if !is_offset_aware {
-            return file_ops.read_at(0, writer, status_flags);
-        }
-
-        let mut offset = self.offset.lock();
-
-        let len = file_ops.read_at(*offset, writer, status_flags)?;
-        *offset += len;
-
-        Ok(len)
+        self.with_read_position(None, |ops, offset, flags| {
+            ops.read_at(offset.unwrap_or(0), writer, flags)
+        })
     }
 
     fn write(&self, reader: &mut VmReader) -> Result<usize> {
@@ -331,14 +340,16 @@ impl FileLike for InodeHandle {
     }
 
     fn read_at(&self, offset: usize, writer: &mut VmWriter) -> Result<usize> {
-        let file_ops = self.file_ops_for_positional_io()?;
-        if self.status_flags().contains(StatusFlags::O_PATH) || !self.access_mode().is_readable() {
-            return_errno_with_message!(Errno::EBADF, "the file is not opened readable");
-        }
+        self.with_read_position(Some(offset), |ops, _, flags| {
+            ops.read_at(offset, writer, flags)
+        })
+    }
 
-        let status_flags = self.status_flags();
-
-        file_ops.read_at(offset, writer, status_flags)
+    fn read_vectored(&self, position: Option<usize>, writers: &mut [VmWriter]) -> Result<usize> {
+        self.with_read_position(position, |ops, offset, flags| match offset {
+            Some(offset) => ops.read_vectored_at(offset, writers, flags),
+            None => read_segments(writers, |_, writer| ops.read_at(0, writer, flags)),
+        })
     }
 
     fn write_at(&self, mut offset: usize, reader: &mut VmReader) -> Result<usize> {
@@ -434,7 +445,7 @@ impl FileLike for InodeHandle {
         if let Some(ref open_file) = self.open_file {
             open_file.check_seekable()?;
             if open_file.is_offset_aware() {
-                return do_seek_util(&self.offset, pos, open_file.seek_end()?);
+                return do_seek_util(&self.offset, pos, || open_file.seek_end());
             } else {
                 return Ok(0);
             }
@@ -444,7 +455,7 @@ impl FileLike for InodeHandle {
         if !inode.type_().is_seekable() {
             return_errno_with_message!(Errno::ESPIPE, "seek is not supported");
         }
-        do_seek_util(&self.offset, pos, inode.seek_end())
+        do_seek_util(&self.offset, pos, || Ok(inode.seek_end()))
     }
 
     fn fallocate(&self, mode: FallocMode, offset: usize, len: usize) -> Result<()> {
@@ -620,23 +631,26 @@ pub trait PerOpenFileOps: Pollable + FileOps + Any + Send + Sync + 'static {
     }
 }
 
-fn do_seek_util(offset: &Mutex<usize>, pos: SeekFrom, end: Option<usize>) -> Result<usize> {
-    let mut offset = offset.lock();
-
-    let new_offset = match pos {
-        SeekFrom::Start(off) => off,
+fn do_seek_util(
+    offset: &Mutex<usize>,
+    pos: SeekFrom,
+    seek_end: impl FnOnce() -> Result<Option<usize>>,
+) -> Result<usize> {
+    let (base, delta) = match pos {
+        SeekFrom::Start(off) => (Some(off), 0),
         SeekFrom::End(diff) => {
-            if let Some(end) = end {
-                end.wrapping_add_signed(diff)
-            } else {
-                return_errno_with_message!(
+            let end = seek_end()?.ok_or_else(|| {
+                Error::with_message(
                     Errno::EINVAL,
-                    "seeking the file from the end is not supported"
-                );
-            }
+                    "seeking the file from the end is not supported",
+                )
+            })?;
+            (Some(end), diff)
         }
-        SeekFrom::Current(diff) => offset.wrapping_add_signed(diff),
+        SeekFrom::Current(diff) => (None, diff),
     };
+    let mut offset = offset.lock();
+    let new_offset = base.unwrap_or(*offset).wrapping_add_signed(delta);
 
     // Invariant: `*offset <= isize::MAX as usize`.
     // TODO: Investigate whether `read`/`write` can break this invariant.

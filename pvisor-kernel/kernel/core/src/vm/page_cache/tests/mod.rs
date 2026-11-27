@@ -23,6 +23,31 @@ fn new_backend_page_cache(backend: &Arc<MockPageCacheBackend>, num_pages: usize)
 }
 
 #[ktest]
+fn exact_write_invalidation_discards_only_overlapping_cached_pages_without_io() {
+    let backend = MockPageCacheBackend::new(4);
+    let cache = new_backend_page_cache(&backend, 4);
+    let mut byte = [0];
+    for idx in [0, 1, 3] {
+        cache.read_bytes(idx * PAGE_SIZE, &mut byte).unwrap();
+    }
+    cache
+        .evict_range(PAGE_SIZE + 17..2 * PAGE_SIZE + 3)
+        .unwrap();
+    for (idx, reads) in [1, 1, 0, 1].into_iter().enumerate() {
+        assert_eq!(backend.read_count(idx), reads);
+        assert_eq!(backend.write_count(idx), 0);
+    }
+    for idx in [1, 2] {
+        backend.set_persisted_page_bytes(idx, &[0x5a; PAGE_SIZE]);
+    }
+    for (idx, expected) in [0, 0x5a, 0x5a, 0].into_iter().enumerate() {
+        cache.read_bytes(idx * PAGE_SIZE, &mut byte).unwrap();
+        assert_eq!(byte, [expected]);
+        assert_eq!(backend.read_count(idx), if idx == 1 { 2 } else { 1 });
+    }
+}
+
+#[ktest]
 fn anonymous_reads_and_zeroing_leave_holes_uncommitted() {
     let cache = PageCache::new_anon(3 * PAGE_SIZE).unwrap();
     cache.write_bytes(PAGE_SIZE, &[0x27, 0x13]).unwrap();

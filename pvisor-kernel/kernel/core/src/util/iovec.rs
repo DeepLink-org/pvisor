@@ -183,6 +183,29 @@ impl<'a> VmWriterArray<'a> {
     }
 }
 
+/// Fills consecutive segments, stopping at a short read or the first error.
+/// Once a segment has completed, return progress rather than a later error.
+pub(crate) fn read_segments(
+    writers: &mut [VmWriter],
+    mut read: impl FnMut(usize, &mut VmWriter) -> Result<usize>,
+) -> Result<usize> {
+    let mut done = 0;
+    for writer in writers {
+        let capacity = writer.avail();
+        match read(done, writer) {
+            Ok(n) => {
+                done += n;
+                if n < capacity {
+                    break;
+                }
+            }
+            Err(_) if done != 0 => break,
+            Err(err) => return Err(err),
+        }
+    }
+    Ok(done)
+}
+
 /// Trait defining the read behavior for a collection of [`VmReader`]s.
 pub(crate) trait MultiRead: ReadCString {
     /// Reads the exact number of bytes required to exhaust `self` or fill `writer`,

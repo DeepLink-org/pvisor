@@ -64,4 +64,5 @@ B-IMAGE-STORAGE-ENG,engineering A/B,storage/image_storage.json,criterion-rust,cr
 B-IMAGE-FORMAT-ENG,engineering A/B,storage/image_format.json,criterion-rust,criterion/src/storage/mod.rs
 B-NATIVE-DOCKER-ENG,engineering A/B,storage/native_runtime.json,criterion-rust,criterion/src/storage/mod.rs
 B-VM-GUEST-ENG,engineering A/B,vm/guest.md,criterion-rust,criterion/src/vm_guest.rs
+B-VM-GUEST-ENG,engineering A/B,vm/tree-granularity.md,criterion-rust,criterion/src/tree_granularity.rs
 B-VM-STARTUP-ENG,engineering A/B,vm/startup.md,criterion-rust,criterion/src/vm_guest.rs

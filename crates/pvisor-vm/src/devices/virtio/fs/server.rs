@@ -3411,6 +3411,74 @@ mod guest_cache_tests {
         (size_of::<EntryOut>() + ((size_of::<Dirent>() + 1 + 7) & !7)) as u32
     }
 
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[ignore = "host-side passthrough READDIR timing"]
+    fn passthrough_readdir_timing() {
+        use super::super::{filesystem::root_context, inode_alloc::InodeAllocator, passthrough};
+        const SIZE: u32 = 4096;
+        const ENTRIES: u32 = 100;
+        const REQUESTS: u32 = 10_000;
+        let temp = tempfile::tempdir().unwrap();
+        for index in 0..ENTRIES {
+            std::fs::File::create(temp.path().join(format!("f{index:04}"))).unwrap();
+        }
+        let fs = passthrough::PassthroughFs::new(
+            passthrough::Config {
+                root_dir: temp.path().to_str().unwrap().into(),
+                ..Default::default()
+            },
+            Arc::new(InodeAllocator::new()),
+        )
+        .unwrap();
+        fs.init(FsOptions::empty()).unwrap();
+        let fh = fs.opendir(root_context(), ROOT_ID, 0).unwrap().0.unwrap();
+        let server = Server::new(fs, false);
+        let arg = ReadIn {
+            fh,
+            size: SIZE,
+            ..Default::default()
+        };
+        let header = InHeader {
+            len: (size_of::<InHeader>() + size_of::<ReadIn>()) as u32,
+            opcode: Opcode::Readdir as u32,
+            nodeid: ROOT_ID,
+            ..Default::default()
+        };
+        let exit = Arc::new(AtomicI32::new(0));
+        let mem = GuestMemoryMmap::from_ranges(&[(GuestAddress(0), 65536)]).unwrap();
+        let capacity = SIZE + size_of::<OutHeader>() as u32;
+        for chunk in [capacity, 257] {
+            let mut descriptors = vec![(DescriptorType::Readable, size_of::<ReadIn>() as u32)];
+            for start in (0..capacity).step_by(chunk as usize) {
+                descriptors.push((DescriptorType::Writable, chunk.min(capacity - start)));
+            }
+            let body = GuestAddress(0x1000);
+            let chain =
+                create_descriptor_chain(&mem, GuestAddress(0), body, descriptors, 8).unwrap();
+            mem.write_slice(arg.as_slice(), body).unwrap();
+            let plan = OwnedDescriptorChain::new(chain).unwrap();
+            let run = || {
+                let (reader, writer) = plan.reader_writer(&mem).unwrap();
+                let count = server
+                    .handle_message((header, reader), writer, false, &None, &exit)
+                    .unwrap();
+                assert_eq!(count, size_of::<OutHeader>() + ENTRIES as usize * 32);
+            };
+            for _ in 0..100 {
+                run();
+            }
+            let start = std::time::Instant::now();
+            for _ in 0..REQUESTS {
+                run();
+            }
+            println!(
+                "chunk={chunk} ns/request={}",
+                start.elapsed().as_nanos() / u128::from(REQUESTS)
+            );
+        }
+    }
+
     #[test]
     fn readdirplus_rpc_error_releases_previously_accepted_entries() {
         let server = Server::new(DirectoryReplyFs::new(true, false), true);

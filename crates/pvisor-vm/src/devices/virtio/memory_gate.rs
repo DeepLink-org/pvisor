@@ -11,6 +11,7 @@ use vm_memory::{GuestMemory, GuestMemoryMmap};
 struct State {
     closed: bool,
     active: usize,
+    drain_waiters: usize,
     prepare: Option<Arc<MemoryPrepare>>,
     dedup_advised: bool,
     balloon_discard_disabled: bool,
@@ -140,6 +141,7 @@ pub struct MemoryGate {
 }
 pub struct Access {
     gate: Arc<MemoryGate>,
+    prepare: Option<Arc<MemoryPrepare>>,
 }
 
 /// Linux resolver activity, independent of the pager/store/VMM locks.
@@ -221,11 +223,13 @@ impl MemoryGate {
             .map_err(|_| "device memory gate poisoned")?;
         state.closed = true;
         while state.active != 0 {
+            state.drain_waiters += 1;
             let (next, timed) = self
                 .changed
                 .wait_timeout(state, deadline.saturating_duration_since(Instant::now()))
                 .map_err(|_| "device memory gate poisoned")?;
             state = next;
+            state.drain_waiters -= 1;
             if timed.timed_out() && state.active != 0 {
                 return Err("device RAM access did not drain");
             }
@@ -327,7 +331,10 @@ impl MemoryGate {
             state = self.changed.wait(state).unwrap();
         }
         state.active += 1;
-        Arc::new(Access { gate: self.clone() })
+        Arc::new(Access {
+            gate: self.clone(),
+            prepare: state.prepare.clone(),
+        })
     }
 }
 impl Access {
@@ -346,8 +353,7 @@ impl Access {
     /// The existing lease prevents mappings changing between descriptor decode
     /// and payload preparation. The callback runs outside the gate lock.
     pub(crate) fn prepare(&self, ranges: &[(u64, usize)]) {
-        let prepare = self.gate.state.lock().unwrap().prepare.clone();
-        if let Some(prepare) = prepare {
+        if let Some(prepare) = &self.prepare {
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| prepare(ranges)));
             match result {
                 Ok(Ok(())) => {}
@@ -368,7 +374,7 @@ impl Drop for Access {
         self.gate.idle.wake("device_completion");
         let mut state = self.gate.state.lock().unwrap();
         state.active -= 1;
-        if state.active == 0 {
+        if state.active == 0 && state.drain_waiters != 0 {
             self.gate.changed.notify_all();
         }
     }
@@ -743,6 +749,30 @@ mod tests {
         assert!(first_gate.is_idle_closed());
         first_gate.open();
         second_gate.open();
+    }
+
+    #[test]
+    fn last_lease_wakes_all_drain_waiters() {
+        let gate = Arc::new(MemoryGate::default());
+        let last = gate.enter();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::scope(|scope| {
+            for _ in 0..2 {
+                let tx = tx.clone();
+                let gate = gate.clone();
+                scope.spawn(move || tx.send(gate.close(Duration::from_secs(5))).unwrap());
+            }
+            let deadline = Instant::now() + Duration::from_secs(2);
+            while gate.state.lock().unwrap().drain_waiters != 2 {
+                assert!(Instant::now() < deadline, "drainers did not register");
+                std::thread::yield_now();
+            }
+            drop(last);
+            for _ in 0..2 {
+                assert_eq!(rx.recv_timeout(Duration::from_secs(1)).unwrap(), Ok(()));
+            }
+        });
+        assert!(gate.is_idle_closed());
     }
 
     #[test]

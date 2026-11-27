@@ -13,7 +13,7 @@ use ostd::{arch::trap::TrapFrame, debug, info};
 
 use super::{
     DEFAULT_QUEUE_SIZE, FileSystemDevice, HIPRIO_QUEUE_INDEX,
-    queue::{FsRequestQueue, MAX_DMA_BUFS_PER_REQUEST},
+    queue::{FsRequestQueue, MAX_DMA_BUFS_PER_REQUEST, SubmitMode},
     register_device,
 };
 use crate::{
@@ -39,13 +39,14 @@ impl FileSystemDevice {
     }
 
     /// Initializes one virtio-fs device from its virtio transport.
-    pub(crate) fn init(mut device_transport: DeviceTransport) -> Result<(), VirtioDeviceError> {
+    pub(crate) fn init(
+        mut device_transport: DeviceTransport,
+        selected: u64,
+    ) -> Result<(), VirtioDeviceError> {
         let config_manager = VirtioFsConfig::new_manager(device_transport.as_ref());
         let config = config_manager.read_config();
 
-        let negotiated_features = FileSystemFeatures::from_bits_truncate(Self::negotiate_features(
-            device_transport.read_device_features(),
-        ));
+        let negotiated_features = FileSystemFeatures::from_bits_truncate(selected);
         let notify_supported = negotiated_features.contains(FileSystemFeatures::NOTIFICATION);
         // Queue layout:
         // - Queue 0: high-priority queue (always present);
@@ -72,10 +73,23 @@ impl FileSystemDevice {
         let inline_metadata = negotiated_features
             .contains(FileSystemFeatures::PVISOR_INLINE_METADATA)
             && (request_queue_count == 1 || ostd::cpu::num_cpus() == 1);
+        let mode = if selected & crate::transport::FS_AUTO_HANDOFF != 0 {
+            SubmitMode::Auto {
+                inline_metadata,
+                // Compare in TSC ticks; no clock conversion on the submit path.
+                gap_ticks: ostd::arch::tsc_freq() / 10_000,
+            }
+        } else if selected & crate::transport::FS_QUEUE_HANDOFF != 0 {
+            SubmitMode::Handoff
+        } else if inline_metadata {
+            SubmitMode::InlineMetadata
+        } else {
+            SubmitMode::Interrupt
+        };
         let device = {
             let hiprio_queue = FsRequestQueue::new(
                 Self::new_queue(HIPRIO_QUEUE_INDEX, device_transport.as_mut())?,
-                false,
+                SubmitMode::Interrupt,
             );
 
             let mut request_queues = Vec::with_capacity(request_queue_count);
@@ -83,7 +97,7 @@ impl FileSystemDevice {
                 let queue_index = request_queue_start_idx + idx as u16;
                 request_queues.push(FsRequestQueue::new(
                     Self::new_queue(queue_index, device_transport.as_mut())?,
-                    inline_metadata,
+                    mode,
                 ));
             }
 

@@ -18,6 +18,7 @@ use crate::{
     prelude::*,
     process::signal::{PollHandle, Pollable},
     thread::work_queue::{self, WorkPriority},
+    util::read_segments,
     vm::vmar::FileMmapRequest,
 };
 
@@ -101,14 +102,25 @@ impl FileOps for VirtioFsFile {
         writer: &mut VmWriter,
         status_flags: StatusFlags,
     ) -> Result<usize> {
-        let fh = self.open_handle.fh();
-        let file_flags = self.open_handle.access_mode() as u32 | status_flags.bits();
+        self.read_vectored_at(offset, core::slice::from_mut(writer), status_flags)
+    }
 
+    fn read_vectored_at(
+        &self,
+        offset: usize,
+        writers: &mut [VmWriter],
+        status_flags: StatusFlags,
+    ) -> Result<usize> {
+        let fh = self.open_handle.fh();
         if self.cache_policy == CachePolicy::Cached && !status_flags.contains(StatusFlags::O_DIRECT)
         {
-            self.inode.cached_read_at(offset, writer, fh)
+            self.inode.cached_read_at(offset, writers, fh)
         } else {
-            self.inode.direct_read_at(offset, writer, fh, file_flags)
+            let file_flags = self.open_handle.access_mode() as u32 | status_flags.bits();
+            read_segments(writers, |done, writer| {
+                self.inode
+                    .direct_read_at(offset + done, writer, fh, file_flags)
+            })
         }
     }
 
@@ -166,7 +178,7 @@ impl PerOpenFileOps for VirtioFsFile {
             return_errno_with_message!(Errno::ENODEV, "the file is not mappable");
         }
 
-        Ok(MappableObject::Vmo(self.inode.cache_for_read()?))
+        Ok(MappableObject::Vmo(self.inode.expose_page_cache()?))
     }
 
     fn check_seekable(&self) -> Result<()> {

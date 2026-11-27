@@ -8,6 +8,7 @@ mod ops;
 mod page_cache;
 
 use core::{
+    ops::Range,
     sync::atomic::{AtomicUsize, Ordering},
     time::Duration,
 };
@@ -164,18 +165,19 @@ impl VirtioFsInode {
         self.size.load(Ordering::Acquire)
     }
 
-    pub(super) fn cache_for_read(&self) -> Result<Arc<Vmo>> {
-        if let Some(cache) = self.inner.read().page_cache() {
-            return Ok(cache.as_vmo().clone());
-        }
-        let mut inner = self.inner.write();
+    fn ensure_page_cache<'a>(&self, inner: &'a mut InodeInner) -> Result<&'a mut InodePages> {
         if inner.page_cache.is_none() {
-            inner.page_cache = Some(PageCache::new_with_backend(
-                self.size(),
-                self.weak_self.clone(),
-            )?);
+            inner.page_cache = Some(InodePages {
+                pages: PageCache::new_with_backend(self.size(), self.weak_self.clone())?,
+                exposed: false,
+            });
         }
-        Ok(inner.page_cache.as_ref().unwrap().as_vmo().clone())
+        Ok(inner.page_cache.as_mut().unwrap())
+    }
+
+    pub(super) fn expose_page_cache(&self) -> Result<Arc<Vmo>> {
+        let mut inner = self.inner.write();
+        Ok(self.ensure_page_cache(&mut inner)?.expose())
     }
 
     /// Updates a cached inode with a fresh FUSE entry reply.
@@ -223,8 +225,33 @@ pub(super) enum WriteOffset {
     Append,
 }
 
+struct InodePages {
+    pages: PageCache,
+    /// Once a VMO escapes the inode lock, mappings may dirty pages independently.
+    exposed: bool,
+}
+
+impl InodePages {
+    fn expose(&mut self) -> Arc<Vmo> {
+        self.exposed = true;
+        self.pages.as_vmo().clone()
+    }
+
+    fn writeback_cache(&mut self) -> Option<&mut PageCache> {
+        self.exposed.then_some(&mut self.pages)
+    }
+
+    fn invalidate(&self, range: Range<usize>) -> Result<()> {
+        if self.exposed {
+            self.pages.invalidate_range(range)
+        } else {
+            self.pages.evict_range(range)
+        }
+    }
+}
+
 struct InodeInner {
-    page_cache: Option<PageCache>,
+    page_cache: Option<InodePages>,
     metadata: Metadata,
     attr_valid_until: Duration,
     no_set_id_until: Duration,
@@ -234,16 +261,11 @@ struct InodeInner {
 impl InodeInner {
     /// Invalidates the whole page cache, if any.
     fn invalidate_page_cache(&self) -> Result<()> {
-        let Some(page_cache) = &self.page_cache else {
+        let Some(cache) = &self.page_cache else {
             return Ok(());
         };
 
-        let cached_size = page_cache.size();
-        if cached_size > 0 {
-            page_cache.invalidate_range(0..cached_size)?;
-        }
-
-        Ok(())
+        cache.invalidate(0..cache.pages.size())
     }
 
     /// Returns whether cached attributes are still inside the server TTL.
@@ -257,11 +279,38 @@ impl InodeInner {
     }
 
     fn page_cache(&self) -> Option<&PageCache> {
-        self.page_cache.as_ref()
+        self.page_cache.as_ref().map(|cache| &cache.pages)
     }
 
     fn page_cache_mut(&mut self) -> Option<&mut PageCache> {
-        self.page_cache.as_mut()
+        self.page_cache.as_mut().map(|cache| &mut cache.pages)
+    }
+
+    fn writeback_cache(&mut self) -> Option<&mut PageCache> {
+        self.page_cache.as_mut()?.writeback_cache()
+    }
+}
+
+#[cfg(ktest)]
+mod tests {
+    use ostd::prelude::ktest;
+
+    use super::*;
+
+    #[ktest]
+    fn vmo_exposure_permanently_requires_writeback() {
+        let mut cache = InodePages {
+            pages: PageCache::new_anon(PAGE_SIZE).unwrap(),
+            exposed: false,
+        };
+        assert!(cache.writeback_cache().is_none());
+        let mapped = cache.expose();
+        assert!(Arc::ptr_eq(
+            cache.writeback_cache().unwrap().as_vmo(),
+            &mapped
+        ));
+        drop(mapped);
+        assert!(cache.writeback_cache().is_some());
     }
 }
 
@@ -364,7 +413,7 @@ impl Inode for VirtioFsInode {
         if !self.type_.is_regular_file() {
             return None;
         }
-        self.cache_for_read().ok()
+        self.expose_page_cache().ok()
     }
 
     fn open(
@@ -562,8 +611,8 @@ impl Inode for VirtioFsInode {
     }
 
     fn sync(&self, _mode: SyncMode) -> Result<()> {
-        let inner = self.inner.write();
-        let Some(page_cache) = &inner.page_cache else {
+        let mut inner = self.inner.write();
+        let Some(page_cache) = inner.writeback_cache() else {
             return Ok(());
         };
         let cached_size = page_cache.size();

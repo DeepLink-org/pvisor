@@ -76,7 +76,7 @@ fn virtio_component_init() -> Result<(), ComponentInitError> {
             .unwrap();
 
         // Negotiate the feature subset supported by the driver.
-        negotiate_features(&mut transport);
+        let selected = negotiate_features(&mut transport);
 
         if !transport.is_legacy_version() {
             // Set `FEATURES_OK` to report that feature negotiation is complete.
@@ -104,7 +104,7 @@ fn virtio_component_init() -> Result<(), ComponentInitError> {
             VirtioDeviceType::Entropy => EntropyDevice::init(device_transport),
             VirtioDeviceType::Network => NetworkDevice::init(device_transport),
             VirtioDeviceType::Socket => SocketDevice::init(device_transport),
-            VirtioDeviceType::FileSystem => FileSystemDevice::init(device_transport),
+            VirtioDeviceType::FileSystem => FileSystemDevice::init(device_transport, selected),
             _ => {
                 warn!("Found unimplemented device: {:?}", device_type);
                 Ok(())
@@ -130,7 +130,7 @@ fn pop_device_transport() -> Option<Box<dyn VirtioTransport>> {
     None
 }
 
-fn negotiate_features(transport: &mut Box<dyn VirtioTransport>) {
+fn negotiate_features(transport: &mut Box<dyn VirtioTransport>) -> u64 {
     let features = transport.read_device_features();
     let mask = ((1u64 << 24) - 1) | (((1u64 << 24) - 1) << 50);
     let device_specified_features = features & mask;
@@ -151,6 +151,7 @@ fn negotiate_features(transport: &mut Box<dyn VirtioTransport>) {
     transport
         .write_driver_features(features & selected)
         .unwrap();
+    features & selected
 }
 
 bitflags! {

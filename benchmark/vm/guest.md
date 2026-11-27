@@ -112,3 +112,16 @@ VMM 和固件哈希，在新 VM 中交替执行 16 对试次；先后顺序在�
 `PVISOR_BENCH_REVISION_BUILDS` 指向 CI 下载的两个 `benchmark-build-*` 目录，
 其他输入路径与测量相同。`paired-diagnostic/` 单独保存全部原始试次及组内变化中位数，
 不写 Criterion 数据、不重算或覆盖门禁判定。
+
+**同一候选的 handoff 对照。** 在上述批次首次执行 `--diagnose` 前另设：
+
+```sh
+export PVISOR_BENCH_HANDOFF_PROBE="$batch/handoff-probe"
+cc -O2 -static -Wall -Wextra -Werror benchmark/vm/handoff_probe.c -o "$PVISOR_BENCH_HANDOFF_PROBE"
+```
+
+诊断在同一候选上随机交替显式 `0`、`1`、`auto`，每项 15 组，分别测原始四个
+共享磁盘负载和 256 次热 `pread`（连续／每次先等待 1 ms）。guest 读计时不含等待；
+VMM 用户态与内核态 CPU 时间包含 VM 启停及校验，不能解释为单个请求的 CPU 成本。
+每项另用非计时 VM 核验协商并记录全程路径计数。`handoff/summary.md` 在 CI
+作业摘要展示，原始样本随制品保留；`off/fallback` 不是成功测到开启后的性能。

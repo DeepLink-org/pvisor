@@ -114,8 +114,18 @@ fn check_write_cache() {
             };
             assert_ne!(addr as isize, -1);
             assert_eq!(unsafe { addr.add(8192).read_volatile() }, b'a');
+            let other_writer = fs::OpenOptions::new().write(true).open(path).unwrap();
+            let newest_reader = fs::File::open(path).unwrap();
+            writer.write_all_at(b"uvw", 8192).unwrap();
+            writer.sync_all().unwrap();
+            assert_eq!(unsafe { addr.add(8192).read_volatile() }, b'u');
+            drop(other_writer);
             writer.write_all_at(b"xyz", 8192).unwrap();
+            writer.sync_all().unwrap();
             assert_eq!(unsafe { addr.add(8192).read_volatile() }, b'x');
+            let mut bytes = [0; 3];
+            newest_reader.read_exact_at(&mut bytes, 8192).unwrap();
+            assert_eq!(&bytes, b"xyz");
             assert_eq!(unsafe { munmap(addr, expected.len()) }, 0);
         } else {
             let mut bytes = vec![0xff; expected.len()];
@@ -128,6 +138,38 @@ fn check_write_cache() {
         writer.sync_all().unwrap();
         expected[8192..].copy_from_slice(b"x\0\0");
         assert_eq!(fs::read(path).unwrap(), expected);
+    }
+}
+
+fn check_write_mapping_race() {
+    let path = "/write-map-race";
+    for attempt in 0..8 {
+        let file = fs::File::create_new(path).unwrap();
+        file.write_all_at(b"ab", 0).unwrap();
+        let mut bytes = [0; 2];
+        file.read_exact_at(&mut bytes, 0).unwrap();
+        assert_eq!(bytes, *b"ab");
+        let start = std::sync::Barrier::new(2);
+        thread::scope(|scope| {
+            let write = scope.spawn(|| {
+                start.wait();
+                file.write_all_at(b"W", 0).unwrap();
+            });
+            start.wait();
+            let addr = unsafe { mmap(std::ptr::null_mut(), 2, 3, 1, file.as_raw_fd(), 0) };
+            assert_ne!(addr as isize, -1);
+            write.join().unwrap();
+            assert_eq!(unsafe { addr.read_volatile() }, b'W');
+            unsafe { addr.add(1).write_volatile(b'M') };
+            assert_eq!(unsafe { munmap(addr, 2) }, 0);
+        });
+        // A dirty page can outlive its last mapping.
+        file.sync_all().unwrap();
+        file.read_exact_at(&mut bytes, 0).unwrap();
+        assert_eq!(bytes, *b"WM");
+        if attempt < 7 {
+            fs::remove_file(path).unwrap();
+        }
     }
 }
 
@@ -338,6 +380,7 @@ fn main() {
             "--check-tmpfs-read" => check_tmpfs_read(),
             "--check-write-cache" => {
                 check_write_cache();
+                check_write_mapping_race();
                 check_setid_writes();
             }
             "--check-keep-cache-copy-up" => check_keep_cache_copy_up(),
