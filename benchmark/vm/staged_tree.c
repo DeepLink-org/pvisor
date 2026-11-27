@@ -57,6 +57,17 @@ static int part(int dir, int i, int flags) {
     return fd;
 }
 
+static void produce(int fd, int file, int write_kib) {
+    unsigned char buf[BULK];
+    CHECK(BLOCKS % write_kib == 0 && (size_t)write_kib * SMALL <= sizeof(buf));
+    for (int j = 0; j < BLOCKS; j += write_kib) {
+        for (int k = 0; k < write_kib; ++k)
+            memset(buf + k * SMALL, (file * 31 + j + k) & 255, SMALL);
+        size_t size = (size_t)write_kib * SMALL;
+        CHECK(write(fd, buf, size) == (ssize_t)size);
+    }
+}
+
 static void publish(int pending, int out, int observe) {
     CHECK(fsync(pending) == 0 && close(pending) == 0);
     checkpoint(observe, "prepared");
@@ -89,9 +100,19 @@ int main(int argc, char **argv) {
         import((int)fd, argc == 4);
         return 0;
     }
+    int write_kib = 1, sweep = 0;
+    if (argc >= 3) {
+        const char *size = argv[argc - 1];
+        if (!strcmp(size, "1") || !strcmp(size, "16") || !strcmp(size, "256")) {
+            write_kib = atoi(size);
+            sweep = 1;
+            --argc;
+        }
+    }
     CHECK(argc == 2 || (argc == 3 && (!strcmp(argv[2], "observe") || !strcmp(argv[2], "start"))));
     int observe = argc == 3 && !strcmp(argv[2], "observe");
     int packed = !strcmp(argv[1], "pack"), local = packed || !strcmp(argv[1], "local");
+    CHECK(!(packed && sweep));
     CHECK(local || !strcmp(argv[1], "shared"));
     int ram = -1;
     if (local) {
@@ -105,16 +126,12 @@ int main(int argc, char **argv) {
     int out = open("/output", O_DIRECTORY | O_RDONLY);
     CHECK(out >= 0);
     checkpoint(argc == 3 && !observe, "begin");
-    unsigned char block[SMALL];
     uint64_t start = now();
     int pending = packed ? -1 : new_tree(out, ".pending");
     int work = local ? new_tree(ram, "stage") : pending;
     for (int i = 0; i < FILES; ++i) {
         int fd = part(work, i, O_CREAT | O_EXCL | O_WRONLY);
-        for (int j = 0; j < BLOCKS; ++j) {
-            memset(block, (i * 31 + j) & 255, sizeof(block));
-            CHECK(write(fd, block, sizeof(block)) == sizeof(block));
-        }
+        produce(fd, i, write_kib);
         CHECK((local || fsync(fd) == 0) && close(fd) == 0);
     }
     checkpoint(observe, "generated");
@@ -141,6 +158,8 @@ int main(int argc, char **argv) {
         }
     }
     publish(pending, out, observe);
-    printf("TREE_PUBLISHED_NS %" PRIu64 "\n", now() - start);
+    uint64_t elapsed = now() - start;
+    if (sweep) printf("TREE_PUBLISHED %s %d %" PRIu64 "\n", argv[1], write_kib, elapsed);
+    else printf("TREE_PUBLISHED_NS %" PRIu64 "\n", elapsed);
     return 0;
 }

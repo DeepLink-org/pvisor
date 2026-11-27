@@ -111,7 +111,7 @@ def importer_checks(probe, pack, top):
 
 def check(vm, probe, top):
     env = os.environ | {"PVISOR_GUEST_KERNEL": "rust-native"}
-    for mode in ("shared", "local", "interrupted", "pack"):
+    for mode in ("shared", "local", "export-conflict", "interrupted", "pack"):
         root = top / mode
         out = root / "output"
         out.mkdir(parents=True)
@@ -141,6 +141,26 @@ def check(vm, probe, top):
             )
             assert p.stdout.startswith(b"begin\nTREE_PUBLISHED_NS ")
             verify(out / "ready")
+            continue
+
+        if mode == "export-conflict":
+            with observed([*cmd, "local", "observe", "256"], env=env) as p:
+                phase(p, "generated")
+                pending = out / ".pending"
+                assert list(out.iterdir()) == [pending] and not list(pending.iterdir())
+                conflict = pending / "part-3"
+                conflict.write_bytes(b"already present")
+                before = conflict.stat()
+                resume(p)
+                output, _ = p.communicate(timeout=20)
+            assert p.returncode == 1 and not output, (p.returncode, output)
+            assert list(out.iterdir()) == [pending]
+            assert {entry.name for entry in pending.iterdir()} == {f"part-{i}" for i in range(4)}
+            assert all((pending / f"part-{i}").stat().st_size == 512 * 1024 for i in range(3))
+            assert (
+                conflict.stat().st_ino == before.st_ino
+                and conflict.read_bytes() == b"already present"
+            )
             continue
 
         capsule = out / "pack"
@@ -187,5 +207,5 @@ if __name__ == "__main__":
     with tempfile.TemporaryDirectory() as directory:
         check(args.vm.resolve(strict=True), args.probe.resolve(strict=True), Path(directory))
     print(
-        "PASS: shared/local/packed trees, exit admission, pinned input, kill phases, conflict, size and write faults"
+        "PASS: shared/local/packed trees, partial guest export conflict, exit admission, pinned input, kill phases, conflict, size and write faults"
     )

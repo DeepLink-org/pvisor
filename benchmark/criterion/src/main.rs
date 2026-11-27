@@ -11,6 +11,8 @@ mod startup;
 #[cfg(all(target_os = "linux", feature = "storage-tls"))]
 mod storage;
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+mod tree_granularity;
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 mod vm_guest;
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 mod vm_matrix;
@@ -218,7 +220,11 @@ fn run() -> Result<()> {
         }
         "vm" => {
             #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-            vm_guest::register(&mut c, entry == "vm/startup.md")?;
+            if entry == "vm/tree-granularity.md" {
+                tree_granularity::register(&mut c)?;
+            } else {
+                vm_guest::register(&mut c, entry == "vm/startup.md")?;
+            }
             #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
             bail!("VM guest regression measurements require Linux x86_64/KVM");
         }
