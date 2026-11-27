@@ -1182,13 +1182,13 @@ Design: 负载、对照、控制变量与有效样本判据。
 - **角色与问题：** engineering A/B。从创建到 guest 内核启动完毕、首个用户命令开始执行，调用方要等多久？
 - **实验设计：** 同机 4 vCPU / 256 MiB。直接启动从宿主发起 VMM spawn 至收到首个 guest 命令入口写出的完整标记；daemon 从客户端发出 HTTP Create 至观察到该请求指定的入口命令在已停泊 VM 的独占文件系统中写出本次标记。均用宿主单调时钟；不以 VMM 启动日志、API Running 或命令完成代替入口标记。
 - **判据：** 两个 pVisor 直接启动项和 Linux daemon 预热命中项分别对比本后端基线，阈值 15%；Firecracker 直接启动作参照。Rust native 和 Firecracker 不支持该 daemon 预热路径，明确标 N/A；缺少命令开始证据、基线或预热命中不能通过。
-- **入口：** [`vm/startup`](vm/startup.md)，独立于 `vm/guest` 的 15 项运行时表。
+- **入口：** [`vm/startup`](vm/startup.md)，独立于 `vm/guest` 的 17 项运行时表。
 
 ### B-VM-GUEST-ENG：guest 内部操作的回归门禁 {#b-vm-guest-eng}
 
-- **角色与问题：** engineering A/B。候选版本是否使 Linux 固件或 Rust native guest 的计算、系统调用、进程间通信、内存、磁盘文件或 tmpfs 操作变慢？
+- **角色与问题：** engineering A/B。候选版本是否使 Linux 固件或 Rust native guest 的计算、系统调用、进程间通信、跨 vCPU 唤醒、内存、磁盘文件或 virtio-fs 多文件元数据操作变慢？
 - **结论形式：** 按后端、负载列出基线和候选的 Criterion 中位耗时。两个 pVisor 后端各自对比本后端基线，单项变慢超过 15% 即失败。固定 Firecracker 是同机参照，不是产品性能下限。
-- **实验设计：** 同一台 Linux x86_64/KVM 主机、单 vCPU、256 MiB，使用相同静态探针。每次新 VM 在 guest 内计时。分别采样整数循环、系统调用、双进程管道往返、内存复制和匿名映射首次触页。文件负载区分顺序写、预热后顺序/乱序读和乱序覆写；磁盘写含 fsync。tmpfs 单独测数据读写、单文件元数据和多文件目录遍历。检查数据、挂载类型和成功完成标记；缺项或失败不计作通过。pVisor 使用 virtio-fs，Firecracker 使用 ext4/virtio-blk，不宣称裸盘等价。
+- **实验设计：** 同一台 Linux x86_64/KVM 主机、单 vCPU、256 MiB，使用相同静态探针；跨 vCPU 唤醒项为 2 vCPU。每次新 VM 在 guest 内计时。分别采样整数循环、系统调用、单/跨 vCPU 双进程管道往返、内存复制和匿名映射首次触页。文件负载区分顺序写、预热后顺序/乱序读和乱序覆写；磁盘写含 fsync；`/work` 上另外创建、`stat` 和删除 32×32 个文件，覆盖 virtio-fs 根的多文件元数据路径。tmpfs 单独测数据读写、单文件元数据和多文件目录遍历。检查数据、挂载类型和成功完成标记；缺项或失败不计作通过。pVisor 使用 virtio-fs，Firecracker 使用 ext4/virtio-blk，不宣称裸盘等价。跨 vCPU 唤醒和多文件元数据项直接来自 kata 3.31.0 对照中发现的跨核 IPI 与目录元数据路径，用来防止后续回归。
 - **入口：** `mise run benchmark -- vm/guest`；[复现与门禁](vm/guest.md)。这是顺序测量的工程门禁，不发布跨后端加速结论。
 - **机制诊断：** [Rust guest 共享文件 I/O](evidence/native-guest-file-io.md) 分开验证热读的属性校验、同步写的确认、tmpfs 目录遍历和新文件分阶段发布。
 - **tmpfs 对照：** [匿名页、文件空洞和并发读](evidence/native-guest-tmpfs.md) 用上一轮制品与 PR #209 为独立基线，区分共享文件同步成本和 guest 内存文件的访问成本。

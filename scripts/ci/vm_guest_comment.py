@@ -52,7 +52,7 @@ def render(report, *, startup=False):
             "warm-command-start": {"linux"},
         }
     else:
-        complete = len(table) == 15 and all(
+        complete = len(table) == 17 and all(
             cells.keys() == set(BACKENDS) for cells in table.values()
         )
     if not complete or report["passed"] is not (failures == 0):

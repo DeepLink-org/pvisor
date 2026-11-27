@@ -4,16 +4,18 @@ pub const DIRECT_START: &str = "direct-command-start";
 pub const WARM_START: &str = "linux-warm-command-start";
 pub const REFERENCE: &str = "firecracker";
 pub const BACKENDS: [&str; 3] = ["linux", "rust-native", REFERENCE];
-pub const METRICS: [&str; 15] = [
+pub const METRICS: [&str; 17] = [
     "cpu-integer",
     "syscall-getpid",
     "ipc-pipe-roundtrip",
+    "ipc-wake-cross-vcpu",
     "memory-copy",
     "memory-map-touch",
     "disk-write-fsync",
     "disk-warm-read",
     "disk-shuffled-read",
     "disk-shuffled-overwrite-fsync",
+    "fs-metadata-tree",
     "tmpfs-write",
     "tmpfs-read",
     "tmpfs-shuffled-read",

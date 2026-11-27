@@ -7,7 +7,7 @@ Benchmark: B-VM-GUEST-ENG ([注册表](../REGISTRY.md#b-vm-guest-eng))，enginee
 
 PR 的目标提交和待合并版本在同一台 Linux x86_64/KVM 主机上顺序测量。每个版本都跑
 pvisor-vm + Linux 固件、pvisor-vm + 嵌入式 Rust native kernel、固定的 Firecracker；
-每个后端 15 项负载，共 30 个独立的产品门禁和 15 个必测参照。
+每个后端 17 项负载，共 34 个独立的产品门禁和 17 个必测参照。
 每项取 Criterion 的 `median.point_estimate`（ns/整项操作，越小越好）。
 两个 pVisor 后端各自和自己的基线比：**任意一项超过基线的 115% 就失败**，不按平均分抵消。
 Firecracker 的两个读数用来识别宿主波动，不要求 pVisor 快于它。三个后端都必须给出有效结果；
@@ -15,7 +15,7 @@ Firecracker 的两个读数用来识别宿主波动，不要求 pVisor 快于它
 
 将 GitHub 状态检查 **`VM guest regression gate`** 设为目标分支的 required check，
 才能用这个失败状态阻止合并。PR 的 **Conversation** 中，GitHub Actions 会更新同一条
-**VM guest performance** 评论。表格按负载分 15 行，三列并排显示各后端的基线 → 候选
+**VM guest performance** 评论。表格按负载分 17 行，三列并排显示各后端的基线 → 候选
 中位耗时（ms/整项）和变化率；超过阈值的 pVisor 项会标红。若本次测量未产出完整报告，
 评论会给出运行链接而不是显示通过。评论不改变门禁结果。
 [benchmark CI](../../.github/workflows/pvisor-benchmark.yml) 在同仓库 PR 的两项 VM 门禁结束后直接调用
@@ -33,7 +33,7 @@ SHA、制品哈希、逐次命令与日志、Criterion 样本及 `comparison/rep
 
 ## 测量内容
 
-每次操作在新 VM 中执行，1 vCPU、256 MiB、相同的静态工作负载，用 guest 的
+每次操作在新 VM 中执行，1 vCPU（跨 vCPU 唤醒项为 2 vCPU）、256 MiB、相同的静态工作负载，用 guest 的
 `CLOCK_MONOTONIC` 计时。启动、关机、准备目录/镜像、挂载和文件内容回读校验不计入。
 每个 cell 用 Flat 采样，10 个统计样本，100 ms 预热和 1 秒目标测量预算；
 不丢慢样本。它不是跨机器的排行榜，也不衡量 VM 启动、内存占用或尾延迟。
@@ -43,12 +43,14 @@ SHA、制品哈希、逐次命令与日志、Criterion 样本及 `comparison/rep
 | `cpu-integer` | 800 万次有数据依赖的 xorshift32；检查最终值 |
 | `syscall-getpid` | 131,072 次直接 `SYS_getpid`，每次检查 PID，测进入和返回 guest 内核的成本 |
 | `ipc-pipe-roundtrip` | 单 vCPU 上两个进程经两条管道完成 4,096 次单字节请求/应答，每次验证应答；不含 fork、首次握手及 waitpid |
+| `ipc-wake-cross-vcpu` | 2 vCPU；两个进程分别绑定 guest CPU 0/1，经两条管道完成 4,096 次单字节请求/应答；覆盖跨 vCPU 唤醒路径 |
 | `memory-copy` | 在已触页的两个 16 MiB 缓冲区间复制 16 次；验证目标字节 |
 | `memory-map-touch` | 私有匿名映射 32 MiB，并对每个 4 KiB 页首次写一个字节；不含读回校验和解除映射 |
 | `disk-write-fsync` | 每次 4 KiB，顺序写 4 MiB 并 `fsync`；回读逐字节校验 |
 | `disk-warm-read` | 预热后按顺序 `pread` 完整 4 MiB，每次 4 KiB |
 | `disk-shuffled-read` | 相同文件和预热条件下，乱序 `pread` 所有 4 KiB 块 |
 | `disk-shuffled-overwrite-fsync` | 乱序 `pwrite` 已有 4 MiB 文件中的所有块，计入末尾一次 `fsync` |
+| `fs-metadata-tree` | 在 `/work` 上创建 32 个目录 × 32 个空文件，逐项 `stat`，再删除并检查不存在；覆盖 virtio-fs 根的多文件元数据路径 |
 | `tmpfs-write` | 每次 4 KiB，顺序写 4 MiB，不含 `fsync` |
 | `tmpfs-read` | 读取刚写入的 4 MiB 文件，每次 4 KiB，校验内容 |
 | `tmpfs-shuffled-read` | 在预热的 tmpfs 文件中乱序 `pread` 所有 4 KiB 块 |

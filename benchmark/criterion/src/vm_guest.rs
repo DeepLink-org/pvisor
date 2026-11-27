@@ -1,5 +1,6 @@
 //! Benchmark: B-VM-GUEST-ENG (benchmark/REGISTRY.md#b-vm-guest-eng), role engineering A/B.
-//! Motivation: catch guest CPU, memory, storage and tmpfs regressions.
+//! Motivation: catch guest CPU, memory, storage, tmpfs, virtio-fs metadata and
+//! cross-vCPU wake regressions.
 //! Conclusion sought: a per-kernel verdict per workload, with a fixed Firecracker reference.
 //! Design: identical guest probe, fresh writable backing, guest clock and verified results.
 //! Benchmark: B-VM-STARTUP-ENG (benchmark/REGISTRY.md#b-vm-startup-eng), role engineering A/B.
@@ -56,7 +57,13 @@ impl Subjects {
         metric: &str,
     ) -> Result<Duration> {
         let startup = metric == vm_matrix::DIRECT_START;
-        let cpus = if startup { 4 } else { 1 };
+        let cpus = if startup {
+            4
+        } else if metric == "ipc-wake-cross-vcpu" {
+            2
+        } else {
+            1
+        };
         fs::create_dir_all(logs)?;
         let backing = tempfile::tempdir_in(batch)?;
         let root = backing.path().join("root");
@@ -106,7 +113,7 @@ impl Subjects {
         ensure!(elapsed <= wall, "guest duration exceeds VM lifetime");
         save(
             logs.join("result.json"),
-            &json!({"backend":backend,"metric":metric,"guest_ns":elapsed.as_nanos()}),
+            &json!({"backend":backend,"metric":metric,"vcpus":cpus,"guest_ns":elapsed.as_nanos()}),
         )?;
         Ok(elapsed)
     }
