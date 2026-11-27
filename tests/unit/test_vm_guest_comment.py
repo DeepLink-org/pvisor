@@ -23,7 +23,7 @@ MARKER = "<!-- pvisor-vm-guest-report"
 
 def report(slow=False):
     rows = []
-    for metric in ["tmpfs-write", *(f"workload-{i}" for i in range(14))]:
+    for metric in ["tmpfs-write", *(f"workload-{i}" for i in range(16))]:
         for backend in reporter.BACKENDS:
             ref = backend == "firecracker"
             fails = slow and (backend, metric) == ("linux", "tmpfs-write")
@@ -152,8 +152,8 @@ class VmGuestCommentTests(unittest.TestCase):
     def test_table_includes_all_cells_and_highlights_only_product_regressions(self):
         for slow in (False, True):
             text = reporter.render(report(slow))
-            self.assertIn("**FAIL** · 1/30" if slow else "**PASS** · 0/30", text)
-            self.assertEqual(text.count("\n| `"), 15)
+            self.assertIn("**FAIL** · 1/34" if slow else "**PASS** · 0/34", text)
+            self.assertEqual(text.count("\n| `"), 17)
             self.assertEqual(text.count("❌"), int(slow))
             self.assertTrue(text.splitlines()[6].endswith("1.000 → 1.200 (+20.00%) |"))
 
@@ -197,7 +197,7 @@ class VmGuestCommentTests(unittest.TestCase):
             ["repos/base/pvisor/issues/comments/124", "--method", "PATCH"],
         )
         body = json.loads(api.call_args.kwargs["input"])["body"]
-        self.assertIn("**FAIL** · 1/30", body)
+        self.assertIn("**FAIL** · 1/34", body)
         self.assertIn("actions/runs/321/attempts/1", body)
 
     @patch.object(reporter, "gh")
