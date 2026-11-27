@@ -114,8 +114,18 @@ fn check_write_cache() {
             };
             assert_ne!(addr as isize, -1);
             assert_eq!(unsafe { addr.add(8192).read_volatile() }, b'a');
+            let other_writer = fs::OpenOptions::new().write(true).open(path).unwrap();
+            let newest_reader = fs::File::open(path).unwrap();
+            writer.write_all_at(b"uvw", 8192).unwrap();
+            writer.sync_all().unwrap();
+            assert_eq!(unsafe { addr.add(8192).read_volatile() }, b'u');
+            drop(other_writer);
             writer.write_all_at(b"xyz", 8192).unwrap();
+            writer.sync_all().unwrap();
             assert_eq!(unsafe { addr.add(8192).read_volatile() }, b'x');
+            let mut bytes = [0; 3];
+            newest_reader.read_exact_at(&mut bytes, 8192).unwrap();
+            assert_eq!(&bytes, b"xyz");
             assert_eq!(unsafe { munmap(addr, expected.len()) }, 0);
         } else {
             let mut bytes = vec![0xff; expected.len()];

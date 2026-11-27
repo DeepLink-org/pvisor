@@ -507,6 +507,12 @@ jobs:
             -- /probe 7 --check-write-cache || status=$?
           test "$status" = 7
           printf WM | cmp - "$root/write-map-race"
+          python3 -c 'import pathlib, sys; assert pathlib.Path(sys.argv[1]).read_bytes() == bytes(8192) + b"x\0\0"' "$root/mapped"
+          root="$(mktemp -d "$RUNNER_TEMP/read-handles.XXXXXX")"
+          mise exec -- rustc --edition=2021 --target x86_64-unknown-linux-musl -C linker=rust-lld -O \
+            pvisor-kernel/tests/read_handles.rs -o "$root/probe"
+          python3 -c 'import pathlib, sys; pathlib.Path(sys.argv[1]).write_bytes(bytes((i // 4096 + i % 251) % 256 for i in range(1027 * 4096)))' "$root/subject"
+          timeout 30 "$vm" --rootfs "$root" --cpus 1 --memory 256 -- /probe 256
 
       - name: Rust guest metadata defaults and seeded filesystem stress / KVM
         if: runner.os == 'Linux' && matrix.shard == 'pvisor'

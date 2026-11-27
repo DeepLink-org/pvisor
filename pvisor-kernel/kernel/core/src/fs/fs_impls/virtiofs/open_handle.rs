@@ -132,24 +132,11 @@ impl OpenHandles {
         accepts_fn: impl Fn(&AccessMode) -> bool,
     ) -> Option<Arc<VirtioFsOpenHandle>> {
         let mut handles = self.handles.lock();
-        let mut found = None;
-
-        // TODO: Replace this scan-and-fallback scheme with a more direct way
-        // to serve inode/page-cache I/O without probing the live open-handle set.
-        // Prefer recently inserted handles, which are more likely to have
-        // required properties and be valid.
-        handles.retain(|handle| {
-            let Some(open_handle) = handle.upgrade() else {
-                return false;
-            };
-
-            if accepts_fn(&open_handle.access_mode) {
-                found = Some(open_handle);
-            }
-
-            true
-        });
-
-        found
+        handles.retain(|h| h.strong_count() > 0);
+        handles
+            .iter()
+            .rev()
+            .filter_map(Weak::upgrade)
+            .find(|h| accepts_fn(&h.access_mode))
     }
 }
