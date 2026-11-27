@@ -48,7 +48,6 @@ fn virtio_component_init() -> Result<(), ComponentInitError> {
     transport::init();
 
     device::entropy::init();
-    device::network::init();
     device::socket::init();
 
     while let Some(mut transport) = pop_device_transport() {

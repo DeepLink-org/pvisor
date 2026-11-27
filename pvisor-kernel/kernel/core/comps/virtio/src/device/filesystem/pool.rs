@@ -27,8 +27,7 @@ use crate::dma_buf::DmaBuf;
 /// fixed-size buffers.
 const MIN_SHIFT: usize = 6;
 
-/// Pool-backed buffers stop at one page. Larger buffers use `DmaStream` so large
-/// buffers do not consume all small-buffer pool segments.
+/// Larger buffers use the directional arena or a per-request DMA stream.
 const MAX_SHIFT: usize = 12;
 
 /// The number of pool-backed size classes.
@@ -37,25 +36,16 @@ const N_CLASSES: usize = MAX_SHIFT - MIN_SHIFT + 1;
 /// The largest buffer size served by a pooled DMA segment.
 pub(super) const MAX_CLASS_SIZE: usize = 1 << MAX_SHIFT;
 
-/// Preallocate a few segments per size class to avoid frequent allocation under
-/// light concurrency.
-const POOL_INIT_SIZE: usize = 8;
-
-/// Retains enough free segments for request bursts.
+/// Retain small-buffer pages for request bursts.
 const POOL_HIGH_WATERMARK: usize = 64;
 
 const MAX_DMA_ARENA_PAGES: usize = 8 * 1024 * 1024 / PAGE_SIZE;
 
-/// A pool of DMA arenas for buffers received from the device.
-static VIRTIOFS_DMA_ARENA_RPOOL: Once<Option<Arc<DmaArenaPool<FromDevice>>>> = Once::new();
-/// A pool of DMA arenas for buffers sent to the device.
-static VIRTIOFS_DMA_ARENA_WPOOL: Once<Option<Arc<DmaArenaPool<ToDevice>>>> = Once::new();
+type SharedArena<D> = Once<Option<Arc<DmaArenaPool<D>>>>;
+pub(super) static REPLY_ARENA: SharedArena<FromDevice> = Once::new();
+pub(super) static REQUEST_ARENA: SharedArena<ToDevice> = Once::new();
 
-/// Returns the shared virtio-fs DMA arena pools, initializing them on first use.
-pub(super) fn dma_arena_pools_singleton() -> (
-    Option<&'static Arc<DmaArenaPool<ToDevice>>>,
-    Option<&'static Arc<DmaArenaPool<FromDevice>>>,
-) {
+fn allocate_arena<D: DmaDirection>() -> Option<Arc<DmaArenaPool<D>>> {
     let usable_pages: usize = boot_info()
         .memory_regions
         .iter()
@@ -64,36 +54,24 @@ pub(super) fn dma_arena_pools_singleton() -> (
         .sum();
     // Both directions together may reserve at most one eighth of usable RAM.
     let pages = (usable_pages / 16).min(MAX_DMA_ARENA_PAGES);
-
-    (
-        VIRTIOFS_DMA_ARENA_WPOOL
-            .call_once(|| DmaArenaPool::new(pages).ok())
-            .as_ref(),
-        VIRTIOFS_DMA_ARENA_RPOOL
-            .call_once(|| DmaArenaPool::new(pages).ok())
-            .as_ref(),
-    )
+    DmaArenaPool::new(pages).ok()
 }
 
 /// A virtio-fs DMA buffer allocator for pooled segments and large arenas.
 #[derive(Debug)]
 pub(super) struct VirtiofsDmaPool<D: DmaDirection> {
     classes: [Arc<DmaPool<D>>; N_CLASSES],
-    arena_pool: Option<&'static Arc<DmaArenaPool<D>>>,
+    arena: &'static SharedArena<D>,
 }
 
 impl<D: DmaDirection> VirtiofsDmaPool<D> {
-    /// Creates a DMA buffer pool with predefined size classes.
-    pub(super) fn new(arena_pool: Option<&'static Arc<DmaArenaPool<D>>>) -> Self {
+    pub(super) fn new(arena: &'static SharedArena<D>) -> Self {
         let classes = core::array::from_fn(|i| {
             let segment_size = 1 << (MIN_SHIFT + i);
-            DmaPool::<D>::new(segment_size, POOL_INIT_SIZE, POOL_HIGH_WATERMARK, false)
+            DmaPool::<D>::new(segment_size, 0, POOL_HIGH_WATERMARK, false)
         });
 
-        Self {
-            classes,
-            arena_pool,
-        }
+        Self { classes, arena }
     }
 
     /// Allocates a DMA buffer whose visible length is `len`.
@@ -107,7 +85,8 @@ impl<D: DmaDirection> VirtiofsDmaPool<D> {
             DmaBuffer::Pooled(self.classes[shift - MIN_SHIFT].alloc_segment()?)
         } else {
             let pages = len.div_ceil(PAGE_SIZE);
-            match self.arena_pool.and_then(|pool| pool.alloc(pages)) {
+            let arena = self.arena.call_once(allocate_arena);
+            match arena.as_ref().and_then(|pool| pool.alloc(pages)) {
                 Some(arena) => DmaBuffer::Arena(arena),
                 None => DmaBuffer::Direct(DmaStream::alloc_uninit(pages, false)?),
             }

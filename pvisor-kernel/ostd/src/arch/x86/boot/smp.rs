@@ -15,17 +15,7 @@
 //! Following a power-up or reset, the APs complete a minimal self-configuration,
 //! then wait for a startup signal (a SIPI message) from the BSP processor.
 //!
-//! The wake-up of AP follows SNIT-SIPI-SIPI IPI sequence:
-//!  - Broadcast INIT IPI (Initialize the APs to the wait-for-SIPI state)
-//!  - Wait
-//!  - Broadcast De-assert INIT IPI (Only older processors need this step)
-//!  - Wait
-//!  - Broadcast SIPI IPI (APs exits the wait-for-SIPI state and starts executing code)
-//!  - Wait
-//!  - Broadcast SIPI IPI (If an AP fails to start)
-//!
-//! This sequence does not need to be strictly followed, and there may be
-//! different considerations in different systems.
+//! The BSP waits for every enumerated AP to report online before completing startup.
 
 use acpi::madt::MadtEntry;
 
@@ -243,11 +233,8 @@ unsafe fn wake_up_aps_via_mailbox(num_cpus: u32) {
 
 /// Sends IPIs to notify all application processors to boot.
 ///
-/// Follow the INIT-SIPI-SIPI IPI sequence.
-/// Here, we don't check whether there is an AP that failed to start,
-/// but send the second SIPI directly (checking whether each core is
-/// started successfully one by one will bring extra overhead). For
-/// APs that have been started, this signal will not bring any cost.
+/// KVM latches INIT and SIPI for delivery in that order when each vCPU runs.
+/// Other platforms retain the timed INIT-SIPI-SIPI sequence.
 ///
 /// # Safety
 ///
@@ -266,6 +253,10 @@ unsafe fn send_boot_ipis() {
     // The safety is upheld by the caller.
     unsafe {
         send_init_to_all_aps(apic);
+        if crate::arch::cpu::cpuid::query_if_running_under_kvm() {
+            send_startup_to_all_aps(apic);
+            return;
+        }
         spin_wait_cycles(100_000_000);
 
         send_init_deassert(apic);

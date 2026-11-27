@@ -126,14 +126,12 @@ impl FileSystemDevice {
         notify_supported: bool,
         read_index_supported: bool,
     ) -> Self {
-        let (to_device_arena_pool, from_device_arena_pool) = pool::dma_arena_pools_singleton();
-
         Self {
             transport: SpinLock::new(transport),
             hiprio_queue,
             request_queues,
-            to_device_pool: VirtiofsDmaPool::new(to_device_arena_pool),
-            from_device_pool: VirtiofsDmaPool::new(from_device_arena_pool),
+            to_device_pool: VirtiofsDmaPool::new(&pool::REQUEST_ARENA),
+            from_device_pool: VirtiofsDmaPool::new(&pool::REPLY_ARENA),
             // Start request IDs at 1 and keep 0 unused. In FUSE,
             // `unique == 0` is reserved for unsolicited notification messages
             // rather than ordinary request/reply matching.
