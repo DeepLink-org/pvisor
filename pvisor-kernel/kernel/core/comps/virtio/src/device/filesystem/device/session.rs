@@ -42,6 +42,7 @@ pub struct FuseSession {
     attr_version: AtomicU64,
     /// The maximum write size accepted by the server.
     max_write: u32,
+    batch_forget: bool,
     /// The feature flags selected by `FUSE_INIT`.
     negotiated_flags: FuseInitFlags,
     /// The extended feature flags selected by `FUSE_INIT`.
@@ -74,6 +75,7 @@ impl FuseSession {
             device,
             attr_version: AtomicU64::new(1),
             max_write,
+            batch_forget: init_reply.minor() >= 16,
             negotiated_flags: init_reply.flags(),
             negotiated_flags2: init_reply.flags2(),
         });
@@ -320,12 +322,20 @@ impl FuseSession {
         Ok(())
     }
 
-    /// Releases one reference per listed non-root node from a directory image.
-    /// As with `forget`, successful submission does not wait for a reply.
-    pub fn forget_index_entries(&self, nodeids: &[FuseNodeId]) -> Result<(), FuseError> {
-        // Keep each request small enough for the ordinary request buffer pool.
-        for ids in nodeids.chunks(128) {
-            let mut operation = BatchForgetOperation(ids);
+    /// Maximum number of releases per batch, keeping the request smaller than one page.
+    pub const FORGET_BATCH_SIZE: usize = 128;
+
+    /// Releases the supplied non-root nodes' lookup counts on the high-priority queue.
+    /// Successful submission does not wait for a reply. FUSE before 7.16 uses single forgets.
+    pub fn forget_many(&self, entries: &[(FuseNodeId, u64)]) -> Result<(), FuseError> {
+        for batch in entries.chunks(Self::FORGET_BATCH_SIZE) {
+            if batch.len() == 1 || !self.batch_forget {
+                for &(nodeid, count) in batch {
+                    self.forget(nodeid, count)?;
+                }
+                continue;
+            }
+            let mut operation = BatchForgetOperation(batch);
             let request = self
                 .device
                 .prepare_request(FUSE_ROOT_ID, &mut operation, None, None)?;

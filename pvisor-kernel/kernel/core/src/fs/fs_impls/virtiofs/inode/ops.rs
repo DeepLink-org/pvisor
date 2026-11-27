@@ -35,7 +35,6 @@ use crate::{
         vfs::inode::Metadata,
     },
     prelude::*,
-    thread::work_queue::{self, WorkPriority},
     time::clocks::MonotonicCoarseClock,
     util::read_segments,
 };
@@ -539,26 +538,6 @@ impl VirtioFsInode {
         Ok(())
     }
 
-    fn forget_async(&self, nlookup: u64) {
-        let nodeid = self.nodeid();
-
-        if let Some(fs) = self.fs.upgrade() {
-            work_queue::submit_work_func(
-                move || {
-                    if let Err(err) = fs.session().forget(nodeid, nlookup) {
-                        warn!(
-                            "virtiofs forget failed for inode {} with nlookup {}: {:?}",
-                            nodeid.as_u64(),
-                            nlookup,
-                            err
-                        );
-                    }
-                },
-                WorkPriority::Normal,
-            );
-        }
-    }
-
     /// Revalidates a cached directory entry with `LOOKUP`.
     ///
     /// The entry TTL and attribute TTL are independent caches. A successful
@@ -633,11 +612,7 @@ impl Drop for VirtioFsInode {
     fn drop(&mut self) {
         if let Some(fs) = self.fs.upgrade() {
             fs.remove_inode_from_cache(self);
-        }
-
-        let nlookup = self.lookup_count.drain();
-        if nlookup > 0 {
-            self.forget_async(nlookup);
+            fs.defer_forget(self.nodeid(), self.lookup_count.drain());
         }
     }
 }

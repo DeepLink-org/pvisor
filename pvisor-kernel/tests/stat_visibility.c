@@ -1,15 +1,21 @@
 /* SPDX-License-Identifier: MPL-2.0 */
 /* Hardware probe for host mutations through a virtio-fs root. */
 #define _GNU_SOURCE
+#include <assert.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <glob.h>
+#include <linux/magic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/inotify.h>
+#include <sys/mount.h>
 #include <sys/stat.h>
 #include <sys/syscall.h>
 #include <sys/uio.h>
+#include <sys/vfs.h>
+#include <time.h>
 #include <unistd.h>
 
 static void expect_stat(int dirfd, const char *path, int flags, off_t size,
@@ -70,8 +76,55 @@ static void expect_linux_transport(const char *expected)
     globfree(&paths);
 }
 
+static int wide_directory(unsigned count)
+{
+    assert(count > 0 && count <= 8192);
+    assert(chdir("/wide") == 0);
+    int held = open("held", O_RDONLY);
+    int notify = inotify_init1(IN_NONBLOCK);
+    int wd = inotify_add_watch(notify, "watched", IN_ATTRIB);
+    assert(held >= 0 && wd >= 0);
+    assert(mount("tmpfs", "mount", "tmpfs", 0, NULL) == 0);
+
+    char name[32];
+    struct timespec start, end;
+    assert(clock_gettime(CLOCK_MONOTONIC, &start) == 0);
+    for (unsigned i = 0; i < count; ++i) {
+        snprintf(name, sizeof(name), "file%u", i);
+        expect_stat(AT_FDCWD, name, 0, 0, S_IFREG | 0644);
+    }
+    assert(clock_gettime(CLOCK_MONOTONIC, &end) == 0);
+    for (unsigned i = 0; i < count; ++i) {
+        snprintf(name, sizeof(name), "absent%u", i);
+        expect_stat(AT_FDCWD, name, 0, -1, 0);
+    }
+
+    assert(rename("held", "moved") == 0);
+    char fd_path[64], target[64] = {0};
+    snprintf(fd_path, sizeof(fd_path), "/proc/self/fd/%d", held);
+    assert(readlink(fd_path, target, sizeof(target) - 1) > 0);
+    assert(strcmp(target, "/wide/moved") == 0);
+    expect_read(held, 0, "old");
+    assert(rename("moved", "absent0") == 0);
+    expect_stat(AT_FDCWD, "absent0", 0, 3, S_IFREG | 0644);
+
+    assert(chmod("watched", 0600) == 0);
+    struct inotify_event event;
+    assert(read(notify, &event, sizeof(event)) == sizeof(event));
+    assert(event.wd == wd && (event.mask & IN_ATTRIB));
+    struct statfs fs;
+    assert(statfs("mount", &fs) == 0 && fs.f_type == TMPFS_MAGIC);
+    assert(umount("mount") == 0);
+    assert(close(notify) == 0 && close(held) == 0);
+    printf("WIDE_STAT_OK %u %lld\n", count,
+           (long long)(end.tv_sec - start.tv_sec) * 1000000000 + end.tv_nsec - start.tv_nsec);
+    return 7;
+}
+
 int main(int argc, char **argv)
 {
+    if (argc == 3 && strcmp(argv[1], "--wide-dir") == 0)
+        return wide_directory(strtoul(argv[2], NULL, 10));
     if (argc == 2)
         expect_linux_transport(argv[1]);
     expect_stat(AT_FDCWD, "/subject", 0, 3, S_IFREG | 0644);

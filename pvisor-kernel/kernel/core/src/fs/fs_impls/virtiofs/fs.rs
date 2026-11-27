@@ -5,8 +5,8 @@
 //! This module defines the filesystem type and objects for virtio-fs.
 
 use aster_fuse::{
-    EntryReply, FUSE_ROOT_ID, FuseFileHandle, GetattrFlags, GetattrOperation, GetattrReq, Kstatfs,
-    StatfsOperation,
+    EntryReply, FUSE_ROOT_ID, FuseFileHandle, FuseNodeId, GetattrFlags, GetattrOperation,
+    GetattrReq, Kstatfs, StatfsOperation,
 };
 use aster_virtio::device::filesystem::device::{self, AttrVersion, FileSystemDevice, FuseSession};
 use device_id::DeviceId;
@@ -26,6 +26,7 @@ use crate::{
         },
     },
     prelude::*,
+    thread::work_queue::{self, WorkPriority},
 };
 
 /// Filesystem magic reported for virtio-fs in `statfs`.
@@ -88,7 +89,33 @@ pub(super) struct VirtioFs {
     session: Arc<FuseSession>,
     dir_index: DirIndex,
     inode_cache: InodeCache,
+    pending_forgets: Mutex<PendingForgets>,
     fs_event_subscriber_stats: FsEventSubscriberStats,
+}
+
+type ForgetEntries = Vec<(FuseNodeId, u64)>;
+
+#[derive(Default)]
+struct PendingForgets {
+    // Some means exactly one worker owns the right to take the tail, even if empty.
+    tail: Option<ForgetEntries>,
+}
+
+enum ForgetWork {
+    TakeTail,
+    Full(ForgetEntries),
+}
+
+impl PendingForgets {
+    fn push(&mut self, entry: (FuseNodeId, u64)) -> Option<ForgetWork> {
+        let Some(tail) = &mut self.tail else {
+            self.tail = Some(vec![entry]);
+            return Some(ForgetWork::TakeTail);
+        };
+        tail.push(entry);
+        (tail.len() == FuseSession::FORGET_BATCH_SIZE)
+            .then(|| ForgetWork::Full(core::mem::take(tail)))
+    }
 }
 
 impl VirtioFs {
@@ -130,6 +157,7 @@ impl VirtioFs {
                 dir_index: DirIndex::new(session.clone()),
                 session,
                 inode_cache,
+                pending_forgets: Mutex::new(PendingForgets::default()),
                 fs_event_subscriber_stats: FsEventSubscriberStats::new(),
             }
         }))
@@ -137,6 +165,31 @@ impl VirtioFs {
 
     pub(super) fn session(&self) -> &Arc<FuseSession> {
         &self.session
+    }
+
+    pub(super) fn defer_forget(self: &Arc<Self>, nodeid: FuseNodeId, count: u64) {
+        if count == 0 || nodeid == FUSE_ROOT_ID {
+            return;
+        }
+        let Some(work) = self.pending_forgets.lock().push((nodeid, count)) else {
+            return;
+        };
+        let fs = self.clone();
+        work_queue::submit_work_func(
+            move || {
+                let result = match &work {
+                    ForgetWork::Full(entries) => fs.session.forget_many(entries),
+                    ForgetWork::TakeTail => {
+                        let tail = fs.pending_forgets.lock().tail.take().unwrap();
+                        fs.session.forget_many(&tail)
+                    }
+                };
+                if let Err(err) = result {
+                    warn!("virtiofs forget submission failed: {:?}", err);
+                }
+            },
+            WorkPriority::Normal,
+        );
     }
 
     pub(super) fn dir_index(&self) -> &DirIndex {
@@ -216,5 +269,44 @@ impl FileSystem for VirtioFs {
 
     fn fs_event_subscriber_stats(&self) -> &FsEventSubscriberStats {
         &self.fs_event_subscriber_stats
+    }
+}
+
+#[cfg(ktest)]
+mod tests {
+    use aster_fuse::{FuseOperation, ops::forget::BatchForgetOperation};
+    use ostd::prelude::ktest;
+
+    use super::*;
+
+    #[ktest]
+    fn reclaim_forget_ownership_and_counts() {
+        let mut pending = PendingForgets::default();
+        let entry = |i: usize| (FuseNodeId::new(2 + i as u64 % 3), (1u64 << 40) + i as u64);
+        let n = FuseSession::FORGET_BATCH_SIZE;
+        for i in 0..2 * n + 1 {
+            match pending.push(entry(i)) {
+                Some(ForgetWork::TakeTail) => assert_eq!(i, 0),
+                Some(ForgetWork::Full(batch)) => {
+                    assert_eq!((i + 1) % n, 0);
+                    let mut op = BatchForgetOperation(&batch);
+                    let mut bytes = vec![0xff; op.body_len()];
+                    op.write_body(&mut VmWriter::from(bytes.as_mut_slice()))
+                        .unwrap();
+                    assert_eq!(bytes.len(), 8 + 16 * n);
+                    assert_eq!(bytes[..4], (n as u32).to_ne_bytes());
+                    assert_eq!(bytes[4..8], [0; 4]);
+                    for (j, record) in bytes[8..].chunks_exact(16).enumerate() {
+                        let (node, count) = entry(i + 1 - n + j);
+                        assert_eq!(record[..8], node.as_u64().to_ne_bytes());
+                        assert_eq!(record[8..], count.to_ne_bytes());
+                    }
+                }
+                None => assert!(i != 0 && (i + 1) % n != 0),
+            }
+        }
+        assert_eq!(pending.tail.take().unwrap(), [entry(2 * n)]);
+        assert!(matches!(pending.push(entry(0)), Some(ForgetWork::TakeTail)));
+        assert_eq!(pending.tail.take().unwrap(), [entry(0)]);
     }
 }

@@ -228,14 +228,14 @@ impl DirIndex {
                 }
                 if let Some(previous) = entries.insert(name, entry) {
                     valid = false;
-                    forget.push(previous.reply.nodeid());
+                    forget.push((previous.reply.nodeid(), 1));
                 }
             } else {
-                forget.push(entry.nodeid());
+                forget.push((entry.nodeid(), 1));
             }
         }
         if !valid || Scope::current(&self.session, scope.parent) != Some(scope) {
-            forget.extend(entries.into_values().map(|entry| entry.reply.nodeid()));
+            forget.extend(entries.into_values().map(|entry| (entry.reply.nodeid(), 1)));
             self.forget(forget);
             return None;
         }
@@ -266,20 +266,20 @@ impl DirIndex {
                     .entries
                     .into_values()
                     .filter(|entry| entry.pending)
-                    .map(|entry| entry.reply.nodeid())
+                    .map(|entry| (entry.reply.nodeid(), 1))
                     .collect(),
             );
         }
     }
 
-    fn forget(&self, nodeids: Vec<FuseNodeId>) {
-        if nodeids.is_empty() {
+    fn forget(&self, entries: Vec<(FuseNodeId, u64)>) {
+        if entries.is_empty() {
             return;
         }
         let session = self.session.clone();
         work_queue::submit_work_func(
             move || {
-                if let Err(err) = session.forget_index_entries(&nodeids) {
+                if let Err(err) = session.forget_many(&entries) {
                     warn!("virtiofs directory index forget failed: {:?}", err);
                 }
             },

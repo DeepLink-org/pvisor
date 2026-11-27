@@ -649,6 +649,21 @@ impl Inode for VirtioFsInode {
         child.revalidate_lookup(self.nodeid(), name).ok()
     }
 
+    fn can_prune_child(&self, _name: &str, child: &dyn Inode) -> bool {
+        let Some(child) = child.downcast_ref::<Self>() else {
+            return false;
+        };
+        child.extension.is_empty()
+            && child
+                .entry_valid_until
+                .try_lock()
+                .is_some_and(|until| MonotonicCoarseClock::get().read_time() >= *until)
+            && child
+                .inner
+                .try_read()
+                .is_some_and(|inner| inner.page_cache.is_none())
+    }
+
     fn revalidate_absent(&self, _name: &str) -> bool {
         // FIXME: FUSE negative-entry caching is not implemented yet.
         // Force a fresh `FUSE_LOOKUP` for each negative lookup.

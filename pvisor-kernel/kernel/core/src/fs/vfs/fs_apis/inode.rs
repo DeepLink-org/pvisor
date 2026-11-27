@@ -607,6 +607,13 @@ pub(crate) trait Inode: Any + FileOps + Send + Sync {
         self.revalidate_exists(name, child).then_some(None)
     }
 
+    /// Whether directory-cache maintenance can discard an unused child.
+    /// Local dynamic directories discard stale entries. Remote filesystems
+    /// must decide from local state, without looking up the name on the server.
+    fn can_prune_child(&self, name: &str, child: &dyn Inode) -> bool {
+        !self.revalidate_exists(name, child)
+    }
+
     /// Checks whether a name is still absent under this directory.
     ///
     /// Called on a negative cache hit
@@ -795,6 +802,11 @@ impl Extension {
             group2: Once::new(),
             group3: Once::new(),
         }
+    }
+
+    /// Whether no VFS state (including watches, locks and overlay claims) has been attached.
+    pub(crate) fn is_empty(&self) -> bool {
+        !self.group1.is_completed() && !self.group2.is_completed() && !self.group3.is_completed()
     }
 
     /// Gets the first extension group.

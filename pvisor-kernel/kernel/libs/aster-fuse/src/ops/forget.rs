@@ -62,7 +62,7 @@ impl FuseOperation for ForgetOperation {
 }
 
 /// Releases multiple lookup references on the high-priority queue.
-pub struct BatchForgetOperation<'a>(pub &'a [FuseNodeId]);
+pub struct BatchForgetOperation<'a>(pub &'a [(FuseNodeId, u64)]);
 
 impl FuseOperation for BatchForgetOperation<'_> {
     type Output = ();
@@ -82,12 +82,12 @@ impl FuseOperation for BatchForgetOperation<'_> {
         writer
             .write_val(&0u32)
             .map_err(|_| FuseError::BufferTooSmall)?;
-        for nodeid in self.0 {
+        for (nodeid, nlookup) in self.0 {
             writer
                 .write_val(nodeid)
                 .map_err(|_| FuseError::BufferTooSmall)?;
             writer
-                .write_val(&1u64)
+                .write_val(nlookup)
                 .map_err(|_| FuseError::BufferTooSmall)?;
         }
         Ok(())
