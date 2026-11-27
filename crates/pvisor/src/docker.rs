@@ -175,6 +175,8 @@ struct PreparedPull {
     rootfs: PathBuf,
     source: crate::image::oci::ImageStore,
     config: Vec<u8>,
+    #[cfg(target_os = "linux")]
+    prefix_view: Option<crate::image::oci::PrefixView>,
     _staging: Option<crate::image::store::ImportDirectory>,
     _pull: File,
 }
@@ -884,12 +886,24 @@ impl Store {
                 }),
                 _ => None,
             };
-        if cached.is_some() {
+        let prefix_view = if cached.is_some() {
             resolved.report_cached(progress);
+            None
         } else {
             let retire_downloads = cold_import.is_some_and(|import| import.ephemeral);
-            store.extract_resolved(&resolved, progress, retire_downloads)?;
+            store.extract_resolved(
+                &resolved,
+                progress,
+                retire_downloads,
+                cold_import.map(|_| &self.images),
+            )?
+        };
+        #[cfg(target_os = "linux")]
+        if prefix_view.is_some() {
+            store.prefix_view_digest = Some(resolved.prepared.digest.clone());
         }
+        #[cfg(not(target_os = "linux"))]
+        let _ = prefix_view;
         let id = resolved.config_digest;
         let prepared = resolved.prepared;
         ensure!(
@@ -931,6 +945,8 @@ impl Store {
             rootfs: prepared.rootfs,
             source: store,
             config: config_bytes,
+            #[cfg(target_os = "linux")]
+            prefix_view,
             _staging: staging,
             _pull,
         })

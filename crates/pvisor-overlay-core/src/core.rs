@@ -183,6 +183,27 @@ pub struct ResolvedMetadata {
     pub layer: usize,
 }
 
+impl ResolvedMetadata {
+    /// Whether this xattr is an opacity hint on a Core-marked upper directory.
+    /// Lower/source attributes, unrelated user attributes and non-marker values
+    /// retain their normal visibility in a merged host mount.
+    pub fn is_upper_opacity_hint(&self, name: &OsStr) -> io::Result<bool> {
+        if !self.resolved.is_upper
+            || !self.metadata.is_dir()
+            || !OPAQUE_XATTRS.iter().any(|hint| name == OsStr::new(hint))
+        {
+            return Ok(false);
+        }
+        let path = &self.resolved.path;
+        match fs::symlink_metadata(path.join(OPAQUE_NAME)) {
+            Ok(receipt) if receipt.is_file() => Ok(sys::get_xattr(path, name)? == b"y"),
+            Ok(_) => Ok(false),
+            Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(false),
+            Err(err) => Err(err),
+        }
+    }
+}
+
 /// Physical identity observed while checking a backing parent directory.
 /// Identity evidence, possibly reused under an explicit physical-lower stability
 /// promise; never a permission capability.

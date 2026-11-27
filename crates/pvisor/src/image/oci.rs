@@ -4,6 +4,15 @@
 //! to Docker, Podman, or Buildah. The on-disk layout is private to pVisor; OCI
 //! digests remain the source of truth for blobs and prepared root filesystems.
 
+#[cfg(target_os = "linux")]
+mod prefix;
+#[cfg(target_os = "linux")]
+mod prefix_view;
+#[cfg(target_os = "linux")]
+pub(crate) use prefix_view::PrefixView;
+#[cfg(not(target_os = "linux"))]
+pub(crate) type PrefixView = ();
+
 use anyhow::{Context, bail};
 use flate2::read::GzDecoder;
 use fs2::FileExt;
@@ -115,6 +124,8 @@ pub(crate) struct ResolvedImage {
     pub(crate) config_digest: String,
     reference: String,
     image_ref: ImageReference,
+    #[cfg(target_os = "linux")]
+    platform: String,
     layers: Vec<Descriptor>,
 }
 impl ResolvedImage {
@@ -137,6 +148,8 @@ pub struct ImageStore {
     /// strict client above.
     blob_client: Client,
     credentials: Option<RegistryCredentials>,
+    #[cfg(target_os = "linux")]
+    pub(crate) prefix_view_digest: Option<String>,
     seeded_blobs: Option<PathBuf>,
 }
 
@@ -283,6 +296,8 @@ impl ImageStore {
             client,
             blob_client,
             credentials: None,
+            #[cfg(target_os = "linux")]
+            prefix_view_digest: None,
             seeded_blobs: None,
         })
     }
@@ -430,7 +445,7 @@ impl ImageStore {
         progress: &mut dyn FnMut(PullProgress),
     ) -> anyhow::Result<PreparedImage> {
         let resolved = self.resolve_with_progress(image, architecture, progress)?;
-        self.extract_resolved(&resolved, progress, false)?;
+        self.extract_resolved(&resolved, progress, false, None)?;
         Ok(resolved.prepared)
     }
 
@@ -492,6 +507,8 @@ impl ImageStore {
             config_digest: manifest.config.digest,
             reference: image.into(),
             image_ref,
+            #[cfg(target_os = "linux")]
+            platform: format!("linux/{architecture}"),
             layers: manifest.layers,
         })
     }
@@ -501,7 +518,10 @@ impl ImageStore {
         resolved: &ResolvedImage,
         progress: &mut dyn FnMut(PullProgress),
         retire_downloads: bool,
-    ) -> anyhow::Result<()> {
+        prefix_store: Option<&super::store::LocalStore>,
+    ) -> anyhow::Result<Option<PrefixView>> {
+        #[cfg(not(target_os = "linux"))]
+        let _ = prefix_store;
         let manifest_digest = &resolved.prepared.digest;
         let image = resolved.reference.as_str();
         let mut registry = RegistryClient::new(
@@ -510,9 +530,9 @@ impl ImageStore {
             resolved.image_ref.clone(),
             self.credentials.as_ref(),
         );
-        let digest_hex = digest_hex(manifest_digest)?;
-        let rootfs = self.root.join("rootfs-v3/sha256").join(digest_hex);
-        let lock_path = self.root.join("locks").join(format!("{digest_hex}.lock"));
+        let manifest_hex = digest_hex(manifest_digest)?;
+        let rootfs = self.root.join("rootfs-v3/sha256").join(manifest_hex);
+        let lock_path = self.root.join("locks").join(format!("{manifest_hex}.lock"));
         let lock = OpenOptions::new()
             .create(true)
             .truncate(false)
@@ -521,68 +541,143 @@ impl ImageStore {
             .open(&lock_path)?;
         progress(PullProgress::Waiting);
         lock.lock_exclusive()?;
-        if !rootfs.is_dir() {
+        if rootfs.is_dir() {
+            resolved.report_cached(progress);
+            return Ok(None);
+        }
+        let disposable = retire_downloads && self.seeded_blobs.is_none();
+        let mut last_use = BTreeMap::new();
+        if disposable {
+            for (index, layer) in resolved.layers.iter().enumerate() {
+                if layer.digest != resolved.config_digest {
+                    last_use.insert(layer.digest.as_str(), index);
+                }
+            }
+        }
+        let release_input = |index: usize| -> anyhow::Result<()> {
+            let digest = &resolved.layers[index].digest;
+            if last_use.get(digest.as_str()) == Some(&index) {
+                let path = self.root.join("blobs/sha256").join(digest_hex(digest)?);
+                fs::remove_file(&path)
+                    .with_context(|| format!("release private OCI layer {}", path.display()))?;
+            }
+            Ok(())
+        };
+        let mut apply = |indices: std::ops::Range<usize>,
+                         destination: &Path,
+                         final_pass: bool,
+                         progress: &mut dyn FnMut(PullProgress)|
+         -> anyhow::Result<()> {
+            for index in indices {
+                let layer = &resolved.layers[index];
+                let blob = self.fetch_blob(&mut registry, layer, progress)?;
+                progress(PullProgress::Extracting {
+                    digest: layer.digest.clone(),
+                });
+                let archive = open_layer(&blob, &layer.media_type, disposable)?;
+                if disposable && final_pass {
+                    release_input(index)?;
+                }
+                unpack_layer(archive, destination)?;
+                progress(PullProgress::LayerReady {
+                    digest: layer.digest.clone(),
+                    cached: false,
+                });
+            }
+            Ok(())
+        };
+        #[cfg(target_os = "linux")]
+        let prefix_started = std::time::Instant::now();
+        #[cfg(target_os = "linux")]
+        let mut reported_prefix = 0;
+        #[cfg(not(target_os = "linux"))]
+        let reported_prefix = 0;
+        #[cfg(target_os = "linux")]
+        let view = if let Some(store) = prefix_store
+            && crate::env::cache::experiment_setting(
+                "PVISOR_OCI_PREFIX_REUSE",
+                crate::env::os("PVISOR_OCI_PREFIX_REUSE").as_deref(),
+            )?
+            && prefix_view::available()?
+            && let Some(base) = prefix::acquire(
+                store,
+                &resolved.platform,
+                &resolved.layers,
+                |destination, layers| {
+                    apply(0..layers.len(), destination, false, progress)?;
+                    reported_prefix = layers.len();
+                    prefix_view::index_hardlinks(destination)
+                },
+            )?
+            && let Some(view) = prefix_view::mount(&base.root, &self.root, &rootfs)?
+        {
+            let suffix_started = std::time::Instant::now();
+            if base.reused {
+                for layer in &resolved.layers[..base.len] {
+                    progress(PullProgress::LayerReady {
+                        digest: layer.digest.clone(),
+                        cached: true,
+                    });
+                }
+            } else if disposable {
+                // The mounted prefix commits this import to the suffix path.
+                for index in 0..reported_prefix {
+                    release_input(index)?;
+                }
+            }
+            apply(base.len..resolved.layers.len(), &rootfs, true, progress)?;
+            crate::util::write_private_json(
+                &self.root.join("prefix-import.json"),
+                &serde_json::json!({
+                    "key": base.key,
+                    "layers": base.len,
+                    "reused": base.reused,
+                    "acquire_and_mount_ms": (suffix_started - prefix_started).as_millis(),
+                    "suffix_apply_ms": suffix_started.elapsed().as_millis(),
+                }),
+            )?;
+            Some(view)
+        } else {
+            None
+        };
+        #[cfg(not(target_os = "linux"))]
+        let view = None;
+        if view.is_none() {
             let partial = self
                 .root
                 .join("rootfs-v3/sha256")
-                .join(format!(".{digest_hex}.partial-{}", uuid::Uuid::new_v4()));
+                .join(format!(".{manifest_hex}.partial-{}", uuid::Uuid::new_v4()));
             fs::create_dir(&partial)?;
-            let extraction = (|| -> anyhow::Result<()> {
-                // Seeded blobs belong to the caller. The config is read again after extraction.
-                let private = retire_downloads && self.seeded_blobs.is_none();
-                let mut last_use = BTreeMap::new();
-                if private {
-                    for (index, layer) in resolved.layers.iter().enumerate() {
-                        if layer.digest != resolved.config_digest {
-                            last_use.insert(layer.digest.as_str(), index);
-                        }
-                    }
-                }
-                for (index, layer) in resolved.layers.iter().enumerate() {
-                    let blob = self.fetch_blob(&mut registry, layer, progress)?;
-                    progress(PullProgress::Extracting {
-                        digest: layer.digest.clone(),
-                    });
-                    let archive = open_layer(&blob, &layer.media_type, private)?;
-                    if last_use.get(layer.digest.as_str()) == Some(&index) {
-                        fs::remove_file(&blob).with_context(|| {
-                            format!("release private OCI input {}", blob.display())
-                        })?;
-                    }
-                    unpack_layer(archive, &partial)?;
-                    progress(PullProgress::LayerReady {
-                        digest: layer.digest.clone(),
-                        cached: false,
-                    });
-                }
-                fs::rename(&partial, &rootfs)?;
-                Ok(())
-            })();
-            if extraction.is_err() {
-                let _ = fs::remove_dir_all(&partial);
-            }
-            extraction?;
-            let metadata = RootfsMetadata {
-                image,
-                manifest_digest,
-            };
-            fs::write(
-                self.root
-                    .join("metadata/sha256")
-                    .join(format!("{digest_hex}.json")),
-                serde_json::to_vec_pretty(&metadata)?,
-            )?;
-        } else {
-            for layer in &resolved.layers {
-                progress(PullProgress::LayerReady {
-                    digest: layer.digest.clone(),
-                    cached: true,
-                });
+            // A freshly built prefix may prove ineligible for a shared mount.
+            // Repeat its extraction into the flat root without reporting its layers twice.
+            if let Err(error) = apply(0..reported_prefix, &partial, true, &mut |_| {})
+                .and_then(|()| {
+                    apply(
+                        reported_prefix..resolved.layers.len(),
+                        &partial,
+                        true,
+                        progress,
+                    )
+                })
+                .and_then(|()| fs::rename(&partial, &rootfs).map_err(Into::into))
+            {
+                let _ = super::store::remove_import(&partial);
+                return Err(error);
             }
         }
+        let metadata = RootfsMetadata {
+            image,
+            manifest_digest,
+        };
+        fs::write(
+            self.root
+                .join("metadata/sha256")
+                .join(format!("{manifest_hex}.json")),
+            serde_json::to_vec_pretty(&metadata)?,
+        )?;
         lock.unlock()?;
 
-        Ok(())
+        Ok(view)
     }
 
     fn fetch_blob(

@@ -1450,6 +1450,15 @@ the final occurrence of that digest has a verified archive ready to unpack.
 Repeated layers reuse the same download. An uncompressed private tar stays
 open through extraction. The VM and its forks retain the extracted root.
 
+On Linux cold runs, `PVISOR_OCI_PREFIX_REUSE=1` enables a verified read-only
+prefix shared by matching OCI layer chains in the same local image store and
+host boot. Each import applies the remaining layers to a private FUSE view.
+The default split requires 512 MiB of compressed layers and at least one remaining
+layer. Set `PVISOR_OCI_PREFIX_LAYERS` to choose a positive prefix depth and
+`PVISOR_OCI_PREFIX_MAX_SUFFIX_LAYER_BYTES` to use ordinary extraction when
+any known suffix layer size reaches the given limit. Hosts without accessible
+FUSE and unsupported prefix hardlinks also use ordinary extraction.
+
 Published `Image` records require `CachedImage`, binding the pool location and
 immutable handle. There is no directory-root field or fallback. Private builds
 use a distinct backing type in `Image<BuildSource>`/`Instance<BuildSource>`;

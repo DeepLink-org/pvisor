@@ -18,6 +18,10 @@ use std::path::{Component, Path};
 use std::sync::{Arc, Mutex};
 
 mod metadata;
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+mod prefix_qualification;
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+pub(super) use prefix_qualification::supports_private_view;
 #[cfg(test)]
 mod tests;
 
@@ -37,12 +41,42 @@ pub(super) fn open_child(parent: &File, name: &OsStr, directory: bool) -> anyhow
     Ok(unsafe { File::from_raw_fd(fd) })
 }
 
+#[cfg(target_os = "linux")]
+fn prefix_ancestor(parent: &File, name: &OsStr) -> anyhow::Result<File> {
+    let child = CString::new(name.as_bytes())?;
+    let flags = libc::O_PATH | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC;
+    let fd = unsafe { libc::openat(parent.as_raw_fd(), child.as_ptr(), flags) };
+    if fd < 0 {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    let pinned = unsafe { File::from_raw_fd(fd) };
+    // These ancestors only anchor *at operations. O_RDONLY would make the FUSE server
+    // take a directory listing snapshot even though we never read entries on this fd.
+    // O_PATH alone skips the original read permission check. Check the actual pinned
+    // inode (including effective credentials and ACLs), without looking its name up again.
+    let access = unsafe {
+        libc::syscall(
+            libc::SYS_faccessat2,
+            pinned.as_raw_fd(),
+            c"".as_ptr(),
+            libc::R_OK,
+            libc::AT_EMPTY_PATH | libc::AT_EACCESS,
+        )
+    };
+    if access == 0 {
+        return Ok(pinned);
+    }
+    // Older kernels and syscall filters can lack faccessat2. Give the existing
+    // no-follow directory open the final say about permissions and the returned fd.
+    open_child(parent, name, true)
+}
+
 pub(super) fn parent(
     store: &ImageStore,
     digest: &str,
     path: &[u8],
 ) -> anyhow::Result<(File, Vec<u8>)> {
-    let digest = crate::image::oci::digest_hex(digest)?;
+    let hex = crate::image::oci::digest_hex(digest)?;
     ensure!(!path.contains(&0), "NUL in cache path");
     let path = Path::new(OsStr::from_bytes(path));
     let components: Vec<_> = path.components().collect();
@@ -54,9 +88,16 @@ pub(super) fn parent(
         .read(true)
         .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW)
         .open(store.root.join("rootfs-v3/sha256"))?;
-    let mut directory = open_child(&roots, OsStr::new(digest), true)?;
+    let ancestor = |parent: &File, name: &OsStr| {
+        #[cfg(target_os = "linux")]
+        if store.prefix_view_digest.as_deref() == Some(digest) {
+            return prefix_ancestor(parent, name);
+        }
+        open_child(parent, name, true)
+    };
+    let mut directory = ancestor(&roots, OsStr::new(hex))?;
     for component in components.iter().take(components.len().saturating_sub(1)) {
-        directory = open_child(&directory, component.as_os_str(), true)?;
+        directory = ancestor(&directory, component.as_os_str())?;
     }
     let name = components
         .last()
