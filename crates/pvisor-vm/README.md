@@ -1110,10 +1110,14 @@ guest 属性与 entry TTL 保持原值；本实验不修改内核、KEEP_CACHE�
 
 ## 普通只读目录
 
-普通 passthrough（可写或只读）的 entry/attribute TTL 为零，避免同一宿主
-目录经多个挂载或 VM 共享时，重新打开文件仍读取旧内容或旧长度。数据保留
+普通 passthrough（可写或只读）默认 entry/attribute TTL 为零，避免同一宿主
+目录经多个挂载或 VM 共享时，重新打开文件仍读取旧内容或旧长度。容器 shim
+通过 `VmConfiguration::filesystem_with_metadata_ttl` 为它独占的 `/dev/root`
+任务根文件系统显式选择 1 秒 TTL（与 virtiofsd `--cache=auto` 默认一致），
+共享目录、卷、只读目录和 managed share 仍为零。该显式选择要求调用方保证
+目录在 attachment 生命周期内不被其他挂载、VM 或宿主写入改变。数据保留
 close-to-open 策略与 mmap 支持；这不提供跨 VM 已打开映射的一致性协议，
-并发写与映射仍由调用方同步。Overlay 的缓存策略不受此修复影响。
+并发写与映射仍由调用方同步。Overlay 的缓存策略不受此影响。
 
 `VmConfiguration::read_only_filesystem(tag, path)` 在宿主适配器拒绝所有
 文件系统修改请求，供容器只读 bind mount 使用。所有平台使用同一声明；

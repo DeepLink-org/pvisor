@@ -367,6 +367,24 @@ impl VmConfiguration for VmBuilder {
             Err(unsupported("virtio-fs"))
         }
     }
+    fn filesystem_with_metadata_ttl(
+        &mut self,
+        tag: &str,
+        path: &Path,
+        shm_size: usize,
+        metadata_ttl: Duration,
+    ) -> io::Result<()> {
+        #[cfg(not(any(feature = "tee", feature = "aws-nitro")))]
+        {
+            self.inner
+                .filesystem_with_metadata_ttl(tag, path, shm_size, metadata_ttl)
+        }
+        #[cfg(any(feature = "tee", feature = "aws-nitro"))]
+        {
+            let _ = (tag, path, shm_size, metadata_ttl);
+            Err(unsupported("virtio-fs"))
+        }
+    }
     fn read_only_filesystem(&mut self, tag: &str, path: &Path) -> io::Result<()> {
         #[cfg(not(any(feature = "tee", feature = "aws-nitro")))]
         {

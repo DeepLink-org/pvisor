@@ -1602,6 +1602,7 @@ pub(crate) mod tests {
                 shm_size: None,
                 read_only: false,
                 managed: false,
+                metadata_ttl: std::time::Duration::ZERO,
                 virtual_entries: vec![],
                 overlay: None,
             },

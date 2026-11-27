@@ -4,6 +4,7 @@ use crate::devices::virtio::fs::passthrough::PermissionSemantics;
 use crate::devices::virtio::fs::virtual_entry::VirtualDirEntry;
 #[cfg(not(feature = "aws-nitro"))]
 use crate::devices::virtio::fs::OverlayConfig;
+use std::time::Duration;
 
 #[derive(Clone)]
 pub(crate) enum OverlaySource {
@@ -34,6 +35,8 @@ pub struct FsDeviceConfig {
     pub shm_size: Option<usize>,
     pub read_only: bool,
     pub managed: bool,
+    /// Caller-declared entry/attribute validity; zero for shared trees.
+    pub metadata_ttl: Duration,
     #[cfg(not(feature = "aws-nitro"))]
     pub(crate) overlay: Option<OverlaySource>,
     #[cfg(not(feature = "aws-nitro"))]

@@ -28,6 +28,7 @@ use std::{
     marker::PhantomData,
     path::PathBuf,
     sync::{Arc, Mutex},
+    time::Duration,
 };
 
 /// Single-use, owned configuration. `run` consumes it and keeps firmware and
@@ -638,6 +639,16 @@ impl<B: Backend> Builder<B> {
         path: &std::path::Path,
         shm_size: usize,
     ) -> io::Result<()> {
+        self.filesystem_with_metadata_ttl(tag, path, shm_size, Duration::ZERO)
+    }
+
+    pub(crate) fn filesystem_with_metadata_ttl(
+        &mut self,
+        tag: &str,
+        path: &std::path::Path,
+        shm_size: usize,
+        metadata_ttl: Duration,
+    ) -> io::Result<()> {
         if shm_size != 0 {
             return Err(io::Error::new(
                 io::ErrorKind::Unsupported,
@@ -657,6 +668,7 @@ impl<B: Backend> Builder<B> {
             shm_size: (shm_size != 0).then_some(shm_size),
             read_only: false,
             managed: false,
+            metadata_ttl,
             overlay: None,
             virtual_entries: Vec::new(),
         })
@@ -685,6 +697,7 @@ impl<B: Backend> Builder<B> {
             shm_size: None,
             read_only: true,
             managed: false,
+            metadata_ttl: Duration::ZERO,
             overlay: None,
             virtual_entries: Vec::new(),
         })
@@ -725,6 +738,7 @@ impl<B: Backend> Builder<B> {
             shm_size: None,
             read_only,
             managed: true,
+            metadata_ttl: Duration::ZERO,
             overlay: None,
             virtual_entries: Vec::new(),
         })
@@ -766,6 +780,7 @@ impl<B: Backend> Builder<B> {
             shm_size: Some(window),
             read_only: true,
             managed: false,
+            metadata_ttl: Duration::ZERO,
             overlay: None,
             virtual_entries: Vec::new(),
         })
@@ -795,6 +810,7 @@ impl<B: Backend> Builder<B> {
             shm_size: (shm_size != 0).then_some(shm_size),
             read_only: false,
             managed: false,
+            metadata_ttl: Duration::ZERO,
             overlay: Some(OverlaySource::Config(Box::new(overlay))),
             virtual_entries: Vec::new(),
         })
@@ -839,6 +855,7 @@ impl<B: Backend> Builder<B> {
             shm_size: None,
             read_only: false,
             managed: false,
+            metadata_ttl: Duration::ZERO,
             overlay,
             virtual_entries,
         };
