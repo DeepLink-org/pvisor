@@ -28,9 +28,12 @@ def verify(ready):
 
 @contextlib.contextmanager
 def observed(argv, **options):
-    with tempfile.TemporaryFile() as log, subprocess.Popen(
-        argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=log, **options
-    ) as p:
+    with (
+        tempfile.TemporaryFile() as log,
+        subprocess.Popen(
+            argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=log, **options
+        ) as p,
+    ):
         try:
             yield p
         except BaseException:
@@ -86,9 +89,14 @@ def importer_checks(probe, pack, top):
             before = ready.stat()
         if fault.endswith("-byte"):
             os.ftruncate(pack.fileno(), 4 * 1024**2 + (1 if fault == "extra-byte" else -1))
-        result = subprocess.run(cmd, cwd=dest, capture_output=True, timeout=20,
-                                preexec_fn=small_file_limit if fault == "short-write" else None,
-                                **opts)
+        result = subprocess.run(
+            cmd,
+            cwd=dest,
+            capture_output=True,
+            timeout=20,
+            preexec_fn=small_file_limit if fault == "short-write" else None,
+            **opts,
+        )
         assert result.returncode != 0, fault
         if fault == "conflict":
             assert before.st_ino == ready.stat().st_ino and not list(ready.iterdir())
@@ -110,10 +118,27 @@ def check(vm, probe, top):
         out.chmod(0o777)
         (root / "dev").mkdir()
         shutil.copy2(probe, root / "probe")
-        cmd = [vm, "--rootfs", root, "--cpus", "1", "--memory", "256", "--task-stdio", "--", "/probe"]
+        cmd = [
+            vm,
+            "--rootfs",
+            root,
+            "--cpus",
+            "1",
+            "--memory",
+            "256",
+            "--task-stdio",
+            "--",
+            "/probe",
+        ]
         if mode in ("shared", "local"):
-            p = subprocess.run([*cmd, mode, "start"], env=env, input=b"\n", capture_output=True,
-                               check=True, timeout=30)
+            p = subprocess.run(
+                [*cmd, mode, "start"],
+                env=env,
+                input=b"\n",
+                capture_output=True,
+                check=True,
+                timeout=30,
+            )
             assert p.stdout.startswith(b"begin\nTREE_PUBLISHED_NS ")
             verify(out / "ready")
             continue
@@ -141,8 +166,13 @@ def check(vm, probe, top):
             assert mode == "pack" and output == b"PACK_SUBMITTED\n"
             capsule.unlink()
             capsule.symlink_to("/dev/null")  # Import must not reopen a guest-provided name.
-            subprocess.run([probe, "import", str(pack.fileno())], cwd=dest,
-                           pass_fds=(pack.fileno(),), check=True, timeout=20)
+            subprocess.run(
+                [probe, "import", str(pack.fileno())],
+                cwd=dest,
+                pass_fds=(pack.fileno(),),
+                check=True,
+                timeout=20,
+            )
             verify(dest / "ready")
             importer_checks(probe, pack, top)
 
@@ -156,4 +186,6 @@ if __name__ == "__main__":
     args = parser.parse_args()
     with tempfile.TemporaryDirectory() as directory:
         check(args.vm.resolve(strict=True), args.probe.resolve(strict=True), Path(directory))
-    print("PASS: shared/local/packed trees, exit admission, pinned input, kill phases, conflict, size and write faults")
+    print(
+        "PASS: shared/local/packed trees, exit admission, pinned input, kill phases, conflict, size and write faults"
+    )
