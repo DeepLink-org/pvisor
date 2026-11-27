@@ -196,8 +196,8 @@ jobs:
         run: |
           set -euo pipefail
           if ! command -v strace >/dev/null; then
-            sudo apt-get update
-            sudo apt-get install -y strace
+            bash scripts/ci/ubuntu-apt-get.sh update
+            bash scripts/ci/ubuntu-apt-get.sh install -y strace
           fi
           for cohort in main candidate; do
             batch="$BENCHMARK_DATA/$cohort/smoke"

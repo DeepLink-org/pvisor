@@ -88,8 +88,8 @@ jobs:
         run: |
           set -euo pipefail
           exec > >(tee "$RUNNER_TEMP/feature-evidence/namespaces.log") 2>&1
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq --no-install-recommends util-linux
+          bash scripts/ci/ubuntu-apt-get.sh update -qq
+          bash scripts/ci/ubuntu-apt-get.sh install -y -qq --no-install-recommends util-linux
           if sysctl kernel.unprivileged_userns_clone >/dev/null 2>&1; then
             sudo sysctl -w kernel.unprivileged_userns_clone=1
           fi
@@ -103,7 +103,7 @@ jobs:
         run: |
           set -euo pipefail
           exec > >(tee "$RUNNER_TEMP/feature-evidence/fuse.log") 2>&1
-          sudo apt-get install -y -qq --no-install-recommends fuse3
+          bash scripts/ci/ubuntu-apt-get.sh install -y -qq --no-install-recommends fuse3
           test -c /dev/fuse
           [[ -r /dev/fuse && -w /dev/fuse ]]
           command -v fusermount3
@@ -141,7 +141,7 @@ jobs:
         run: |
           set -euo pipefail
           exec > >(tee "$RUNNER_TEMP/feature-evidence/oci-prerequisites.log") 2>&1
-          sudo apt-get install -y -qq --no-install-recommends crun runc
+          bash scripts/ci/ubuntu-apt-get.sh install -y -qq --no-install-recommends crun runc
           crun --version
           runc --version
           {
@@ -317,7 +317,7 @@ jobs:
           tools: python uv
           setup: python
       - name: Install firmware test compiler
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends build-essential
+        run: bash scripts/ci/ubuntu-apt-get.sh update -qq && bash scripts/ci/ubuntu-apt-get.sh install -y -qq --no-install-recommends build-essential
       - run: mise run fw -- test
 
   native-components:
@@ -417,8 +417,8 @@ jobs:
         if: runner.os == 'Linux' && matrix.prepare_pvisor
         shell: bash
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq --no-install-recommends fuse3 util-linux
+          bash scripts/ci/ubuntu-apt-get.sh update -qq
+          bash scripts/ci/ubuntu-apt-get.sh install -y -qq --no-install-recommends fuse3 util-linux
           if sysctl kernel.unprivileged_userns_clone >/dev/null 2>&1; then
             sudo sysctl -w kernel.unprivileged_userns_clone=1
           fi
@@ -656,8 +656,8 @@ jobs:
       - name: Enable Linux runtime test prerequisites
         shell: bash
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq --no-install-recommends fuse3 util-linux
+          bash scripts/ci/ubuntu-apt-get.sh update -qq
+          bash scripts/ci/ubuntu-apt-get.sh install -y -qq --no-install-recommends fuse3 util-linux
           if sysctl kernel.unprivileged_userns_clone >/dev/null 2>&1; then
             sudo sysctl -w kernel.unprivileged_userns_clone=1
           fi
@@ -724,7 +724,7 @@ jobs:
           cache: false
       - name: Install Bats
         if: matrix.suite == 'bats'
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends bats
+        run: bash scripts/ci/ubuntu-apt-get.sh update -qq && bash scripts/ci/ubuntu-apt-get.sh install -y -qq --no-install-recommends bats
       - name: Run contract shard
         env:
           SUITE: ${{ matrix.suite }}
@@ -774,8 +774,8 @@ jobs:
       - name: Enable Linux runtime test prerequisites
         if: runner.os == 'Linux'
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq --no-install-recommends fuse3 util-linux
+          bash scripts/ci/ubuntu-apt-get.sh update -qq
+          bash scripts/ci/ubuntu-apt-get.sh install -y -qq --no-install-recommends fuse3 util-linux
           if sysctl kernel.unprivileged_userns_clone >/dev/null 2>&1; then
             sudo sysctl -w kernel.unprivileged_userns_clone=1
           fi
@@ -810,8 +810,8 @@ jobs:
       - name: Enable rootless isolation primitives
         shell: bash
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq --no-install-recommends fuse3 util-linux
+          bash scripts/ci/ubuntu-apt-get.sh update -qq
+          bash scripts/ci/ubuntu-apt-get.sh install -y -qq --no-install-recommends fuse3 util-linux
           if sysctl kernel.unprivileged_userns_clone >/dev/null 2>&1; then
             sudo sysctl -w kernel.unprivileged_userns_clone=1
           fi

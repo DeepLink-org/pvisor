@@ -43,8 +43,8 @@ runs:
       run: |
         packages=(build-essential flex bison libelf-dev libssl-dev curl)
         for attempt in 1 2 3; do
-          if sudo apt-get -o APT::Update::Error-Mode=any -o Acquire::Retries=3 update &&
-             sudo apt-get -o Acquire::Retries=3 install -y --no-install-recommends "${packages[@]}"; then
+          if bash scripts/ci/ubuntu-apt-get.sh -o APT::Update::Error-Mode=any -o Acquire::Retries=3 update &&
+             bash scripts/ci/ubuntu-apt-get.sh -o Acquire::Retries=3 install -y --no-install-recommends "${packages[@]}"; then
             break
           fi
           if [[ "$attempt" == 3 ]]; then
