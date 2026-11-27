@@ -1467,7 +1467,9 @@ Linux 固件也在 `pVis` MMIO 设备上协商 bit 23。只在一个在线 guest
 
 **实验：单 vCPU split-ring handoff。** `PVISOR_VM_FS_QUEUE_HANDOFF=1` 仅请求
 协商，默认关闭，不改变门禁。Linux x86_64/KVM 的可写、非托管、非 DAX
-passthrough `/dev/root` 在允许并行且启用 read-to-ack 时才提供私有 bit 21。
+passthrough `/dev/root` 在启用 read-to-ack、可用并行度大于一且初始 CPU
+亲和掩码包含至少两个可识别的不同物理核心时才提供私有 bit 21。仅允许同核的
+SMT 线程或无法确认核心分组时，保留普通通知；宿主不预留核心或跟踪后续绑核。
 Rust native 单 vCPU 在现代 `pVis` MMIO 上选择；两端须选 bit 21、22 和
 `VERSION_1`，不选 `EVENT_IDX`。未协商者沿用原路径。该模式不注册新的 MMIO
 处理逻辑，不在 vCPU 线程执行文件 I/O，不更改凭据、缓存期限或 FUSE 回复。

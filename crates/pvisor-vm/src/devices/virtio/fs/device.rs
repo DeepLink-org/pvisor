@@ -31,6 +31,42 @@ const QUEUE_HANDOFF_FEATURE: u64 = 1 << 21;
 const INLINE_METADATA_FEATURE: u64 = 1 << 23;
 const READ_INDEX_FEATURE: u64 = 1 << 24;
 
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+fn can_run_handoff_peers() -> bool {
+    use nix::sched::{sched_getaffinity, CpuSet};
+    use nix::unistd::Pid;
+
+    if !std::thread::available_parallelism().is_ok_and(|n| n.get() > 1) {
+        return false;
+    }
+    let Ok(affinity) = sched_getaffinity(Pid::from_raw(0)) else {
+        return false;
+    };
+    let groups = (0..CpuSet::count())
+        .filter(|&cpu| affinity.is_set(cpu) == Ok(true))
+        .filter_map(|cpu| {
+            // Linux lists the same logical CPUs for all threads of one core.
+            std::fs::read_to_string(format!(
+                "/sys/devices/system/cpu/cpu{cpu}/topology/thread_siblings_list"
+            ))
+            .ok()
+        });
+    has_distinct_core_groups(groups)
+}
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+fn has_distinct_core_groups(groups: impl Iterator<Item = String>) -> bool {
+    let mut known = groups.filter(|group| !group.trim().is_empty());
+    known
+        .next()
+        .is_some_and(|first| known.any(|group| group.trim() != first.trim()))
+}
+
+#[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+fn can_run_handoff_peers() -> bool {
+    false
+}
+
 #[derive(Copy, Clone)]
 #[repr(C, packed)]
 struct VirtioFsConfig {
@@ -116,7 +152,7 @@ impl Fs {
                 && device_config.overlay.is_none()
                 && device_config.shm_size.is_none()
                 && device_config.shared_dir.is_some()
-                && std::thread::available_parallelism().is_ok_and(|n| n.get() > 1)
+                && can_run_handoff_peers()
             {
                 avail_features |= QUEUE_HANDOFF_FEATURE;
             }
@@ -560,6 +596,20 @@ mod tests {
         );
     }
 
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    #[rstest::rstest]
+    #[case::unavailable(&[], false)]
+    #[case::one_core(&["0,8\n"], false)]
+    #[case::smt_only(&["0,8\n", "0,8\n"], false)]
+    #[case::missing_group_not_a_core(&["\n", "0,8\n"], false)]
+    #[case::different_cores(&["0,8\n", "0,8\n", "2,10\n"], true)]
+    fn handoff_needs_two_known_cores(#[case] groups: &[&str], #[case] eligible: bool) {
+        assert_eq!(
+            has_distinct_core_groups(groups.iter().map(|g| (*g).to_owned())),
+            eligible
+        );
+    }
+
     #[test]
     fn queue_handoff_requires_a_host_offer_and_compatible_ack() {
         use crate::env::fs;
@@ -582,8 +632,7 @@ mod tests {
             Fs::new_with_profile(cfg, Arc::new(AtomicI32::new(0)), profile.clone()).unwrap()
         };
         let mut dev = make(&config);
-        let eligible = cfg!(all(target_os = "linux", target_arch = "x86_64"))
-            && std::thread::available_parallelism().is_ok_and(|n| n.get() > 1);
+        let eligible = can_run_handoff_peers();
         assert_eq!(dev.avail_features() & QUEUE_HANDOFF_FEATURE != 0, eligible);
         for ack in [
             0,

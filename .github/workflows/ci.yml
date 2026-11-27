@@ -488,7 +488,16 @@ jobs:
             export PVISOR_VM_FS_QUEUE_HANDOFF=$handoff
             root="$(mktemp -d "$RUNNER_TEMP/shared-read.XXXXXX")"
             cp "$RUNNER_TEMP/readv" "$root/probe"
-            timeout 30 "$vm" --rootfs "$root" --cpus 1 --memory 256 -- /probe check /records
+            profile="$RUNNER_TEMP/shared-read-$handoff.log"
+            PVISOR_FS_PROFILE=1 timeout 30 "$vm" --rootfs "$root" --cpus 1 --memory 256 \
+              -- /probe check /records 2>"$profile" || { cat "$profile"; exit 1; }
+            grep -q '"component":"virtio-fs-dispatch".*"final_record":true' "$profile"
+            if grep -Eq '"handoff_(hit|miss)"' "$profile"; then
+              test "$handoff" = 1
+              echo "Verified shared reads with negotiated queue handoff."
+            elif [[ "$handoff" = 1 ]]; then
+              echo "::notice::Queue handoff was requested but not exercised on this runner; verified fallback only."
+            fi
             python3 pvisor-kernel/tests/warm_write.py --binary "$vm" --guest "$RUNNER_TEMP/write-ack"
           done
           root="$(mktemp -d "$RUNNER_TEMP/mapped-write.XXXXXX")"

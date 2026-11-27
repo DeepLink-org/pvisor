@@ -8,10 +8,12 @@ There is no change to the probe, validation, cache policy, or gate.
 
 ## Protocol and failure boundaries
 
-- A host opt-in, `/dev/root`, writable plain passthrough, no DAX, no managed
-  or overlay backend, and `available_parallelism() > 1` at device creation are
-  necessary to offer bit 21. The guest selects it only on one vCPU and modern
-  x86 `pVis` MMIO alongside bit 22. The host masks unoffered bits and enables
+- A host opt-in, `/dev/root`, writable plain passthrough, no DAX or managed
+  or overlay backend, and `available_parallelism() > 1` are necessary to offer
+  bit 21. At device creation at least two CPUs in the calling thread's affinity
+  mask must have different Linux `thread_siblings_list` groups. If this cannot
+  be established the device retains ordinary notifications. The guest selects
+  it only on one vCPU and modern x86 `pVis` MMIO alongside bit 22. The host masks unoffered bits and enables
   ordinary queues only on activation with both bits and `VERSION_1` acknowledged
   and `EVENT_IDX` absent. Device reset clears negotiation. Bit 21 grants no
   authority to access files. Only an optimization hint crosses the boundary:
@@ -42,7 +44,7 @@ There is no change to the probe, validation, cache policy, or gate.
   work, not wall time if a host thread is descheduled.
 - Hiprio, busy guest queues and `FSYNC` use the ordinary completion path.
   A slow WRITE that exhausts the guest budget still waits for the host IRQ;
-  the used reply carries the actual byte count or errno. With one host CPU
+  the used reply carries the actual byte count or errno. With only one core
   in the initial affinity mask the offer is absent, not merely ignored.
   A larger mask does not reserve cores or detect later pinning, CPU contention
   or throttling: each missed window can still burn CPU. Neither request tail
@@ -83,6 +85,33 @@ and verification, and are **not** exit counts. Use the phase-bracketed vCPU
 stats FD observer described in the [#212 experiment](native-guest-file-io.md)
 for actual exits. Do not draw per-syscall tail latency or CPU conclusions
 from `VM_GUEST_OK`, which reports elapsed time per whole workload.
+
+### Check the CPU admission boundary
+
+Use `lscpu -e=CPU,CORE,SOCKET` and `taskset -pc $$` to select one allowed
+CPU, two allowed SMT siblings, and two allowed CPUs on different cores.
+Repeat the `disk-warm-read` command above with each mask, request handoff,
+and set `PVISOR_FS_PROFILE=1`. Check the **final** `virtio-fs-dispatch`
+record, not just the exit status. Only the last mask should produce handoff
+counts on an eligible machine. Containers without readable CPU topology may
+decline all three. This is not a physical-CPU reservation in nested VMs.
+
+On a Ryzen 7 9700X, Linux x86_64/KVM, btrfs, the same Rust guest image
+(`2320383782b1`) and probe (`a26febf3addc`) ran on the PR baseline
+`0249c8ec` and the core-admission VMM. All six fresh VMs passed the byte
+oracle. One profiled VM per cell, whole-run counts (including setup):
+
+| Host affinity | Handoff hits before → after | Interpretation |
+|---|---:|---|
+| `6` | 0 → 0 | Neither version offers handoff. |
+| `6,14` | 448 → 0 | SMT-only mask now keeps inline metadata and ordinary IRQs. |
+| `5,6` | 614 → 630 | Two distinct reported cores still exercise handoff. |
+
+These counts identify paths, not their relative speeds. A separate 15-pair
+SMT-only timing run overlapped other experiments. For example, three baseline
+warm-read samples took over 60 ms, the other twelve at most 21 ms; no samples
+were removed. Do not use this batch to predict a speedup. Raw records and
+runner hashes: `benchmark/vm/.data/physical-core-admission-0249c8ec/`.
 
 ## KVM preflight
 
