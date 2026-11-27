@@ -19,6 +19,8 @@ use std::{
     time::Duration,
 };
 
+mod handoff;
+
 struct Subjects {
     vm: PathBuf,
     firmware: PathBuf,
@@ -45,6 +47,18 @@ fn duration(stdout: &str, metric: &str) -> Result<Duration> {
         .parse()?;
     ensure!(ns > 0 && lines.next().is_none(), "invalid guest result");
     Ok(Duration::from_nanos(ns))
+}
+
+fn pvisor_command(vm: &Path, root: &Path, backend: &str, cpus: u32) -> Command {
+    let mut cmd = Command::new(vm);
+    clean(&mut cmd);
+    cmd.env("PVISOR_GUEST_KERNEL", backend)
+        .arg("--rootfs")
+        .arg(root)
+        .arg("--cpus")
+        .arg(cpus.to_string())
+        .args(["--memory", "256", "--task-stdio"]);
+    cmd
 }
 
 impl Subjects {
@@ -85,14 +99,7 @@ impl Subjects {
             cmd.args(["--no-api", "--config-file"]).arg(config);
         } else {
             rootfs(&root, &self.guest)?;
-            cmd = Command::new(&self.vm);
-            clean(&mut cmd);
-            cmd.env("PVISOR_GUEST_KERNEL", backend)
-                .arg("--rootfs")
-                .arg(&root)
-                .arg("--cpus")
-                .arg(cpus.to_string())
-                .args(["--memory", "256", "--task-stdio"]);
+            cmd = pvisor_command(&self.vm, &root, backend, cpus);
             if backend == "linux" {
                 cmd.arg("--firmware").arg(&self.firmware);
             }
@@ -181,6 +188,9 @@ pub(crate) fn diagnose(batch: &Path) -> Result<()> {
             }),
         )?;
         println!("{name}: 16 paired blocks, median change {median:+.2}% (diagnostic only)");
+    }
+    if let Some(probe) = std::env::var_os("PVISOR_BENCH_HANDOFF_PROBE") {
+        handoff::compare(&batch.join("handoff"), &arms[1].1, &PathBuf::from(probe))?;
     }
     Ok(())
 }

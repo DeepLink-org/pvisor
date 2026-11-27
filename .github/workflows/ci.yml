@@ -484,7 +484,7 @@ jobs:
           cc -static -O2 -Wall -Wextra -Werror pvisor-kernel/tests/readv.c -o "$RUNNER_TEMP/readv"
           mise exec -- rustc --edition=2021 --target x86_64-unknown-linux-musl -C linker=rust-lld \
             pvisor-kernel/tests/write_ack.rs -o "$RUNNER_TEMP/write-ack"
-          for handoff in 0 1; do
+          for handoff in 0 auto 1; do
             export PVISOR_VM_FS_QUEUE_HANDOFF=$handoff
             root="$(mktemp -d "$RUNNER_TEMP/shared-read.XXXXXX")"
             cp "$RUNNER_TEMP/readv" "$root/probe"
@@ -492,10 +492,14 @@ jobs:
             PVISOR_FS_PROFILE=1 timeout 30 "$vm" --rootfs "$root" --cpus 1 --memory 256 \
               -- /probe check /records 2>"$profile" || { cat "$profile"; exit 1; }
             grep -q '"component":"virtio-fs-dispatch".*"final_record":true' "$profile"
-            if grep -Eq '"handoff_(hit|miss)"' "$profile"; then
-              test "$handoff" = 1
-              echo "Verified shared reads with negotiated queue handoff."
-            elif [[ "$handoff" = 1 ]]; then
+            if grep -Eq '"handoff_(auto|forced)_queues"' "$profile"; then
+              case "$handoff" in
+                auto) grep -q '"handoff_auto_queues"' "$profile" ;;
+                1) grep -q '"handoff_forced_queues"' "$profile" ;;
+                *) exit 1 ;;
+              esac
+              echo "Verified shared reads with negotiated $handoff handoff policy."
+            elif [[ "$handoff" != 0 ]]; then
               echo "::notice::Queue handoff was requested but not exercised on this runner; verified fallback only."
             fi
             python3 pvisor-kernel/tests/warm_write.py --binary "$vm" --guest "$RUNNER_TEMP/write-ack"

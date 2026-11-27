@@ -8,19 +8,25 @@ There is no change to the probe, validation, cache policy, or gate.
 
 ## Protocol and failure boundaries
 
-- A host opt-in, `/dev/root`, writable plain passthrough, no DAX or managed
-  or overlay backend, and `available_parallelism() > 1` are necessary to offer
-  bit 21. At device creation at least two CPUs in the calling thread's affinity
+- `/dev/root`, writable plain passthrough, no DAX, managed or overlay backend,
+  and `available_parallelism() > 1` are necessary for either offer.
+  Unset or `PVISOR_VM_FS_QUEUE_HANDOFF=auto` offers bit 20; `1` offers only
+  bit 21 (forced); `0` offers neither. A pre-auto guest ignores bit 20.
+  At device creation at least two CPUs in the calling thread's affinity
   mask must have different Linux `thread_siblings_list` groups. If this cannot
   be established the device retains ordinary notifications. The guest selects
   it only on one vCPU and modern x86 `pVis` MMIO alongside bit 22. The host masks unoffered bits and enables
   ordinary queues only on activation with both bits and `VERSION_1` acknowledged
-  and `EVENT_IDX` absent. Device reset clears negotiation. Bit 21 grants no
+  and `EVENT_IDX` absent. Device reset clears negotiation. Neither mode grants
   authority to access files. Only an optimization hint crosses the boundary:
   ordinary descriptor validation, credentials, dispatch and reply parsing
-  still apply. A specially marked inline kick in this mode can only wake the
-  worker.
-- On an otherwise empty request queue, the submitter sets `NO_INTERRUPT`
+  still apply. In forced mode an inline kick can only wake the worker. In
+  auto, a cold foreground metadata request keeps its normal inline kick.
+- Auto considers two eligible submissions on the same otherwise empty queue
+  a burst when their start times are at most 100 µs apart. Gaps, unrelated
+  opcodes and busy queues reset this history. Two consecutive poll misses skip
+  the next eight eligible submissions in the burst. No background timer.
+- On an eligible polling request, the submitter sets `NO_INTERRUPT`
   **before** publishing `LOOKUP`, `GETATTR` or `WRITE`. It kicks if required,
   polls at most 512 iterations under the IRQ-disabled queue lock, clears
   `NO_INTERRUPT`, fences and checks used.idx again. The request owns its DMA
@@ -35,7 +41,8 @@ There is no change to the probe, validation, cache policy, or gate.
   Spurious interrupts are harmless. The guest wait queue retains the
   completion status even if the IRQ precedes the call to wait.
 - In the reverse direction the worker leaves `NO_NOTIFY` set while draining.
-  After an eligible completion it checks avail.idx up to 512 times under the
+  After an eligible completion (in auto, only when it observes the driver's
+  suppressed IRQ), it checks avail.idx up to 512 times under the
   ring mutex and a RAM access lease. A hit returns to normal admission; a
   miss goes through the ordinary empty-ring **arm, full fence, recheck**
   before epoll. The guest fences between publishing avail.idx and testing
@@ -48,7 +55,45 @@ There is no change to the probe, validation, cache policy, or gate.
   in the initial affinity mask the offer is absent, not merely ignored.
   A larger mask does not reserve cores or detect later pinning, CPU contention
   or throttling: each missed window can still burn CPU. Neither request tail
-  latency nor host CPU usage is bounded to improve. Leave this opt-in.
+  latency nor host CPU usage is bounded to improve. Forced polling stays opt-in.
+
+## Default auto versus forced polling
+
+Same release VMM and embedded guest for all three arms. `off` is `0`, `forced`
+is `1`, and `auto` here means the variable was **unset**. Fresh 1-vCPU/256 MiB
+VM per operation on a Ryzen 7 9700X, Linux x86_64/KVM, btrfs, affinity 2–5.
+15 randomized blocks (seed 21341), no discarded trials. Milliseconds per whole
+guest workload; changes are the median within-block `auto/off − 1`, with
+95% percentile bootstrap intervals (20,000 draws, seed 21342, unadjusted).
+
+| Workload | Off | Forced | Auto | Auto vs off |
+|---|---:|---:|---:|---:|
+| Sequential warm read | 14.92 | 5.16 | 5.90 | −59.7% [−60.7%, −55.9%] |
+| Shuffled warm read | 15.11 | 5.46 | 5.99 | −56.2% [−60.0%, −53.3%] |
+| Sequential write + fsync | 30.28 | 12.35 | 13.32 | −54.6% [−58.8%, −46.8%] |
+| Shuffled overwrite + fsync | 29.55 | 12.15 | 12.77 | −56.9% [−58.2%, −31.6%] |
+| 256 reads of one warm page | 3.71 | 1.34 | 1.38 | −60.2% [−63.3%, −58.2%] |
+| Same reads after 1 ms sleeps (sleep excluded) | 4.92 | 9.15 | 4.89 | +2.0% [−9.2%, +18.9%] |
+
+No difference was resolved for auto on spaced reads. The interval does **not**
+establish a <15% slowdown bound. Forced polling was slower there: +58.1%
+[+29.3%, +111.7%]. The host was not dedicated; individual slow calls/VMs
+remain in the batch. Whole-VMM CPU (including setup, not the guest clock)
+for the spaced case was 90.6 / 101.0 / 91.7 CPU-ms (off / forced / auto).
+
+A separate untimed check bracketed dense → spaced → dense reads on the
+**same fd in the same VM**, counting `fstatat64` of the subject inode on
+the vCPU vs worker threads. Of 256 validations per phase, auto used the
+worker **255 / 0 / 255** times; forced used it 256 times in every phase;
+off used it zero times. On one logical CPU or two SMT siblings, default
+auto kept all 768 validations inline. This observes fallback and recovery
+directly; neither guest duration nor a negotiation bit proves either.
+
+Local raw records: `benchmark/vm/.data/auto-213/{original,spacing}` (timing
+runner `1176a9e8a61b`), `phase-routes.json` (candidate `6d05153865b5` with
+queue-activation profile counters). CI repeats off/forced/auto on one
+candidate after the unchanged gate using the [diagnostic recipe](../vm/guest.md).
+Its summary distinguishes a negotiated mode from an ineligible runner.
 
 ## Reproduce
 
@@ -64,7 +109,7 @@ batch=$(mktemp -d "$PWD/benchmark/vm/.data/handoff.XXXXXX")
 cc -O2 -static -Wall -Wextra -Werror benchmark/vm/probe.c -o "$batch/probe"
 sha256sum "$runner" "$batch/probe" >"$batch/inputs.sha256"
 for op in disk-warm-read disk-shuffled-read disk-write-fsync disk-shuffled-overwrite-fsync; do
-  for arm in 0 1; do
+  for arm in 0 auto 1; do
     cell="$batch/$op-$arm"; root="$cell/root"
     mkdir -p "$root"/{dev,ram,work}
     cp "$batch/probe" "$root/probe"

@@ -340,7 +340,7 @@ jobs:
           exit "$status"
       - name: Diagnose guest variance on the measurement host
         if: ${{ !cancelled() && matrix.kind == 'guest' }}
-        timeout-minutes: 5
+        timeout-minutes: 10
         shell: bash
         run: |
           set -euo pipefail
@@ -348,9 +348,12 @@ jobs:
           [[ -f "$data/comparison/comparison.json" ]] || exit 0
           export PVISOR_BENCH_REVISION_BUILDS="$RUNNER_TEMP/builds"
           export PVISOR_BENCH_GUEST="$RUNNER_TEMP/probe"
+          export PVISOR_BENCH_HANDOFF_PROBE="$RUNNER_TEMP/handoff-probe"
+          cc -O2 -static -Wall -Wextra -Werror benchmark/vm/handoff_probe.c -o "$PVISOR_BENCH_HANDOFF_PROBE"
           export PVISOR_BENCH_FIRECRACKER="$RUNNER_TEMP/firecracker"
           export PVISOR_BENCH_FC_KERNEL="$RUNNER_TEMP/vmlinux"
           mise run benchmark -- vm/guest --diagnose "$data"
+          cat "$data/handoff/summary.md" >> "$GITHUB_STEP_SUMMARY"
       - name: Retain compact comparison for the PR conversation
         if: ${{ !cancelled() && github.event_name == 'pull_request' }}
         uses: actions/upload-artifact@v4

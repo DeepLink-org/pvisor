@@ -2,6 +2,9 @@
 
 [B-VM-GUEST-ENG](../REGISTRY.md#b-vm-guest-eng) 工程记录。问题是：**在保留可变共享文件的可见性、短写和同步错误时，哪些往返可以省；显式改变发布边界又能省多少？**
 
+下文“默认”均指引入自动策略**之前**的历史制品（handoff 关闭）。当前默认是
+[`auto`，独立三臂对照](native-queue-handoff.md#default-auto-versus-forced-polling)；各批数字不累加。
+
 ## 基线与归因
 
 以已合入 #212 的 `4ee9e3d2` 为基线，不沿用 #209 的数字。[#212 最终 CI](https://github.com/DeepLink-org/pvisor/pull/212#issuecomment-7196945266) 的 Rust 顺序/乱序热读为 19.32/19.51 ms，顺序写/乱序覆写加 `fsync` 为 61.24/56.71 ms。那次 CI 为 PASS；PR 描述里的 25/30 是另一台机器上的另一批测量。Firecracker 使用私有 ext4/virtio-blk，没有监视一个宿主可写目录的义务，不能把两列直接当作传输层 A/B。
