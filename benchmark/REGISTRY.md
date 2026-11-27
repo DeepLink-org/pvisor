@@ -259,6 +259,7 @@ Design: 负载、对照、控制变量与有效样本判据。
 
 - **双固件工程子集：** Linux 与 Rust native 的任务日志、按需读页批处理、原始批次及配对区间见[工程记录](evidence/rust-kernel-filesystem.md)。共享 rootfs VM API 结果不填充九运行时用户表。
 - **Rust native 写路径：** [配对实验](evidence/rust-kernel-write-path.md)对照按需页缓存、写入权限检查和完成通知策略；1 KiB 写、同步写、完整发布与无能力调用者单独比较，不合成用户性能分数。
+- **固定输入的供给成本：** 在 Rust native KVM 中，[对照逐文件只读共享与打包后一次导入 guest tmpfs](filesystem/read-input.md)。分别测少量单次读取与重复整树扫描；报告宿主打包、guest 导入和完整使用成本，逐字节验证。限定固定普通文件，不比较 live 工作区或整棵 rootfs。[工程对照结果](evidence/native-fs-boundaries.md)。
 - **Rust native 引入报告：** [架构决定与初步性能数据](evidence/rust-native-kernel-intro.zh.md)，含端到端任务和路径查询对照。
 - **JSON 入口状态：** 可执行 [filesystem/dax_ab.json](filesystem/dax_ab.json)；未准备 [filesystem/ab.json](filesystem/ab.json)（拒绝测量）。
 
@@ -1192,9 +1193,11 @@ Design: 负载、对照、控制变量与有效样本判据。
 - **入口：** `mise run benchmark -- vm/guest`；[复现与门禁](vm/guest.md)。这是顺序测量的工程门禁，不发布跨后端加速结论。
 - **机制诊断：** [Rust guest 共享文件 I/O](evidence/native-guest-file-io.md) 分开验证热读的属性校验、同步写的确认、tmpfs 目录遍历和新文件分阶段发布。
 - **#212 后续：** [可变文件的请求与确认](evidence/native-file-handoff.md) 对照标量和散读、精确写入、宿主 RAM 屏障与显式新树发布；不更改原门禁或为 `:rw` 延迟确认。
+- **物理核心准入：** [队列交接](evidence/native-queue-handoff.md)用同核 SMT 线程与不同核心分别核验协商。在仅允许同一物理核心的条件下，比较两版均请求交接时的热读与写加同步；不改变三后端门禁。
 - **tmpfs 对照：** [匿名页、文件空洞和并发读](evidence/native-guest-tmpfs.md) 用上一轮制品与 PR #209 为独立基线，区分共享文件同步成本和 guest 内存文件的访问成本。
 - **Linux 固件：** [virtio-fs 往返与目录发布](evidence/linux-fw-file-io.md) 记录同固件 tmpfs 配对、传输层消融、完整门禁和新目录的分阶段发布边界。
 - **受限提交：** [定长批量提交](vm/packed-tree.md) 对照逐文件导出与 guest 退出后宿主一次导入；相同的新目录内容，区分生产结束、可见与同步确认，不改变普通共享写语义。
+- **写入粒度：** [同一新目录的三档生产写入](vm/tree-granularity.md)，比较直接生成和 guest 本地生成后批量导出的完整发布耗时；不改变 gate cell 或用户默认挂载。
 
 ## 检查清单 {#checklist}
 

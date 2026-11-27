@@ -359,6 +359,15 @@ PVISOR_GUEST_KERNEL=rust-native timeout 30 /path/to/vm_api_case \
 Expect exit 0 and four `READDIR_OK` records. The reported time covers one
 resident scan and decoding, not VM startup, close or exit.
 
+The [reader-fanout probe](tests/read_handles.rs) opens one regular file
+1, 32 or 256 times, then reads 1,024 shuffled pages through the first fd.
+Create `/subject` with 1,027 × 4,096 bytes, byte `i` equal to
+`(i / 4096 + i % 251) % 256` (integer division). Use the same static
+probe build and fresh-root VM recipe above, passing the handle count as
+its only argument. Each run verifies the bytes, continued reads with
+mixed-access and closed handles, and EOF before printing `READ_HANDLES_OK`.
+See the [paired results and limits](../benchmark/evidence/native-fs-boundaries.md).
+
 To verify captured streams on Linux x86_64/KVM, run the same static workload
 with the embedded-kernel probe:
 
