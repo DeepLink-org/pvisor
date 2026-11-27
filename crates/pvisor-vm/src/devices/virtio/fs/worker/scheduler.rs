@@ -1,5 +1,5 @@
 //! Queue-local execution with stealing directly from a blocked owner's ring.
-//! Only descriptor admission and used-ring publication hold the ring mutex.
+//! Backend I/O runs outside the ring mutex.
 use super::*;
 use std::sync::atomic::AtomicU64;
 use std::sync::{Mutex, Weak};
@@ -350,6 +350,17 @@ impl Runtime {
         if notify {
             if ring.needs_notification(&self.execution.mem).unwrap() {
                 self.interrupt.signal_used_queue();
+            } else if ring.fs_handoff {
+                self.profile.add("handoff_irq_suppressed", 1);
+            }
+            if ring.fs_handoff
+                && matches!(request.header.opcode,
+                x if x == Opcode::Getattr as u32 || x == Opcode::Lookup as u32 || x == Opcode::Write as u32)
+            {
+                // take() left kicks disabled. A miss returns to normal arm/recheck.
+                let hit = ring.poll_next_avail(&self.execution.mem);
+                self.profile
+                    .add(if hit { "handoff_hit" } else { "handoff_miss" }, 1);
             }
         } else {
             lane.inline_active.store(false, Ordering::Relaxed);
@@ -685,6 +696,36 @@ mod tests {
             runtime.publish(final_request, 16);
             assert_eq!(first.used.idx.get(), 3);
         }
+    }
+
+    #[test]
+    fn queue_handoff_suppresses_only_until_guest_rearms() {
+        let mem = GuestMemoryMmap::from_ranges(&[(GuestAddress(0), 0x10000)]).unwrap();
+        let high = VirtQueue::new(GuestAddress(0), &mem, 8);
+        let first = VirtQueue::new(GuestAddress(0x400), &mem, 8);
+        fill(&first, &mem, 0x4000, &[Opcode::Getattr, Opcode::Write]);
+        first.avail.idx.set(1);
+        let mut ring = first.create_queue();
+        ring.fs_handoff = true;
+        let rt = runtime(mem.clone(), vec![high.create_queue(), ring]);
+        let request = rt.next(1, &mut 0).unwrap();
+        first.avail.flags.set(1);
+        assert_eq!(first.used.flags.get(), 1);
+        // The first completion finds a suppressed IRQ and a kickless successor.
+        first.avail.idx.set(2);
+        rt.publish(request, 16);
+        assert_eq!(rt.interrupt.status().load(Ordering::Acquire), 0);
+        assert_eq!(first.used.idx.get(), 1);
+        rt.lanes[1].busy.store(false, Ordering::Release);
+        let second = rt.next(1, &mut 0).unwrap();
+        // The second arrives after guest poll expiry; the ordinary IRQ is required.
+        first.avail.flags.set(0);
+        rt.publish(second, 24);
+        assert_ne!(rt.interrupt.status().load(Ordering::Acquire), 0);
+        assert_eq!(first.used.idx.get(), 2);
+        rt.lanes[1].busy.store(false, Ordering::Release);
+        assert!(rt.next(1, &mut 0).is_none());
+        assert_eq!(first.used.flags.get(), 0);
     }
 
     #[test]

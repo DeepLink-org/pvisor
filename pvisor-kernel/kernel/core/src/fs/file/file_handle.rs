@@ -15,7 +15,7 @@ use crate::{
     net::socket::Socket,
     prelude::*,
     process::{Process, signal::Pollable},
-    util::ioctl::RawIoctl,
+    util::{ioctl::RawIoctl, read_segments},
     vm::{
         page_cache::Vmo,
         vmar::{FileMmapRequest, MapHandle},
@@ -72,6 +72,14 @@ pub(crate) trait FileLike: Pollable + Send + Sync + Any {
     /// [`read`]: FileLike::read
     fn read_at(&self, offset: usize, writer: &mut VmWriter) -> Result<usize> {
         return_errno_with_message!(Errno::ESPIPE, "read_at is not supported");
+    }
+
+    /// Reads into the nonempty segments of one syscall. `None` uses the file position.
+    fn read_vectored(&self, offset: Option<usize>, writers: &mut [VmWriter]) -> Result<usize> {
+        read_segments(writers, |done, writer| match offset {
+            Some(start) => self.read_at(start + done, writer),
+            None => self.read(writer),
+        })
     }
 
     /// Write at the given file offset.

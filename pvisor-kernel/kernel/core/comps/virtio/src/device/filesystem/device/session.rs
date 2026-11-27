@@ -313,7 +313,9 @@ impl FuseSession {
         let request = self
             .device
             .prepare_request(nodeid, &mut operation, None, None)?;
-        self.device.hiprio_queue.add_request(request, false)?;
+        self.device
+            .hiprio_queue
+            .add_request(request, operation.opcode(), false)?;
 
         Ok(())
     }
@@ -327,7 +329,9 @@ impl FuseSession {
             let request = self
                 .device
                 .prepare_request(FUSE_ROOT_ID, &mut operation, None, None)?;
-            self.device.hiprio_queue.add_request(request, false)?;
+            self.device
+                .hiprio_queue
+                .add_request(request, operation.opcode(), false)?;
         }
         Ok(())
     }

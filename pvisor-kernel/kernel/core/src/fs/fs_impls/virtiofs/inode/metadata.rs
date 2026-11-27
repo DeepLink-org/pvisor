@@ -72,7 +72,9 @@ impl VirtioFsInode {
             inner.invalidate_page_cache()?;
         }
 
-        if new_size != old_size && let Some(page_cache) = &mut inner.page_cache {
+        if new_size != old_size
+            && let Some(page_cache) = inner.page_cache_mut()
+        {
             // The server has already applied the size change; don't zero bytes in its last page.
             page_cache.resize_from_backing(new_size, old_size)?;
         }

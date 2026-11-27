@@ -9,7 +9,7 @@ use std::cmp::min;
 use std::fmt::{self, Debug, Display};
 use std::num::Wrapping;
 use std::sync::atomic::{fence, Ordering};
-use virtio_bindings::virtio_ring::VRING_USED_F_NO_NOTIFY;
+use virtio_bindings::virtio_ring::{VRING_AVAIL_F_NO_INTERRUPT, VRING_USED_F_NO_NOTIFY};
 use vm_memory::{
     Address, ByteValued, Bytes, GuestAddress, GuestMemory, GuestMemoryError, GuestMemoryMmap,
     VolatileMemoryError,
@@ -360,6 +360,7 @@ impl QueueSnapshot {
             next_avail: Wrapping(self.next_avail),
             next_used: Wrapping(self.next_used),
             event_idx_enabled: self.event_idx_enabled,
+            fs_handoff: false,
             num_added: Wrapping(self.num_added),
         };
         if self.ready && !queue.valid_layout(mem) {
@@ -395,6 +396,8 @@ pub struct Queue {
 
     /// VIRTIO_F_RING_EVENT_IDX negotiated.
     event_idx_enabled: bool,
+    /// Recomputed at filesystem activation, never restored from guest RAM.
+    pub(super) fs_handoff: bool,
 
     /// The number of descriptor chains placed in the used ring via `add_used`
     /// since the last time `needs_notification` was called on the associated queue.
@@ -414,6 +417,7 @@ impl Queue {
             next_avail: Wrapping(0),
             next_used: Wrapping(0),
             event_idx_enabled: false,
+            fs_handoff: false,
             num_added: Wrapping(0),
         }
     }
@@ -671,13 +675,33 @@ impl Queue {
         self.set_notification(mem, false)
     }
 
+    /// One bounded window per serviced request; admission still arms and rechecks.
+    pub(super) fn poll_next_avail(&self, mem: &GuestMemoryMmap) -> bool {
+        let _lease = self.memory_access(mem);
+        let address = self.avail_ring.checked_add(2).unwrap();
+        for _ in 0..512 {
+            if mem.load::<u16>(address, Ordering::Acquire).unwrap() != self.next_avail.0 {
+                return true;
+            }
+            std::hint::spin_loop();
+        }
+        false
+    }
+
     pub fn needs_notification(&mut self, mem: &GuestMemoryMmap) -> Result<bool, Error> {
         let used_idx = self.next_used;
 
         // Complete all the writes in add_used() before reading the event.
         fence(Ordering::SeqCst);
 
-        // The VRING_AVAIL_F_NO_INTERRUPT flag isn't supported yet.
+        if self.fs_handoff {
+            debug_assert!(!self.event_idx_enabled);
+            let _lease = self.memory_access(mem);
+            let flags: u16 = mem
+                .load(self.avail_ring, Ordering::Relaxed)
+                .map_err(Error::GuestMemory)?;
+            return Ok(flags & VRING_AVAIL_F_NO_INTERRUPT as u16 == 0);
+        }
 
         // When the `EVENT_IDX` feature is negotiated, the driver writes into `used_event`
         // a value that's used by the device to determine whether a notification must

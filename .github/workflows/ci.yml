@@ -474,6 +474,31 @@ jobs:
             -- /probe 7 --check-tmpfs-read || status=$?
           test "$status" = 7
 
+      - name: Rust guest shared reads and acknowledged writes / KVM
+        if: runner.os == 'Linux' && matrix.shard == 'pvisor'
+        env:
+          PVISOR_GUEST_KERNEL: rust-native
+        shell: bash
+        run: |
+          vm=target/debug/examples/vm_api_case
+          cc -static -O2 -Wall -Wextra -Werror pvisor-kernel/tests/readv.c -o "$RUNNER_TEMP/readv"
+          mise exec -- rustc --edition=2021 --target x86_64-unknown-linux-musl -C linker=rust-lld \
+            pvisor-kernel/tests/write_ack.rs -o "$RUNNER_TEMP/write-ack"
+          for handoff in 0 1; do
+            export PVISOR_VM_FS_QUEUE_HANDOFF=$handoff
+            root="$(mktemp -d "$RUNNER_TEMP/shared-read.XXXXXX")"
+            cp "$RUNNER_TEMP/readv" "$root/probe"
+            timeout 30 "$vm" --rootfs "$root" --cpus 1 --memory 256 -- /probe check /records
+            python3 pvisor-kernel/tests/warm_write.py --binary "$vm" --guest "$RUNNER_TEMP/write-ack"
+          done
+          root="$(mktemp -d "$RUNNER_TEMP/mapped-write.XXXXXX")"
+          cp "$RUNNER_TEMP/native-stdio-guest" "$root/probe"
+          status=0
+          timeout 30 "$vm" --rootfs "$root" --cpus 2 --memory 256 \
+            -- /probe 7 --check-write-cache || status=$?
+          test "$status" = 7
+          printf WM | cmp - "$root/write-map-race"
+
       - name: Rust guest metadata defaults and seeded filesystem stress / KVM
         if: runner.os == 'Linux' && matrix.shard == 'pvisor'
         env:

@@ -25,6 +25,8 @@ use crate::{
 pub(crate) mod mmio;
 pub(crate) mod pci;
 
+pub(crate) const FS_QUEUE_HANDOFF: u64 = 1 << 21;
+
 /// The transport of virtio device. Virtio device can use this transport to:
 /// 1. Set device status.
 /// 2. Negotiate features.

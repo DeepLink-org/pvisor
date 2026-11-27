@@ -159,13 +159,13 @@ impl FileSystemDevice {
         data_bufs: Option<FuseDataBuf>,
         complete_fn: Option<FuseCompleteFn>,
     ) -> Result<Arc<FuseWaiter>, FuseError> {
-        let inline = complete_fn.is_none()
-            && matches!(operation.opcode(), FuseOpcode::Lookup | FuseOpcode::Getattr);
+        let opcode = operation.opcode();
+        let deferred = complete_fn.is_some();
         let request = self.prepare_request(nodeid, operation, data_bufs, complete_fn)?;
         let waiter = request.waiter().clone();
 
         let queue = self.select_request_queue(request.nodeid());
-        queue.add_request(request, inline)?;
+        queue.add_request(request, opcode, deferred)?;
 
         Ok(waiter)
     }

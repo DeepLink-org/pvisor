@@ -216,6 +216,37 @@ append `--check-read-fixture` after `7`. The workload warms one page,
 verifies an unaligned multi-batch read spanning it, and checks the short
 read at EOF. See the [filesystem A/B](../benchmark/evidence/rust-kernel-filesystem.md).
 
+On a mutable virtio-fs root, a buffered `readv` or `preadv` validates the open
+file once for the whole syscall, not once per nonempty destination. It applies
+the same size/mtime invalidation as `pread`, then copies the contiguous file
+range under the inode read lock. This benefits callers scattering records into
+separate buffers. It does not establish a snapshot against concurrent host
+writes, extend a TTL, batch discontiguous file offsets, or remove validation
+from a loop of independent `pread` calls. Direct I/O still reads from the host.
+`lseek(SEEK_SET)` and `lseek(SEEK_CUR)` do not need the file length and no
+longer issue an EOF query. `SEEK_END` still validates live EOF.
+
+The standalone scatter probe checks contents, file position, short reads, EOF,
+and a fault after a completed segment. Run it in a fresh writable root:
+
+```sh
+root=$(mktemp -d "$PWD/target/readv.XXXXXX")
+cc -static -O2 pvisor-kernel/tests/readv.c -o "$root/probe"
+PVISOR_GUEST_KERNEL=rust-native timeout 30 /path/to/vm_api_case \
+  --rootfs "$root" --cpus 1 --memory 256 -- /probe check /records
+```
+
+For request counts only, run with `PVISOR_FS_PROFILE=1` and `profile` instead
+of `check`. After warming all pages it issues 128 `preadv` calls, each with
+eight nonempty fields. `SCATTER_BEGIN` / `SCATTER_END` bracket just this loop.
+Compare the same protocol instance's cumulative checkpoints across it; the
+trailing `fstat` adds one `GETATTR`. With a zero attribute TTL, expect 129
+`GETATTR` versus 1,025 on #212, and no data `READ` in either delta. Neither
+the diagnostic pauses nor these request counts are throughput measurements.
+`profile-seek` uses the same shuffled offsets and checkpoints, with 128 pairs
+of `lseek(SEEK_SET)` and scalar `read`. Expect 129 versus 257 `GETATTR`,
+including the checkpoint, and zero `READ`.
+
 `7 --check-tmpfs-read` needs only a fresh root and the guest's `/dev/shm`.
 It checks that sparse reads return zeros and leave the destination past EOF
 untouched, including with two readers racing a truncate/regrow loop. Run on
@@ -225,8 +256,11 @@ two vCPUs with 64 MiB under a 30-second deadline. Reading every page of a
 `--check-write-cache` instead tests sparse write-only I/O, a subsequent
 buffered read or shared mapping, and truncate/regrow. After exit, `/mapped`
 and `/buffered` must each contain 8192 zero bytes followed by `78 00 00`
-(hex). The guest also tests set-ID bits and file-capability removal on its
-own tmpfs before and after dropping effective `CAP_FSETID`.
+(hex). On two vCPUs it also races first mapping against a write to a warmed
+file, dirties a byte through that mapping and unmaps before `fsync`; verify
+`/write-map-race` contains exactly `WM` on the host. The guest also tests
+set-ID bits and file-capability removal on its own tmpfs before and after
+dropping effective `CAP_FSETID`.
 
 To check full, short and failed host write acknowledgments on Linux x86_64/KVM,
 run the following in Bash with `vm_api_case` built against the candidate kernel.
@@ -243,12 +277,23 @@ mise exec -- rustc --edition=2021 --target x86_64-unknown-linux-musl \
     target/release/examples/vm_api_case --rootfs "$root" --cpus 1 --memory 256 \
     -- /probe write /subject
 ) && "$root/probe" verify "$root/subject"
+python3 pvisor-kernel/tests/warm_write.py --binary target/release/examples/vm_api_case \
+  --guest "$root/probe"
 ```
 
-On virtio-fs, a regular file starts without a page cache. Writes use the
-caller's file handle and wait for the server reply; the first buffered read
-or mapping creates the cache under the same inode lock as writers. From
-then on, buffered writes keep it coherent. This is not writeback caching.
+The second probe warms two pages through a reader, changes neighboring bytes
+on the host, then issues a short write and a failing write on a guest writer.
+The host checks the accepted prefix, untouched neighbors and length **before**
+the guest calls `fsync` and again after exit.
+
+On virtio-fs, buffered reads alone use a private clean page cache. A write
+evicts overlapping pages under the inode lock and sends only the caller's
+bytes on its own file handle. It returns the host's accepted count or error;
+subsequent buffered reads refill evicted pages from the server. `fsync` does
+not scan this clean cache, but still sends and waits for the server `FSYNC`.
+Handing out the cache VMO (including for `mmap`) switches the inode to its
+mapped write-through and flush path under the same lock. This transition is
+permanent: a dirty page can remain after a mapping ends.
 See the [write-path experiment](../benchmark/evidence/rust-kernel-write-path.md).
 
 When the server returns `FOPEN_KEEP_CACHE`, closing a cached file still

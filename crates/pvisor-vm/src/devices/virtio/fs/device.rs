@@ -27,6 +27,7 @@ use crate::devices::virtio::passthrough::PermissionSemantics;
 use crate::devices::virtio::InterruptTransport;
 use crate::vmm::vmm_config::fs::OverlaySource;
 
+const QUEUE_HANDOFF_FEATURE: u64 = 1 << 21;
 const INLINE_METADATA_FEATURE: u64 = 1 << 23;
 const READ_INDEX_FEATURE: u64 = 1 << 24;
 
@@ -108,6 +109,17 @@ impl Fs {
         let mut avail_features = (1u64 << VIRTIO_F_VERSION_1) | (1u64 << VIRTIO_RING_F_EVENT_IDX);
         if cfg!(all(target_os = "linux", target_arch = "x86_64")) && profile.irq_read_ack {
             avail_features |= super::super::FS_IRQ_READ_ACK;
+            if profile.queue_handoff
+                && device_config.fs_id == "/dev/root"
+                && !device_config.read_only
+                && !device_config.managed
+                && device_config.overlay.is_none()
+                && device_config.shm_size.is_none()
+                && device_config.shared_dir.is_some()
+                && std::thread::available_parallelism().is_ok_and(|n| n.get() > 1)
+            {
+                avail_features |= QUEUE_HANDOFF_FEATURE;
+            }
         }
 
         let tag = device_config.fs_id.as_bytes();
@@ -181,7 +193,7 @@ impl Fs {
         self.configure_request_queues(count)?;
         // Preserve the source's optional doorbells and vendor ID even before DRIVER_OK.
         // Never add a capability disallowed by this host; MMIO checks exact equality.
-        self.avail_features &= offered | !super::super::FS_IRQ_READ_ACK;
+        self.avail_features &= offered | !(super::super::FS_IRQ_READ_ACK | QUEUE_HANDOFF_FEATURE);
         if offered & INLINE_METADATA_FEATURE == 0 {
             self.inline_dispatch = None;
         }
@@ -190,11 +202,22 @@ impl Fs {
 
     pub fn set_shm_region(&mut self, shm_region: VirtioShmRegion) {
         self.shm_region = Some(shm_region);
+        self.avail_features &= !QUEUE_HANDOFF_FEATURE;
     }
     pub(crate) fn set_managed(&mut self, managed: bool) {
         if let Some(cfg) = self.passthrough_cfg.as_mut() {
             cfg.managed = managed;
         }
+        if managed {
+            self.avail_features &= !QUEUE_HANDOFF_FEATURE;
+        }
+    }
+
+    fn queue_handoff_selected(&self) -> bool {
+        let required =
+            QUEUE_HANDOFF_FEATURE | super::super::FS_IRQ_READ_ACK | (1 << VIRTIO_F_VERSION_1);
+        self.avail_features & self.acked_features & required == required
+            && self.acked_features & (1 << VIRTIO_RING_F_EVENT_IDX) == 0
     }
 
     pub fn set_export_table(&mut self, export_table: ExportTable) -> u64 {
@@ -224,6 +247,9 @@ impl VirtioDevice for Fs {
             || self.acked_features & self.avail_features() & INLINE_METADATA_FEATURE == 0
         {
             return None;
+        }
+        if self.queue_handoff_selected() {
+            return Some(false);
         }
         self.inline_dispatch
             .as_ref()
@@ -381,7 +407,8 @@ impl VirtioDevice for Fs {
         // Extract queues and eventfds from DeviceQueues.
         let mut worker_queues = Vec::with_capacity(queues.len());
         let mut queue_evts = Vec::with_capacity(queues.len());
-        for dq in queues {
+        for (index, mut dq) in queues.into_iter().enumerate() {
+            dq.queue.fs_handoff = index >= REQ_INDEX && self.queue_handoff_selected();
             worker_queues.push(dq.queue);
             queue_evts.push(dq.event);
         }
@@ -531,6 +558,55 @@ mod tests {
             fs.avail_features() & crate::devices::virtio::FS_IRQ_READ_ACK != 0,
             kvm && irq
         );
+    }
+
+    #[test]
+    fn queue_handoff_requires_a_host_offer_and_compatible_ack() {
+        use crate::env::fs;
+        let private = QUEUE_HANDOFF_FEATURE | super::super::super::FS_IRQ_READ_ACK;
+        let required = private | (1 << VIRTIO_F_VERSION_1);
+        let profile = Arc::new(
+            fs::FsProfile::parse(|key| (key == fs::QUEUE_HANDOFF).then(|| "1".into())).unwrap(),
+        );
+        let mut config = crate::vmm::vmm_config::fs::FsDeviceConfig {
+            fs_id: "/dev/root".into(),
+            semantics: PermissionSemantics::LinuxComplete,
+            shared_dir: Some("/shared".into()),
+            shm_size: None,
+            read_only: false,
+            managed: false,
+            virtual_entries: vec![],
+            overlay: None,
+        };
+        let make = |cfg: &crate::vmm::vmm_config::fs::FsDeviceConfig| {
+            Fs::new_with_profile(cfg, Arc::new(AtomicI32::new(0)), profile.clone()).unwrap()
+        };
+        let mut dev = make(&config);
+        let eligible = cfg!(all(target_os = "linux", target_arch = "x86_64"))
+            && std::thread::available_parallelism().is_ok_and(|n| n.get() > 1);
+        assert_eq!(dev.avail_features() & QUEUE_HANDOFF_FEATURE != 0, eligible);
+        for ack in [
+            0,
+            QUEUE_HANDOFF_FEATURE,
+            private,
+            required | (1 << VIRTIO_RING_F_EVENT_IDX),
+        ] {
+            dev.set_acked_features(ack);
+            assert!(!dev.queue_handoff_selected());
+        }
+        dev.set_acked_features(required);
+        assert_eq!(dev.queue_handoff_selected(), eligible);
+        dev.restore_transport(1, !QUEUE_HANDOFF_FEATURE).unwrap();
+        assert!(!dev.queue_handoff_selected());
+
+        config.read_only = true;
+        assert_eq!(make(&config).avail_features() & QUEUE_HANDOFF_FEATURE, 0);
+        config.read_only = false;
+        config.managed = true;
+        assert_eq!(make(&config).avail_features() & QUEUE_HANDOFF_FEATURE, 0);
+        config.managed = false;
+        config.fs_id = "bind".into();
+        assert_eq!(make(&config).avail_features() & QUEUE_HANDOFF_FEATURE, 0);
     }
 
     #[test]

@@ -1465,6 +1465,16 @@ Linux 固件也在 `pVis` MMIO 设备上协商 bit 23。只在一个在线 guest
 见[固件验证步骤](../../fw/README.md#linux-virtio-fs-notifications)和
 [Rust native 工程对照](../../benchmark/evidence/native-guest-file-io.md)。
 
+**实验：单 vCPU split-ring handoff。** `PVISOR_VM_FS_QUEUE_HANDOFF=1` 仅请求
+协商，默认关闭，不改变门禁。Linux x86_64/KVM 的可写、非托管、非 DAX
+passthrough `/dev/root` 在允许并行且启用 read-to-ack 时才提供私有 bit 21。
+Rust native 单 vCPU 在现代 `pVis` MMIO 上选择；两端须选 bit 21、22 和
+`VERSION_1`，不选 `EVENT_IDX`。未协商者沿用原路径。该模式不注册新的 MMIO
+处理逻辑，不在 vCPU 线程执行文件 I/O，不更改凭据、缓存期限或 FUSE 回复。
+宿主 worker 服务请求后短暂读取 avail.idx；guest 短暂检查 used.idx，然后
+恢复普通 IRQ。它用 CPU 和 IRQ 延迟换取较少的门铃与中断，不是默认性能保证。
+见[边界与复现](../../benchmark/evidence/native-queue-handoff.md)。
+
 OverlayFs 的普通 READ/不变更权限的 WRITE/FLUSH/FSYNC 直接在 handle map 和
 I/O admission 短锁内取得原生 Arc lease，不取得 namespace operation guard。
 原生文件锁协调该 handle 的读写与同步。需要清除虚拟 setuid/setgid 的 WRITE

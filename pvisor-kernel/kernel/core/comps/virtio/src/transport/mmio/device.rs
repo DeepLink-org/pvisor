@@ -243,6 +243,11 @@ impl VirtioTransport for VirtioMmioTransport {
                 == u32::from_le_bytes(*b"pVis")
         {
             FS_IRQ_READ_ACK
+                | if ostd::cpu::num_cpus() == 1 {
+                    offered & crate::transport::FS_QUEUE_HANDOFF
+                } else {
+                    0
+                }
         } else {
             0
         }

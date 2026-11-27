@@ -30,6 +30,7 @@ use crate::{
     },
     security::lsm::hooks as lsm_hooks,
     time::clocks::RealTimeCoarseClock,
+    util::read_segments,
     vm::page_cache::Vmo,
 };
 
@@ -345,6 +346,18 @@ pub trait FileOps {
         writer: &mut VmWriter,
         status_flags: StatusFlags,
     ) -> Result<usize>;
+
+    /// Reads one contiguous file range into successive destination segments.
+    fn read_vectored_at(
+        &self,
+        offset: usize,
+        writers: &mut [VmWriter],
+        status_flags: StatusFlags,
+    ) -> Result<usize> {
+        read_segments(writers, |done, writer| {
+            self.read_at(offset + done, writer, status_flags)
+        })
+    }
 
     /// Writes data from the given `VmReader` into the file.
     fn write_at(

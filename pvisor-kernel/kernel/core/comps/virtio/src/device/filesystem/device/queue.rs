@@ -9,13 +9,13 @@
 use alloc::{sync::Arc, vec::Vec};
 use core::mem;
 
-use aster_fuse::FuseError;
-use aster_softirq::Taskless;
+use aster_fuse::{FuseError, FuseOpcode};
+use aster_softirq::{BottomHalfDisabled, Taskless};
 use aster_util::{mem_obj_slice::Slice, slot_vec::SlotVec};
 use dma_pool::DmaBuffer;
 use ostd::{
     mm::dma::{FromDevice, ToDevice},
-    sync::{LocalIrqDisabled, SpinLock, WaitQueue},
+    sync::{LocalIrqDisabled, SpinGuardian, SpinLock, WaitQueue},
 };
 use smallvec::SmallVec;
 use spin::Once;
@@ -31,12 +31,19 @@ use crate::queue::VirtQueue;
 /// queue.
 pub(crate) const MAX_DMA_BUFS_PER_REQUEST: usize = 64;
 
+#[derive(Clone, Copy, PartialEq)]
+pub(super) enum SubmitMode {
+    Interrupt,
+    InlineMetadata,
+    Handoff,
+}
+
 /// A virtio-fs request queue and its in-flight request state.
 pub(super) struct FsRequestQueue {
     inner: SpinLock<FsRequestQueueInner, LocalIrqDisabled>,
     wait_queue: WaitQueue,
     taskless: Once<Arc<Taskless>>,
-    inline_metadata: bool,
+    mode: SubmitMode,
 }
 
 struct FsRequestQueueInner {
@@ -52,7 +59,7 @@ struct CompletedFuseRequest {
 
 impl FsRequestQueue {
     /// Creates a request queue backed by a virtqueue.
-    pub(super) fn new(queue: VirtQueue, inline_metadata: bool) -> Arc<Self> {
+    pub(super) fn new(queue: VirtQueue, mode: SubmitMode) -> Arc<Self> {
         Arc::new(Self {
             inner: SpinLock::new(FsRequestQueueInner {
                 queue,
@@ -61,7 +68,7 @@ impl FsRequestQueue {
             }),
             wait_queue: WaitQueue::new(),
             taskless: Once::new(),
-            inline_metadata,
+            mode,
         })
     }
 
@@ -87,7 +94,12 @@ impl FsRequestQueue {
     }
 
     /// Submits a FUSE request to the virtqueue.
-    pub(super) fn add_request(&self, request: FuseRequest, inline: bool) -> Result<(), FuseError> {
+    pub(super) fn add_request(
+        &self,
+        request: FuseRequest,
+        opcode: FuseOpcode,
+        deferred: bool,
+    ) -> Result<(), FuseError> {
         let num_dma_bufs = request.num_dma_bufs();
         debug_assert!(num_dma_bufs <= MAX_DMA_BUFS_PER_REQUEST);
 
@@ -99,7 +111,15 @@ impl FsRequestQueue {
                 return None;
             }
 
-            let inline = inline && self.inline_metadata && inner.in_flight_requests.is_empty();
+            let alone = inner.in_flight_requests.is_empty();
+            let metadata = matches!(opcode, FuseOpcode::Lookup | FuseOpcode::Getattr);
+            let inline = alone && self.mode == SubmitMode::InlineMetadata && metadata && !deferred;
+            let poll = alone
+                && self.mode == SubmitMode::Handoff
+                && (metadata || opcode == FuseOpcode::Write);
+            if poll {
+                inner.queue.disable_callback();
+            }
             let request = request.take().unwrap();
             let token = {
                 let request_bufs = request
@@ -121,27 +141,42 @@ impl FsRequestQueue {
             };
             inner.in_flight_requests.put_at(token as usize, request);
 
-            if inline && inner.queue.notify_inline_metadata() {
-                let completed = inner.queue.pop_used().ok().map(|(used, len)| {
-                    debug_assert_eq!(used, token);
-                    let request = inner.in_flight_requests.remove(used as usize).unwrap();
-                    CompletedFuseRequest {
-                        request,
-                        reply_len: len as usize,
+            if !(inline && inner.queue.notify_inline_metadata()) {
+                if inner.queue.should_notify() {
+                    inner.queue.notify();
+                }
+                if !poll {
+                    return Some(None);
+                }
+                for _ in 0..512 {
+                    if inner.queue.can_pop() {
+                        break;
                     }
-                });
-                return Some(completed);
+                    core::hint::spin_loop();
+                }
+                // Arm first; pop_used/can_pop fences before rereading used.idx.
+                inner.queue.enable_callback();
             }
-            if inner.queue.should_notify() {
-                inner.queue.notify();
-            }
-
-            Some(None)
+            Some(inner.queue.pop_used().ok().map(|(used, len)| {
+                debug_assert_eq!(used, token);
+                CompletedFuseRequest {
+                    request: inner.in_flight_requests.remove(used as usize).unwrap(),
+                    reply_len: len as usize,
+                }
+            }))
         });
 
         if let Some(completed) = completed {
             self.wait_queue.wake_all();
-            completed.request.finish_reply(completed.reply_len);
+            if deferred {
+                // In task context, releasing the BH guard dispatches pending softirqs.
+                // The Taskless callback must not depend on a future hardware IRQ.
+                let _bh = BottomHalfDisabled::guard();
+                self.inner.lock().pending_completions.push(completed);
+                self.schedule_completion_taskless();
+            } else {
+                completed.request.finish_reply(completed.reply_len);
+            }
         }
         Ok(())
     }

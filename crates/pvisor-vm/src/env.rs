@@ -11,6 +11,7 @@ pub(crate) mod fs {
     pub(crate) const WORKERS: &str = "PVISOR_VM_FS_WORKERS";
     pub(crate) const INLINE_METADATA: &str = "PVISOR_VM_FS_INLINE_METADATA";
     pub(crate) const IRQ_READ_ACK: &str = "PVISOR_VM_FS_IRQ_READ_ACK";
+    pub(crate) const QUEUE_HANDOFF: &str = "PVISOR_VM_FS_QUEUE_HANDOFF";
     pub(crate) const RNGK_READINDEX: &str = "PVISOR_VM_FS_RNGK_READINDEX";
     pub(crate) const CACHE_EXPERIMENT: &str = "PVISOR_VM_CACHE_EXPERIMENT";
     pub(crate) const GUEST_CACHE: &str = "PVISOR_VM_GUEST_CACHE";
@@ -38,6 +39,7 @@ pub(crate) mod fs {
         pub(crate) workers: usize,
         pub(crate) inline_metadata: bool,
         pub(crate) irq_read_ack: bool,
+        pub(crate) queue_handoff: bool,
         pub(crate) rngk_readindex: bool,
         pub(crate) root_data_cache: bool,
         pub(crate) guest_cache: bool,
@@ -84,6 +86,7 @@ pub(crate) mod fs {
                 workers,
                 inline_metadata: boolean(get(INLINE_METADATA).as_deref(), INLINE_METADATA, true)?,
                 irq_read_ack: boolean(get(IRQ_READ_ACK).as_deref(), IRQ_READ_ACK, true)?,
+                queue_handoff: boolean(get(QUEUE_HANDOFF).as_deref(), QUEUE_HANDOFF, false)?,
                 rngk_readindex: boolean(get(RNGK_READINDEX).as_deref(), RNGK_READINDEX, true)?,
                 root_data_cache: root_data_cache_enabled("/dev/root", cache_setting.as_deref())?,
                 guest_cache: guest_cache_enabled(get(GUEST_CACHE).as_deref())?,

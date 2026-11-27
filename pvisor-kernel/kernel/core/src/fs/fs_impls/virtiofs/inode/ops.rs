@@ -37,6 +37,7 @@ use crate::{
     prelude::*,
     thread::work_queue::{self, WorkPriority},
     time::clocks::MonotonicCoarseClock,
+    util::read_segments,
 };
 
 const MAX_READDIR_BYTES: usize = 32 * 1024;
@@ -46,7 +47,7 @@ impl VirtioFsInode {
     pub(in virtiofs) fn cached_read_at(
         &self,
         offset: usize,
-        writer: &mut VmWriter,
+        writers: &mut [VmWriter],
         fh: FuseFileHandle,
     ) -> Result<usize> {
         self.revalidate_attr(Some(fh))?;
@@ -54,24 +55,27 @@ impl VirtioFsInode {
         let mut inner = self.inner.read();
         if inner.page_cache().is_none() {
             drop(inner);
-            self.cache_for_read()?;
+            self.ensure_page_cache(&mut self.inner.write())?;
             inner = self.inner.read();
         }
         let file_size = self.size();
-        let start = file_size.min(offset);
-        let end = file_size.min(offset.saturating_add(writer.avail()));
-        let read_len = end - start;
-        if read_len == 0 {
-            return Ok(0);
-        }
-
-        let mut limited_writer = writer.clone_exclusive();
-        limited_writer.limit(read_len);
         let page_cache = inner.page_cache().unwrap();
-        page_cache.read(start, &mut limited_writer)?;
-        writer.skip(read_len);
-
-        Ok(read_len)
+        read_segments(writers, |done, writer| {
+            let start = offset + done;
+            let len = writer.avail().min(file_size.saturating_sub(start));
+            if len == 0 {
+                return Ok(0);
+            }
+            let mut dst = writer.clone_exclusive();
+            dst.limit(len);
+            let result = page_cache.read(start, &mut dst);
+            let copied = len - dst.avail();
+            if copied == 0 {
+                result?;
+            }
+            writer.skip(copied);
+            Ok(copied)
+        })
     }
 
     /// Reads file data directly from the server.
@@ -111,7 +115,7 @@ impl VirtioFsInode {
         Ok(copied)
     }
 
-    /// Write through to the server, updating cached pages if a reader or mapping uses them.
+    /// Write the caller's exact range unless external VMO users require page writeback.
     pub(in virtiofs) fn cached_write_at(
         &self,
         write_offset: WriteOffset,
@@ -125,17 +129,15 @@ impl VirtioFsInode {
         }
 
         let mut inner = self.inner.write();
-        if inner.page_cache.is_none() {
+        let Some(page_cache) = inner.writeback_cache() else {
             return self.direct_write_locked(&mut inner, write_offset, reader, fh, flags);
-        }
+        };
         let offset = self.resolve_write_offset(write_offset);
         let requested_end = offset
             .checked_add(write_len)
             .ok_or_else(|| Error::with_message(Errno::EOVERFLOW, "virtiofs write size overflow"))?;
 
         let old_size = self.size();
-        let page_cache = inner.page_cache_mut().unwrap();
-
         if requested_end > old_size {
             // Extend the visible EOF before growing the page cache.
             self.set_size(requested_end);
@@ -193,14 +195,14 @@ impl VirtioFsInode {
             .checked_add(write_len)
             .ok_or_else(|| Error::with_message(Errno::EOVERFLOW, "virtiofs write size overflow"))?;
 
-        if let Some(page_cache) = inner.page_cache() {
-            page_cache.invalidate_range(offset..write_end)?;
-        };
+        if let Some(cache) = &inner.page_cache {
+            cache.invalidate(offset..write_end)?;
+        }
 
         let written = self.do_direct_write(offset, reader, fh, flags)?;
-
-        // TODO: Do `evict_range` again after write to prevent stale data from
-        // being loaded into the page cache during asynchronous read-ahead.
+        if written == 0 {
+            return Ok(0);
+        }
 
         let new_size = offset
             .checked_add(written)
@@ -208,7 +210,9 @@ impl VirtioFsInode {
 
         let old_size = self.size();
         let new_size = old_size.max(new_size);
-        if new_size > old_size && let Some(cache) = inner.page_cache_mut() {
+        if new_size > old_size
+            && let Some(cache) = inner.page_cache_mut()
+        {
             cache.resize_from_backing(new_size, old_size)?;
         }
         let attr_version = self.fs_ref().session().bump_attr_version();

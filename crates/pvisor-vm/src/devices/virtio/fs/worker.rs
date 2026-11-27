@@ -1069,6 +1069,7 @@ mod tests {
         assert!(defaults.guest_cache && defaults.root_data_cache);
         assert!(!defaults.host_writeback && !defaults.negative_entry_cache);
         assert!(defaults.inline_metadata && defaults.rngk_readindex);
+        assert!(!defaults.queue_handoff);
         let disabled = FsProfile::parse(|key| {
             matches!(key, env::INLINE_METADATA | env::RNGK_READINDEX).then(|| "0".into())
         })
@@ -1095,6 +1096,7 @@ mod tests {
             env::CACHE_EXPERIMENT,
             env::GUEST_CACHE,
             env::INLINE_METADATA,
+            env::QUEUE_HANDOFF,
             env::RNGK_READINDEX,
             env::HOST_WRITEBACK,
             env::HOST_WRITEBACK_CONFIG,
