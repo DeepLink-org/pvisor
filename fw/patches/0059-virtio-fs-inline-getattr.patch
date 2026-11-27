@@ -1,0 +1,153 @@
+Subject: [PATCH] virtio-fs: complete an idle foreground GETATTR on the submitting vCPU
+
+Negotiate pVisor's inline metadata doorbell only on its qualified MMIO
+transport. An inline claim publishes used before the MMIO write returns,
+without an interrupt. A declined claim wakes the normal worker, which
+publishes with the normal interrupt policy. Check used once with callbacks
+still armed. Never retry the request or send a second kick.
+
+diff --git a/drivers/virtio/virtio_mmio.c b/drivers/virtio/virtio_mmio.c
+--- a/drivers/virtio/virtio_mmio.c
++++ b/drivers/virtio/virtio_mmio.c
+@@ -81,6 +81,7 @@
+ 
+ #define PVISOR_VENDOR_ID		0x73695670 /* "pVis", little endian */
+ #define PVISOR_FS_F_IRQ_READ_ACK		22
++#define PVISOR_FS_F_INLINE_METADATA	23
+ #define PVISOR_FS_IRQ_TAKE		0x1fc
+ 
+ #define to_virtio_mmio_device(_plat_dev) \
+@@ -142,10 +143,17 @@ static int vm_finalize_features(struct virtio_device *vdev)
+ 	}
+ 
+ 	if (vm_dev->pvisor_fs_mmio) {
+-		if (vm_get_features(vdev) & BIT_ULL(PVISOR_FS_F_IRQ_READ_ACK))
++		u64 offered = vm_get_features(vdev);
++
++		if (offered & BIT_ULL(PVISOR_FS_F_IRQ_READ_ACK))
+ 			__virtio_set_bit(vdev, PVISOR_FS_F_IRQ_READ_ACK);
+ 		else
+ 			__virtio_clear_bit(vdev, PVISOR_FS_F_IRQ_READ_ACK);
++		if ((offered & BIT_ULL(PVISOR_FS_F_INLINE_METADATA)) &&
++		    !__virtio_test_bit(vdev, VIRTIO_F_NOTIFICATION_DATA))
++			__virtio_set_bit(vdev, PVISOR_FS_F_INLINE_METADATA);
++		else
++			__virtio_clear_bit(vdev, PVISOR_FS_F_INLINE_METADATA);
+ 	}
+ 
+ 	writel(1, vm_dev->base + VIRTIO_MMIO_DRIVER_FEATURES_SEL);
+@@ -314,6 +322,19 @@ static bool vm_notify(struct virtqueue *vq)
+ 	return true;
+ }
+ 
++static bool vm_notify_metadata(struct virtqueue *vq)
++{
++	struct virtio_mmio_device *vm_dev = to_virtio_mmio_device(vq->vdev);
++
++	if (!vm_dev->pvisor_fs_mmio ||
++	    !__virtio_test_bit(vq->vdev, PVISOR_FS_F_INLINE_METADATA) ||
++	    virtqueue_is_broken(vq))
++		return false;
++
++	writel(BIT(31) | vq->index, vm_dev->base + VIRTIO_MMIO_QUEUE_NOTIFY);
++	return true;
++}
++
+ static bool vm_notify_with_data(struct virtqueue *vq)
+ {
+ 	struct virtio_mmio_device *vm_dev = to_virtio_mmio_device(vq->vdev);
+@@ -621,6 +642,7 @@ static const struct virtio_config_ops virtio_mmio_config_ops = {
+ 	.bus_name	= vm_bus_name,
+ 	.get_shm_region = vm_get_shm_region,
+ 	.synchronize_cbs = vm_synchronize_cbs,
++	.pvisor_notify_metadata = vm_notify_metadata,
+ };
+ 
+ #ifdef CONFIG_PM_SLEEP
+diff --git a/fs/fuse/virtio_fs.c b/fs/fuse/virtio_fs.c
+--- a/fs/fuse/virtio_fs.c
++++ b/fs/fuse/virtio_fs.c
+@@ -1408,6 +1408,40 @@ static unsigned int sg_init_fuse_args(struct scatterlist *sg,
+ 	return total_sgs;
+ }
+ 
++static void virtio_fs_kick_and_unlock(struct virtio_fs_vq *fsvq,
++				      struct fuse_req *req, bool retry)
++	__releases(&fsvq->lock)
++{
++	struct virtqueue *vq = fsvq->vq;
++	struct fuse_req *done = NULL;
++	bool notify = virtqueue_kick_prepare(vq);
++	unsigned int len;
++
++	if (notify && !retry && fsvq->in_flight == 1 &&
++	    req->in.h.opcode == FUSE_GETATTR &&
++	    !test_bit(FR_BACKGROUND, &req->flags) &&
++	    !test_bit(FR_ASYNC, &req->flags) && !req->args->may_block &&
++	    num_online_cpus() == 1 && vq->vdev->config->pvisor_notify_metadata &&
++	    vq->vdev->config->pvisor_notify_metadata(vq)) {
++		/* Sole request; the IRQ callback schedules work taking this lock. */
++		notify = false;
++		done = virtqueue_get_buf(vq, &len);
++		if (done) {
++			struct fuse_pqueue *fpq = &fsvq->fud->pq;
++
++			spin_lock(&fpq->lock);
++			list_del_init(&done->list);
++			spin_unlock(&fpq->lock);
++		}
++	}
++	spin_unlock(&fsvq->lock);
++
++	if (done)
++		virtio_fs_request_complete(done, fsvq);
++	else if (notify)
++		virtqueue_notify(vq);
++}
++
+ /* Add a request to a virtqueue and kick the device */
+ static int virtio_fs_enqueue_req(struct virtio_fs_vq *fsvq,
+ 				 struct fuse_req *req, bool in_flight)
+@@ -1425,7 +1459,6 @@ static int virtio_fs_enqueue_req(struct virtio_fs_vq *fsvq,
+ 	unsigned int total_sgs;
+ 	unsigned int i;
+ 	int ret;
+-	bool notify;
+ 	struct fuse_pqueue *fpq;
+ 
+ 	total_sgs = sg_count_fuse_req(req);
+@@ -1491,12 +1524,7 @@ static int virtio_fs_enqueue_req(struct virtio_fs_vq *fsvq,
+ 
+ 	if (!in_flight)
+ 		inc_in_flight_req(fsvq);
+-	notify = virtqueue_kick_prepare(vq);
+-
+-	spin_unlock(&fsvq->lock);
+-
+-	if (notify)
+-		virtqueue_notify(vq);
++	virtio_fs_kick_and_unlock(fsvq, req, in_flight);
+ 
+ out:
+ 	if (ret < 0 && req->argbuf) {
+diff --git a/include/linux/virtio_config.h b/include/linux/virtio_config.h
+--- a/include/linux/virtio_config.h
++++ b/include/linux/virtio_config.h
+@@ -104,6 +104,9 @@ struct virtqueue_info {
+  *	Returns 0 on success or error status
+  *	If disable_vq_and_reset is set, then enable_vq_after_reset must also be
+  *	set.
++ * @pvisor_notify_metadata: optional synchronous virtio-fs doorbell for one
++ *	published metadata request. True means the kick was sent, not that the
++ *	request completed. False leaves notification to the caller.
+  */
+ struct virtio_config_ops {
+ 	void (*get)(struct virtio_device *vdev, unsigned offset,
+@@ -131,6 +134,7 @@ struct virtio_config_ops {
+ 			       struct virtio_shm_region *region, u8 id);
+ 	int (*disable_vq_and_reset)(struct virtqueue *vq);
+ 	int (*enable_vq_after_reset)(struct virtqueue *vq);
++	bool (*pvisor_notify_metadata)(struct virtqueue *vq);
+ };
+ 
+ /* If driver didn't advertise the feature, it will never appear. */

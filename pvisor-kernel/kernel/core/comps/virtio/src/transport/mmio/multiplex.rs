@@ -9,18 +9,17 @@ use ostd::{
     arch::trap::TrapFrame,
     io::IoMem,
     irq::{IrqCallbackFunction, IrqLine},
-    sync::RwLock,
+    sync::{RwLock, WriteIrqDisabled},
 };
 
-/// Multiplexing Irqs. The two interrupt types (configuration space change and queue interrupt)
-/// of the virtio-mmio device share the same IRQ, so `MultiplexIrq` are used to distinguish them.
-/// Besides, virtio-mmio requires ack_interrupt after interrupt is handled.
+/// Dispatch the acknowledged causes of a shared virtio-mmio interrupt.
 pub(super) struct MultiplexIrq {
     irq: IrqLine,
     queue_callbacks: Vec<Box<IrqCallbackFunction>>,
     cfg_callbacks: Vec<Box<IrqCallbackFunction>>,
     interrupt_ack: SafePtr<u32, IoMem, TRightSet<WriteOp>>,
     interrupt_status: SafePtr<u32, IoMem, TRightSet<ReadOp>>,
+    pub(super) read_ack: Option<SafePtr<u32, IoMem, TRightSet<ReadOp>>>,
 }
 
 impl MultiplexIrq {
@@ -28,13 +27,14 @@ impl MultiplexIrq {
         irq: IrqLine,
         interrupt_ack: SafePtr<u32, IoMem, TRightSet<WriteOp>>,
         interrupt_status: SafePtr<u32, IoMem, TRightSet<ReadOp>>,
-    ) -> Arc<RwLock<Self>> {
+    ) -> Arc<RwLock<Self, WriteIrqDisabled>> {
         let irq = Arc::new(RwLock::new(Self {
             irq,
             queue_callbacks: Vec::new(),
             cfg_callbacks: Vec::new(),
             interrupt_ack,
             interrupt_status,
+            read_ack: None,
         }));
 
         // Holding a weak reference to prevent memory leakage due to
@@ -46,10 +46,14 @@ impl MultiplexIrq {
             };
             let irq = multiplex_irq.read();
 
-            let interrupt_status = irq.interrupt_status.read_once().unwrap();
-            // Acknowledging before invoking the callbacks to prevent the loss of unhandled
-            // interrupts due to race conditions.
-            irq.interrupt_ack.write_once(&interrupt_status).unwrap();
+            // Acknowledge before draining rings: a later completion needs its own notification.
+            let interrupt_status = if let Some(read_ack) = &irq.read_ack {
+                read_ack.read_once().unwrap()
+            } else {
+                let status = irq.interrupt_status.read_once().unwrap();
+                irq.interrupt_ack.write_once(&status).unwrap();
+                status
+            };
 
             // Used buffer notification
             if interrupt_status & 0x01 != 0 {

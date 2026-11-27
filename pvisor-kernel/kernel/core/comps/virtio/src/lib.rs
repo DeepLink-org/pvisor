@@ -16,9 +16,9 @@ use aster_block::MajorIdOwner;
 use bitflags::bitflags;
 use component::{ComponentInitError, init_component};
 use device::{
-    VirtioDeviceType, console::device::ConsoleDevice,
-    entropy::device::EntropyDevice, filesystem::device::FileSystemDevice,
-    network::device::NetworkDevice, socket::device::SocketDevice,
+    VirtioDeviceType, console::device::ConsoleDevice, entropy::device::EntropyDevice,
+    filesystem::device::FileSystemDevice, network::device::NetworkDevice,
+    socket::device::SocketDevice,
 };
 use ostd::{error, warn};
 use spin::Once;
@@ -145,8 +145,11 @@ fn negotiate_features(transport: &mut Box<dyn VirtioTransport>) {
     };
     let mut support_feature = Feature::from_bits_truncate(features);
     support_feature.remove(Feature::RING_EVENT_IDX);
+    let selected = support_feature.bits
+        | device_support_features
+        | transport.select_transport_features(features);
     transport
-        .write_driver_features(features & (support_feature.bits | device_support_features))
+        .write_driver_features(features & selected)
         .unwrap();
 }
 

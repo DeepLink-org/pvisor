@@ -1,32 +1,13 @@
 """Check Rust native metadata routes and bounded namespace stress on Linux KVM."""
 
 import argparse
-import json
 import os
 import subprocess
 import tempfile
 from pathlib import Path
 
 import stat_visibility
-
-
-def expect_counter(profile, component, name, enabled, unit="calls"):
-    records = [
-        json.loads(line.removeprefix("pvisor-fs-profile "))
-        for line in profile.splitlines()
-        if line.startswith("pvisor-fs-profile ")
-    ]
-    final = [
-        record["measurements"]
-        for record in records
-        if record["component"] == component and record["final_record"]
-    ]
-    if not final:
-        raise RuntimeError(f"missing final {component} profile")
-    count = sum(m.get(name, {}).get(unit, 0) for m in final)
-    if bool(count) != enabled:
-        raise RuntimeError(f"expected {name} {'> 0' if enabled else '= 0'}, got {count}")
-    print(f"{name}={count}", flush=True)
+from stat_visibility import expect_counter
 
 
 def run_staged(binary, guest, output, enabled, seed=None):
@@ -78,14 +59,22 @@ def main():
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=False)
 
-    for inline, label in ((None, "inline-default"), (0, "inline-disabled")):
+    for cpus, workers, inline, label in (
+        (1, 1, None, "inline-default"),
+        (1, 1, 0, "inline-disabled"),
+        (1, 4, None, "inline-multiqueue"),
+        (2, 4, None, "smp-multiqueue"),
+    ):
         profile = stat_visibility.run(
             args.vm_api.resolve(strict=True),
             args.stat_guest.resolve(strict=True),
             inline,
             output / f"{label}.stderr.log",
+            workers=workers,
+            cpus=cpus,
         )
-        expect_counter(profile, "virtio-fs-dispatch", "vcpu_inline_metadata", inline is None, "units")
+        enabled = inline is None and (cpus == 1 or workers == 1)
+        expect_counter(profile, "virtio-fs-dispatch", "vcpu_inline_metadata", enabled, "units")
         expect_counter(profile, "virtio-fs-protocol", "READINDEX", False)
 
     case = args.metadata_case.resolve(strict=True)

@@ -47,6 +47,8 @@ fn heavy(opcode: u32) -> bool {
 
 struct Lane {
     ring: Mutex<Queue>,
+    // Accessed under this ring's lock, independent of where its worker is executing.
+    inline_active: AtomicBool,
     busy: AtomicBool,
     started: AtomicU64,
     stealable: AtomicBool,
@@ -115,6 +117,7 @@ impl Runtime {
         // A guest may initialize fewer request queues than advertised.
         if !ring.ready
             || self.stopped.load(Ordering::Acquire)
+            || lane.inline_active.load(Ordering::Relaxed)
             || (owner == victim && lane.busy.load(Ordering::Acquire))
         {
             return None;
@@ -211,7 +214,7 @@ impl Runtime {
     }
 
     fn try_metadata(&self, queue: usize) -> bool {
-        if queue != REQ_INDEX || self.lanes.len() != REQ_INDEX + 1 {
+        if !(REQ_INDEX..self.lanes.len()).contains(&queue) {
             return false;
         }
         let lane = &self.lanes[queue];
@@ -223,7 +226,8 @@ impl Runtime {
             return false;
         }
         let mem = &self.execution.mem;
-        if ring.len(mem) != 1 {
+        // A thief can still owe this ring a completion after the owner has returned.
+        if ring.next_avail != ring.next_used || ring.len(mem) != 1 {
             return false;
         }
         let Some(head) = ring.pop(mem) else {
@@ -242,7 +246,7 @@ impl Runtime {
             ring.undo_pop();
             return false;
         }
-        lane.busy.store(true, Ordering::Release);
+        lane.inline_active.store(true, Ordering::Relaxed);
         drop(ring);
         let request = Request {
             queue,
@@ -255,10 +259,6 @@ impl Runtime {
         self.profile.add("vcpu_inline_metadata", 1);
         let len = self.execution.handle(&request);
         self.publish_used(request, len, false);
-        lane.busy.store(false, Ordering::Release);
-        if !lane.ring.lock().unwrap().is_empty(mem) {
-            lane.wake.signal();
-        }
         true
     }
 
@@ -343,11 +343,20 @@ impl Runtime {
     }
 
     fn publish_used(&self, request: Request, len: usize, notify: bool) {
-        let mut ring = self.lanes[request.queue].ring.lock().unwrap();
+        let lane = &self.lanes[request.queue];
+        let mut ring = lane.ring.lock().unwrap();
         ring.add_used(&self.execution.mem, request.index, len as u32)
             .unwrap();
-        if notify && ring.needs_notification(&self.execution.mem).unwrap() {
-            self.interrupt.signal_used_queue();
+        if notify {
+            if ring.needs_notification(&self.execution.mem).unwrap() {
+                self.interrupt.signal_used_queue();
+            }
+        } else {
+            lane.inline_active.store(false, Ordering::Relaxed);
+            // The owner may have gone to sleep while we held admission, before rearming kicks.
+            if ring.enable_notification(&self.execution.mem).unwrap() {
+                lane.wake.signal();
+            }
         }
         // The request owns its RAM lease through used-ring publication.
         drop(ring);
@@ -371,6 +380,7 @@ pub(super) fn serve(
             .into_iter()
             .map(|ring| Lane {
                 ring: Mutex::new(ring),
+                inline_active: AtomicBool::new(false),
                 busy: AtomicBool::new(false),
                 started: AtomicU64::new(0),
                 stealable: AtomicBool::new(false),
@@ -532,6 +542,7 @@ mod tests {
                 .into_iter()
                 .map(|ring| Lane {
                     ring: Mutex::new(ring),
+                    inline_active: AtomicBool::new(false),
                     busy: AtomicBool::new(false),
                     started: AtomicU64::new(0),
                     stealable: AtomicBool::new(false),
@@ -590,6 +601,42 @@ mod tests {
             lane.ring.lock().unwrap().len(&runtime.execution.mem),
             count as u16 - 1
         );
+    }
+
+    #[test]
+    fn multiqueue_inline_waits_for_stolen_completion_on_target_ring_only() {
+        let mem = GuestMemoryMmap::from_ranges(&[(GuestAddress(0), 0x10000)]).unwrap();
+        let high = VirtQueue::new(GuestAddress(0), &mem, 8);
+        let first = VirtQueue::new(GuestAddress(0x400), &mem, 8);
+        let second = VirtQueue::new(GuestAddress(0x800), &mem, 8);
+        fill(
+            &first,
+            &mem,
+            0x4000,
+            &[Opcode::Read, Opcode::Read, Opcode::Getattr],
+        );
+        fill(&second, &mem, 0x6000, &[Opcode::Getattr]);
+        let runtime = runtime(
+            mem.clone(),
+            vec![
+                high.create_queue(),
+                first.create_queue(),
+                second.create_queue(),
+            ],
+        );
+        let blocked = runtime.take(1, 1).unwrap();
+        assert!(runtime.try_metadata(2));
+        assert_eq!(second.used.idx.get(), 1);
+        std::thread::sleep(STEAL_DELAY);
+        let stolen = runtime.take(2, 1).unwrap();
+        runtime.publish(blocked, 16);
+        runtime.lanes[1].busy.store(false, Ordering::Release);
+        assert!(!runtime.try_metadata(1));
+        runtime.publish(stolen, 16);
+        assert!(runtime.try_metadata(1));
+        assert_eq!(first.used.idx.get(), 3);
+        assert_eq!(first.used.flags.get(), 0);
+        assert!(!runtime.try_metadata(3));
     }
 
     #[test]

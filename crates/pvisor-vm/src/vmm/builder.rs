@@ -64,8 +64,6 @@ use crate::vmm::signal_handler::register_sigwinch_handler;
 use crate::vmm::terminal::{term_restore_mode, term_set_raw_mode};
 #[cfg(feature = "blk")]
 use crate::vmm::vmm_config::block::BlockBuilder;
-#[cfg(not(any(feature = "tee", feature = "aws-nitro")))]
-use crate::vmm::vmm_config::fs::FsDeviceConfig;
 use crate::vmm::vmm_config::kernel_cmdline::DEFAULT_KERNEL_CMDLINE;
 #[cfg(target_os = "linux")]
 use crate::vmm::vstate::KvmContext;
@@ -1146,15 +1144,7 @@ pub fn build_microvm_for_arch<A: crate::backend::Architecture>(
     #[cfg(not(any(feature = "tee", feature = "aws-nitro")))]
     attach_fs_devices(
         &mut vmm,
-        &vm_resources.fs,
-        #[cfg(any(
-            all(target_os = "macos", target_arch = "aarch64"),
-            all(target_os = "linux", target_arch = "x86_64")
-        ))]
-        vm_resources
-            .machine_restore
-            .as_ref()
-            .map(|restore| restore.state.devices.as_slice()),
+        vm_resources,
         &mut _shm_manager,
         #[cfg(not(feature = "tee"))]
         export_table,
@@ -2219,12 +2209,7 @@ fn attach_mmio_device(
 #[cfg_attr(target_os = "macos", allow(clippy::too_many_arguments))]
 fn attach_fs_devices(
     vmm: &mut Vmm,
-    fs_devs: &[FsDeviceConfig],
-    #[cfg(any(
-        all(target_os = "macos", target_arch = "aarch64"),
-        all(target_os = "linux", target_arch = "x86_64")
-    ))]
-    restored_devices: Option<&[crate::devices::snapshot::BusMappingSnapshot]>,
+    resources: &VmResources,
     shm_manager: &mut ShmManager,
     #[cfg(not(feature = "tee"))] export_table: Option<ExportTable>,
     intc: IrqChip,
@@ -2233,14 +2218,14 @@ fn attach_fs_devices(
 ) -> std::result::Result<(), StartMicrovmError> {
     use self::StartMicrovmError::*;
 
-    if fs_devs.is_empty() {
+    if resources.fs.is_empty() {
         return Ok(());
     }
     let profile = Arc::new(
         crate::env::fs::FsProfile::from_env()
             .map_err(|error| StartMicrovmError::CreateFsDevice(error.to_string()))?,
     );
-    for (i, config) in fs_devs.iter().enumerate() {
+    for (i, config) in resources.fs.iter().enumerate() {
         let fs = Arc::new(Mutex::new(
             crate::devices::virtio::Fs::new_with_profile(
                 config,
@@ -2255,16 +2240,16 @@ fn attach_fs_devices(
             all(target_os = "macos", target_arch = "aarch64"),
             all(target_os = "linux", target_arch = "x86_64")
         ))]
-        if let Some(devices) = restored_devices {
-            let mut saved_count = None;
-            for mapping in devices {
+        if let Some(restore) = &resources.machine_restore {
+            let mut saved_transport = None;
+            for mapping in &restore.state.devices {
                 if let crate::devices::snapshot::BusDeviceSnapshot::Virtio(state) = &mapping.device
                 {
-                    if let Some(count) = state
-                        .filesystem_request_queues(config.fs_id.as_bytes())
+                    if let Some(transport) = state
+                        .filesystem_transport(config.fs_id.as_bytes())
                         .map_err(StartMicrovmError::GuestMemoryMmap)?
                     {
-                        if saved_count.replace(count).is_some() {
+                        if saved_transport.replace(transport).is_some() {
                             return Err(StartMicrovmError::GuestMemoryMmap(
                                 "duplicate filesystem snapshot tag".into(),
                             ));
@@ -2272,10 +2257,10 @@ fn attach_fs_devices(
                     }
                 }
             }
-            if let Some(count) = saved_count {
+            if let Some((count, offered)) = saved_transport {
                 fs.lock()
                     .unwrap()
-                    .configure_request_queues(count)
+                    .restore_transport(count, offered)
                     .map_err(StartMicrovmError::GuestMemoryMmap)?;
             }
         }

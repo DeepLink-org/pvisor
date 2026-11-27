@@ -1449,12 +1449,21 @@ body 与 reply 建立一次借用 consumer，不重新读取 opcode。队列主�
 drain 时保持 guest kick 通知关闭，仅在空队列时 enable/recheck 后休眠；
 控制线程独立检查长操作和 backlog，因此仍可救援正在执行的 owner。
 
-Linux x86_64/KVM 的 Rust native metadata 快路径在单普通队列
-（`PVISOR_VM_FS_WORKERS=1`）、普通非托管、非 DAX 的目录共享上默认开启，
-不适用于 OverlayFS。`PVISOR_VM_FS_INLINE_METADATA=0` 可关闭。协商后，
-空闲队列的 `LOOKUP` / `GETATTR` 通过专用 MMIO 通知由当前宿主 vCPU 线程
-执行。内联完成不发 IRQ；不能认领时由普通队列线程处理，不重新提交请求。
-宿主 metadata I/O 或锁等待会停住发起请求的 vCPU。
+Linux x86_64/KVM 的普通非托管、非 DAX 目录共享支持内联 `LOOKUP` / `GETATTR`，
+不适用于 OverlayFS。Rust native 在单 vCPU 或单普通队列时使用该路径；多 vCPU
+多队列仍由并行 worker 服务，避免在 MMIO 设备锁上串行。`PVISOR_VM_FS_INLINE_METADATA=0`
+可关闭。目标队列须只有一个待取请求且没有未发布的完成（含其他 worker 认领的请求）。
+当前宿主 vCPU 线程执行 metadata I/O；成功时不发 IRQ，不能认领时回到普通队列，
+不重新提交请求。宿主 I/O 或锁等待会停住发起请求的 vCPU。共享文件的属性仍按
+原 TTL 校验；打开的 fd 不构成独占权。
+
+Linux 固件也在 `pVis` MMIO 设备上协商 bit 23。只在一个在线 guest CPU、目标队列
+空闲且前台同步 `GETATTR` 需要通知时使用；不改宿主队列数或共享文件可见性。
+两种 guest 都可协商 bit 22，一次读取并确认中断原因。`PVISOR_VM_FS_IRQ_READ_ACK=0`
+恢复标准中断协议和 vendor ID；Linux 此时也不使用专用 metadata kick。`WRITE` /
+`FSYNC` 始终等待实际完成。恢复快照时按保存的 offer 重建设备，旧快照不必改环境。
+见[固件验证步骤](../../fw/README.md#linux-virtio-fs-notifications)和
+[Rust native 工程对照](../../benchmark/evidence/native-guest-file-io.md)。
 
 OverlayFs 的普通 READ/不变更权限的 WRITE/FLUSH/FSYNC 直接在 handle map 和
 I/O admission 短锁内取得原生 Arc lease，不取得 namespace operation guard。

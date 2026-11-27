@@ -9,8 +9,8 @@ use alloc::{string::String, sync::Arc, vec::Vec};
 use core::sync::atomic::{AtomicU64, Ordering};
 
 use aster_fuse::{
-    FUSE_KERNEL_MINOR_VERSION, FUSE_KERNEL_VERSION, FUSE_ROOT_ID, FuseCompleteFn, FuseDirEntry,
-    FuseError, FuseFileHandle, FuseNodeId, FuseOperation, MIN_MAX_WRITE,
+    FUSE_KERNEL_MINOR_VERSION, FUSE_KERNEL_VERSION, FUSE_ROOT_ID, FuseCompleteFn, FuseCompletion,
+    FuseDirEntry, FuseError, FuseFileHandle, FuseNodeId, FuseOperation, MIN_MAX_WRITE,
     ops::{
         forget::{BatchForgetOperation, ForgetOperation, ForgetReq},
         fsync::{FsyncFlags, FsyncOperation, FsyncdirOperation, SyncFsOperation},
@@ -270,14 +270,12 @@ impl FuseSession {
         data_buf: FuseRequestBuf,
     ) -> Result<usize, FuseError> {
         let waiter = self.write_async(nodeid, write_request, smallvec![data_buf], None)?;
-        let payload_len = waiter.wait().payload_len()?;
-
-        let write_reply = waiter.parse_reply::<WriteOperation>(payload_len)?;
-        if write_reply.size() > write_request.size() as usize {
-            return Err(FuseError::MalformedResponse);
+        match waiter.wait() {
+            FuseCompletion::Complete(_) => Ok(write_request.size() as usize),
+            FuseCompletion::ShortWrite { written, .. } => Ok(written),
+            FuseCompletion::MalformedResponse => Err(FuseError::MalformedResponse),
+            FuseCompletion::RemoteError(err) => Err(FuseError::RemoteError(err)),
         }
-
-        Ok(write_reply.size())
     }
 
     /// Submits a `FUSE_WRITE` request without waiting for completion.

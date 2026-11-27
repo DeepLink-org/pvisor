@@ -44,7 +44,7 @@ struct Args {
     /// Tool-independent, short Criterion boundary smoke, NOT product evidence.
     #[arg(long)]
     smoke: bool,
-    /// Replay frozen process argv for diagnosis, outside all samples.
+    /// Diagnose a completed batch outside all gate samples (process smoke or vm/guest).
     #[arg(long)]
     diagnose: Option<PathBuf>,
     /// Criterion baseline options: --save-baseline NAME or --baseline NAME.
@@ -111,6 +111,12 @@ fn run() -> Result<()> {
         return Ok(());
     }
     if let Some(batch) = args.diagnose {
+        if args.entry == "vm/guest" {
+            #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+            return vm_guest::diagnose(&batch);
+            #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+            bail!("VM guest diagnosis requires Linux x86_64/KVM");
+        }
         return process::diagnose(&batch);
     }
     // Criterion's own parser sees only its options, not this tool's arguments.

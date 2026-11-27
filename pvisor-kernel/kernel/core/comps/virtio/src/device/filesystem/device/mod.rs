@@ -17,7 +17,7 @@ use core::sync::atomic::{AtomicU64, Ordering};
 
 use aster_fuse::{
     FuseCompleteFn, FuseError, FuseNodeId, FuseOpcode, FuseOperation, FuseUnique, ReplyExpectation,
-    ReplyHeader, ReqHeader,
+    ReplyHeader, ReqHeader, WriteReply,
 };
 use ostd::{
     mm::{
@@ -91,10 +91,9 @@ pub const MAX_READ_DATA_PAGES_PER_REQUEST: usize = queue::MAX_DMA_BUFS_PER_REQUE
 
 /// Maximum data pages packed into one FUSE write request as DMA buffers.
 ///
-/// A write request reserves one descriptor each for its request header, reply
-/// header, and write reply payload. Batching beyond this limit must be split
-/// across multiple requests.
-pub const MAX_WRITE_DATA_PAGES_PER_REQUEST: usize = queue::MAX_DMA_BUFS_PER_REQUEST - 3;
+/// A write reserves one descriptor for its request header and one for its
+/// complete fixed-size reply.
+pub const MAX_WRITE_DATA_PAGES_PER_REQUEST: usize = queue::MAX_DMA_BUFS_PER_REQUEST - 2;
 
 static FILESYSTEM_DEVICES: Once<SpinLock<Vec<Arc<FileSystemDevice>>, LocalIrqDisabled>> =
     Once::new();
@@ -299,25 +298,14 @@ impl FileSystemDevice {
     ) -> Result<ReplyBufs, FuseError> {
         match (reply_expectation, data_bufs) {
             (ReplyExpectation::None, None) => Ok(ReplyBufs::new(None)),
-            (ReplyExpectation::HeaderOnly, None) => {
-                let header_buf = self.alloc_reply_header_buf()?;
-                Ok(ReplyBufs::new(Some(header_buf)))
-            }
+            (ReplyExpectation::HeaderOnly, None) => self.alloc_control_reply(0),
             (
                 ReplyExpectation::FixedPayload(payload_size)
                 | ReplyExpectation::VariablePayload(payload_size),
                 None,
-            ) => {
-                let mut reply_bufs = ReplyBufs::new(Some(self.alloc_reply_header_buf()?));
-                reply_bufs.push_payload(self.alloc_reply_payload_buf(payload_size.get())?);
-                Ok(reply_bufs)
-            }
+            ) => self.alloc_control_reply(payload_size.get()),
             (ReplyExpectation::WritePayload { .. }, None) => {
-                let mut reply_bufs = ReplyBufs::new(Some(self.alloc_reply_header_buf()?));
-                reply_bufs.push_payload(
-                    self.alloc_reply_payload_buf(size_of::<aster_fuse::ops::write::WriteReply>())?,
-                );
-                Ok(reply_bufs)
+                self.alloc_control_reply(size_of::<WriteReply>())
             }
             (
                 ReplyExpectation::FixedPayload(payload_size)
@@ -339,8 +327,15 @@ impl FileSystemDevice {
         }
     }
 
-    fn alloc_reply_payload_buf(&self, payload_size: usize) -> Result<FuseReplyBuf, FuseError> {
-        self.alloc_from_device_buf(payload_size)
+    fn alloc_control_reply(&self, payload_size: usize) -> Result<ReplyBufs, FuseError> {
+        let header_size = size_of::<ReplyHeader>();
+        if payload_size <= pool::MAX_CLASS_SIZE - header_size {
+            let buf = self.alloc_from_device_buf(header_size + payload_size)?;
+            return Ok(ReplyBufs::new(Some(buf)));
+        }
+        let mut bufs = ReplyBufs::new(Some(self.alloc_reply_header_buf()?));
+        bufs.push_payload(self.alloc_from_device_buf(payload_size)?);
+        Ok(bufs)
     }
 
     fn alloc_reply_header_buf(&self) -> Result<FuseReplyBuf, FuseError> {

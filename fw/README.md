@@ -96,6 +96,52 @@ downloaded tarballs. Default pVisor builds handle this through isolated snapshot
 The standalone upstream GitHub workflows and CODEOWNERS were not imported;
 pVisor's root CI runs the firmware bundle regression tests.
 
+### Linux virtio-fs notifications
+
+New Linux x86_64/KVM VMs offer the `pVis` MMIO transport by default. To
+isolate IRQ acknowledgement, set `PVISOR_VM_FS_INLINE_METADATA=0` in both
+runs and compare `PVISOR_VM_FS_IRQ_READ_ACK=0` (standard transport and vendor
+ID) with `=1` (offer bit 22). No guest command-line parameter is needed.
+
+Patch `0058` negotiates private bit 22 only on a modern `pVis` MMIO filesystem
+device whose mapped resource contains the 32-bit word at `0x1fc`. Once
+`FEATURES_OK` and `DRIVER_OK` are confirmed, one aligned read takes the pending
+causes instead of reading `InterruptStatus` and then writing `InterruptACK`.
+Configuration and used-ring callbacks, controller EOI, FUSE completions and cache
+policy are unchanged. Failed negotiation, reset and failed devices keep the
+standard path. An older guest ignores the private offer; an older host doesn't
+offer the `pVis` transport to Linux. Restore reconstructs the source's
+optional feature offer before registering the device, including the legacy
+vendor ID for pre-extension snapshots. Disabling a feature required by the
+snapshot still causes restore to fail.
+
+In a guest with sysfs mounted, check `/sys/bus/virtio/devices/virtio*/device`
+for `0x001a` (filesystem). In that directory, `vendor` should be `0x73695670`
+and `cut -c23 features` should print `1` in the enabled run (`0` in the
+control). `features` lists negotiated bits least-significant first; the vendor
+ID alone does not prove negotiation.
+
+Patch `0059` negotiates bit 23 on this transport for unmanaged, non-DAX
+passthrough shares. With one online guest CPU and no competing request on
+the queue, a foreground `GETATTR` can receive its result on the submitting
+vCPU. A declined inline kick wakes the normal worker; the guest checks the
+used ring once, with callbacks armed, and never resubmits the request.
+SMP, overlays and other opcodes retain worker completion.
+
+This changes how Linux waits for attributes, not when it checks them.
+`FUSE_AUTO_INVAL_DATA` and the zero attribute timeout still validate size
+and mtime before serving a buffered read. `PVISOR_VM_FS_INLINE_METADATA=0`
+disables this path without disabling read-to-ack. To verify overwrite,
+truncate and replacement against open descriptors (including SMP fallback):
+
+```sh
+cc -static -O2 -Wall -Wextra -Werror pvisor-kernel/tests/stat_visibility.c -o "$STAT_PROBE"
+python3 pvisor-kernel/tests/stat_visibility.py --binary "$VM_API_CASE" \
+  --firmware "$LIBKRUNFW" --guest "$STAT_PROBE"
+```
+
+### FUSE cache and writeback contracts
+
 The virtio-fs directory image preserves zero-validity lookup-only entries for
 one-shot injected files. Even after a COMPLETE import, these names use host
 LOOKUP and stay hidden from readdir. READINDEX rejects replies beyond its page

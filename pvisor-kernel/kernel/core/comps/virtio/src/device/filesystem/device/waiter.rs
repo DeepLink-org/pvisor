@@ -59,8 +59,8 @@ impl ReplyBufs {
 
     /// Returns the only payload buffer used by typed reply parsers.
     ///
-    /// `FUSE_INIT`, `FUSE_WRITE`, and typed replies reached through
-    /// `FuseSession::do_fuse_op` use one payload buffer after the reply header.
+    /// `FUSE_INIT` and other fixed typed replies may use a separate payload
+    /// buffer. With no separate payload, parsing continues after the header.
     /// A `FUSE_READ` reply may use several page buffers, but
     /// [`FuseOperation::parse_reply`] is not a scatter-gather parser. Rejecting
     /// more than one payload prevents it from silently parsing only the first

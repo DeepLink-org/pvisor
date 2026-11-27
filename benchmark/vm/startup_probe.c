@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <sys/reboot.h>
 #include <sys/vfs.h>
+#include <termios.h>
 #include <unistd.h>
 
 int main(void) {
@@ -14,6 +15,9 @@ int main(void) {
     if (statfs("/", &root) || root.f_type != (init ? EXT4_SUPER_MAGIC : FUSE_SUPER_MAGIC))
         return 1;
     if (puts("VM_GUEST_COMMAND_OK") < 0 || fflush(stdout))
+        return 1;
+    /* PID 1's serial queue must be empty before reboot prints to the same console. */
+    if (init && tcdrain(STDOUT_FILENO))
         return 1;
     return init ? reboot(RB_AUTOBOOT) : 0;
 }

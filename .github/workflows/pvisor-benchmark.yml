@@ -338,6 +338,19 @@ jobs:
             python3 -I scripts/ci/vm_guest_comment.py "--$KIND-summary" "$data/comparison/comparison.json" >> "$GITHUB_STEP_SUMMARY"
           fi
           exit "$status"
+      - name: Diagnose guest variance on the measurement host
+        if: ${{ !cancelled() && matrix.kind == 'guest' }}
+        timeout-minutes: 5
+        shell: bash
+        run: |
+          set -euo pipefail
+          data="$RUNNER_TEMP/.data/vm-guest"
+          [[ -f "$data/comparison/comparison.json" ]] || exit 0
+          export PVISOR_BENCH_REVISION_BUILDS="$RUNNER_TEMP/builds"
+          export PVISOR_BENCH_GUEST="$RUNNER_TEMP/probe"
+          export PVISOR_BENCH_FIRECRACKER="$RUNNER_TEMP/firecracker"
+          export PVISOR_BENCH_FC_KERNEL="$RUNNER_TEMP/vmlinux"
+          mise run benchmark -- vm/guest --diagnose "$data"
       - name: Retain compact comparison for the PR conversation
         if: ${{ !cancelled() && github.event_name == 'pull_request' }}
         uses: actions/upload-artifact@v4

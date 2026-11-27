@@ -56,8 +56,8 @@ pub(crate) use options::VmoOptions;
 ///
 /// # Backing Modes
 ///
-/// - **Anonymous VMO.** RAM-backed and zero-filled on first access. This is
-///   used for anonymous memory and in-memory page caches.
+/// - **Anonymous VMO.** Buffered reads return zeros for holes without allocating.
+///   Writes and mapping faults commit zero-initialized RAM pages on demand.
 /// - **Backend VMO.** Connected to a [`PageCacheBackend`]. Pages are loaded
 ///   lazily and can later be written back.
 ///
@@ -288,7 +288,7 @@ impl VmoMapMode {
 impl Vmo {
     /// Commits the page at `page_idx`, blocking on backend I/O if required.
     ///
-    /// For anonymous VMOs the page is zero-filled on first access.
+    /// A newly committed anonymous page is zero-filled.
     /// For VMOs with a backend this may perform synchronous I/O.
     pub(crate) fn commit_on(&self, page_idx: usize, map_mode: VmoMapMode) -> Result<()> {
         let page = self.commit_on_internal(page_idx, CommitMode::Read)?;
@@ -536,6 +536,20 @@ impl Vmo {
         }
         let read_end = offset + read_len;
 
+        if !self.has_backend() {
+            return self.visit_anonymous_pages(offset..read_end, |pos, len, page| {
+                if let Some(page) = page {
+                    page.reader()
+                        .skip(pos % PAGE_SIZE)
+                        .limit(len)
+                        .read_fallible(writer)?;
+                } else {
+                    writer.fill_zeros(len)?;
+                }
+                Ok(())
+            });
+        }
+
         let range = offset..read_end;
         let page_idx_range = get_page_idx_range(&range);
         let mut current_idx = page_idx_range.start;
@@ -564,6 +578,30 @@ impl Vmo {
         Ok(())
     }
 
+    /// Visits existing frames or holes without committing storage.
+    fn visit_anonymous_pages(
+        &self,
+        range: Range<usize>,
+        mut visit: impl FnMut(usize, usize, Option<CachePage>) -> Result<()>,
+    ) -> Result<()> {
+        debug_assert!(!self.has_backend());
+        let mut pos = range.start;
+        while pos < range.end {
+            let offset = pos % PAGE_SIZE;
+            let len = (range.end - pos).min(PAGE_SIZE - offset);
+            // The user copy can fault. Pin the frame, not the XArray cursor.
+            let page = {
+                let guard = disable_preempt();
+                self.pages
+                    .load(&guard, (pos / PAGE_SIZE) as u64)
+                    .map(|p| p.clone())
+            };
+            visit(pos, len, page)?;
+            pos += len;
+        }
+        Ok(())
+    }
+
     /// Writes data from `reader` into the VMO at `offset`.
     pub(crate) fn write(&self, offset: usize, reader: &mut VmReader) -> Result<()> {
         let write_len = reader.remain().min(self.size().saturating_sub(offset));
@@ -573,20 +611,25 @@ impl Vmo {
         let write_end = offset + write_len;
 
         let write_range = offset..write_end;
+        if !self.has_backend() {
+            return self.visit_anonymous_pages(write_range, |pos, len, page| {
+                let page = match page {
+                    Some(page) => page,
+                    None => self.commit_on_anonymous(pos / PAGE_SIZE)?,
+                };
+                page.writer()
+                    .skip(pos % PAGE_SIZE)
+                    .limit(len)
+                    .write_fallible(reader)?;
+                Ok(())
+            });
+        }
+
         let mut page_offset = offset % PAGE_SIZE;
         let mut page_batch = Vec::with_capacity(min(
             write_range.len().div_ceil(PAGE_SIZE),
             Self::PAGE_BATCH_CAPACITY,
         ));
-
-        if !self.has_backend() {
-            return self.write_anonymous_pages(
-                &write_range,
-                &mut page_offset,
-                reader,
-                &mut page_batch,
-            );
-        }
 
         // VMOs with a backend require dirty tracking and may skip backend reads
         // for page-aligned ranges that will be entirely overwritten.
@@ -647,6 +690,15 @@ impl Vmo {
             return_errno_with_message!(Errno::EINVAL, "the range to fill exceeds the VMO size");
         }
 
+        if !self.has_backend() {
+            return self.visit_anonymous_pages(range, |pos, len, page| {
+                if let Some(page) = page {
+                    page.writer().skip(pos % PAGE_SIZE).fill_zeros(len);
+                }
+                Ok(())
+            });
+        }
+
         static ZERO_PAGE: [u8; PAGE_SIZE] = [0; PAGE_SIZE];
 
         let mut current_offset = range.start;
@@ -657,41 +709,6 @@ impl Vmo {
 
             self.write(current_offset, &mut reader)?;
             current_offset += write_len;
-        }
-
-        Ok(())
-    }
-
-    /// Writes data to pages without dirty tracking.
-    ///
-    /// Used for anonymous VMO writes where pages are always in the `UpToDate`
-    /// state.
-    fn write_anonymous_pages(
-        &self,
-        range: &Range<usize>,
-        page_offset: &mut usize,
-        reader: &mut VmReader,
-        page_batch: &mut Vec<(usize, CachePage)>,
-    ) -> Result<()> {
-        let page_idx_range = get_page_idx_range(range);
-        let mut current_idx = page_idx_range.start;
-
-        while current_idx < page_idx_range.end {
-            self.collect_pages(
-                current_idx,
-                page_idx_range.end,
-                CommitMode::Read,
-                page_batch,
-            )?;
-
-            for (_, page) in page_batch.iter() {
-                page.writer().skip(*page_offset).write_fallible(reader)?;
-                *page_offset = 0;
-            }
-
-            // `current_idx < page_idx_range.end` guarantees at least one page is successfully
-            // collected here.
-            current_idx = page_batch.last().unwrap().0 + 1;
         }
 
         Ok(())

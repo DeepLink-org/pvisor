@@ -110,8 +110,30 @@ The [inline metadata path](../crates/pvisor-vm/README.md#virtio-fs-并发与冻�
 negotiates device feature bit 23. An idle ordinary queue can use bit 31 in its
 MMIO notification value for `LOOKUP` or `GETATTR`. The guest checks the used
 ring on return and waits for the ordinary IRQ if the worker owns the request.
-It defaults on for eligible single-queue shares on Linux x86_64/KVM.
+On eligible Linux x86_64/KVM shares it defaults on for single-vCPU guests
+or a single ordinary queue. SMP with multiple queues keeps parallel workers.
 Set `PVISOR_VM_FS_INLINE_METADATA=0` to disable it.
+
+**IRQ read-to-ack.** For a Rust native guest on Linux x86_64/KVM, the VMM
+offers private virtio-fs feature bit 22 under the MMIO vendor ID `pVis`
+(little endian). Set `PVISOR_VM_FS_IRQ_READ_ACK=0` to disable it.
+Only a modern x86 MMIO filesystem
+driver that selects the bit and completes `FEATURES_OK` and `DRIVER_OK` uses
+the private register. Other devices, PCI, and older hosts/guests keep their
+normal interrupt protocol. [Linux firmware](../fw/README.md#linux-virtio-fs-notifications)
+negotiates the same transport. Native-kernel snapshots remain unsupported.
+
+One aligned 32-bit read at MMIO offset `0x1fc` atomically takes the pending
+causes before callbacks: bit 0 drains used rings, bit 1 signals a config
+change, both dispatch both, and zero dispatches neither. The ordinary
+`InterruptStatus` read remains observational and `InterruptACK` still works.
+The private read does not clear causes before activation, after failure or
+after reset; reset requires fresh negotiation. The producer still publishes
+the used entry, sets the cause and signals irqfd. A cause arriving after the
+take remains pending for its IRQ; a delayed pulse can find nothing to do.
+Interrupt-controller EOI, queue notification suppression and FUSE replies
+are unchanged. This removes one synchronous MMIO access per handled fs IRQ,
+not one IRQ per write. It does not buffer writes or poll the CPU.
 
 Path-based `stat`, `lstat` and `newfstatat` can reuse the last component's
 `LOOKUP` attributes when that walk obtained them for the resolved inode.
@@ -194,11 +216,34 @@ append `--check-read-fixture` after `7`. The workload warms one page,
 verifies an unaligned multi-batch read spanning it, and checks the short
 read at EOF. See the [filesystem A/B](../benchmark/evidence/rust-kernel-filesystem.md).
 
+`7 --check-tmpfs-read` needs only a fresh root and the guest's `/dev/shm`.
+It checks that sparse reads return zeros and leave the destination past EOF
+untouched, including with two readers racing a truncate/regrow loop. Run on
+two vCPUs with 64 MiB under a 30-second deadline. Reading every page of a
+96 MiB hole must complete with authenticated exit 7.
+
 `--check-write-cache` instead tests sparse write-only I/O, a subsequent
 buffered read or shared mapping, and truncate/regrow. After exit, `/mapped`
 and `/buffered` must each contain 8192 zero bytes followed by `78 00 00`
 (hex). The guest also tests set-ID bits and file-capability removal on its
 own tmpfs before and after dropping effective `CAP_FSETID`.
+
+To check full, short and failed host write acknowledgments on Linux x86_64/KVM,
+run the following in Bash with `vm_api_case` built against the candidate kernel.
+The file-size limit applies to the host runner, not the guest application.
+The fixture creates a sparse file on a fresh passthrough root.
+
+```sh
+root=$(mktemp -d "$PWD/target/write-ack.XXXXXX")
+mise exec -- rustc --edition=2021 --target x86_64-unknown-linux-musl \
+  -C linker=rust-lld pvisor-kernel/tests/write_ack.rs -o "$root/probe"
+(
+  trap '' XFSZ
+  PVISOR_GUEST_KERNEL=rust-native timeout 30 prlimit --fsize=1073741824 \
+    target/release/examples/vm_api_case --rootfs "$root" --cpus 1 --memory 256 \
+    -- /probe write /subject
+) && "$root/probe" verify "$root/subject"
+```
 
 On virtio-fs, a regular file starts without a page cache. Writes use the
 caller's file handle and wait for the server reply; the first buffered read

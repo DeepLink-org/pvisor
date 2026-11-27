@@ -112,6 +112,79 @@ impl Subjects {
     }
 }
 
+/// Replay failed cells plus a guest-local control on the original runner, outside Criterion.
+/// Derive commands from the fixed matrix, never from archived argv or comparison row names.
+pub(crate) fn diagnose(batch: &Path) -> Result<()> {
+    let batch = batch.canonicalize()?;
+    let report: serde_json::Value =
+        serde_json::from_slice(&fs::read(batch.join("comparison/comparison.json"))?)?;
+    let rows = report["rows"]
+        .as_array()
+        .context("missing comparison rows")?;
+    let builds = required("PVISOR_BENCH_REVISION_BUILDS")?;
+    let subject = |arm: &str| -> Result<Subjects> {
+        let vm = builds.join(format!("benchmark-build-{arm}/vm"));
+        let subjects = Subjects {
+            vm: vm.join("vm_api_case"),
+            firmware: vm.join("libkrunfw.so.5"),
+            guest: required("PVISOR_BENCH_GUEST")?,
+            fc: required("PVISOR_BENCH_FIRECRACKER")?,
+            kernel: required("PVISOR_BENCH_FC_KERNEL")?,
+        };
+        let manifest: serde_json::Value =
+            serde_json::from_slice(&fs::read(batch.join(arm).join("manifest.json"))?)?;
+        for (key, path) in [
+            ("vm_sha256", &subjects.vm),
+            ("firmware_sha256", &subjects.firmware),
+            ("guest_sha256", &subjects.guest),
+        ] {
+            ensure!(manifest[key] == sha(path)?, "{arm} {key} mismatch");
+        }
+        Ok(subjects)
+    };
+    let arms = [
+        ("main", subject("main")?),
+        ("candidate", subject("candidate")?),
+    ];
+    let destination = batch.join("paired-diagnostic");
+    fs::create_dir(&destination)?;
+    for (backend, metric, name) in vm_matrix::cells().filter(|(b, _, _)| *b != REFERENCE) {
+        let row = rows
+            .iter()
+            .find(|row| row["condition"] == name)
+            .with_context(|| format!("missing comparison row: {name}"))?;
+        let passed = row["passed"].as_bool().context("missing gate verdict")?;
+        if passed && name != "linux-tmpfs-shuffled-overwrite" {
+            continue;
+        }
+        let mut changes = Vec::new();
+        for block in 0..16u32 {
+            // Balanced AB/BA order, also balanced in each consecutive group of four.
+            let first = (block.count_ones() % 2) as usize;
+            let mut ns = [0.0; 2];
+            for index in [first, 1 - first] {
+                let (arm, subjects) = &arms[index];
+                let trial = destination.join(&name).join(block.to_string()).join(arm);
+                ns[index] = subjects
+                    .operation(&destination, &trial, backend, metric)?
+                    .as_nanos() as f64;
+            }
+            changes.push(100.0 * (ns[1] / ns[0] - 1.0));
+        }
+        changes.sort_by(f64::total_cmp);
+        let median = (changes[7] + changes[8]) / 2.0;
+        save(
+            destination.join(&name).join("summary.json"),
+            &json!({
+                "condition": name, "gate_passed": passed, "blocks": changes.len(),
+                "median_paired_change_pct": median
+            }),
+        )?;
+        println!("{name}: 16 paired blocks, median change {median:+.2}% (diagnostic only)");
+    }
+    Ok(())
+}
+
 pub fn register(c: &mut Criterion, startup: bool) -> Result<()> {
     let batch = output()?;
     let subjects = Subjects {

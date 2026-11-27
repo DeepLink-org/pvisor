@@ -105,7 +105,10 @@ impl Fs {
         exit_code: Arc<AtomicI32>,
         profile: Arc<crate::env::fs::FsProfile>,
     ) -> super::Result<Fs> {
-        let avail_features = (1u64 << VIRTIO_F_VERSION_1) | (1u64 << VIRTIO_RING_F_EVENT_IDX);
+        let mut avail_features = (1u64 << VIRTIO_F_VERSION_1) | (1u64 << VIRTIO_RING_F_EVENT_IDX);
+        if cfg!(all(target_os = "linux", target_arch = "x86_64")) && profile.irq_read_ack {
+            avail_features |= super::super::FS_IRQ_READ_ACK;
+        }
 
         let tag = device_config.fs_id.as_bytes();
         let mut config = VirtioFsConfig::default();
@@ -130,7 +133,6 @@ impl Fs {
 
         let inline_dispatch = (cfg!(all(target_os = "linux", target_arch = "x86_64"))
             && profile.inline_metadata
-            && profile.workers == 1
             && !device_config.managed
             && device_config.overlay.is_none()
             && device_config.shm_size.is_none()
@@ -175,6 +177,17 @@ impl Fs {
         Ok(())
     }
 
+    pub(crate) fn restore_transport(&mut self, count: usize, offered: u64) -> Result<(), String> {
+        self.configure_request_queues(count)?;
+        // Preserve the source's optional doorbells and vendor ID even before DRIVER_OK.
+        // Never add a capability disallowed by this host; MMIO checks exact equality.
+        self.avail_features &= offered | !super::super::FS_IRQ_READ_ACK;
+        if offered & INLINE_METADATA_FEATURE == 0 {
+            self.inline_dispatch = None;
+        }
+        Ok(())
+    }
+
     pub fn set_shm_region(&mut self, shm_region: VirtioShmRegion) {
         self.shm_region = Some(shm_region);
     }
@@ -207,7 +220,7 @@ impl Fs {
 
 impl VirtioDevice for Fs {
     fn inline_queue_kick(&self, queue: usize) -> Option<bool> {
-        if queue != REQ_INDEX
+        if !(REQ_INDEX..self.queue_config.len()).contains(&queue)
             || self.acked_features & self.avail_features() & INLINE_METADATA_FEATURE == 0
         {
             return None;
@@ -297,7 +310,6 @@ impl VirtioDevice for Fs {
 
     fn avail_features(&self) -> u64 {
         let inline = self.inline_dispatch.is_some()
-            && self.queue_config.len() == REQ_INDEX + 1
             && self.shm_region.is_none()
             && self
                 .passthrough_cfg
@@ -468,6 +480,57 @@ mod tests {
                 assert_eq!(cfg.cache_policy, passthrough::CachePolicy::Auto);
             }
         }
+    }
+
+    #[rstest::rstest]
+    #[case::new_multiqueue(4, None, true, true, true)]
+    #[case::old_single_queue(1, Some(INLINE_METADATA_FEATURE), true, true, false)]
+    #[case::old_multiqueue(4, Some(0), true, false, false)]
+    #[case::saved_irq_only(4, Some(crate::devices::virtio::FS_IRQ_READ_ACK), true, false, true)]
+    #[case::cannot_restore_disabled_inline(1, Some(INLINE_METADATA_FEATURE), false, false, false)]
+    fn transport_feature_offer(
+        #[case] queues: usize,
+        #[case] saved: Option<u64>,
+        #[case] enabled: bool,
+        #[case] inline: bool,
+        #[case] irq: bool,
+    ) {
+        use crate::env::fs;
+
+        let profile = fs::FsProfile::parse(|key| match key {
+            fs::WORKERS => Some("4".into()),
+            fs::INLINE_METADATA if !enabled => Some("0".into()),
+            _ => None,
+        })
+        .unwrap();
+        let mut fs = Fs::new_with_profile(
+            &crate::vmm::vmm_config::fs::FsDeviceConfig {
+                fs_id: "shared".into(),
+                semantics: PermissionSemantics::LinuxComplete,
+                shared_dir: Some("/shared".into()),
+                shm_size: None,
+                read_only: false,
+                managed: false,
+                virtual_entries: vec![],
+                overlay: None,
+            },
+            Arc::new(AtomicI32::new(0)),
+            Arc::new(profile),
+        )
+        .unwrap();
+        if let Some(offered) = saved {
+            fs.restore_transport(queues, offered).unwrap();
+        }
+        assert_eq!(fs.queue_config.len(), queues + 1);
+        let kvm = cfg!(all(target_os = "linux", target_arch = "x86_64"));
+        assert_eq!(
+            fs.avail_features() & INLINE_METADATA_FEATURE != 0,
+            kvm && inline
+        );
+        assert_eq!(
+            fs.avail_features() & crate::devices::virtio::FS_IRQ_READ_ACK != 0,
+            kvm && irq
+        );
     }
 
     #[test]

@@ -16,6 +16,7 @@
 #include <sys/syscall.h>
 #include <sys/vfs.h>
 #include <sys/wait.h>
+#include <termios.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -304,7 +305,9 @@ int main(int argc, char **argv) {
     CHECK(ns > 0);
     printf("VM_GUEST_OK %s %" PRIu64 "\n", metric, ns);
     CHECK(fflush(stdout) == 0);
-    if (init)
+    if (init) {
+        CHECK(tcdrain(STDOUT_FILENO) == 0);
         CHECK(reboot(RB_AUTOBOOT) == 0);
+    }
     return 0;
 }

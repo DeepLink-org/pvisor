@@ -175,7 +175,7 @@ pub(in crate::fs::fs_impls) struct RamInode {
 /// Inode inner specifics.
 enum Inner {
     Dir(RwLock<DirEntry>),
-    File(Mutex<PageCache>),
+    File(RwMutex<PageCache>),
     SymLink(SpinLock<String>),
     BlockDevice(u64),
     CharDevice(u64),
@@ -200,7 +200,7 @@ impl Inner {
     }
 
     pub(self) fn new_file() -> Self {
-        Self::File(Mutex::new(PageCache::new_anon(0).unwrap()))
+        Self::File(RwMutex::new(PageCache::new_anon(0).unwrap()))
     }
 
     pub(self) fn new_symlink(target: &str) -> Self {
@@ -223,10 +223,6 @@ impl Inner {
         Self::NamedPipe(Pipe::new())
     }
 
-    pub(self) fn new_file_in_memfd() -> Self {
-        Self::File(Mutex::new(PageCache::new_anon(0).unwrap()))
-    }
-
     fn as_direntry(&self) -> Option<&RwLock<DirEntry>> {
         match self {
             Self::Dir(dir_entry) => Some(dir_entry),
@@ -234,7 +230,7 @@ impl Inner {
         }
     }
 
-    fn as_file(&self) -> Option<&Mutex<PageCache>> {
+    fn as_file(&self) -> Option<&RwMutex<PageCache>> {
         match self {
             Self::File(page_cache) => Some(page_cache),
             _ => None,
@@ -602,7 +598,7 @@ impl RamInode {
         gid: Gid,
     ) -> Self {
         Self {
-            inner: Inner::new_file_in_memfd(),
+            inner: Inner::new_file(),
             metadata: SpinLock::new(InodeMeta::new(mode, uid, gid)),
             ino: weak_self.as_ptr() as u64,
             typ: InodeType::File,
@@ -1000,7 +996,7 @@ impl RamInode {
             return_errno_with_message!(Errno::EINVAL, "the inode is not a regular file");
         }
 
-        let mut page_cache = self.inner.as_file().unwrap().lock();
+        let mut page_cache = self.inner.as_file().unwrap().write();
         let mut inode_meta = self.metadata.lock();
         let file_size = inode_meta.size;
         if file_size == new_size {
@@ -1031,23 +1027,20 @@ impl FileOps for RamInode {
         writer: &mut VmWriter,
         _status_flags: StatusFlags,
     ) -> Result<usize> {
-        let read_len = match &self.inner {
-            Inner::File(page_cache) => {
-                let (offset, read_len) = {
-                    let file_size = self.size();
-                    let start = file_size.min(offset);
-                    let end = file_size.min(offset + writer.avail());
-                    (start, end - start)
-                };
-                page_cache.lock().read(offset, writer)?;
-                read_len
-            }
-            _ => return_errno_with_message!(Errno::EISDIR, "read is not supported"),
+        let Some(cache) = self.inner.as_file() else {
+            return_errno_with_message!(Errno::EISDIR, "read is not supported");
         };
-
-        if self.typ == InodeType::File {
-            self.metadata.lock().set_atime(now());
+        let cache = cache.read();
+        let read_len = writer.avail().min(self.size().saturating_sub(offset));
+        if read_len != 0 {
+            let mut limited = writer.clone_exclusive();
+            let result = cache.read(offset, limited.limit(read_len));
+            let copied = read_len - limited.avail();
+            writer.skip(copied);
+            result?;
         }
+        drop(cache);
+        self.metadata.lock().set_atime(now());
         Ok(read_len)
     }
 
@@ -1067,23 +1060,21 @@ impl FileOps for RamInode {
 
                 let now = now();
 
-                let mut page_cache = self.inner.as_file().unwrap().lock();
+                let mut page_cache = self.inner.as_file().unwrap().write();
 
                 let mut inode_meta = self.metadata.lock();
                 let file_size = inode_meta.size;
                 let new_size = offset + write_len;
                 let should_expand_size = new_size > file_size;
-                let new_size_aligned = new_size.align_up(BLOCK_SIZE);
                 inode_meta.set_mtime(now);
                 inode_meta.set_ctime(now);
                 if should_expand_size {
-                    inode_meta.size = new_size;
-                    inode_meta.blocks = new_size_aligned / BLOCK_SIZE;
+                    inode_meta.resize(new_size);
                 }
                 drop(inode_meta);
 
                 if should_expand_size {
-                    page_cache.resize(new_size_aligned, file_size)?;
+                    page_cache.resize(new_size, file_size)?;
                 }
                 page_cache.write(offset, reader)?;
 
@@ -1116,7 +1107,7 @@ impl Inode for RamInode {
     fn page_cache(&self) -> Option<Arc<Vmo>> {
         self.inner
             .as_file()
-            .map(|page_cache| page_cache.lock().as_vmo().clone())
+            .map(|page_cache| page_cache.read().as_vmo().clone())
     }
 
     fn size(&self) -> usize {
@@ -1530,13 +1521,13 @@ impl Inode for RamInode {
                 Ok(())
             }
             FallocMode::PunchHoleKeepSize => {
+                let cache = self.inner.as_file().ok_or(Errno::EISDIR)?.write();
                 let file_size = self.size();
                 if offset >= file_size {
                     return Ok(());
                 }
-                let range = offset..file_size.min(offset + len);
-                // TODO: Think of a more light-weight approach
-                self.inner.as_file().unwrap().lock().fill_zeros(range)
+                let range = offset..file_size.min(offset.saturating_add(len));
+                cache.fill_zeros(range)
             }
             _ => {
                 return_errno_with_message!(
