@@ -72,6 +72,115 @@ fn source_fixture(root: &Path) -> Registry {
 fn source_fixture_for_architecture(root: &Path, target: &str) -> Registry {
     Registry::start(root, target, None)
 }
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[test]
+fn cold_run_ephemeral_preserves_reader_leases_and_skips_durable_publication() {
+    use pvisor::docker::Store;
+    use std::time::{Duration, Instant};
+
+    fn wait_for_release(path: &Path) {
+        let file = fs::File::open(path).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            match fs2::FileExt::try_lock_exclusive(&file) {
+                Ok(()) => return,
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    assert!(Instant::now() < deadline, "lease still held at {path:?}");
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Err(e) => panic!("cannot lock {path:?}: {e}"),
+            }
+        }
+    }
+
+    let tmp = tempfile::tempdir().unwrap();
+    let docker = tmp.path().join("docker");
+    std::os::unix::fs::symlink(
+        docker.join("cold-imports"),
+        tmp.path().join("watched-imports"),
+    )
+    .unwrap();
+    let registry = source_fixture(&docker);
+    let store = Store::open(docker.clone()).unwrap();
+    // A reserved port stops the owner after OCI admission and before VMM launch.
+    let reserved = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let publish = format!("{}:8080", reserved.local_addr().unwrap());
+    let admit = |name, ephemeral| {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_pvisor"));
+        cmd.env_clear()
+            .env("HOME", tmp.path())
+            .env("PVISOR_DOCKER_HOME", &docker)
+            .env("PVISOR_IMAGE_STORE", docker.join("images"))
+            .env("SSL_CERT_FILE", tmp.path().join("registry/ca.pem"))
+            .args([
+                "run",
+                "--name",
+                name,
+                "--publish",
+                &publish,
+                &registry.reference,
+            ]);
+        if ephemeral {
+            cmd.env("PVISOR_OCI_EPHEMERAL", "1");
+        }
+        let output = cmd.output().unwrap();
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            !output.status.success() && stderr.contains("address already in use"),
+            "{stderr}"
+        );
+        let instance = store.resolve(name).unwrap();
+        assert_eq!(instance.image.digest, registry.digest);
+        let id = instance
+            .image
+            .cache
+            .handle
+            .strip_prefix("pvisor-import-v1:")
+            .unwrap();
+        let import = docker.join("cold-imports").join(id);
+        wait_for_release(&import);
+        wait_for_release(
+            &docker
+                .join("instances")
+                .join(&instance.id)
+                .join("owner.lock"),
+        );
+        assert!(!import.join("publication-error.json").exists());
+        assert!(!import.join("blobs").exists());
+        (instance, import)
+    };
+
+    let (ephemeral, first_import) = admit("once", true);
+    let events = tmp.path().join("registry/layer-events");
+    assert_eq!(fs::read_to_string(&events).unwrap(), "download\nreleased\n");
+    assert!(store.images().unwrap().is_empty());
+    assert!(!store.image_pool_location().exists());
+    assert!(!first_import.join("published.json").exists());
+    let reader = store.open_image(&ephemeral.image).unwrap();
+    store.remove(&ephemeral.id, false).unwrap();
+    assert_eq!(
+        fs::read(reader.rootfs().join("small-007")).unwrap(),
+        b"value-7"
+    );
+    drop(reader);
+
+    let (durable, next_import) = admit("default", false);
+    assert_eq!(
+        fs::read_to_string(events).unwrap(),
+        "download\nreleased\ndownload\nretained\n"
+    );
+    assert!(!first_import.exists());
+    let catalog = store.images().unwrap();
+    assert_eq!(catalog.len(), 1);
+    assert_eq!(catalog[0].digest, durable.image.digest);
+    let published: String =
+        serde_json::from_slice(&fs::read(next_import.join("published.json")).unwrap()).unwrap();
+    assert_eq!(published, catalog[0].cache.handle);
+    store.remove(&durable.id, false).unwrap();
+    assert!(!next_import.exists());
+    assert!(store.open_image(&catalog[0]).is_ok());
+}
+
 fn clean_imports(root: &Path) {
     for name in ["blobs", "rootfs-v3", "metadata"] {
         assert!(!root.join(name).exists(), "retained raw {name}");

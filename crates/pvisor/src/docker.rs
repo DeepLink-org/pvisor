@@ -161,6 +161,13 @@ pub struct Image<Backing = CachedImage> {
     pub created_ms: u64,
 }
 
+/// The worker owns this import directory and decides whether it will publish from it.
+#[derive(Clone, Copy)]
+struct ColdImport<'a> {
+    directory: &'a Path,
+    ephemeral: bool,
+}
+
 // Keep both the private unpacked tree and the reference lock until publication finishes.
 struct PreparedPull {
     image: Image<()>,
@@ -168,6 +175,8 @@ struct PreparedPull {
     rootfs: PathBuf,
     source: crate::image::oci::ImageStore,
     config: Vec<u8>,
+    #[cfg(target_os = "linux")]
+    prefix_view: Option<crate::image::oci::PrefixView>,
     _staging: Option<crate::image::store::ImportDirectory>,
     _pull: File,
 }
@@ -840,7 +849,7 @@ impl Store {
         reference: &str,
         platform: &str,
         progress: &mut dyn FnMut(PullProgress),
-        directory: Option<&Path>,
+        cold_import: Option<ColdImport<'_>>,
     ) -> anyhow::Result<PreparedPull> {
         let platform = canonical_platform(platform)?;
         let arch = platform.strip_prefix("linux/").unwrap();
@@ -848,12 +857,13 @@ impl Store {
         let reference = reference.as_str();
         progress(PullProgress::Waiting);
         let _pull = self.image_pull_lock(reference, arch)?;
-        let staging = if directory.is_none() {
+        let staging = if cold_import.is_none() {
             Some(self.images.staging()?)
         } else {
             None
         };
-        let root = directory
+        let root = cold_import
+            .map(|import| import.directory)
             .or_else(|| staging.as_ref().map(|s| s.path()))
             .context("missing import directory")?;
         let mut store = crate::image::oci::ImageStore::new(Some(root.into()))?;
@@ -876,11 +886,24 @@ impl Store {
                 }),
                 _ => None,
             };
-        if cached.is_some() {
+        let prefix_view = if cached.is_some() {
             resolved.report_cached(progress);
+            None
         } else {
-            store.extract_resolved(&resolved, progress)?;
+            let retire_downloads = cold_import.is_some_and(|import| import.ephemeral);
+            store.extract_resolved(
+                &resolved,
+                progress,
+                retire_downloads,
+                cold_import.map(|_| &self.images),
+            )?
+        };
+        #[cfg(target_os = "linux")]
+        if prefix_view.is_some() {
+            store.prefix_view_digest = Some(resolved.prepared.digest.clone());
         }
+        #[cfg(not(target_os = "linux"))]
+        let _ = prefix_view;
         let id = resolved.config_digest;
         let prepared = resolved.prepared;
         ensure!(
@@ -922,6 +945,8 @@ impl Store {
             rootfs: prepared.rootfs,
             source: store,
             config: config_bytes,
+            #[cfg(target_os = "linux")]
+            prefix_view,
             _staging: staging,
             _pull,
         })

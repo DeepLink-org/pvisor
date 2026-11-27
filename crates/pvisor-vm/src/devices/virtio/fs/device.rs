@@ -134,6 +134,7 @@ impl Fs {
                 overlay: overlay_cfg.map(|config| OverlaySource::Config(Box::new(config))),
                 shm_size: None,
                 managed: false,
+                metadata_ttl: Duration::ZERO,
             },
             exit_code,
             Arc::new(profile),
@@ -172,15 +173,15 @@ impl Fs {
         let queue_config =
             vec![QueueConfig::new(defs::QUEUE_SIZE); config.num_request_queues as usize + 1];
 
+        let metadata_timeout = device_config.metadata_ttl;
         let fs_cfg = device_config
             .shared_dir
             .clone()
             .map(|root_dir| passthrough::Config {
                 root_dir,
                 semantics: device_config.semantics,
-                // Another mount or VM can change the backing inode between opens.
-                attr_timeout: Duration::ZERO,
-                entry_timeout: Duration::ZERO,
+                attr_timeout: metadata_timeout,
+                entry_timeout: metadata_timeout,
                 ..Default::default()
             });
 
@@ -536,6 +537,85 @@ mod tests {
     use super::*;
 
     #[test]
+    fn caller_declared_metadata_ttl_applies_to_passthrough() {
+        for semantics in [
+            PermissionSemantics::LinuxComplete,
+            PermissionSemantics::LinuxSimplified,
+        ] {
+            let profile = Arc::new(crate::env::fs::FsProfile::parse(|_| None).unwrap());
+            let fs = Fs::new_with_profile(
+                &crate::vmm::vmm_config::fs::FsDeviceConfig {
+                    fs_id: "/dev/root".into(),
+                    semantics,
+                    shared_dir: Some("/root".into()),
+                    shm_size: None,
+                    read_only: false,
+                    managed: false,
+                    metadata_ttl: Duration::from_secs(1),
+                    virtual_entries: vec![],
+                    overlay: None,
+                },
+                Arc::new(AtomicI32::new(0)),
+                profile,
+            )
+            .unwrap();
+            let cfg = fs.passthrough_cfg.unwrap();
+            assert_eq!(cfg.attr_timeout, Duration::from_secs(1));
+            assert_eq!(cfg.entry_timeout, Duration::from_secs(1));
+            assert_eq!(cfg.cache_policy, passthrough::CachePolicy::Auto);
+        }
+    }
+
+    #[test]
+    fn root_passthrough_default_keeps_zero_metadata_validity() {
+        for read_only in [false, true] {
+            for semantics in [
+                PermissionSemantics::LinuxComplete,
+                PermissionSemantics::LinuxSimplified,
+            ] {
+                let fs = Fs::new(
+                    "/dev/root".into(),
+                    semantics,
+                    Some("/root".into()),
+                    Arc::new(AtomicI32::new(0)),
+                    read_only,
+                    vec![],
+                    None,
+                )
+                .unwrap();
+                let cfg = fs.passthrough_cfg.unwrap();
+                assert_eq!(cfg.attr_timeout, Duration::ZERO);
+                assert_eq!(cfg.entry_timeout, Duration::ZERO);
+                assert_eq!(cfg.cache_policy, passthrough::CachePolicy::Auto);
+            }
+        }
+    }
+
+    #[test]
+    fn managed_root_tag_keeps_zero_metadata_validity() {
+        let profile = Arc::new(crate::env::fs::FsProfile::parse(|_| None).unwrap());
+        let fs = Fs::new_with_profile(
+            &crate::vmm::vmm_config::fs::FsDeviceConfig {
+                fs_id: "/dev/root".into(),
+                semantics: PermissionSemantics::LinuxComplete,
+                shared_dir: Some("/root".into()),
+                shm_size: None,
+                read_only: false,
+                managed: true,
+                metadata_ttl: Duration::ZERO,
+                virtual_entries: vec![],
+                overlay: None,
+            },
+            Arc::new(AtomicI32::new(0)),
+            profile,
+        )
+        .unwrap();
+        let cfg = fs.passthrough_cfg.unwrap();
+        assert_eq!(cfg.attr_timeout, Duration::ZERO);
+        assert_eq!(cfg.entry_timeout, Duration::ZERO);
+    }
+
+    #[test]
     fn passthrough_mounts_revalidate_metadata_without_disabling_mmap() {
         for read_only in [false, true] {
             for semantics in [
@@ -589,6 +669,7 @@ mod tests {
                 shm_size: None,
                 read_only: false,
                 managed: false,
+                metadata_ttl: Duration::ZERO,
                 virtual_entries: vec![],
                 overlay: None,
             },
@@ -696,6 +777,7 @@ mod tests {
                 shm_size: None,
                 read_only: false,
                 managed: false,
+                metadata_ttl: Duration::ZERO,
                 virtual_entries: vec![],
                 overlay: None,
             },

@@ -167,7 +167,10 @@ shape from `io.pvisor.vm.cpus` / `io.pvisor.vm.memory-mib` or, when an
 annotation is absent, derived from the workload's own OCI limits (memory
 limit minus a 256 MiB hypervisor reserve, floored at 256 MiB; cpu quota
 rounded up; default 2 vCPU / 512 MiB). Invalid annotation values fail the
-task instead of silently resizing the guest. Kill signals the VM runner (destroying the VM); the guest exit
+task instead of silently resizing the guest. The task rootfs is attached
+with one-second entry/attribute validity because the shim owns it for the VM
+lifetime; shared volumes keep the default zero validity so cross-container
+updates remain immediately visible. Kill signals the VM runner (destroying the VM); the guest exit
 code propagates through the task exit status. The shim configures a vsock
 proxy for the guest control protocol (see below); this is not a network isolation claim.
 

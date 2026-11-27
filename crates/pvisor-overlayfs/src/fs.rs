@@ -14,6 +14,7 @@ use std::collections::{BTreeSet, HashMap};
 use std::ffi::{OsStr, OsString};
 use std::fs::{self, File, OpenOptions};
 use std::io;
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{FileExt, FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
@@ -2021,6 +2022,12 @@ impl OverlayFs {
         let observed_path = self.node_path(ino).ok();
         let result = self.node_path(ino).and_then(|path| {
             let backing = self.core.observe_read_resolved(&path)?;
+            if backing.is_upper_opacity_hint(name)? {
+                #[cfg(target_os = "macos")]
+                return Err(io::Error::from_raw_os_error(libc::ENOATTR));
+                #[cfg(not(target_os = "macos"))]
+                return Err(io::Error::from_raw_os_error(libc::ENODATA));
+            }
             sys::get_xattr(&backing.resolved.path, name)
         });
         self.observe_result(observed_path.as_deref(), "getxattr", &result, 0, false);
@@ -2040,6 +2047,9 @@ impl OverlayFs {
             let names = sys::list_xattrs(&backing.resolved.path)?;
             let mut encoded = Vec::new();
             for name in names {
+                if backing.is_upper_opacity_hint(OsStr::from_bytes(&name))? {
+                    continue;
+                }
                 encoded.extend_from_slice(&name);
                 encoded.push(0);
             }

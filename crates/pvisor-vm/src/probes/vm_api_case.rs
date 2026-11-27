@@ -20,6 +20,10 @@ struct Args {
     /// Host directory exposed read-only at /readonly in the guest.
     #[arg(long)]
     readonly: Option<PathBuf>,
+    /// Cache root entry/attribute replies for this many milliseconds; requires
+    /// exclusive ownership of the rootfs for the VM lifetime.
+    #[arg(long)]
+    root_metadata_ttl_ms: Option<u64>,
     /// Route stdin, stdout and stderr through the named virtio-serial ports (requires pipes).
     #[arg(long)]
     task_stdio: bool,
@@ -51,7 +55,16 @@ fn run(args: Args) -> anyhow::Result<()> {
     } else if VmPlatform::embedded_kernel().is_none() {
         vm.set_firmware_path(VmPlatform::resolve_firmware_path(None)?)?;
     }
-    vm.filesystem("/dev/root", &root, 0)?;
+    if let Some(ttl_ms) = args.root_metadata_ttl_ms {
+        vm.filesystem_with_metadata_ttl(
+            "/dev/root",
+            &root,
+            0,
+            std::time::Duration::from_millis(ttl_ms),
+        )?;
+    } else {
+        vm.filesystem("/dev/root", &root, 0)?;
+    }
     if args.task_stdio {
         vm.task_stdio(0, 1, 2)?;
     }

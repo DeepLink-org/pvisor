@@ -1436,6 +1436,29 @@ reboot a surviving instance requires its recorded durable revision. A publicatio
 error is recorded in the import's `publication-error.json`; an explicit pull can
 retry publication.
 
+On Linux x86-64, set `PVISOR_OCI_EPHEMERAL=1` on `pvisor run` for a
+one-shot cold OCI import. The worker admits an eligible verified root and
+skips background Image Pack publication. Each instance and its forks pin the
+import until removal. Recreate the instance from OCI after a host reboot.
+Published images are still usable, and an explicit `pvisor pull` still
+publishes an image. A cold miss requiring synchronous conversion or explicit
+in-process registry credentials returns an error in this mode. Leave the
+setting unset or use `0` for the usual background publication.
+
+In a one-shot import, the importer unlinks each private layer download once
+the final occurrence of that digest has a verified archive ready to unpack.
+Repeated layers reuse the same download. An uncompressed private tar stays
+open through extraction. The VM and its forks retain the extracted root.
+
+On Linux cold runs, `PVISOR_OCI_PREFIX_REUSE=1` enables a verified read-only
+prefix shared by matching OCI layer chains in the same local image store and
+host boot. Each import applies the remaining layers to a private FUSE view.
+The default split requires 512 MiB of compressed layers and at least one remaining
+layer. Set `PVISOR_OCI_PREFIX_LAYERS` to choose a positive prefix depth and
+`PVISOR_OCI_PREFIX_MAX_SUFFIX_LAYER_BYTES` to use ordinary extraction when
+any known suffix layer size reaches the given limit. Hosts without accessible
+FUSE and unsupported prefix hardlinks also use ordinary extraction.
+
 Published `Image` records require `CachedImage`, binding the pool location and
 immutable handle. There is no directory-root field or fallback. Private builds
 use a distinct backing type in `Image<BuildSource>`/`Instance<BuildSource>`;

@@ -1,7 +1,9 @@
-//! Admit a cold run from its verified import while a separate process publishes the image.
+//! Admit Linux cold runs from a leased, verified OCI import.
 use super::*;
 use std::io::{BufRead, BufReader};
 use std::os::unix::fs::DirBuilderExt;
+
+mod view;
 
 pub(super) const PREFIX: &str = "pvisor-import-v1:";
 
@@ -36,10 +38,9 @@ fn set_parent_death_signal(signal: libc::c_int) -> io::Result<()> {
 
 impl Store {
     /// Prepare an instance for immediate Linux/KVM execution. A verified cold
-    /// import stays pinned by the instance while a separate process publishes
-    /// the durable catalog. A publication failure leaves the instance usable.
-    /// A local hit or a caller with explicit registry credentials uses the
-    /// ordinary create path. No credentials are serialized to another process.
+    /// import stays pinned by the instance. A separate process publishes the
+    /// durable image unless the caller sets `PVISOR_OCI_EPHEMERAL=1` for a
+    /// one-shot run. One-shot instances require the import on the current boot.
     pub fn create_for_run(
         &self,
         config: Create,
@@ -49,12 +50,20 @@ impl Store {
             let _guard = self.lock()?;
             collect(self)?;
         }
-        if self.registry_credentials.is_some() {
+        let ephemeral = crate::env::cache::experiment_setting(
+            "PVISOR_OCI_EPHEMERAL",
+            crate::env::os("PVISOR_OCI_EPHEMERAL").as_deref(),
+        )?;
+        if self.registry_credentials.is_some() && !ephemeral {
             return self.create_with_progress(config, progress);
         }
         if let Some(image) = self.local_image(&config.image)? {
             return self.create_pinned_member(config, progress, None, Some(image));
         }
+        ensure!(
+            self.registry_credentials.is_none(),
+            "ephemeral cold run requires a local image or a registry accessible to the cold-run worker"
+        );
         let mut command = Command::new(std::env::current_exe()?);
         command
             .arg("--pvisor-internal-cold-run")
@@ -77,7 +86,7 @@ impl Store {
         let result = (|| {
             serde_json::to_writer(
                 child.stdin.take().context("missing cold run input")?,
-                &config,
+                &(&config, ephemeral),
             )?;
             let output = BufReader::new(child.stdout.take().context("missing cold run output")?);
             for line in output.lines() {
@@ -112,6 +121,10 @@ struct Binding {
     boot: String,
     device: u64,
     inode: u64,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    prefix_view: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    ephemeral: bool,
 }
 
 pub(super) fn open(store: &Store, image: &Image) -> anyhow::Result<ImageRoot> {
@@ -136,27 +149,39 @@ pub(super) fn open(store: &Store, image: &Image) -> anyhow::Result<ImageRoot> {
             && binding.platform == image.platform,
         "cold import identity mismatch"
     );
-    if binding.boot != fs::read_to_string("/proc/sys/kernel/random/boot_id")? {
+    let published = || -> anyhow::Result<ImageRoot> {
+        ensure!(
+            !binding.ephemeral,
+            "ephemeral OCI import expired after reboot or loss of its mounted view. Run the OCI image again"
+        );
         // The extracted files are only verified for this boot. Reopen the
         // exact durable revision after a host restart, even if the tag moved.
         let handle: String = serde_json::from_reader(
             File::open(dir.join("published.json"))
-                .context("cold image publication did not finish before reboot")?,
+                .context("cold image publication did not finish before reboot or view loss")?,
         )?;
         let mut cached = image.cache.clone();
         cached.handle = handle;
-        return store.open_cached(&cached, &image.digest, &image.platform);
+        store.open_cached(&cached, &image.digest, &image.platform)
+    };
+    if binding.boot != fs::read_to_string("/proc/sys/kernel/random/boot_id")? {
+        return published();
     }
     let root = dir
         .join("rootfs-v3/sha256")
         .join(crate::image::oci::digest_hex(&image.digest)?);
-    let meta = fs::symlink_metadata(&root)?;
-    ensure!(
-        meta.is_dir()
+    let accessible = || -> io::Result<bool> {
+        let meta = fs::symlink_metadata(&root)?;
+        Ok(meta.is_dir()
             && root.canonicalize()? == root
-            && (meta.dev(), meta.ino()) == (binding.device, binding.inode),
-        "cold import root changed"
-    );
+            && (meta.dev(), meta.ino()) == (binding.device, binding.inode))
+    };
+    if binding.prefix_view && !accessible().unwrap_or(false) {
+        return published();
+    }
+    if !binding.prefix_view {
+        ensure!(accessible()?, "cold import root changed");
+    }
     Ok(ImageRoot {
         root,
         _owner: None,
@@ -189,8 +214,10 @@ pub(super) fn collect(store: &Store) -> anyhow::Result<()> {
         ensure!(entry.file_type()?.is_dir(), "invalid cold import owner");
         let lease = File::open(entry.path())?;
         match FileExt::try_lock_exclusive(&lease) {
-            Ok(()) => crate::image::store::remove_import(&entry.path())?,
-            Err(e) if e.kind() == io::ErrorKind::WouldBlock => continue,
+            Ok(()) => view::remove_unmounted(&entry.path())?,
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                view::request_retirement(&entry.path())?;
+            }
             Err(e) => return Err(e.into()),
         }
     }
@@ -206,12 +233,14 @@ fn prepare(
     reference: &str,
     dir: &Path,
     id: &str,
+    ephemeral: bool,
+    prefix_view: &mut Option<crate::image::oci::PrefixView>,
 ) -> anyhow::Result<(Image, Option<PreparedPull>)> {
     if let Some(image) = store.local_image(reference)? {
         return Ok((image, None));
     }
     let mut write_error = Ok(());
-    let prepared = store.prepare_pull(
+    let mut prepared = store.prepare_pull(
         reference,
         &native_platform(),
         &mut |p| {
@@ -219,12 +248,24 @@ fn prepare(
                 write_error = event(Event::Progress(p));
             }
         },
-        Some(dir),
+        Some(ColdImport {
+            directory: dir,
+            ephemeral,
+        }),
     )?;
     write_error?;
-    if prepared.cached.is_some()
-        || !crate::image::cache::supports_extracted_run(&prepared.source, &prepared.image.digest)?
-    {
+    if prepared.cached.is_some() {
+        return Ok((store.publish_pull(prepared)?, None));
+    }
+    if !crate::image::cache::supports_extracted_run(
+        &prepared.source,
+        &prepared.image.digest,
+        prepared.prefix_view.as_ref(),
+    )? {
+        ensure!(
+            !ephemeral,
+            "image is ineligible for an ephemeral run from its extracted root"
+        );
         return Ok((store.publish_pull(prepared)?, None));
     }
     store
@@ -238,6 +279,8 @@ fn prepare(
         boot: fs::read_to_string("/proc/sys/kernel/random/boot_id")?,
         device: meta.dev(),
         inode: meta.ino(),
+        prefix_view: prepared.prefix_view.is_some(),
+        ephemeral,
     };
     crate::util::write_private_json(&dir.join("binding.json"), &binding)?;
     let image = prepared.image.clone().map_cache(|()| CachedImage {
@@ -246,6 +289,11 @@ fn prepare(
         repository: None,
         mirrors: vec![],
     });
+    *prefix_view = prepared.prefix_view.take();
+    if ephemeral {
+        fs::remove_dir_all(dir.join("blobs"))?;
+        return Ok((image, None));
+    }
     Ok((image, Some(prepared)))
 }
 
@@ -253,7 +301,7 @@ pub(super) fn worker(store: &Store) -> anyhow::Result<()> {
     let frontend = unsafe { libc::getppid() };
     let mut admitted = false;
     let result = (|| {
-        let config = serde_json::from_reader(io::stdin().lock())?;
+        let (config, ephemeral): (Create, bool) = serde_json::from_reader(io::stdin().lock())?;
         let id = uuid();
         let dir = imports(store).join(&id);
         let lease = {
@@ -265,9 +313,12 @@ pub(super) fn worker(store: &Store) -> anyhow::Result<()> {
             FileExt::lock_shared(&lease)?;
             lease
         };
+        view::prepare(&dir)?;
+        let mut prefix_view = None;
         let mut publication = None;
         let instance = store.create_resolving(config, None, |reference| {
-            let (image, prepared) = prepare(store, reference, &dir, &id)?;
+            let (image, prepared) =
+                prepare(store, reference, &dir, &id, ephemeral, &mut prefix_view)?;
             // Once admission can change the catalog, use the Created pipe to
             // roll back a lost handoff instead of dying during the write.
             if unsafe { libc::setsid() } < 0 {
@@ -283,7 +334,10 @@ pub(super) fn worker(store: &Store) -> anyhow::Result<()> {
             return Err(e);
         }
         admitted = true;
-        if let Some(prepared) = publication {
+        let published = (|| -> anyhow::Result<()> {
+            let Some(prepared) = publication else {
+                return Ok(());
+            };
             let result = store.publish_pull(prepared);
             if let Ok(published) = &result {
                 crate::util::write_private_json(
@@ -300,10 +354,13 @@ pub(super) fn worker(store: &Store) -> anyhow::Result<()> {
             if blobs.try_exists()? {
                 fs::remove_dir_all(blobs)?;
             }
-            result?;
+            result.map(|_| ())
+        })();
+        if let Some(view) = prefix_view {
+            view::serve_until_retired(store, &id, &dir, &lease, view)?;
         }
         drop(lease);
-        Ok(())
+        published
     })();
     if let Err(e) = &result
         && !admitted
@@ -379,6 +436,22 @@ mod tests {
         assert!(!reading.exists());
     }
     #[test]
+    fn retiring_an_import_signals_the_view_and_preserves_readers() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Store::open(tmp.path().join("docker")).unwrap();
+        let _guard = store.lock().unwrap();
+        let dir = imports(&store).join(uuid());
+        private_directory(&dir).unwrap();
+        File::create_new(dir.join("prefix-view-owner")).unwrap();
+        let reader = File::open(&dir).unwrap();
+        FileExt::lock_shared(&reader).unwrap();
+        collect(&store).unwrap();
+        assert!(dir.join("retire-prefix-view").is_file());
+        drop(reader);
+        collect(&store).unwrap();
+        assert!(!dir.exists());
+    }
+    #[test]
     fn cleanup_refuses_a_redirected_import_directory() {
         let tmp = tempfile::tempdir().unwrap();
         let store = Store::open(tmp.path().join("docker")).unwrap();
@@ -415,9 +488,12 @@ mod tests {
             boot: fs::read_to_string("/proc/sys/kernel/random/boot_id").unwrap(),
             device: meta.dev(),
             inode: meta.ino(),
+            prefix_view: false,
+            ephemeral: false,
         };
         let path = dir.join("binding.json");
         crate::util::write_private_json(&path, &binding).unwrap();
+        assert!(!fs::read_to_string(&path).unwrap().contains("ephemeral"));
         assert!(open(&store, &image).is_ok());
         binding.boot = "previous boot".into();
         crate::util::write_private_json(&path, &binding).unwrap();
@@ -427,6 +503,15 @@ mod tests {
                 .unwrap()
                 .to_string()
                 .contains("before reboot")
+        );
+        binding.ephemeral = true;
+        crate::util::write_private_json(&path, &binding).unwrap();
+        assert!(
+            open(&store, &image)
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("ephemeral OCI import expired")
         );
     }
 }

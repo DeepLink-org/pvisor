@@ -242,7 +242,7 @@ fn import_rejects_unrepresentable_xattrs_without_publishing_a_revision() {
     let pool = temporary.path().join("pool");
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     assert!(
-        super::super::supports_extracted_run(&source, &image.digest)
+        super::super::supports_extracted_run(&source, &image.digest, None)
             .unwrap_err()
             .to_string()
             .contains("does not support xattr user.required")

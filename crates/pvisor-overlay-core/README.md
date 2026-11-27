@@ -209,6 +209,8 @@ Shared helper contracts (exported at this unmigrated crate's existing root):
   to stored names so control state cannot be forged or enumerated;
   `validate_guest_xattr` keeps rejecting the reserved overlay spellings for
   adapters without translation (Host FUSE staging path).
+- `ResolvedMetadata::is_upper_opacity_hint` identifies the reserved opacity
+  xattr by value on a whiteout-marked upper directory for merged-view readers.
 
 Review reports logical modes, including permission-only override modes. Apply
 publishes logical UID/GID/mode through `copy_host_metadata` and strips both

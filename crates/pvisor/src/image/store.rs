@@ -319,7 +319,7 @@ impl LocalStore {
         self.lock_file(&key)
     }
 
-    fn lock_file(&self, key: &str) -> anyhow::Result<File> {
+    pub(super) fn lock_file(&self, key: &str) -> anyhow::Result<File> {
         let file = OpenOptions::new()
             .read(true)
             .write(true)
@@ -369,7 +369,7 @@ fn resolve_root(
         .context("cannot find user image data directory")
 }
 
-fn private_directory(path: &Path) -> anyhow::Result<()> {
+pub(super) fn private_directory(path: &Path) -> anyhow::Result<()> {
     match fs::DirBuilder::new()
         .recursive(true)
         .mode(0o700)

@@ -72,6 +72,16 @@ impl VmConfiguration for VmBuilder {
     fn filesystem(&mut self, tag: &str, path: &Path, shm_size: usize) -> io::Result<()> {
         self.inner.filesystem(tag, path, shm_size, false)
     }
+    fn filesystem_with_metadata_ttl(
+        &mut self,
+        tag: &str,
+        path: &Path,
+        shm_size: usize,
+        metadata_ttl: Duration,
+    ) -> io::Result<()> {
+        let _ = (tag, path, shm_size, metadata_ttl);
+        Err(unsupported("filesystem_with_metadata_ttl"))
+    }
     fn read_only_filesystem(&mut self, tag: &str, path: &Path) -> io::Result<()> {
         self.inner.filesystem(tag, path, 0, true)
     }
