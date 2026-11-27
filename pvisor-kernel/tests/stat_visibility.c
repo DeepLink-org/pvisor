@@ -18,8 +18,8 @@
 #include <time.h>
 #include <unistd.h>
 
-static void expect_stat(int dirfd, const char *path, int flags, off_t size,
-                        mode_t mode)
+static void expect_fstatat(int dirfd, const char *path, int flags, off_t size,
+                           mode_t mode)
 {
     struct stat st;
     long rc = syscall(SYS_newfstatat, dirfd, path, &st, flags);
@@ -30,6 +30,46 @@ static void expect_stat(int dirfd, const char *path, int flags, off_t size,
     fprintf(stderr, "unexpected stat of '%s' (flags=%#x, rc=%ld, errno=%d)\n",
             path, flags, rc, errno);
     exit(19);
+}
+
+static void expect_statx(int dirfd, const char *path, int flags, off_t size, mode_t mode)
+{
+    struct statx st;
+    const unsigned mask = STATX_TYPE | STATX_MODE | STATX_SIZE;
+    long rc = syscall(SYS_statx, dirfd, path, flags, mask, &st);
+    if (size < 0)
+        assert(rc == -1 && errno == ENOENT);
+    else
+        assert(rc == 0 && (st.stx_mask & mask) == mask &&
+               st.stx_size == (unsigned long long)size && st.stx_mode == mode);
+}
+
+static void expect_stat(int dirfd, const char *path, int flags, off_t size, mode_t mode)
+{
+    expect_statx(dirfd, path, flags, size, mode);
+    expect_fstatat(dirfd, path, flags, size, mode);
+}
+
+static int scan_metadata(const char *method)
+{
+    assert(chdir("/files") == 0);
+    int flags = AT_SYMLINK_NOFOLLOW;
+    if (!strcmp(method, "force"))
+        flags |= AT_STATX_FORCE_SYNC;
+    else if (!strcmp(method, "dont"))
+        flags |= AT_STATX_DONT_SYNC;
+    else
+        assert(!strcmp(method, "statx") || !strcmp(method, "fstatat"));
+    for (int i = 0; i < 512; ++i) {
+        char path[32];
+        snprintf(path, sizeof(path), "f%d", i);
+        if (!strcmp(method, "fstatat"))
+            expect_fstatat(AT_FDCWD, path, flags, i % 7, S_IFREG | 0644);
+        else
+            expect_statx(AT_FDCWD, path, flags, i % 7, S_IFREG | 0644);
+    }
+    puts("SCAN_OK");
+    return 0;
 }
 
 static void expect_read(int fd, off_t offset, const char *expected)
@@ -91,12 +131,12 @@ static int wide_directory(unsigned count)
     assert(clock_gettime(CLOCK_MONOTONIC, &start) == 0);
     for (unsigned i = 0; i < count; ++i) {
         snprintf(name, sizeof(name), "file%u", i);
-        expect_stat(AT_FDCWD, name, 0, 0, S_IFREG | 0644);
+        expect_fstatat(AT_FDCWD, name, 0, 0, S_IFREG | 0644);
     }
     assert(clock_gettime(CLOCK_MONOTONIC, &end) == 0);
     for (unsigned i = 0; i < count; ++i) {
         snprintf(name, sizeof(name), "absent%u", i);
-        expect_stat(AT_FDCWD, name, 0, -1, 0);
+        expect_fstatat(AT_FDCWD, name, 0, -1, 0);
     }
 
     assert(rename("held", "moved") == 0);
@@ -114,6 +154,16 @@ static int wide_directory(unsigned count)
     assert(event.wd == wd && (event.mask & IN_ATTRIB));
     struct statfs fs;
     assert(statfs("mount", &fs) == 0 && fs.f_type == TMPFS_MAGIC);
+    struct statx by_path, by_fd;
+    int mounted = open("mount", O_DIRECTORY | O_RDONLY);
+    assert(mounted >= 0);
+    unsigned mask = STATX_BASIC_STATS | STATX_MNT_ID;
+    assert(statx(AT_FDCWD, "mount", 0, mask, &by_path) == 0);
+    assert(statx(mounted, "", AT_EMPTY_PATH, mask, &by_fd) == 0);
+    assert((by_path.stx_mask & STATX_MNT_ID) && (by_path.stx_attributes & STATX_ATTR_MOUNT_ROOT));
+    assert(by_path.stx_mnt_id == by_fd.stx_mnt_id && by_path.stx_ino == by_fd.stx_ino &&
+           by_path.stx_dev_minor == by_fd.stx_dev_minor && by_path.stx_dev_major == by_fd.stx_dev_major);
+    assert(close(mounted) == 0);
     assert(umount("mount") == 0);
     assert(close(notify) == 0 && close(held) == 0);
     printf("WIDE_STAT_OK %u %lld\n", count,
@@ -123,6 +173,8 @@ static int wide_directory(unsigned count)
 
 int main(int argc, char **argv)
 {
+    if (argc == 3 && strcmp(argv[1], "--scan") == 0)
+        return scan_metadata(argv[2]);
     if (argc == 3 && strcmp(argv[1], "--wide-dir") == 0)
         return wide_directory(strtoul(argv[2], NULL, 10));
     if (argc == 2)
@@ -170,6 +222,7 @@ int main(int argc, char **argv)
     expect_stat(AT_FDCWD, "/link", 0, 4, S_IFREG | 0640);
 
     expect_read(reader, 0, "ok");
+    expect_statx(reader, "", AT_EMPTY_PATH, 2, S_IFREG | 0600);
     int fd = open("/subject", O_RDONLY);
     if (fd < 0)
         return 21;

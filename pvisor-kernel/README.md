@@ -149,10 +149,12 @@ Interrupt-controller EOI, queue notification suppression and FUSE replies
 are unchanged. This removes one synchronous MMIO access per handled fs IRQ,
 not one IRQ per write. It does not buffer writes or poll the CPU.
 
-Path-based `stat`, `lstat` and `newfstatat` can reuse the last component's
-`LOOKUP` attributes when that walk obtained them for the resolved inode.
-This does not extend TTLs or change directory search checks. `statx` and
-descriptor-only queries keep their existing paths.
+Path-based `stat`, `lstat`, `newfstatat` and default-sync `statx` can reuse
+attributes obtained for the final inode during that lookup. If none were
+obtained, or `statx` specifies `AT_STATX_FORCE_SYNC` or `AT_STATX_DONT_SYNC`,
+the kernel uses the resolved path's normal metadata operation. Mount IDs
+still come from the resolved mount. This does not extend TTLs, change
+directory search checks or change descriptor-only queries.
 
 In directories that revalidate positive entries, inserting a cached name
 above a soft target of 1,024 entries checks at most two candidates for
@@ -454,7 +456,9 @@ not thread scheduling.
 On a mutable root the wide-directory probe adds 3,072 positive and 3,072
 negative lookups and checks the increase in host `LOOKUP` requests. It also
 checks an open fd across rename, an inotify watch, and a nested tmpfs mount
-while the directory cache is under pressure.
+while the directory cache is under pressure. A separate 512-name scan compares
+`LOOKUP` and `GETATTR` counts for `newfstatat`, default `statx` and its two
+explicit synchronization modes at zero TTL.
 These are correctness checks, not timing gates.
 
 ### KVM memory acceptance
