@@ -43,20 +43,20 @@ SHA、制品哈希、逐次命令与日志、Criterion 样本及 `comparison/rep
 | `cpu-integer` | 800 万次有数据依赖的 xorshift32；检查最终值 |
 | `syscall-getpid` | 131,072 次直接 `SYS_getpid`，每次检查 PID，测进入和返回 guest 内核的成本 |
 | `ipc-pipe-roundtrip` | 单 vCPU 上两个进程经两条管道完成 4,096 次单字节请求/应答，每次验证应答；不含 fork、首次握手及 waitpid |
-| `ipc-wake-cross-vcpu` | 2 vCPU；两个进程分别绑定 guest CPU 0/1，经两条管道完成 4,096 次单字节请求/应答；覆盖跨 vCPU 唤醒路径 |
 | `memory-copy` | 在已触页的两个 16 MiB 缓冲区间复制 16 次；验证目标字节 |
 | `memory-map-touch` | 私有匿名映射 32 MiB，并对每个 4 KiB 页首次写一个字节；不含读回校验和解除映射 |
 | `disk-write-fsync` | 每次 4 KiB，顺序写 4 MiB 并 `fsync`；回读逐字节校验 |
 | `disk-warm-read` | 预热后按顺序 `pread` 完整 4 MiB，每次 4 KiB |
 | `disk-shuffled-read` | 相同文件和预热条件下，乱序 `pread` 所有 4 KiB 块 |
 | `disk-shuffled-overwrite-fsync` | 乱序 `pwrite` 已有 4 MiB 文件中的所有块，计入末尾一次 `fsync` |
-| `fs-metadata-tree` | 在 `/work` 上创建 32 个目录 × 32 个空文件，逐项 `stat`，再删除并检查不存在；覆盖 virtio-fs 根的多文件元数据路径 |
 | `tmpfs-write` | 每次 4 KiB，顺序写 4 MiB，不含 `fsync` |
 | `tmpfs-read` | 读取刚写入的 4 MiB 文件，每次 4 KiB，校验内容 |
 | `tmpfs-shuffled-read` | 在预热的 tmpfs 文件中乱序 `pread` 所有 4 KiB 块 |
 | `tmpfs-shuffled-overwrite` | 乱序覆写已有 tmpfs 文件中的所有 4 KiB 块，不含 `fsync` |
 | `tmpfs-metadata` | 1,024 轮创建、关闭、重命名、`stat` 和删除；检查最终路径不存在 |
 | `tmpfs-dirscan` | 对含 512 个文件的目录执行 16 次完整的打开、遍历、复制名称、关闭；逐轮在计时外校验名称集合 |
+| `ipc-wake-cross-vcpu` | 2 vCPU；两个进程分别绑定 guest CPU 0/1，经两条管道完成 4,096 次单字节请求/应答；覆盖跨 vCPU 唤醒路径 |
+| `fs-metadata-tree` | 在 `/work` 上创建 32 个目录 × 32 个空文件，逐项 `stat`，再删除并检查不存在；覆盖 virtio-fs 根的多文件元数据路径 |
 
 定位读写负载都先填满文件并完整读回一次；磁盘文件在预热前另做一次 `fsync`。
 乱序负载用相同的固定种子打乱块顺序，每个偏移恰好访问一次，最后检查长度与全部字节。

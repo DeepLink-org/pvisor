@@ -8,20 +8,20 @@ pub const METRICS: [&str; 17] = [
     "cpu-integer",
     "syscall-getpid",
     "ipc-pipe-roundtrip",
-    "ipc-wake-cross-vcpu",
     "memory-copy",
     "memory-map-touch",
     "disk-write-fsync",
     "disk-warm-read",
     "disk-shuffled-read",
     "disk-shuffled-overwrite-fsync",
-    "fs-metadata-tree",
     "tmpfs-write",
     "tmpfs-read",
     "tmpfs-shuffled-read",
     "tmpfs-shuffled-overwrite",
     "tmpfs-metadata",
     "tmpfs-dirscan",
+    "ipc-wake-cross-vcpu",
+    "fs-metadata-tree",
 ];
 
 pub fn cells() -> impl Iterator<Item = (&'static str, &'static str, String)> {
