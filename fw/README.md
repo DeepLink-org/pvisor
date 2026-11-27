@@ -379,7 +379,9 @@ sudo make install
 The generic x86-64 configuration targets pVisor's virtio-mmio guest. It omits
 ACPI/PCI devices, disk mapping, guest LSMs, audit, thermal management and other
 unused hardware. SMP, MP tables, KVM guest support, virtio, namespaces and
-seccomp remain enabled. The generic x86-64 configuration disables
+seccomp remain enabled. `CONFIG_X86_X2APIC=y` makes cross-vCPU IPIs one MSR
+write instead of the xAPIC ICR MMIO sequence; guests fall back to xAPIC when
+the hypervisor does not expose x2APIC. The generic x86-64 configuration disables
 `CONFIG_CPU_MITIGATIONS`, removing guest kernel CPU vulnerability mitigations.
 This reduces guest protection against speculative-execution and related attacks;
 host mitigations are unchanged and do not replace guest protections. These guest

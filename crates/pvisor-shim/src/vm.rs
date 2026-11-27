@@ -18,6 +18,7 @@ use pvisor_overlaynet::api::VmNetworkConfiguration;
 use pvisor_vm::api::{RamDedupControl, VmConfiguration, VmRuntime};
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
+use std::time::Duration;
 
 /// Guest mount point of the read-only payloads share (the virtio-fs tag
 /// matches); shared payload targets symlink into it.
@@ -206,10 +207,10 @@ pub(crate) fn boot_vm(
 
     let mut vm = pvisor_vm::api::VmBuilder::new(config.cpus, config.ram_mib)?;
 
-    // The rootfs is shared read-write, so it rides plain virtio-fs without a
-    // DAX window: writable DAX requires a lifecycle contract the shim does
-    // not provide.
-    vm.filesystem("/dev/root", &plan.rootfs, 0)?;
+    // The task rootfs is owned by this VM for its lifetime, so it opts into the
+    // virtiofsd --cache=auto metadata validity. Shared volumes below keep the
+    // default zero validity.
+    vm.filesystem_with_metadata_ttl("/dev/root", &plan.rootfs, 0, Duration::from_secs(1))?;
     // One read-only DAX share serves every VM's staged payloads from a
     // single host copy; targets inside the rootfs symlink into it.
     if let Some(injection) = plan.injections.iter().find(|i| i.share.is_some()) {

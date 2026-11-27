@@ -51,6 +51,29 @@ fn deferred_root_reserves_tags_without_running_the_factory() {
 }
 
 #[test]
+fn metadata_ttl_attachment_reuses_filesystem_validation() {
+    use std::io::ErrorKind;
+    use std::time::Duration;
+
+    let root = tempfile::tempdir().unwrap();
+    let mut vm = VmBuilder::new(1, 128).unwrap();
+    assert_eq!(
+        vm.filesystem_with_metadata_ttl("data", root.path(), 4096, Duration::from_secs(1))
+            .unwrap_err()
+            .kind(),
+        ErrorKind::Unsupported
+    );
+    vm.filesystem_with_metadata_ttl("data", root.path(), 0, Duration::from_secs(1))
+        .unwrap();
+    assert_eq!(
+        vm.filesystem_with_metadata_ttl("data", root.path(), 0, Duration::ZERO)
+            .unwrap_err()
+            .kind(),
+        ErrorKind::InvalidInput
+    );
+}
+
+#[test]
 fn managed_filesystem_validation_is_atomic_and_excludes_snapshots() {
     let root = tempfile::tempdir().unwrap();
     let mut builder = VmBuilder::new(1, 128).unwrap();

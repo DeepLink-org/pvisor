@@ -285,6 +285,23 @@ pub trait VmConfiguration: Sized {
     /// writes or already-open mappings across VMs require caller synchronization.
     /// Use `immutable_filesystem` for the supported read-only DAX contract.
     fn filesystem(&mut self, tag: &str, path: &Path, shm_size: usize) -> io::Result<()>;
+    /// Attach an ordinary writable passthrough directory with caller-declared
+    /// entry/attribute validity. `shm_size` must be zero; nonzero windows return
+    /// Unsupported before changing configuration. A nonzero `metadata_ttl` makes
+    /// the guest cache metadata replies for that long and is valid only when the
+    /// caller keeps the directory private to this VM for the attachment lifetime:
+    /// no other mount, VM or host writer may change its contents, metadata or
+    /// namespace. Data retains close-to-open caching and mmap support; already-open
+    /// mappings across VMs still require caller synchronization. Use `filesystem`
+    /// for shared trees and `immutable_filesystem` for the supported read-only DAX
+    /// contract. Windows/WHP returns Unsupported.
+    fn filesystem_with_metadata_ttl(
+        &mut self,
+        tag: &str,
+        path: &Path,
+        shm_size: usize,
+        metadata_ttl: Duration,
+    ) -> io::Result<()>;
     /// Attach a host-enforced read-only directory without DAX or an immutability
     /// promise. All guest mutation requests fail even if the guest remounts it.
     /// The caller retains the directory and its mount identity until teardown.
