@@ -17,6 +17,52 @@ fn fixture() -> (tempfile::TempDir, ImageStore, String) {
 }
 
 #[test]
+#[cfg(target_os = "linux")]
+fn prefix_view_ancestor_fds_preserve_read_access_and_no_follow_confinement() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let (_tmp, mut store, digest) = fixture();
+    let root = store.root.join("rootfs-v3/sha256").join(&digest[7..]);
+    let dir = root.join("dir");
+    fs::write(dir.join("leaf"), b"inside").unwrap();
+    let path_fd =
+        |fd: &File| unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_GETFL) } & libc::O_PATH != 0;
+    let (ordinary, _) = parent(&store, &digest, b"dir/leaf").unwrap();
+    assert!(!path_fd(&ordinary));
+    store.prefix_view_digest = Some(digest.clone());
+    let (anchor, name) = parent(&store, &digest, b"dir/leaf").unwrap();
+    let access = unsafe {
+        libc::syscall(
+            libc::SYS_faccessat2,
+            ordinary.as_raw_fd(),
+            c"".as_ptr(),
+            libc::R_OK,
+            libc::AT_EMPTY_PATH | libc::AT_EACCESS,
+        )
+    };
+    assert_eq!(path_fd(&anchor), access == 0);
+    let mut leaf = open_child(&anchor, OsStr::from_bytes(&name), false).unwrap();
+    let mut content = Vec::new();
+    assert!(!path_fd(&leaf));
+    leaf.read_to_end(&mut content).unwrap();
+    assert_eq!(content, b"inside");
+    assert!(parent(&store, &digest, b"escape/passwd").is_err());
+    assert!(parent(&store, &digest, b"dir/../hello").is_err());
+    assert_eq!(
+        &*directory(&store, &digest, b"dir").unwrap(),
+        &[b"leaf".to_vec()]
+    );
+
+    // With only search permission, O_PATH can resolve children while the previous
+    // O_RDONLY open rejects the directory. Both modes must enforce the latter.
+    fs::set_permissions(&dir, fs::Permissions::from_mode(0o111)).unwrap();
+    let optimized = parent(&store, &digest, b"dir/leaf").is_ok();
+    store.prefix_view_digest = None;
+    assert_eq!(optimized, parent(&store, &digest, b"dir/leaf").is_ok());
+    fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
+}
+
+#[test]
 #[cfg(target_os = "macos")]
 fn pool_attributes_ignore_only_host_provenance_without_mutating_source() {
     use pvisor_overlay_core::sys;

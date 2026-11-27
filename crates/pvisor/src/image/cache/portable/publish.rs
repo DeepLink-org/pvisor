@@ -59,7 +59,31 @@ fn visit_source(
 }
 
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-pub(crate) fn supports_extracted_run(store: &ImageStore, digest: &str) -> anyhow::Result<bool> {
+pub(crate) fn supports_extracted_run(
+    store: &ImageStore,
+    digest: &str,
+    prefix: Option<&crate::image::oci::PrefixView>,
+) -> anyhow::Result<bool> {
+    let Some(prefix) = prefix else {
+        return supports_merged_run(store, digest);
+    };
+    let start = std::time::Instant::now();
+    let qualified = prefix.backing_directories().is_ok_and(|(base, upper)| {
+        super::super::source::supports_private_view(&base, &upper, MAX_ENTRIES, MAX_SPANS)
+    });
+    let supported = qualified || supports_merged_run(store, digest)?;
+    crate::util::write_private_json(
+        &store.root.join("prefix-qualification.json"),
+        &serde_json::json!({
+            "physical_bounds_sufficient": qualified,
+            "elapsed_ms": start.elapsed().as_millis(),
+        }),
+    )?;
+    Ok(supported)
+}
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+fn supports_merged_run(store: &ImageStore, digest: &str) -> anyhow::Result<bool> {
     let mut spans = 0u64;
     visit_source(store, digest, |path, metadata| {
         let Response::Metadata {

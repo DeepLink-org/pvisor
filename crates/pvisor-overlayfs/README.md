@@ -144,6 +144,9 @@ The FUSE receive thread serves LOOKUP, GETATTR, ACCESS, STATFS, macOS GETXTIMES,
 READDIR/READDIRPLUS, FORGET and atime-only SETATTR through the shared state lock.
 Directory GETXATTR/LISTXATTR use that path too: macOS stat can probe parent
 FinderInfo before LOOKUP, and directories have no regular-file bytes to hash.
+Both xattr reads and listings hide Core's backing opacity hint on a recreated
+upper directory. Core identifies it by its reserved name, the value `y` and
+the accompanying upper whiteout marker. Lower attributes remain visible.
 Read-only OPEN, READ, OPENDIR, READLINK and regular-file xattr queries enter a
 separate bounded read worker. RELEASEDIR and readonly-handle FLUSH/RELEASE/
 LSEEK also use it: otherwise completing a read or closing a directory can still
