@@ -73,7 +73,13 @@ impl FileSystemDevice {
         let inline_metadata = negotiated_features
             .contains(FileSystemFeatures::PVISOR_INLINE_METADATA)
             && (request_queue_count == 1 || ostd::cpu::num_cpus() == 1);
-        let mode = if selected & crate::transport::FS_QUEUE_HANDOFF != 0 {
+        let mode = if selected & crate::transport::FS_AUTO_HANDOFF != 0 {
+            SubmitMode::Auto {
+                inline_metadata,
+                // Compare in TSC ticks; no clock conversion on the submit path.
+                gap_ticks: ostd::arch::tsc_freq() / 10_000,
+            }
+        } else if selected & crate::transport::FS_QUEUE_HANDOFF != 0 {
             SubmitMode::Handoff
         } else if inline_metadata {
             SubmitMode::InlineMetadata

@@ -25,9 +25,12 @@ use super::ExportTable;
 use super::{defs, defs::uapi};
 use crate::devices::virtio::passthrough::PermissionSemantics;
 use crate::devices::virtio::InterruptTransport;
+use crate::env::fs::QueueHandoff;
 use crate::vmm::vmm_config::fs::OverlaySource;
 
+const AUTO_HANDOFF_FEATURE: u64 = 1 << 20;
 const QUEUE_HANDOFF_FEATURE: u64 = 1 << 21;
+const HANDOFF_FEATURES: u64 = AUTO_HANDOFF_FEATURE | QUEUE_HANDOFF_FEATURE;
 const INLINE_METADATA_FEATURE: u64 = 1 << 23;
 const READ_INDEX_FEATURE: u64 = 1 << 24;
 
@@ -145,7 +148,7 @@ impl Fs {
         let mut avail_features = (1u64 << VIRTIO_F_VERSION_1) | (1u64 << VIRTIO_RING_F_EVENT_IDX);
         if cfg!(all(target_os = "linux", target_arch = "x86_64")) && profile.irq_read_ack {
             avail_features |= super::super::FS_IRQ_READ_ACK;
-            if profile.queue_handoff
+            if profile.queue_handoff != QueueHandoff::Off
                 && device_config.fs_id == "/dev/root"
                 && !device_config.read_only
                 && !device_config.managed
@@ -154,7 +157,11 @@ impl Fs {
                 && device_config.shared_dir.is_some()
                 && can_run_handoff_peers()
             {
-                avail_features |= QUEUE_HANDOFF_FEATURE;
+                avail_features |= match profile.queue_handoff {
+                    QueueHandoff::Auto => AUTO_HANDOFF_FEATURE,
+                    QueueHandoff::Forced => QUEUE_HANDOFF_FEATURE,
+                    QueueHandoff::Off => 0,
+                };
             }
         }
 
@@ -229,7 +236,7 @@ impl Fs {
         self.configure_request_queues(count)?;
         // Preserve the source's optional doorbells and vendor ID even before DRIVER_OK.
         // Never add a capability disallowed by this host; MMIO checks exact equality.
-        self.avail_features &= offered | !(super::super::FS_IRQ_READ_ACK | QUEUE_HANDOFF_FEATURE);
+        self.avail_features &= offered | !(super::super::FS_IRQ_READ_ACK | HANDOFF_FEATURES);
         if offered & INLINE_METADATA_FEATURE == 0 {
             self.inline_dispatch = None;
         }
@@ -238,22 +245,28 @@ impl Fs {
 
     pub fn set_shm_region(&mut self, shm_region: VirtioShmRegion) {
         self.shm_region = Some(shm_region);
-        self.avail_features &= !QUEUE_HANDOFF_FEATURE;
+        self.avail_features &= !HANDOFF_FEATURES;
     }
     pub(crate) fn set_managed(&mut self, managed: bool) {
         if let Some(cfg) = self.passthrough_cfg.as_mut() {
             cfg.managed = managed;
         }
         if managed {
-            self.avail_features &= !QUEUE_HANDOFF_FEATURE;
+            self.avail_features &= !HANDOFF_FEATURES;
         }
     }
 
-    fn queue_handoff_selected(&self) -> bool {
-        let required =
-            QUEUE_HANDOFF_FEATURE | super::super::FS_IRQ_READ_ACK | (1 << VIRTIO_F_VERSION_1);
-        self.avail_features & self.acked_features & required == required
-            && self.acked_features & (1 << VIRTIO_RING_F_EVENT_IDX) == 0
+    fn queue_handoff_selected(&self) -> QueueHandoff {
+        let selected = self.avail_features & self.acked_features;
+        let required = super::super::FS_IRQ_READ_ACK | (1 << VIRTIO_F_VERSION_1);
+        if selected & required != required || selected & (1 << VIRTIO_RING_F_EVENT_IDX) != 0 {
+            return QueueHandoff::Off;
+        }
+        match selected & HANDOFF_FEATURES {
+            AUTO_HANDOFF_FEATURE => QueueHandoff::Auto,
+            QUEUE_HANDOFF_FEATURE => QueueHandoff::Forced,
+            _ => QueueHandoff::Off,
+        }
     }
 
     pub fn set_export_table(&mut self, export_table: ExportTable) -> u64 {
@@ -284,7 +297,7 @@ impl VirtioDevice for Fs {
         {
             return None;
         }
-        if self.queue_handoff_selected() {
+        if self.queue_handoff_selected() == QueueHandoff::Forced {
             return Some(false);
         }
         self.inline_dispatch
@@ -444,7 +457,9 @@ impl VirtioDevice for Fs {
         let mut worker_queues = Vec::with_capacity(queues.len());
         let mut queue_evts = Vec::with_capacity(queues.len());
         for (index, mut dq) in queues.into_iter().enumerate() {
-            dq.queue.fs_handoff = index >= REQ_INDEX && self.queue_handoff_selected();
+            if index >= REQ_INDEX {
+                dq.queue.fs_handoff = self.queue_handoff_selected();
+            }
             worker_queues.push(dq.queue);
             queue_evts.push(dq.event);
         }
@@ -610,13 +625,19 @@ mod tests {
         );
     }
 
-    #[test]
-    fn queue_handoff_requires_a_host_offer_and_compatible_ack() {
+    #[rstest::rstest]
+    #[case::forced("1", QUEUE_HANDOFF_FEATURE, QueueHandoff::Forced)]
+    #[case::auto("auto", AUTO_HANDOFF_FEATURE, QueueHandoff::Auto)]
+    fn queue_handoff_requires_a_host_offer_and_compatible_ack(
+        #[case] setting: &str,
+        #[case] feature: u64,
+        #[case] mode: QueueHandoff,
+    ) {
         use crate::env::fs;
-        let private = QUEUE_HANDOFF_FEATURE | super::super::super::FS_IRQ_READ_ACK;
+        let private = feature | super::super::super::FS_IRQ_READ_ACK;
         let required = private | (1 << VIRTIO_F_VERSION_1);
         let profile = Arc::new(
-            fs::FsProfile::parse(|key| (key == fs::QUEUE_HANDOFF).then(|| "1".into())).unwrap(),
+            fs::FsProfile::parse(|key| (key == fs::QUEUE_HANDOFF).then(|| setting.into())).unwrap(),
         );
         let mut config = crate::vmm::vmm_config::fs::FsDeviceConfig {
             fs_id: "/dev/root".into(),
@@ -633,29 +654,30 @@ mod tests {
         };
         let mut dev = make(&config);
         let eligible = can_run_handoff_peers();
-        assert_eq!(dev.avail_features() & QUEUE_HANDOFF_FEATURE != 0, eligible);
+        assert_eq!(dev.avail_features() & HANDOFF_FEATURES, if eligible { feature } else { 0 });
         for ack in [
             0,
-            QUEUE_HANDOFF_FEATURE,
+            feature,
+            required ^ HANDOFF_FEATURES,
             private,
             required | (1 << VIRTIO_RING_F_EVENT_IDX),
         ] {
             dev.set_acked_features(ack);
-            assert!(!dev.queue_handoff_selected());
+            assert_eq!(dev.queue_handoff_selected(), QueueHandoff::Off);
         }
         dev.set_acked_features(required);
-        assert_eq!(dev.queue_handoff_selected(), eligible);
-        dev.restore_transport(1, !QUEUE_HANDOFF_FEATURE).unwrap();
-        assert!(!dev.queue_handoff_selected());
+        assert_eq!(dev.queue_handoff_selected(), if eligible { mode } else { QueueHandoff::Off });
+        dev.restore_transport(1, !feature).unwrap();
+        assert_eq!(dev.queue_handoff_selected(), QueueHandoff::Off);
 
         config.read_only = true;
-        assert_eq!(make(&config).avail_features() & QUEUE_HANDOFF_FEATURE, 0);
+        assert_eq!(make(&config).avail_features() & HANDOFF_FEATURES, 0);
         config.read_only = false;
         config.managed = true;
-        assert_eq!(make(&config).avail_features() & QUEUE_HANDOFF_FEATURE, 0);
+        assert_eq!(make(&config).avail_features() & HANDOFF_FEATURES, 0);
         config.managed = false;
         config.fs_id = "bind".into();
-        assert_eq!(make(&config).avail_features() & QUEUE_HANDOFF_FEATURE, 0);
+        assert_eq!(make(&config).avail_features() & HANDOFF_FEATURES, 0);
     }
 
     #[test]

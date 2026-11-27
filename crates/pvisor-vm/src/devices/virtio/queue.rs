@@ -15,6 +15,8 @@ use vm_memory::{
     VolatileMemoryError,
 };
 
+use crate::env::fs::QueueHandoff;
+
 /// Size of used ring header: flags (u16) + idx (u16)
 pub(crate) const VIRTQ_USED_RING_HEADER_SIZE: u64 = 4;
 
@@ -360,7 +362,7 @@ impl QueueSnapshot {
             next_avail: Wrapping(self.next_avail),
             next_used: Wrapping(self.next_used),
             event_idx_enabled: self.event_idx_enabled,
-            fs_handoff: false,
+            fs_handoff: QueueHandoff::Off,
             num_added: Wrapping(self.num_added),
         };
         if self.ready && !queue.valid_layout(mem) {
@@ -397,7 +399,7 @@ pub struct Queue {
     /// VIRTIO_F_RING_EVENT_IDX negotiated.
     event_idx_enabled: bool,
     /// Recomputed at filesystem activation, never restored from guest RAM.
-    pub(super) fs_handoff: bool,
+    pub(super) fs_handoff: QueueHandoff,
 
     /// The number of descriptor chains placed in the used ring via `add_used`
     /// since the last time `needs_notification` was called on the associated queue.
@@ -417,7 +419,7 @@ impl Queue {
             next_avail: Wrapping(0),
             next_used: Wrapping(0),
             event_idx_enabled: false,
-            fs_handoff: false,
+            fs_handoff: QueueHandoff::Off,
             num_added: Wrapping(0),
         }
     }
@@ -694,7 +696,7 @@ impl Queue {
         // Complete all the writes in add_used() before reading the event.
         fence(Ordering::SeqCst);
 
-        if self.fs_handoff {
+        if self.fs_handoff != QueueHandoff::Off {
             debug_assert!(!self.event_idx_enabled);
             let _lease = self.memory_access(mem);
             let flags: u16 = mem

@@ -114,6 +114,14 @@ On eligible Linux x86_64/KVM shares it defaults on for single-vCPU guests
 or a single ordinary queue. SMP with multiple queues keeps parallel workers.
 Set `PVISOR_VM_FS_INLINE_METADATA=0` to disable it.
 
+On eligible single-vCPU mutable passthrough roots, `PVISOR_VM_FS_QUEUE_HANDOFF`
+defaults to `auto`. A request after an idle gap still uses inline metadata
+when available, or ordinary worker notification. Closely spaced requests on
+the same queue can instead poll the used ring briefly; repeated misses back
+off. `0` disables handoff; `1` forces the bounded polling policy, not hardware
+eligibility. Neither mode buffers writes across syscalls. See the
+[transport contract and measurements](../benchmark/evidence/native-queue-handoff.md).
+
 **IRQ read-to-ack.** For a Rust native guest on Linux x86_64/KVM, the VMM
 offers private virtio-fs feature bit 22 under the MMIO vendor ID `pVis`
 (little endian). Set `PVISOR_VM_FS_IRQ_READ_ACK=0` to disable it.

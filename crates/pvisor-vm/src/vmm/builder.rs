@@ -2224,8 +2224,9 @@ fn attach_fs_devices(
     let mut profile = crate::env::fs::FsProfile::from_env()
         .map_err(|error| StartMicrovmError::CreateFsDevice(error.to_string()))?;
     // Do not change the transport offer of Linux guests or their snapshots.
-    profile.queue_handoff &=
-        resources.rust_native_kernel && resources.vm_config().vcpu_count == Some(1);
+    if !resources.rust_native_kernel || resources.vm_config().vcpu_count != Some(1) {
+        profile.queue_handoff = crate::env::fs::QueueHandoff::Off;
+    }
     let profile = Arc::new(profile);
     for (i, config) in resources.fs.iter().enumerate() {
         let fs = Arc::new(Mutex::new(

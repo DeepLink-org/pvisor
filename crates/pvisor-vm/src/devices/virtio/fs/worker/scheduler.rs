@@ -1,6 +1,7 @@
 //! Queue-local execution with stealing directly from a blocked owner's ring.
 //! Backend I/O runs outside the ring mutex.
 use super::*;
+use crate::env::fs::QueueHandoff;
 use std::sync::atomic::AtomicU64;
 use std::sync::{Mutex, Weak};
 use std::time::{Duration, Instant};
@@ -348,12 +349,19 @@ impl Runtime {
         ring.add_used(&self.execution.mem, request.index, len as u32)
             .unwrap();
         if notify {
-            if ring.needs_notification(&self.execution.mem).unwrap() {
+            let irq = ring.needs_notification(&self.execution.mem).unwrap();
+            if irq {
                 self.interrupt.signal_used_queue();
-            } else if ring.fs_handoff {
+            } else if ring.fs_handoff != QueueHandoff::Off {
                 self.profile.add("handoff_irq_suppressed", 1);
             }
-            if ring.fs_handoff
+            // In auto, a suppressed IRQ is the guest's per-request polling hint.
+            let poll = match ring.fs_handoff {
+                QueueHandoff::Off => false,
+                QueueHandoff::Auto => !irq,
+                QueueHandoff::Forced => true,
+            };
+            if poll
                 && matches!(request.header.opcode,
                 x if x == Opcode::Getattr as u32 || x == Opcode::Lookup as u32 || x == Opcode::Write as u32)
             {
@@ -385,6 +393,13 @@ pub(super) fn serve(
     inline_dispatch: Option<&InlineDispatch>,
 ) -> Vec<Queue> {
     assert!(queues.len() > REQ_INDEX && queues.len() == events.len());
+    for queue in queues.iter().filter(|q| q.ready) {
+        match queue.fs_handoff {
+            QueueHandoff::Auto => profile.add("handoff_auto_queues", 1),
+            QueueHandoff::Forced => profile.add("handoff_forced_queues", 1),
+            QueueHandoff::Off => {}
+        }
+    }
     let runtime = Arc::new(Runtime {
         epoch: Instant::now(),
         lanes: queues
@@ -698,15 +713,17 @@ mod tests {
         }
     }
 
-    #[test]
-    fn queue_handoff_suppresses_only_until_guest_rearms() {
+    #[rstest::rstest]
+    #[case::forced(QueueHandoff::Forced)]
+    #[case::auto(QueueHandoff::Auto)]
+    fn queue_handoff_suppresses_only_until_guest_rearms(#[case] mode: QueueHandoff) {
         let mem = GuestMemoryMmap::from_ranges(&[(GuestAddress(0), 0x10000)]).unwrap();
         let high = VirtQueue::new(GuestAddress(0), &mem, 8);
         let first = VirtQueue::new(GuestAddress(0x400), &mem, 8);
         fill(&first, &mem, 0x4000, &[Opcode::Getattr, Opcode::Write]);
         first.avail.idx.set(1);
         let mut ring = first.create_queue();
-        ring.fs_handoff = true;
+        ring.fs_handoff = mode;
         let rt = runtime(mem.clone(), vec![high.create_queue(), ring]);
         let request = rt.next(1, &mut 0).unwrap();
         first.avail.flags.set(1);
@@ -723,6 +740,12 @@ mod tests {
         rt.publish(second, 24);
         assert_ne!(rt.interrupt.status().load(Ordering::Acquire), 0);
         assert_eq!(first.used.idx.get(), 2);
+        let counts = rt.profile.report().unwrap().measurements;
+        assert_eq!(counts["handoff_hit"].units, 1);
+        assert_eq!(
+            counts.get("handoff_miss").map_or(0, |m| m.units),
+            u64::from(mode == QueueHandoff::Forced),
+        );
         rt.lanes[1].busy.store(false, Ordering::Release);
         assert!(rt.next(1, &mut 0).is_none());
         assert_eq!(first.used.flags.get(), 0);

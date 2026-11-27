@@ -1465,16 +1465,18 @@ Linux 固件也在 `pVis` MMIO 设备上协商 bit 23。只在一个在线 guest
 见[固件验证步骤](../../fw/README.md#linux-virtio-fs-notifications)和
 [Rust native 工程对照](../../benchmark/evidence/native-guest-file-io.md)。
 
-**实验：单 vCPU split-ring handoff。** `PVISOR_VM_FS_QUEUE_HANDOFF=1` 仅请求
-协商，默认关闭，不改变门禁。Linux x86_64/KVM 的可写、非托管、非 DAX
+**单 vCPU split-ring handoff。** `PVISOR_VM_FS_QUEUE_HANDOFF` 默认为 `auto`，
+`0` 关闭，`1` 在符合条件时强制使用原来的有界轮询。Linux x86_64/KVM 的可写、非托管、非 DAX
 passthrough `/dev/root` 在启用 read-to-ack、可用并行度大于一且初始 CPU
-亲和掩码包含至少两个可识别的不同物理核心时才提供私有 bit 21。仅允许同核的
+亲和掩码包含至少两个可识别的不同物理核心时才提供私有 bit 20（auto）或 21（强制）。仅允许同核的
 SMT 线程或无法确认核心分组时，保留普通通知；宿主不预留核心或跟踪后续绑核。
-Rust native 单 vCPU 在现代 `pVis` MMIO 上选择；两端须选 bit 21、22 和
-`VERSION_1`，不选 `EVENT_IDX`。未协商者沿用原路径。该模式不注册新的 MMIO
-处理逻辑，不在 vCPU 线程执行文件 I/O，不更改凭据、缓存期限或 FUSE 回复。
-宿主 worker 服务请求后短暂读取 avail.idx；guest 短暂检查 used.idx，然后
-恢复普通 IRQ。它用 CPU 和 IRQ 延迟换取较少的门铃与中断，不是默认性能保证。
+Rust native 单 vCPU 在现代 `pVis` MMIO 上选择；两端还须选 bit 22 和
+`VERSION_1`，不选 `EVENT_IDX`。不识别 bit 20 的 guest 不会误入强制模式。
+`auto` 在空闲后的首个请求走原路径（包括已协商的内联 metadata）。同队列上相邻的
+`LOOKUP`、`GETATTR` 或 `WRITE` 提交间隔不超过 100 µs，且没有其他在途请求时，
+guest 才短暂轮询；宿主 worker 仅在该完成实际抑制 IRQ 时轮询下一项。连续两次
+未等到完成，接下来八个相邻请求退回普通路径；空闲间隔重置历史。
+写确认、缓存期限和 `fsync` 不变；时间窗口不是对宿主调度延迟的保证。
 见[边界与复现](../../benchmark/evidence/native-queue-handoff.md)。
 
 OverlayFs 的普通 READ/不变更权限的 WRITE/FLUSH/FSYNC 直接在 handle map 和

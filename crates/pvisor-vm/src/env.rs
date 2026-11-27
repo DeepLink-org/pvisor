@@ -33,13 +33,34 @@ pub(crate) mod fs {
     pub(crate) const DEFAULT_DIRECTORY_CACHE_CAPACITY: usize = 256;
     pub(crate) const MAX_DIRECTORY_CACHE_CAPACITY: usize = 4096;
 
+    #[derive(Debug, Clone, Copy, Eq, PartialEq)]
+    pub(crate) enum QueueHandoff {
+        Off,
+        Auto,
+        Forced,
+    }
+
+    impl QueueHandoff {
+        fn parse(setting: Option<&std::ffi::OsStr>) -> io::Result<Self> {
+            match setting.map(OsStrExt::as_bytes) {
+                None | Some(b"auto") => Ok(Self::Auto),
+                Some(b"0") => Ok(Self::Off),
+                Some(b"1") => Ok(Self::Forced),
+                _ => Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("{QUEUE_HANDOFF} must be auto, 0 or 1"),
+                )),
+            }
+        }
+    }
+
     /// Captured once before publishing any device. Shared-open errors are deferred
     /// until overlay construction; other backends do not consume that setting.
     pub(crate) struct FsProfile {
         pub(crate) workers: usize,
         pub(crate) inline_metadata: bool,
         pub(crate) irq_read_ack: bool,
-        pub(crate) queue_handoff: bool,
+        pub(crate) queue_handoff: QueueHandoff,
         pub(crate) rngk_readindex: bool,
         pub(crate) root_data_cache: bool,
         pub(crate) guest_cache: bool,
@@ -86,7 +107,7 @@ pub(crate) mod fs {
                 workers,
                 inline_metadata: boolean(get(INLINE_METADATA).as_deref(), INLINE_METADATA, true)?,
                 irq_read_ack: boolean(get(IRQ_READ_ACK).as_deref(), IRQ_READ_ACK, true)?,
-                queue_handoff: boolean(get(QUEUE_HANDOFF).as_deref(), QUEUE_HANDOFF, false)?,
+                queue_handoff: QueueHandoff::parse(get(QUEUE_HANDOFF).as_deref())?,
                 rngk_readindex: boolean(get(RNGK_READINDEX).as_deref(), RNGK_READINDEX, true)?,
                 root_data_cache: root_data_cache_enabled("/dev/root", cache_setting.as_deref())?,
                 guest_cache: guest_cache_enabled(get(GUEST_CACHE).as_deref())?,

@@ -244,7 +244,11 @@ impl VirtioTransport for VirtioMmioTransport {
         {
             FS_IRQ_READ_ACK
                 | if ostd::cpu::num_cpus() == 1 {
-                    offered & crate::transport::FS_QUEUE_HANDOFF
+                    if offered & crate::transport::FS_AUTO_HANDOFF != 0 {
+                        crate::transport::FS_AUTO_HANDOFF
+                    } else {
+                        offered & crate::transport::FS_QUEUE_HANDOFF
+                    }
                 } else {
                     0
                 }

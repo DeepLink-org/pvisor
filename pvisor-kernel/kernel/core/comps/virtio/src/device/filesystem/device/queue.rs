@@ -36,6 +36,42 @@ pub(super) enum SubmitMode {
     Interrupt,
     InlineMetadata,
     Handoff,
+    Auto {
+        inline_metadata: bool,
+        gap_ticks: u64,
+    },
+}
+
+#[derive(Default)]
+struct Burst {
+    previous: Option<u64>,
+    missed_once: bool,
+    skip: u8,
+}
+
+impl Burst {
+    fn should_poll(&mut self, now: u64, gap: u64) -> bool {
+        let previous = self.previous.replace(now);
+        if !previous.is_some_and(|t| now.wrapping_sub(t) <= gap) {
+            self.missed_once = false;
+            self.skip = 0;
+            return false;
+        }
+        if self.skip != 0 {
+            self.skip -= 1;
+            return false;
+        }
+        true
+    }
+
+    fn record(&mut self, completed: bool) {
+        if !completed && self.missed_once {
+            self.skip = 8;
+            self.missed_once = false;
+        } else {
+            self.missed_once = !completed;
+        }
+    }
 }
 
 /// A virtio-fs request queue and its in-flight request state.
@@ -50,6 +86,7 @@ struct FsRequestQueueInner {
     queue: VirtQueue,
     in_flight_requests: SlotVec<FuseRequest>,
     pending_completions: Vec<CompletedFuseRequest>,
+    burst: Burst,
 }
 
 struct CompletedFuseRequest {
@@ -65,6 +102,7 @@ impl FsRequestQueue {
                 queue,
                 in_flight_requests: SlotVec::new(),
                 pending_completions: Vec::new(),
+                burst: Burst::default(),
             }),
             wait_queue: WaitQueue::new(),
             taskless: Once::new(),
@@ -113,10 +151,25 @@ impl FsRequestQueue {
 
             let alone = inner.in_flight_requests.is_empty();
             let metadata = matches!(opcode, FuseOpcode::Lookup | FuseOpcode::Getattr);
-            let inline = alone && self.mode == SubmitMode::InlineMetadata && metadata && !deferred;
-            let poll = alone
-                && self.mode == SubmitMode::Handoff
-                && (metadata || opcode == FuseOpcode::Write);
+            let eligible = alone && (metadata || opcode == FuseOpcode::Write);
+            let (inline_metadata, poll) = match self.mode {
+                SubmitMode::Interrupt => (false, false),
+                SubmitMode::InlineMetadata => (true, false),
+                SubmitMode::Handoff => (false, eligible),
+                SubmitMode::Auto {
+                    inline_metadata,
+                    gap_ticks,
+                } => {
+                    let poll = if eligible {
+                        inner.burst.should_poll(ostd::arch::read_tsc(), gap_ticks)
+                    } else {
+                        inner.burst = Burst::default();
+                        false
+                    };
+                    (inline_metadata && !poll, poll)
+                }
+            };
+            let inline = alone && inline_metadata && metadata && !deferred;
             if poll {
                 inner.queue.disable_callback();
             }
@@ -157,7 +210,11 @@ impl FsRequestQueue {
                 // Arm first; pop_used/can_pop fences before rereading used.idx.
                 inner.queue.enable_callback();
             }
-            Some(inner.queue.pop_used().ok().map(|(used, len)| {
+            let used = inner.queue.pop_used().ok();
+            if poll && matches!(self.mode, SubmitMode::Auto { .. }) {
+                inner.burst.record(used.is_some());
+            }
+            Some(used.map(|(used, len)| {
                 debug_assert_eq!(used, token);
                 CompletedFuseRequest {
                     request: inner.in_flight_requests.remove(used as usize).unwrap(),
@@ -203,5 +260,33 @@ impl FsRequestQueue {
     /// Schedules deferred completion processing for this queue.
     pub(super) fn schedule_completion_taskless(&self) {
         self.taskless.get().unwrap().schedule();
+    }
+}
+
+#[cfg(ktest)]
+mod tests {
+    use super::Burst;
+    use ostd::prelude::ktest;
+
+    #[ktest]
+    fn auto_starts_cold_and_backs_off_after_two_misses() {
+        let mut b = Burst::default();
+        assert!(!b.should_poll(0, 100));
+        assert!(b.should_poll(100, 100));
+        b.record(false);
+        assert!(b.should_poll(101, 100));
+        b.record(true);
+        assert!(b.should_poll(102, 100));
+        b.record(false);
+        assert!(b.should_poll(103, 100));
+        b.record(false);
+        for t in 104..112 {
+            assert!(!b.should_poll(t, 100));
+        }
+        assert!(b.should_poll(112, 100));
+        b.record(true);
+        assert!(!b.should_poll(213, 100));
+        assert!(!b.should_poll(314, 100));
+        assert!(b.should_poll(315, 100));
     }
 }
