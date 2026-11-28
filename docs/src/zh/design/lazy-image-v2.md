@@ -76,7 +76,7 @@ Docker pull/build、无 daemon 的 spawn 和 cache server 都写同一个 `<imag
 
 VM direct lower 与 host FUSE 共用读取器。VM 使用私有元数据／稀疏文件投影；普通 guest READ 从后端读取，copy-up、完整导出与校验可能读取整个文件。guest mmap 继续走 virtio-fs 和 guest page cache，没有新增 DAX。远程 VM 适配器原有的已校验文件块缓存仍可能持久保存原始块，应与本地池区分。镜像首次准备仍须下载、应用 OCI 层；本格式不实现 registry layer 的远端按需解压。
 
-任意 xattr、ACL 与安全标签未纳入格式。本地池导入拒绝无法表示的 xattr；直接发布也不提供 xattr／ACL 保真合同。保留现有 ownership/mode override；macOS 本地池只忽略宿主 provenance 属性。协议 1／2、连接池与 reader prefetch 的开关属于传输层，与存储格式 V1 的退役无关。
+任意 xattr、ACL 与安全标签未纳入格式。本地池导入拒绝无法表示的 xattr 与设备节点；直接发布也不提供 xattr／ACL 保真合同。保留现有 ownership/mode override；macOS 本地池只忽略宿主 provenance 属性。协议 1／2、连接池与 reader prefetch 的开关属于传输层，与存储格式 V1 的退役无关。
 
 V1 handle／format／pool marker 会返回明确错误，不原地改写，也不自动删除旧目录。新 pull 可以从 OCI 构建 V2，已经固定旧 handle 的容器需要重新创建。旧目录型实例仍按其原有路径处理。RAFS 不与此格式二进制兼容；标准 seekable framing 也不意味着可以直接挂载为 Nydus 镜像。
 

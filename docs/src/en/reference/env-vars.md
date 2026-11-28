@@ -17,8 +17,9 @@ The task prints its own Run ID. For network credentials, use `--pass-env` as des
 | `PVISOR_IMAGE_STORE` | Common local image directory; explicit Session/cache image-store options win; see [path precedence](shared-image-cache.md#local-image-store) |
 | `PVISOR_IMAGE_BLOB_TARGET_MIB` | Host writer's Image Pack pool target: `32` (default for new pools) or `64`; see [pool policy](../design/experimental/image-pack/index.md#packing) |
 | `PVISOR_GCS_ENDPOINT` | Host-side GCS API endpoint override for OpenDAL; HTTPS required outside loopback. Repositories still use `gs://BUCKET/PREFIX` |
+| `PVISOR_OCI_INSECURE_BLOB_HOSTS` | Comma-separated `host[:port]` allowlist for plain-HTTP OCI blob redirects; empty denies every plaintext redirect. HTTPS redirects need no entry |
 | `PVISOR_CACHE_SERVER` | Shared cache endpoint; `off` selects the local V2 pool; unset probes the per-user Unix socket, then uses the local pool if absent |
-| `PVISOR_CACHE_TOKEN` | Shared secret for TCP cache endpoints; do not pass it to agents with `--pass-env` |
+| `PVISOR_CACHE_TOKEN` | Shared secret for TCP cache endpoints, at least 16 bytes; do not pass it to agents with `--pass-env` |
 | `PVISOR_BIN` | Obsolete Python-launcher override; installed native scripts do not read it. Invoke the binary path directly or select it through `PATH` |
 | `XDG_CONFIG_HOME` | User-policy root, default `~/.config` |
 | `HOME` / `PATH` | Host storage/tool-discovery/projection inputs; safe mode redirects HOME |

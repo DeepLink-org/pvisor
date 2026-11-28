@@ -1,8 +1,10 @@
 # PolicyVisor (pVisor)
 
-OCI registry requests and token realms require HTTPS. A blob download may
-follow a plain-HTTP redirect to a different host and port; the HTTP client
-drops credentials on cross-host redirects and the bytes are digest-verified.
+OCI registry requests and token realms require HTTPS. A plain-HTTP blob
+redirect is denied unless the target host and optional port are listed in
+`PVISOR_OCI_INSECURE_BLOB_HOSTS`; the redirect must also leave the original
+endpoint, the HTTP client drops credentials on cross-host redirects and the
+bytes are digest-verified. An empty allowlist denies every plaintext redirect.
 Unsafe token realms are rejected before attaching credentials or dispatching a
 request.
 
@@ -1805,6 +1807,8 @@ fallback; authentication, protocol and explicitly configured source failures
 remain errors. `PVISOR_CACHE_SERVER=off` selects local storage.
 Setting a cache token or read-only override also makes discovery
 explicit; a non-Unicode token is an error rather than an ignored credential.
+TCP endpoints require a literal loopback address and `PVISOR_CACHE_TOKEN` of at
+least 16 bytes; there is no built-in TLS, so remote access uses an SSH tunnel.
 Attachment uses capabilities derived from the validated source, without
 reinterpreting address prefixes. Capability parsing starts no transport workers:
 the Linux runner creates the host-network bridge before constructing its final

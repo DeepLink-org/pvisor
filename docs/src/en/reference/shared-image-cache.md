@@ -167,7 +167,7 @@ Each backend retains validated content in a per-file memory cache capped at 64 M
 
 Direct backends stay attached until VM completion, then release their private projections; host FUSE mounts remain until their users exit. Cached blocks remain. Cached content survives service failure, but missing blocks return I/O errors. Digest/endpoint stay fixed for a Run with no mid-run registry fallback. Cache endpoint/token are removed from implicitly inherited guest environment.
 
-Before responding to `prepare`, the server fully prepares an uncached image and generates indexes/content objects in a temporary import directory, removed after success or an ordinary error. This is client-side lazy loading, not lazy OCI layer extraction on the server. FUSE adapters and existing virtio-fs workers handle requests synchronously, so a miss can delay unrelated filesystem requests. There is no explicit vCPU pause. Disk quotas/eviction, original OCI xattrs and asynchronous virtio-fs completion are outside this implementation.
+Before responding to `prepare`, the server fully prepares an uncached image and generates indexes/content objects in a temporary import directory, removed after success or an ordinary error. This is client-side lazy loading, not lazy OCI layer extraction on the server. FUSE adapters and existing virtio-fs workers handle requests synchronously, so a miss can delay unrelated filesystem requests. There is no explicit vCPU pause. Disk quotas/eviction and asynchronous virtio-fs completion are outside this implementation; OCI layers containing xattrs or device nodes are rejected at import rather than silently losing metadata.
 
 The blocking Rust client uses its selected backend directly. Automatic local fallback belongs to VM source selection.
 
@@ -190,7 +190,7 @@ cargo run --locked -p pvisor --example cache_probe -- \
   '{"op":"prepare","image":"alpine:3.20","architecture":"amd64"}'
 ```
 
-TCP requires a nonempty token and literal loopback IP endpoints. There is no built-in TLS; use SSH encryption. Tokens grant all cache operations, including preparing new images. This is a trusted shared service rather than a public multitenant API. Unix clients must also supply tokens when configured on the server.
+TCP requires a token of at least 16 bytes and literal loopback IP endpoints. There is no built-in TLS; use SSH encryption. Tokens grant all cache operations, including preparing new images. This is a trusted shared service rather than a public multitenant API. Unix clients must also supply tokens when configured on the server.
 
 ## Wire format
 

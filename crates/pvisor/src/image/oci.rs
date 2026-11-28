@@ -34,10 +34,53 @@ const MANIFEST_ACCEPT: &str = concat!(
     "application/vnd.docker.distribution.manifest.v2+json"
 );
 const MAX_REDIRECTS: usize = 12;
+/// Explicit host[:port] allowlist for plaintext blob redirects. Empty denies
+/// every HTTP redirect; HTTPS redirects do not need an entry.
+const INSECURE_BLOB_HOSTS_ENV: &str = "PVISOR_OCI_INSECURE_BLOB_HOSTS";
+
+fn insecure_blob_hosts() -> Vec<String> {
+    std::env::var(INSECURE_BLOB_HOSTS_ENV)
+        .map(|value| {
+            value
+                .split(',')
+                .map(str::trim)
+                .filter(|entry| !entry.is_empty())
+                .map(str::to_ascii_lowercase)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn host_entry_matches(entry: &str, host: &str, port: Option<u16>) -> bool {
+    let entry = entry.trim().trim_end_matches('/').to_ascii_lowercase();
+    let host = host.to_ascii_lowercase();
+    if let Some(rest) = entry.strip_prefix('[') {
+        let Some((entry_host, suffix)) = rest.split_once(']') else {
+            return false;
+        };
+        let entry_port = match suffix {
+            "" => None,
+            suffix => match suffix
+                .strip_prefix(':')
+                .and_then(|port| port.parse::<u16>().ok())
+            {
+                Some(port) => Some(port),
+                None => return false,
+            },
+        };
+        return entry_host == host && entry_port.is_none_or(|entry_port| Some(entry_port) == port);
+    }
+    if let Some((entry_host, entry_port)) = entry.rsplit_once(':')
+        && !entry_host.is_empty()
+    {
+        return entry_host == host && entry_port.parse::<u16>().ok() == port;
+    }
+    entry == host
+}
 
 /// Build the registry HTTP client. `relaxed_redirects` selects the blob-only
 /// client; every other request keeps the strict HTTPS-only client.
-fn registry_client(relaxed_redirects: bool) -> anyhow::Result<Client> {
+fn registry_client(relaxed_redirects: bool, insecure_hosts: &[String]) -> anyhow::Result<Client> {
     let mut client = Client::builder()
         .connect_timeout(Duration::from_secs(10))
         // Blocking reqwest bounds response-body reads as well as requests;
@@ -45,7 +88,7 @@ fn registry_client(relaxed_redirects: bool) -> anyhow::Result<Client> {
         .timeout(Duration::from_secs(30))
         .user_agent(concat!("pvisor/", env!("CARGO_PKG_VERSION")));
     client = if relaxed_redirects {
-        client.redirect(registry_redirect_policy())
+        client.redirect(registry_redirect_policy(insecure_hosts.to_vec()))
     } else {
         client.https_only(true)
     };
@@ -66,36 +109,51 @@ fn registry_client(relaxed_redirects: bool) -> anyhow::Result<Client> {
 
 /// Blob storage backends may redirect downloads to a plain-HTTP endpoint.
 /// Only blob downloads may leave HTTPS, the target must use a different host
-/// or port so the HTTP client drops credentials, and the bytes remain
-/// digest-verified. Every other redirect must stay on HTTPS.
-fn registry_redirect_policy() -> reqwest::redirect::Policy {
-    reqwest::redirect::Policy::custom(|attempt| {
+/// or port so the HTTP client drops credentials, the target must be in the
+/// explicit allowlist, and the bytes remain digest-verified. Every other
+/// redirect must stay on HTTPS.
+fn registry_redirect_policy(insecure_hosts: Vec<String>) -> reqwest::redirect::Policy {
+    reqwest::redirect::Policy::custom(move |attempt| {
         let hops = attempt.previous().len().saturating_sub(1);
         let allowed = attempt.previous().first().is_some_and(|origin| {
-            hops < MAX_REDIRECTS && redirect_target_allowed(origin, attempt.url())
+            hops < MAX_REDIRECTS && redirect_target_allowed(origin, attempt.url(), &insecure_hosts)
         });
         if allowed {
             if attempt.url().scheme() == "http" {
                 tracing::warn!(
                     host = attempt.url().host_str().unwrap_or(""),
-                    "OCI registry blob redirect uses plain HTTP"
+                    "OCI registry blob redirect uses allowlisted plain HTTP"
                 );
             }
             attempt.follow()
+        } else if attempt.url().scheme() == "http" {
+            attempt.error(
+                "OCI registry plaintext blob redirect is not allowlisted; \
+                 set PVISOR_OCI_INSECURE_BLOB_HOSTS",
+            )
         } else {
             attempt.error("OCI registry redirect is not allowed")
         }
     })
 }
 
-fn redirect_target_allowed(origin: &reqwest::Url, target: &reqwest::Url) -> bool {
+fn redirect_target_allowed(
+    origin: &reqwest::Url,
+    target: &reqwest::Url,
+    insecure_hosts: &[String],
+) -> bool {
     match target.scheme() {
         "https" => true,
         "http" => {
             let blob = origin.scheme() == "https" && origin.path().contains("/blobs/");
             let same_endpoint = target.host_str() == origin.host_str()
                 && target.port_or_known_default() == origin.port_or_known_default();
-            blob && !same_endpoint
+            let allowlisted = target.host_str().is_some_and(|host| {
+                insecure_hosts
+                    .iter()
+                    .any(|entry| host_entry_matches(entry, host, target.port_or_known_default()))
+            });
+            blob && !same_endpoint && allowlisted
         }
         _ => false,
     }
@@ -168,6 +226,109 @@ impl std::fmt::Debug for RegistryCredentials {
             .field("password", &"«redacted»")
             .finish()
     }
+}
+
+#[derive(Deserialize)]
+struct DockerConfigFile {
+    #[serde(default)]
+    auths: BTreeMap<String, DockerAuthEntry>,
+}
+
+#[derive(Deserialize)]
+struct DockerAuthEntry {
+    auth: Option<String>,
+    username: Option<String>,
+    password: Option<String>,
+}
+
+fn docker_config_path() -> Option<PathBuf> {
+    std::env::var_os("DOCKER_CONFIG")
+        .map(PathBuf::from)
+        .map(|directory| directory.join("config.json"))
+        .or_else(|| {
+            std::env::var_os("HOME")
+                .map(|home| PathBuf::from(home).join(".docker").join("config.json"))
+        })
+}
+
+fn docker_config_keys(registry: &str) -> Vec<String> {
+    let mut keys = vec![
+        registry.to_owned(),
+        format!("https://{registry}"),
+        format!("http://{registry}"),
+        format!("https://{registry}/v1/"),
+    ];
+    if matches!(
+        registry,
+        "docker.io" | "index.docker.io" | "registry-1.docker.io"
+    ) {
+        keys.push("https://index.docker.io/v1/".into());
+        keys.push("index.docker.io".into());
+    }
+    keys
+}
+
+fn docker_config_credentials_at(
+    path: &Path,
+    registry: &str,
+) -> anyhow::Result<Option<RegistryCredentials>> {
+    let bytes = match fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    let config: DockerConfigFile = serde_json::from_slice(&bytes).context("parse Docker config")?;
+    let keys = docker_config_keys(registry);
+    let entry = keys
+        .iter()
+        .find_map(|key| config.auths.get(key))
+        .or_else(|| {
+            config.auths.iter().find_map(|(key, entry)| {
+                keys.iter()
+                    .any(|candidate| key.eq_ignore_ascii_case(candidate))
+                    .then_some(entry)
+            })
+        });
+    let Some(entry) = entry else {
+        return Ok(None);
+    };
+    if let (Some(username), Some(password)) = (&entry.username, &entry.password)
+        && !username.is_empty()
+    {
+        return Ok(Some(RegistryCredentials {
+            username: username.clone(),
+            password: password.clone(),
+        }));
+    }
+    let Some(auth) = entry.auth.as_deref().filter(|value| !value.is_empty()) else {
+        return Ok(None);
+    };
+    use base64::Engine as _;
+    let decoded = base64::engine::general_purpose::STANDARD
+        .decode(auth)
+        .context("decode Docker config auth")?;
+    let decoded = String::from_utf8(decoded).context("Docker config auth is not UTF-8")?;
+    let (username, password) = decoded
+        .split_once(':')
+        .context("Docker config auth has no username/password separator")?;
+    if username.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(RegistryCredentials {
+        username: username.to_owned(),
+        password: password.to_owned(),
+    }))
+}
+
+/// Credentials for `image` from Docker's config `auths` map, when present.
+pub(crate) fn docker_config_credentials(
+    image: &str,
+) -> anyhow::Result<Option<RegistryCredentials>> {
+    let reference = ImageReference::parse(image)?;
+    let Some(path) = docker_config_path() else {
+        return Ok(None);
+    };
+    docker_config_credentials_at(&path, &reference.registry)
 }
 
 /// Synchronous observations of OCI image preparation. Byte counts represent
@@ -289,8 +450,8 @@ impl ImageStore {
         fs::create_dir_all(root.join("rootfs-v3/sha256"))?;
         fs::create_dir_all(root.join("metadata/sha256"))?;
         fs::create_dir_all(root.join("locks"))?;
-        let client = registry_client(false)?;
-        let blob_client = registry_client(true)?;
+        let client = registry_client(false, &[])?;
+        let blob_client = registry_client(true, &insecure_blob_hosts())?;
         Ok(Self {
             root,
             client,
@@ -1186,16 +1347,69 @@ fn open_layer(blob: &Path, media_type: &str, private: bool) -> anyhow::Result<Fi
     Ok(output)
 }
 
+fn record_unsupported(
+    unsupported: &mut BTreeMap<String, Vec<PathBuf>>,
+    feature: &str,
+    relative: &Path,
+) {
+    let paths = unsupported.entry(feature.to_owned()).or_default();
+    if paths.len() < 8 {
+        paths.push(relative.to_owned());
+    }
+}
+
+fn audit_oci_entry<R: Read>(
+    entry: &mut tar::Entry<'_, R>,
+    relative: &Path,
+    unsupported: &mut BTreeMap<String, Vec<PathBuf>>,
+) -> anyhow::Result<()> {
+    let kind = entry.header().entry_type();
+    if kind.is_character_special() || kind.is_block_special() {
+        record_unsupported(unsupported, "device node", relative);
+    }
+    if let Some(extensions) = entry.pax_extensions()? {
+        for extension in extensions {
+            let extension = extension?;
+            let key = extension.key()?;
+            if let Some(name) = key
+                .strip_prefix("SCHILY.xattr.")
+                .or_else(|| key.strip_prefix("LIBARCHIVE.xattr."))
+            {
+                record_unsupported(unsupported, &format!("xattr {name}"), relative);
+            }
+        }
+    }
+    Ok(())
+}
+
 fn unpack_layer(mut file: File, rootfs: &Path) -> anyhow::Result<()> {
     let mut archive = tar::Archive::new(&mut file);
+    let mut unsupported = BTreeMap::new();
+    let mut whiteouts = Vec::new();
     for entry in archive.entries()? {
-        let entry = entry?;
+        let mut entry = entry?;
         let relative = clean_relative(&entry.path()?)?;
+        audit_oci_entry(&mut entry, &relative, &mut unsupported)?;
         if let Some(whiteout) = whiteout(&relative)? {
-            match whiteout {
-                Whiteout::Remove(path) => remove_relative(rootfs, &path)?,
-                Whiteout::Opaque(path) => clear_relative_directory(rootfs, &path)?,
-            }
+            whiteouts.push(whiteout);
+        }
+    }
+    if !unsupported.is_empty() {
+        let mut message = String::from("OCI image uses features Image Pack V1 cannot preserve:");
+        for (feature, paths) in &unsupported {
+            let sample = paths
+                .iter()
+                .map(|path| path.display().to_string())
+                .collect::<Vec<_>>()
+                .join(", ");
+            message.push_str(&format!("\n  {feature}: {sample}"));
+        }
+        bail!("{message}");
+    }
+    for whiteout in whiteouts {
+        match whiteout {
+            Whiteout::Remove(path) => remove_relative(rootfs, &path)?,
+            Whiteout::Opaque(path) => clear_relative_directory(rootfs, &path)?,
         }
     }
 
@@ -1988,7 +2202,108 @@ mod tests {
     fn registry_redirect_targets(#[case] origin: &str, #[case] target: &str, #[case] follow: bool) {
         let origin = reqwest::Url::parse(origin).unwrap();
         let target = reqwest::Url::parse(target).unwrap();
-        assert_eq!(redirect_target_allowed(&origin, &target), follow);
+        let insecure = [
+            "ssd1.example:8060".to_string(),
+            "registry.example:8060".to_string(),
+        ];
+        assert_eq!(redirect_target_allowed(&origin, &target, &insecure), follow);
+    }
+
+    #[rstest::rstest]
+    #[case::unlisted_http_blob(
+        "https://registry.example/v2/app/blobs/sha256:aa",
+        "http://other.example:8060/x",
+        false
+    )]
+    #[case::listed_http_blob_wrong_port(
+        "https://registry.example/v2/app/blobs/sha256:aa",
+        "http://ssd1.example:9999/x",
+        false
+    )]
+    #[case::https_blob_is_not_restricted(
+        "https://registry.example/v2/app/blobs/sha256:aa",
+        "https://other.example/x",
+        true
+    )]
+    fn unlisted_plaintext_redirects_are_rejected(
+        #[case] origin: &str,
+        #[case] target: &str,
+        #[case] follow: bool,
+    ) {
+        let origin = reqwest::Url::parse(origin).unwrap();
+        let target = reqwest::Url::parse(target).unwrap();
+        let insecure = ["ssd1.example:8060".to_string()];
+        assert_eq!(redirect_target_allowed(&origin, &target, &insecure), follow);
+    }
+
+    #[test]
+    fn insecure_blob_host_entries_match_host_and_optional_port() {
+        assert!(host_entry_matches(
+            "ssd1.example:8060",
+            "ssd1.example",
+            Some(8060)
+        ));
+        assert!(!host_entry_matches(
+            "ssd1.example:8060",
+            "ssd1.example",
+            Some(80)
+        ));
+        assert!(host_entry_matches("ssd1.example", "ssd1.example", Some(80)));
+        assert!(host_entry_matches("[::1]:8060", "::1", Some(8060)));
+        assert!(host_entry_matches("[::1]", "::1", Some(80)));
+        assert!(!host_entry_matches("[::1]:8060", "::1", Some(80)));
+        assert!(!host_entry_matches(
+            "ssd1.example",
+            "other.example",
+            Some(80)
+        ));
+    }
+
+    #[test]
+    fn docker_config_auths_supply_registry_credentials() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("config.json");
+        fs::write(
+            &path,
+            r#"{"auths":{"registry.example":{"auth":"dXNlcjpwYXNz"}}}"#,
+        )
+        .unwrap();
+        let credentials = docker_config_credentials_at(&path, "registry.example")
+            .unwrap()
+            .unwrap();
+        assert_eq!(credentials.username, "user");
+        assert_eq!(credentials.password, "pass");
+
+        fs::write(
+            &path,
+            r#"{"auths":{"registry.example":{"username":"u","password":"p"}}}"#,
+        )
+        .unwrap();
+        let credentials = docker_config_credentials_at(&path, "registry.example")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            (credentials.username.as_str(), credentials.password.as_str()),
+            ("u", "p")
+        );
+
+        fs::write(&path, r#"{"auths":{}}"#).unwrap();
+        assert!(
+            docker_config_credentials_at(&path, "registry.example")
+                .unwrap()
+                .is_none()
+        );
+
+        fs::write(
+            &path,
+            r#"{"auths":{"https://index.docker.io/v1/":{"auth":"dXNlcjpwYXNz"}}}"#,
+        )
+        .unwrap();
+        assert!(
+            docker_config_credentials_at(&path, "registry-1.docker.io")
+                .unwrap()
+                .is_some()
+        );
     }
 
     #[test]
@@ -2290,6 +2605,52 @@ mod tests {
             );
         }
         assert_eq!(fs::read(outside.path()).unwrap(), b"outside");
+    }
+
+    #[test]
+    fn unpack_rejects_xattrs_and_device_nodes_before_extraction() {
+        let temp = tempfile::tempdir().unwrap();
+        let rootfs = temp.path().join("rootfs");
+        fs::create_dir(&rootfs).unwrap();
+
+        let layer = temp.path().join("xattr.tar");
+        {
+            let mut builder = tar::Builder::new(File::create(&layer).unwrap());
+            builder
+                .append_pax_extensions([("SCHILY.xattr.security.capability", &b"AAAA"[..])])
+                .unwrap();
+            let mut header = tar::Header::new_gnu();
+            header.set_size(0);
+            header.set_mode(0o644);
+            header.set_entry_type(tar::EntryType::Regular);
+            header.set_cksum();
+            builder
+                .append_data(&mut header, "ping", &[] as &[u8])
+                .unwrap();
+            builder.finish().unwrap();
+        }
+        let error = unpack_layer(File::open(&layer).unwrap(), &rootfs).unwrap_err();
+        assert!(error.to_string().contains("security.capability"));
+        assert!(!rootfs.join("ping").exists());
+
+        let layer = temp.path().join("device.tar");
+        {
+            let mut builder = tar::Builder::new(File::create(&layer).unwrap());
+            let mut header = tar::Header::new_gnu();
+            header.set_entry_type(tar::EntryType::Char);
+            header.set_size(0);
+            header.set_mode(0o600);
+            header.set_device_major(1).unwrap();
+            header.set_device_minor(3).unwrap();
+            header.set_cksum();
+            builder
+                .append_data(&mut header, "console", &[] as &[u8])
+                .unwrap();
+            builder.finish().unwrap();
+        }
+        let error = unpack_layer(File::open(&layer).unwrap(), &rootfs).unwrap_err();
+        assert!(error.to_string().contains("device node"));
+        assert!(!rootfs.join("console").exists());
     }
 
     #[test]

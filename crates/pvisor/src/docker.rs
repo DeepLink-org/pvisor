@@ -676,6 +676,18 @@ impl Store {
     ) {
         self.registry_credentials = Some(credentials);
     }
+
+    /// Fill registry credentials from Docker's config when none were supplied.
+    pub fn use_docker_config_credentials(&mut self, image: &str) -> anyhow::Result<bool> {
+        if self.registry_credentials.is_some() {
+            return Ok(false);
+        }
+        if let Some(credentials) = crate::image::oci::docker_config_credentials(image)? {
+            self.registry_credentials = Some(credentials);
+            return Ok(true);
+        }
+        Ok(false)
+    }
     fn lock(&self) -> anyhow::Result<File> {
         let file = OpenOptions::new()
             .read(true)

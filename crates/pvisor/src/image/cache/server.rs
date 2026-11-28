@@ -32,6 +32,19 @@ fn reader(root: &std::path::Path) -> anyhow::Result<PortableCache> {
     ))
 }
 
+fn validate_tcp_auth(address: std::net::SocketAddr, token: Option<&str>) -> anyhow::Result<()> {
+    ensure!(
+        address.ip().is_loopback(),
+        "cache TCP listener must bind loopback; use a private bridge or TLS terminator for remote access"
+    );
+    let token = token.context(format!("TCP requires {TOKEN_ENV}"))?;
+    ensure!(
+        token.len() >= 16,
+        "cache TCP token must be at least 16 bytes"
+    );
+    Ok(())
+}
+
 fn ensure_same_user(socket: &UnixStream) -> anyhow::Result<()> {
     #[cfg(target_os = "macos")]
     let uid = {
@@ -328,10 +341,7 @@ pub(super) fn serve(
             Listener::Unix(listener, lock)
         }
         Endpoint::Tcp(address) => {
-            ensure!(
-                token.as_ref().as_ref().is_some_and(|t| !t.is_empty()),
-                "TCP requires {TOKEN_ENV}"
-            );
+            validate_tcp_auth(address, token.as_ref().as_deref())?;
             Listener::Tcp(TcpListener::bind(address)?)
         }
     };

@@ -9,15 +9,18 @@ PR 的目标提交和待合并版本在同一台 Linux x86_64/KVM 主机上顺�
 pvisor-vm + Linux 固件、pvisor-vm + 嵌入式 Rust native kernel、固定的 Firecracker；
 每个后端 17 项负载，共 34 个独立的产品门禁和 17 个必测参照。
 每项取 Criterion 的 `median.point_estimate`（ns/整项操作，越小越好）。
-两个 pVisor 后端各自和自己的基线比：**任意一项超过基线的 115% 就失败**，不按平均分抵消。
+两个 pVisor 后端各自和自己的基线比：**顺序比较中任意一项超过基线的 115% 时，
+在同一 runner 上用 16 对平衡 AB/BA 试次复核；复核的配对变化下四分位
+（16 对中第 4 小值，保守的 95% 下界）也超过 115% 才失败**，不按平均分抵消。
+复核只针对未通过项，阈值不变，也不重跑已通过项。
 Firecracker 的两个读数用来识别宿主波动，不要求 pVisor 快于它。三个后端都必须给出有效结果；
 缺 KVM、缺制品、超时、校验失败、缺少估计值都不放行。
 
 将 GitHub 状态检查 **`VM guest regression gate`** 设为目标分支的 required check，
 才能用这个失败状态阻止合并。PR 的 **Conversation** 中，GitHub Actions 会更新同一条
 **VM guest performance** 评论。表格按负载分 17 行，三列并排显示各后端的基线 → 候选
-中位耗时（ms/整项）和变化率；超过阈值的 pVisor 项会标红。若本次测量未产出完整报告，
-评论会给出运行链接而不是显示通过。评论不改变门禁结果。
+中位耗时（ms/整项）和变化率；顺序比较超过阈值的 pVisor 项会标红，平衡复核确认未超阈值的项标 ✅。
+若本次测量未产出完整报告，评论会给出运行链接而不是显示通过。评论不改变门禁结果。
 [benchmark CI](../../.github/workflows/pvisor-benchmark.yml) 在同仓库 PR 的两项 VM 门禁结束后直接调用
 [评论工作流](../../.github/workflows/vm-guest-comment.yml)，不需要先合并 PR。运行时表与启动表由
 `github-actions[bot]` 分别发布，后续提交更新原评论。只有发布作业需要写 PR 评论的权限；
@@ -108,12 +111,12 @@ mise run benchmark-compare -- "$batch/criterion" --suite vm-guest --output "$bat
 不要在测量机上同时构建或执行另一个 benchmark。顺序 cohort 中的百分比仅用于门禁，
 不能当作随机配对的因果结论。失败后保留证据，不反复执行择优。
 
-CI 在原 runner 上额外诊断未通过的 pVisor 项和固定的 guest 本地对照
-`linux-tmpfs-shuffled-overwrite`。`vm/guest --diagnose "$batch"` 校验探针、两版
+CI 在原 runner 上对未通过的 pVisor 项和固定的 guest 本地对照
+`linux-tmpfs-shuffled-overwrite` 执行复核。`vm/guest --diagnose "$batch"` 校验探针、两版
 VMM 和固件哈希，在新 VM 中交替执行 16 对试次；先后顺序在每四对内平衡。
 `PVISOR_BENCH_REVISION_BUILDS` 指向 CI 下载的两个 `benchmark-build-*` 目录，
-其他输入路径与测量相同。`paired-diagnostic/` 单独保存全部原始试次及组内变化中位数，
-不写 Criterion 数据、不重算或覆盖门禁判定。
+其他输入路径与测量相同。未通过项的配对变化下四分位不超过阈值时门禁通过，否则失败；
+`comparison.sequential.json` 保留原始顺序结果，`paired-diagnostic/` 保存全部原始试次。
 
 **同一候选的 handoff 对照。** 在上述批次首次执行 `--diagnose` 前另设：
 
