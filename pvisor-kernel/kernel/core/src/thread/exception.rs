@@ -8,7 +8,10 @@ use ostd::{arch::cpu::context::UserContext, task::Task};
 
 use crate::{
     prelude::*,
-    process::signal::signals::fault::FaultSignal,
+    process::signal::{
+        constants::{BUS_ADRERR, SIGBUS},
+        signals::fault::FaultSignal,
+    },
     thread::kernel_thread::AsKernelThread,
     vm::vmar::{PageFaultInfo, Vmar},
 };
@@ -19,8 +22,17 @@ pub(super) fn handle_exception(ctx: &Context, user_ctx: &UserContext, exception:
     if let Ok(page_fault_info) = PageFaultInfo::try_from(&exception) {
         let user_space = ctx.user_space();
         let vmar = user_space.vmar();
-        if handle_page_fault_from_vmar(vmar, &page_fault_info).is_ok() {
-            return;
+        match handle_page_fault_from_vmar(vmar, &page_fault_info) {
+            Ok(()) => return,
+            Err(e) if e.error() == Errno::ENXIO => {
+                ctx.posix_thread.enqueue_signal(Box::new(FaultSignal::new(
+                    SIGBUS,
+                    BUS_ADRERR,
+                    Some(page_fault_info.address() as u64),
+                )));
+                return;
+            }
+            Err(_) => (),
         }
     }
 
@@ -30,13 +42,13 @@ pub(super) fn handle_exception(ctx: &Context, user_ctx: &UserContext, exception:
 }
 
 /// Handles the page fault occurs in the VMAR.
-fn handle_page_fault_from_vmar(vmar: &Vmar, page_fault_info: &PageFaultInfo) -> Result<(), ()> {
+fn handle_page_fault_from_vmar(vmar: &Vmar, page_fault_info: &PageFaultInfo) -> Result<()> {
     if let Err(e) = vmar.handle_page_fault(page_fault_info) {
         warn!(
             "page fault handler failed: info: {:#x?}, err: {:?}",
             page_fault_info, e
         );
-        return Err(());
+        return Err(e);
     }
     Ok(())
 }
@@ -80,12 +92,12 @@ pub(super) fn page_fault_handler(info: &CpuException) -> Result<(), ()> {
         }
 
         let user_space = CurrentUserSpace::new(thread_local);
-        handle_page_fault_from_vmar(user_space.vmar(), &page_fault_info)
+        handle_page_fault_from_vmar(user_space.vmar(), &page_fault_info).map_err(|_| ())
     } else {
         let vmar = task
             .as_kernel_thread()
             .and_then(|kernel_thread| kernel_thread.vmar())
             .ok_or(())?;
-        handle_page_fault_from_vmar(vmar, &page_fault_info)
+        handle_page_fault_from_vmar(vmar, &page_fault_info).map_err(|_| ())
     }
 }

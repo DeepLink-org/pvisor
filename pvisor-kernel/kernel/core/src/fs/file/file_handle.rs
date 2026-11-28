@@ -11,7 +11,10 @@ use super::{
     inode_handle::SeekFrom,
 };
 use crate::{
-    fs::vfs::{inode::FallocMode, path::Path},
+    fs::vfs::{
+        inode::{FallocMode, Metadata},
+        path::Path,
+    },
     net::socket::Socket,
     prelude::*,
     process::{Process, signal::Pollable},
@@ -24,6 +27,11 @@ use crate::{
 
 /// The basic operations defined on a file
 pub(crate) trait FileLike: Pollable + Send + Sync + Any {
+    /// Metadata of the opened object, which can differ from the current namespace backing.
+    fn stat_metadata(&self) -> Result<Metadata> {
+        self.common().path().metadata()
+    }
+
     /// Reads data from this file.
     ///
     /// By default, this method returns `EBADF`
@@ -357,6 +365,8 @@ impl StatusFlagsUpdate {
 pub enum MappableObject<'a> {
     /// A VMO (i.e., page cache).
     Vmo(Arc<Vmo>),
+    /// The read-only, fixed-EOF backing of this open description, not the namespace inode.
+    ImmutableFile(Arc<Vmo>),
     /// A device mapping.
     Device(&'a dyn Mappable),
 }

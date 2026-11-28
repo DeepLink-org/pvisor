@@ -49,21 +49,14 @@ pub(super) fn sys_statx(
         );
     }
 
-    let (path, observed) = {
-        let filename = filename.to_string_lossy();
-        let fs_path =
-            FsPath::from_fd_at(dirfd, &filename, EmptyPathStr::AllowIfFlag(flags.bits()))?;
-
-        let fs_ref = ctx.thread_local.borrow_fs();
-        let path_resolver = fs_ref.resolver().read();
-        path_resolver
-            .lookup_with_metadata(&fs_path, !flags.contains(StatxFlags::AT_SYMLINK_NOFOLLOW))?
-    };
-
-    let metadata = match observed {
-        Some(info) if !flags.intersects(sync_flags) => info,
-        _ => path.metadata()?,
-    };
+    let filename = filename.to_string_lossy();
+    let fs_path = FsPath::from_fd_at(dirfd, &filename, EmptyPathStr::AllowIfFlag(flags.bits()))?;
+    let (path, metadata) = super::stat::resolve_stat_target(
+        ctx,
+        &fs_path,
+        !flags.contains(StatxFlags::AT_SYMLINK_NOFOLLOW),
+        !flags.intersects(sync_flags),
+    )?;
     let statx = Statx::new(&path, metadata, mask);
 
     user_space.write_val(statx_buf_ptr, &statx)?;

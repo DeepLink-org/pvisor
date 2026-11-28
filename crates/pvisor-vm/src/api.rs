@@ -1097,13 +1097,12 @@ pub struct OverlayConfig {
     /// restore lifetimes. Read-only mounts and frozen baselines are not proof.
     /// This never describes upper or merged-view stability. Legacy saved device
     /// records with no declarations retain mutable semantics when restored.
-    /// On the root device, read-only regular-file OPENs from an explicitly
-    /// immutable lower retain guest data pages across opens by default. OPEN
-    /// authorization and baseline observations still run. When every physical
-    /// lower is explicitly immutable, the guest may also import directory images
-    /// with long metadata validity. Mutable lowers use ordinary
-    /// FUSE metadata timeouts and lookup. Upper files do not use the data-cache
-    /// optimization.
+    /// Linux-hosted Rust native guests can retain eligible read-only regular-file
+    /// data across opens on any overlay, including mixed stacks. The selected
+    /// physical lower must be immutable, or its registered content provider must
+    /// pin the logical object. OPEN authorization and baseline observations still
+    /// run. A mutable directory, upper file or read-only bind is not by itself a
+    /// content guarantee. Directory images require a separate namespace guarantee.
     pub lower_mutability: Vec<pvisor_core::overlay::LayerMutability>,
     /// Writable stage, exclusively owned by this VM's filesystem connection.
     /// Read-only observers may coexist without a freshness guarantee; concurrent

@@ -106,8 +106,7 @@ impl FileSystemDevice {
                 hiprio_queue,
                 request_queues,
                 config.parse_tag().to_string(),
-                notify_supported,
-                negotiated_features.contains(FileSystemFeatures::PVISOR_READ_INDEX),
+                negotiated_features,
             ))
         };
 
@@ -162,7 +161,7 @@ impl FileSystemDevice {
             DEVICE_NAME,
             device.tag.as_str(),
             device.request_queues.len(),
-            device.notify_supported
+            notify_supported
         );
         Ok(())
     }

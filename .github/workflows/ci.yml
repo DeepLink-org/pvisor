@@ -544,6 +544,11 @@ jobs:
             --vm-api target/debug/examples/vm_api_case --stat-guest "$RUNNER_TEMP/native-stat" \
             --metadata-case target/debug/examples/guest_metadata_case --metadata-guest "$RUNNER_TEMP/native-metadata" \
             --output "$RUNNER_TEMP/native-fs-metadata" --seed 1 --seed 314159 --seed 57596
+          cc -static -O2 -Wall -Wextra -Werror pvisor-kernel/tests/immutable_lower.c -o "$RUNNER_TEMP/immutable-lower"
+          cc -static -O2 -Wall -Wextra -Werror benchmark/vm/probe.c -o "$RUNNER_TEMP/stage-io"
+          python3 pvisor-kernel/tests/immutable_lower.py --binary target/debug/examples/guest_metadata_case \
+            --guest "$RUNNER_TEMP/immutable-lower" --io-guest "$RUNNER_TEMP/stage-io" \
+            --output "$RUNNER_TEMP/native-fs-metadata/lower-data"
       - uses: actions/upload-artifact@v4
         if: failure() && runner.os == 'Linux' && matrix.shard == 'pvisor'
         with:

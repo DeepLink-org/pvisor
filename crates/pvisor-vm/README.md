@@ -818,8 +818,10 @@ OCI extraction, lazy physical projections or frozen baselines to immutable.
 Host OPEN still resolves merged precedence, checks policy/aliases and permissions,
 records the baseline observation and acquires its normal native descriptor.
 Without writeback, writable or privilege-changing OPENs, copy-up and reads from
-upper/mutable layers retain the original cache-invalidating OPEN behavior. Workspace devices
-retain their original data policy even if a lower is explicitly immutable.
+upper/mutable layers retain the original cache-invalidating OPEN behavior.
+This root-only setting does not change workspace OPEN flags. The independent
+[data-object protocol](#independent-immutable-lower-data-objects) can retain
+qualified bytes in a separate guest cache on either kind of mount.
 The root-data setting itself leaves metadata TTLs and FUSE no-open negotiation
 unchanged; directory images and deferred opens follow the separate contract below.
 New VM writeback and
@@ -956,15 +958,16 @@ and independent performance runs remain required before any benefit/default clai
 
 ## Independent immutable-lower data objects
 
-`PVISOR_VM_FS_LOWER_DATA_CACHE=1` enables a default-off Linux experiment for
-explicitly Immutable selected physical lowers, on root and workspace devices.
-Unset/`0` uses the previous path; other values fail before filesystem owner
-construction. LinuxComplete permissions, guest cache, WB=0, no DAX window and
+Linux-hosted Rust native guests automatically request immutable data objects on
+overlay devices, including mixed stacks; no prepared-root or workspace selector
+is required. `PVISOR_VM_FS_LOWER_DATA_CACHE=0` disables automatic selection.
+Linux firmware still requires explicit opt-in (`1`). Other values fail before
+filesystem owner construction. LinuxComplete permissions, guest cache, WB=0, no DAX window and
 no negotiated POSIX/flock remote locking are required. Qualification is per
 opened lower; upper, Mutable, direct-I/O, privilege-changing, nonregular and
 multiply-linked native files fall back. Attached remote-content projections
-also fall back per selected physical path: their placeholder inode is not a
-content identity. Synthetic guest configuration/init files do not disable
+never qualify by their placeholder inode: an exact-root lease on a stable content
+provider can instead identify the selected logical object. Synthetic guest configuration/init files do not disable
 unrelated ordinary lower files.
 
 Host and guest negotiate `PVISOR_DATA_OBJECT` (INIT bit 44). Only `FUSE_OPEN`
@@ -997,6 +1000,14 @@ not change the old lower mapping's size or place upper bytes in its pages.
 The namespace inode's current size is never used as an old lower size receipt.
 The existing root-only KEEP_CACHE preference is separate; this experiment does
 not turn on ordinary workspace KEEP_CACHE for shared merged-inode data pages.
+
+The Rust native guest requests the extended OPEN format only on devices
+advertising the dedicated pVisor virtio-fs feature (bit 19). This does not
+negotiate READINDEX, grant a directory TTL, or skip host OPEN. Turning off
+READINDEX does not disable file-data reuse. Its
+[per-mount retention policy](../../pvisor-kernel/README.md#immutable-lower-data-in-the-rust-guest)
+does not require a patched Linux firmware. Linux firmware experiments with
+directory mirrors, lazy OPEN or writeback are separate from this read path.
 
 Negotiating this experimental contract makes capture/restore unsupported for
 the remaining host owner lifetime, including after DESTROY; server restore
@@ -1229,8 +1240,11 @@ guest 物理写入产生 MMIO exit。宿主映射保留 MAP_PRIVATE 的 COW 保�
 
 ## Guest 目录镜像
 
-`PVISOR_VM_FS_LOGICAL_DATA_CACHE=1` 是默认关闭的Linux实验：要求逻辑目录
-租约资格、无journal/host写缓存、guest目录缓存开启及DAX/guest WB关闭。
+Linux 宿主的 Rust native guest 默认对启用 lower 数据缓存的 overlay 逐层检查：
+只有注册了 exact-root 固定版本的内容后端才取得逻辑数据租约。混合层和 live
+journal 不要求目录镜像，首次访问仍由 host OPEN 记录。`PVISOR_VM_FS_LOGICAL_DATA_CACHE=0`
+可单独关闭逻辑对象资格；显式 `1` 可独立请求逻辑对象实验。Linux 固件默认关闭，
+仍要求既有逻辑目录租约资格、无 journal/host 写缓存、guest 缓存开启及 DAX/guest WB 关闭。
 复用既有独立lower-data inode协议，但key使用固定layer租约内backend对象ID
 与逻辑长度，不使用占位文件的native身份作为内容证明。OPEN仍做原授权、
 native FD形态核验，READ仍校验源内容；native与逻辑key不共用域，upper不能

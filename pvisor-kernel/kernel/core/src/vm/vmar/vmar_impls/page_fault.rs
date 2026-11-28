@@ -46,6 +46,10 @@ pub(crate) struct PageFaultInfo {
 }
 
 impl PageFaultInfo {
+    pub(crate) fn address(&self) -> Vaddr {
+        self.address
+    }
+
     /// Creates a new `PageFaultInfo`.
     pub(crate) fn new(address: Vaddr, required_perms: VmPerms) -> Self {
         Self {

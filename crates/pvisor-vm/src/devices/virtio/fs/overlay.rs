@@ -1724,7 +1724,7 @@ impl OverlayFs {
 
     #[cfg(test)]
     fn build(cfg: Config, inode_alloc: Arc<InodeAllocator>, restoring: bool) -> io::Result<Self> {
-        let profile = crate::env::fs::FsProfile::from_env()?;
+        let profile = crate::env::fs::FsProfile::from_env(false)?;
         Self::build_with_profile(cfg, inode_alloc, restoring, &profile)
     }
 
@@ -1753,7 +1753,7 @@ impl OverlayFs {
         restoring: bool,
         writeback_setting: Option<&str>,
     ) -> io::Result<Self> {
-        let shared_open_qualification = crate::env::fs::FsProfile::from_env()?.shared_open?;
+        let shared_open_qualification = crate::env::fs::FsProfile::from_env(false)?.shared_open?;
         Self::build_with_settings(
             cfg,
             inode_alloc,
@@ -2716,12 +2716,31 @@ impl OverlayFs {
                 .all(|m| *m == pvisor_overlay_core::LayerMutability::Immutable)
     }
 
-    pub(super) fn configure_logical_data_cache(&mut self, requested: bool) {
-        self.logical_data_cache = requested
-            && self.logical_directory_cache_enabled
+    pub(super) fn configure_logical_data_cache(&mut self, requested: bool, per_layer: bool) {
+        let eligible = requested
             && cfg!(target_os = "linux")
             && !self.host_writeback
             && !self.new_session_writeback;
+        if eligible
+            && per_layer
+            && self.snapshot_config.semantics == passthrough::PermissionSemantics::LinuxComplete
+        {
+            // A data receipt still requires a normal, journal-observed OPEN. It needs only
+            // this layer's pinned content provider, not a lease on every name in the mount.
+            for (layer, root) in self.roots.iter().enumerate().skip(1) {
+                let std::collections::hash_map::Entry::Vacant(slot) =
+                    self.stable_namespace_leases.entry(layer)
+                else {
+                    continue;
+                };
+                if let Ok(Some(lease)) = backend::stable_namespace(root) {
+                    slot.insert(lease);
+                }
+            }
+        }
+        self.logical_data_cache = eligible
+            && !self.stable_namespace_leases.is_empty()
+            && (per_layer || self.logical_directory_cache_enabled);
         self.profile.add(
             "logical_data_cache_enabled",
             u64::from(self.logical_data_cache),
@@ -9800,28 +9819,29 @@ mod tests {
         }
     }
 
+    fn parent_cache_config(root: &Path) -> Config {
+        Config {
+            lower_mutability: Vec::new(),
+            lower_dirs: vec![root.join("lower").to_string_lossy().into_owned()],
+            apply_target: None,
+            baseline_lower: None,
+            baseline_content_index: None,
+            upper_dir: root.join("upper").to_string_lossy().into_owned(),
+            work_dir: None,
+            preimage_dir: None,
+            excluded_paths: vec!["private".into()],
+            access_policy: pvisor_overlay_core::FileAccessPolicy::new(
+                vec!["private/**".into()],
+                vec![],
+            )
+            .unwrap(),
+            semantics: passthrough::PermissionSemantics::LinuxComplete,
+        }
+    }
+
     fn parent_cache_fixture(root: &Path) -> OverlayFs {
-        let fs = OverlayFs::new(
-            Config {
-                lower_mutability: Vec::new(),
-                lower_dirs: vec![root.join("lower").to_string_lossy().into_owned()],
-                apply_target: None,
-                baseline_lower: None,
-                baseline_content_index: None,
-                upper_dir: root.join("upper").to_string_lossy().into_owned(),
-                work_dir: None,
-                preimage_dir: None,
-                excluded_paths: vec!["private".into()],
-                access_policy: pvisor_overlay_core::FileAccessPolicy::new(
-                    vec!["private/**".into()],
-                    vec![],
-                )
-                .unwrap(),
-                semantics: passthrough::PermissionSemantics::LinuxComplete,
-            },
-            Arc::new(InodeAllocator::new()),
-        )
-        .unwrap();
+        let fs =
+            OverlayFs::new(parent_cache_config(root), Arc::new(InodeAllocator::new())).unwrap();
         fs.init(FsOptions::empty()).unwrap();
         fs
     }
@@ -12646,8 +12666,12 @@ mod tests {
         let entry = fs.lookup(root_context(), fuse::ROOT_ID, c"real").unwrap();
         assert_ne!(entry.inode, virtual_inode);
     }
-    #[test]
-    fn direct_lower_reads_virtual_bytes_and_keeps_guest_metadata_through_copy_up() {
+    #[rstest::rstest]
+    #[case::whole_directory_lease(false)]
+    #[case::mixed_live_journal(true)]
+    fn direct_lower_reads_virtual_bytes_and_keeps_guest_metadata_through_copy_up(
+        #[case] per_layer: bool,
+    ) {
         use pvisor_overlay_core::backend::{
             BackendAttachment, FileAttr, FileType, ReadOnlyBackend,
         };
@@ -12718,19 +12742,28 @@ mod tests {
                 BackendAttachment::new(&lower, image)
             }
             .unwrap();
-            let mut fs = parent_cache_fixture(temp.path());
-            fs.snapshot_config.lower_mutability =
-                vec![pvisor_overlay_core::LayerMutability::Mutable];
+            let target = temp.path().join("project");
+            let journal = temp.path().join("journal");
+            let mut config = parent_cache_config(temp.path());
+            if per_layer {
+                std::fs::create_dir(&target).unwrap();
+                std::fs::write(target.join("file"), b"live project baseline").unwrap();
+                config.lower_dirs.push(target.to_str().unwrap().into());
+                config.preimage_dir = Some(journal.to_str().unwrap().into());
+            }
+            config.lower_mutability =
+                vec![pvisor_overlay_core::LayerMutability::Mutable; config.lower_dirs.len()];
+            let mut fs = OverlayFs::new(config, Arc::new(InodeAllocator::new())).unwrap();
             assert!(fs.configure_logical_directory_cache(true, true).is_err());
-            fs.configure_logical_directory_cache(true, false).unwrap();
-            assert_eq!(fs.supports_directory_image(), stable);
+            fs.configure_logical_directory_cache(!per_layer, false).unwrap();
+            assert_eq!(fs.supports_directory_image(), stable && !per_layer);
             assert!(!fs.physical_lowers_immutable());
             fs.configure_directory_names_cache(true);
             assert!(
                 !fs.directory_names_cache_enabled,
                 "physical cache qualification must not expand"
             );
-            if stable {
+            if stable && !per_layer {
                 fs.snapshot_config.preimage_dir = Some("observation-journal".into());
                 fs.configure_logical_directory_cache(true, false).unwrap();
                 assert!(
@@ -12740,7 +12773,8 @@ mod tests {
                 fs.snapshot_config.preimage_dir = None;
                 fs.configure_logical_directory_cache(true, false).unwrap();
             }
-            fs.configure_logical_data_cache(true);
+            fs.configure_logical_data_cache(true, per_layer);
+            assert_eq!(fs.supports_directory_image(), stable && !per_layer);
             fs.configure_lower_data_cache(true, true, false).unwrap();
             fs.init(FsOptions::PVISOR_DATA_OBJECT).unwrap();
             let ctx = root_context();
@@ -12752,6 +12786,11 @@ mod tests {
                 receipt.data_object.is_some(),
                 stable && cfg!(target_os = "linux")
             );
+            if per_layer {
+                let preimages = pvisor_overlay_core::load_preimages(&journal).unwrap();
+                let expected = pvisor_overlay_core::fingerprint_at(&target, Path::new("file")).unwrap();
+                assert!(preimages.iter().any(|p| p.path == b"file" && p.state == expected));
+            }
             fs.release(
                 ctx,
                 entry.inode,

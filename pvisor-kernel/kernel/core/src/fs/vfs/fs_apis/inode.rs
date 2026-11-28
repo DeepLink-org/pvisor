@@ -404,6 +404,11 @@ pub(crate) trait Inode: Any + FileOps + Send + Sync {
     /// [`group`]: Inode::group
     fn metadata(&self) -> Result<Metadata>;
 
+    /// Handle-based getattr may address an object other than the current namespace backing.
+    fn open_metadata(&self, _open: Option<&dyn PerOpenFileOps>) -> Result<Metadata> {
+        self.metadata()
+    }
+
     /// Returns the inode number.
     fn ino(&self) -> u64;
 

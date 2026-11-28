@@ -52,7 +52,7 @@ pub(super) fn sys_msync(
     // Do nothing if not file-backed, as <https://pubs.opengroup.org/onlinepubs/9699919799/> says.
     let inodes = query_guard
         .iter()
-        .filter_map(|m| m.inode().cloned())
+        .filter_map(|m| m.inode_for_sync().cloned())
         .collect::<Vec<_>>();
     let task_fn = move || {
         for inode in inodes {

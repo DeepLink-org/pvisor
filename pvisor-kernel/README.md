@@ -187,6 +187,30 @@ userspace enumeration use ordinary FUSE. Imported attributes do not extend
 ordinary inode TTLs. Set `PVISOR_VM_FS_RNGK_READINDEX=0` to disable the
 default-on path. `PVISOR_VM_GUEST_CACHE=0` also disables the protocol.
 
+### Immutable lower data in the Rust guest
+
+Linux-hosted Rust guests automatically use the
+[immutable-data OPEN protocol](../crates/pvisor-vm/README.md#independent-immutable-lower-data-objects)
+on eligible overlay files. Neither an immutable rootfs nor an entirely immutable
+workspace is required: read-only files from an immutable physical layer or a
+pinned stable content provider qualify even when another layer is live.
+Every open still resolves the merged name on the host. Only a read-only handle
+with an immutable object receipt gets a separate fixed-size guest page cache.
+Reads and file-backed faults use that backing even after copy-up, truncation,
+replacement or unlink. Shared writable mappings are denied; private mappings
+use copy-on-write. Adjacent misses in the existing read-fault window can share
+one FUSE request. A fallback open uses the ordinary inode path, not previously
+retained immutable pages. The option does not change shared-directory TTLs,
+write acknowledgement, stage recording, or who may apply changes.
+
+After the last open or mapping closes, each mount may retain up to 1024
+objects, with a resident-page budget of `min(guest usable RAM / 32, 16 MiB)`.
+Empty caches and objects larger than the budget in resident bytes are not
+retained. Reopening an evicted object refetches bytes through the new handle.
+This is a bound on **idle data pages per mount**, not on active mappings or
+total VM memory. `PVISOR_VM_FS_LOWER_DATA_CACHE=0` disables the automatic
+data policy. Plain mutable passthrough and unqualified bind mounts are unchanged.
+
 ## Tests and hardware acceptance
 
 On Linux x86_64/KVM `vm_api_case` runs the guest supervisor and a static

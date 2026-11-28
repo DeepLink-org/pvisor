@@ -1101,7 +1101,7 @@ Linux x86_64 上，认证后的 prepared rootfs 在 fresh native 启动时，若
 显式设为 `0` 保留原行为。guest 必须支持协商，且只有合格的本地 Immutable 只读 fd
 才跳过 backend FLUSH；旧 guest 或不合格 fd 仍走原 FLUSH。未选择并认证 prepared
 rootfs 的 SDK 调用（包括仅以 `with_rootfs_base` 提供 owner），以及 macOS，
-在变量缺省时保持原行为。该默认不自动开启数据页缓存、负项缓存、WB 或 DAX。
+在变量缺省时保持原 FLUSH 行为。负项缓存、WB 或 DAX 不因此开启。
 
 #### 使用封存工作区 {#prepared-workspace}
 
@@ -1132,7 +1132,8 @@ compose、工作区逻辑 checkpoint fork/恢复与 execution checkpoint 捕获/
 拒绝；工作区 checkpoint 的创建和只读查看仍独立可用。两个 store 须彼此独立，并处于
 项目、stage、guest 暴露路径和 VM 可写 backing/control 路径之外；不要外部改写
 store。该入口沿用[prepared rootfs 的限定只读 FLUSH 默认](#prepared-rootfs)，
-不自动开启独立数据页、负项缓存、WB 或 DAX；可显式设置
+Linux 上的 Rust native guest 按文件复用不可变 lower 数据页，不要求封存整个工作区。
+负项缓存、WB 或 DAX 不因此开启；可显式设置
 `PVISOR_VM_FS_READONLY_FLUSH_ELISION=0` 保留原 FLUSH。
 
 ## Run 项目发现 {#run-项目发现}

@@ -32,6 +32,7 @@ use spin::Once;
 use waiter::{FuseWaiter, ReplyBufs};
 
 pub use self::session::{AttrVersion, FuseSession};
+use super::config::FileSystemFeatures;
 
 static REQUEST_CREDENTIALS: Once<fn() -> (u32, u32, u32)> = Once::new();
 
@@ -113,7 +114,7 @@ pub struct FileSystemDevice {
     from_device_pool: VirtiofsDmaPool<FromDevice>,
     next_unique: AtomicU64,
     tag: String,
-    notify_supported: bool,
+    features: FileSystemFeatures,
     index_epoch: Option<Arc<SpinLock<IndexEpoch, LocalIrqDisabled>>>,
 }
 
@@ -123,8 +124,7 @@ impl FileSystemDevice {
         hiprio_queue: Arc<FsRequestQueue>,
         request_queues: Vec<Arc<FsRequestQueue>>,
         tag: String,
-        notify_supported: bool,
-        read_index_supported: bool,
+        features: FileSystemFeatures,
     ) -> Self {
         Self {
             transport: SpinLock::new(transport),
@@ -137,9 +137,10 @@ impl FileSystemDevice {
             // rather than ordinary request/reply matching.
             next_unique: AtomicU64::new(1),
             tag,
-            notify_supported,
-            index_epoch: read_index_supported
+            index_epoch: features
+                .contains(FileSystemFeatures::PVISOR_READ_INDEX)
                 .then(|| Arc::new(SpinLock::new(IndexEpoch::default()))),
+            features,
         }
     }
 

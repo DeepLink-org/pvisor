@@ -7,6 +7,8 @@ mod metadata;
 mod ops;
 mod page_cache;
 
+pub(super) use ops::read_cached;
+
 use core::{
     ops::Range,
     sync::atomic::{AtomicUsize, Ordering},
@@ -334,6 +336,17 @@ impl Inode for VirtioFsInode {
     fn metadata(&self) -> Result<Metadata> {
         self.revalidate_attr(None)?;
         Ok(self.inner.read().metadata)
+    }
+
+    fn open_metadata(&self, open: Option<&dyn PerOpenFileOps>) -> Result<Metadata> {
+        if let Some(fh) = open
+            .and_then(|open| (open as &dyn Any).downcast_ref::<super::file::VirtioFsFile>())
+            .and_then(super::file::VirtioFsFile::lower_handle)
+        {
+            self.handle_metadata(fh)
+        } else {
+            self.metadata()
+        }
     }
 
     fn ino(&self) -> u64 {

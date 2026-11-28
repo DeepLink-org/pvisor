@@ -25,7 +25,9 @@ use aster_fuse::{
 use ostd::{info, mm::io::util::HasVmReaderWriter};
 use smallvec::smallvec;
 
-use super::{super::DEVICE_NAME, FileSystemDevice, FuseWaiter, request_credentials};
+use super::{
+    super::DEVICE_NAME, FileSystemDevice, FileSystemFeatures, FuseWaiter, request_credentials,
+};
 use crate::device::filesystem::pool::{
     FuseDataBuf, FuseReplyBuf, FuseReplyBufs, FuseRequestBuf, FuseRequestBufs,
 };
@@ -54,11 +56,19 @@ impl FuseSession {
     /// the server.
     pub fn new(device: Arc<FileSystemDevice>) -> Result<Arc<Self>, FuseError> {
         let requested_flags = Self::init_flags();
-        let requested_flags2 = if device.index_epoch.is_some() {
-            FuseInitFlags2::PVISOR_META
-        } else {
-            FuseInitFlags2::empty()
-        };
+        let mut requested_flags2 = FuseInitFlags2::empty();
+        if device
+            .features
+            .contains(FileSystemFeatures::PVISOR_READ_INDEX)
+        {
+            requested_flags2 |= FuseInitFlags2::PVISOR_META;
+        }
+        if device
+            .features
+            .contains(FileSystemFeatures::PVISOR_DATA_OBJECT)
+        {
+            requested_flags2 |= FuseInitFlags2::PVISOR_DATA_OBJECT;
+        }
         let mut operation = InitOperation::new(InitReq::new(
             FUSE_KERNEL_VERSION,
             FUSE_KERNEL_MINOR_VERSION,
@@ -70,6 +80,17 @@ impl FuseSession {
         let payload_len = waiter.wait().payload_len()?;
         let init_reply = waiter.parse_reply::<InitOperation>(payload_len)?;
 
+        let flags2 = init_reply.flags2() & requested_flags2;
+        if flags2.contains(FuseInitFlags2::PVISOR_DATA_OBJECT)
+            && (init_reply.flags().intersects(
+                FuseInitFlags::POSIX_LOCKS
+                    | FuseInitFlags::FLOCK_LOCKS
+                    | FuseInitFlags::WRITEBACK_CACHE
+                    | FuseInitFlags::MAP_ALIGNMENT,
+            ) || init_reply.flags2().contains(FuseInitFlags2::HAS_INODE_DAX))
+        {
+            return Err(FuseError::MalformedResponse);
+        }
         let max_write = init_reply.max_write().max(MIN_MAX_WRITE);
         let session = Arc::new(Self {
             device,
@@ -77,7 +98,7 @@ impl FuseSession {
             max_write,
             batch_forget: init_reply.minor() >= 16,
             negotiated_flags: init_reply.flags(),
-            negotiated_flags2: init_reply.flags2(),
+            negotiated_flags2: flags2,
         });
 
         info!(
@@ -194,7 +215,17 @@ impl FuseSession {
         read_request: ReadReq,
         data_buf: FuseReplyBuf,
     ) -> Result<usize, FuseError> {
-        let waiter = self.read_async(nodeid, read_request, smallvec![data_buf], None)?;
+        self.read_buffers(nodeid, read_request, smallvec![data_buf])
+    }
+
+    /// Reads into one or more DMA buffers and returns the validated byte count.
+    pub fn read_buffers(
+        &self,
+        nodeid: FuseNodeId,
+        read_request: ReadReq,
+        data_bufs: FuseReplyBufs,
+    ) -> Result<usize, FuseError> {
+        let waiter = self.read_async(nodeid, read_request, data_bufs, None)?;
         let read_len = waiter.wait().payload_len()?;
         if read_len > read_request.size() as usize {
             return Err(FuseError::MalformedResponse);

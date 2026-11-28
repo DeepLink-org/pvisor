@@ -349,6 +349,17 @@ impl<'a, 'b> VmarMapOptions<'a, 'b> {
                     MappedMemory::Vmo(MappedVmo::new(vmo, vmo_offset, is_writable_tracked)?);
                 (mapped_mem, None)
             }
+            Some(MappableObject::ImmutableFile(vmo)) => {
+                if map_mode.is_shared() {
+                    if perms.contains(VmPerms::WRITE) {
+                        return_errno!(Errno::EACCES);
+                    }
+                    may_perms.remove(VmPerms::MAY_WRITE);
+                }
+                let mut mapped = MappedVmo::new(vmo, vmo_offset, false)?;
+                mapped.fixed_eof = true;
+                (MappedMemory::Vmo(mapped), None)
+            }
             Some(MappableObject::Device(mappable)) => {
                 if !map_mode.is_shared() {
                     return_errno_with_message!(

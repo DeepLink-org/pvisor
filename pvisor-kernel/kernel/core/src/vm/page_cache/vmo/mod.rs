@@ -456,6 +456,25 @@ impl Vmo {
         self.size.load(Ordering::Acquire)
     }
 
+    /// Counts populated slots (including uninitialized pages) up to a retention limit.
+    pub(crate) fn resident_pages_up_to(&self, limit: usize) -> usize {
+        let pages = self.pages.lock();
+        let mut cursor = pages.cursor(0);
+        let mut count = usize::from(limit != 0 && cursor.load().is_some());
+        while count < limit && cursor.next_present().is_some() {
+            count += 1;
+        }
+        count
+    }
+
+    /// Fill an absent run inside an already selected file fault-around window.
+    /// An existing page ends the run; its pending I/O belongs to its initializer.
+    pub(crate) fn fill_fault_window(&self, pages: Range<usize>) -> Result<()> {
+        self.as_backed_vmo()
+            .ok_or(Errno::EIO)?
+            .fill_missing_read_pages(pages)
+    }
+
     /// Returns the status of writable mappings of the VMO.
     pub(crate) fn writable_mapping_status(&self) -> &WritableMappingStatus {
         // Currently, only VMOs used by `MemfdInode` (anonymous) track writable mapping status.

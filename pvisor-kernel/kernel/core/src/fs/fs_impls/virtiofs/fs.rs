@@ -12,6 +12,7 @@ use aster_virtio::device::filesystem::device::{self, AttrVersion, FileSystemDevi
 use device_id::DeviceId;
 
 use super::{
+    data_object::LowerObjects,
     dir_index::DirIndex,
     inode::{InodeCache, VirtioFsInode},
 };
@@ -89,6 +90,7 @@ pub(super) struct VirtioFs {
     session: Arc<FuseSession>,
     dir_index: DirIndex,
     inode_cache: InodeCache,
+    lower_objects: spin::Once<Mutex<LowerObjects>>,
     pending_forgets: Mutex<PendingForgets>,
     fs_event_subscriber_stats: FsEventSubscriberStats,
 }
@@ -157,6 +159,7 @@ impl VirtioFs {
                 dir_index: DirIndex::new(session.clone()),
                 session,
                 inode_cache,
+                lower_objects: spin::Once::new(),
                 pending_forgets: Mutex::new(PendingForgets::default()),
                 fs_event_subscriber_stats: FsEventSubscriberStats::new(),
             }
@@ -165,6 +168,11 @@ impl VirtioFs {
 
     pub(super) fn session(&self) -> &Arc<FuseSession> {
         &self.session
+    }
+
+    pub(super) fn lower_objects(&self) -> &Mutex<LowerObjects> {
+        self.lower_objects
+            .call_once(|| Mutex::new(LowerObjects::new(crate::vm::mem_total())))
     }
 
     pub(super) fn defer_forget(self: &Arc<Self>, nodeid: FuseNodeId, count: u64) {

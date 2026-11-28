@@ -2221,7 +2221,7 @@ fn attach_fs_devices(
     if resources.fs.is_empty() {
         return Ok(());
     }
-    let mut profile = crate::env::fs::FsProfile::from_env()
+    let mut profile = crate::env::fs::FsProfile::from_env(resources.rust_native_kernel)
         .map_err(|error| StartMicrovmError::CreateFsDevice(error.to_string()))?;
     // Do not change the transport offer of Linux guests or their snapshots.
     if !resources.rust_native_kernel || resources.vm_config().vcpu_count != Some(1) {

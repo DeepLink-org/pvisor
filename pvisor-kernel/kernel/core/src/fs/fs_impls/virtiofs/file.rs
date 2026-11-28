@@ -2,10 +2,11 @@
 
 //! Open regular-file handles for `virtiofs`.
 
-use aster_fuse::{FsyncFlags, FuseOpenFlags, ops::init::FuseInitFlags2};
+use aster_fuse::{FsyncFlags, FuseFileHandle, FuseOpenFlags, ops::init::FuseInitFlags2};
 use ostd::warn;
 
 use super::{
+    data_object::LowerObject,
     inode::{VirtioFsInode, WriteOffset},
     open_handle::VirtioFsOpenHandle,
 };
@@ -37,6 +38,10 @@ pub(super) struct VirtioFsFile {
 }
 
 impl VirtioFsFile {
+    pub(super) fn lower_handle(&self) -> Option<FuseFileHandle> {
+        matches!(self.cache_policy, CachePolicy::Lower(_)).then(|| self.open_handle.fh())
+    }
+
     pub(super) fn new(
         inode: Arc<VirtioFsInode>,
         open_handle: Arc<VirtioFsOpenHandle>,
@@ -52,8 +57,13 @@ impl VirtioFsFile {
 
 impl Drop for VirtioFsFile {
     fn drop(&mut self) {
-        if self.cache_policy != CachePolicy::Cached {
-            return;
+        match core::mem::replace(&mut self.cache_policy, CachePolicy::Direct) {
+            CachePolicy::Lower(object) => {
+                self.inode.fs_ref().lower_objects().lock().release(object);
+                return;
+            }
+            CachePolicy::Direct => return,
+            CachePolicy::Cached => (),
         }
 
         let fs = self.inode.fs_ref();
@@ -112,16 +122,18 @@ impl FileOps for VirtioFsFile {
         status_flags: StatusFlags,
     ) -> Result<usize> {
         let fh = self.open_handle.fh();
-        if self.cache_policy == CachePolicy::Cached && !status_flags.contains(StatusFlags::O_DIRECT)
-        {
-            self.inode.cached_read_at(offset, writers, fh)
-        } else {
-            let file_flags = self.open_handle.access_mode() as u32 | status_flags.bits();
-            read_segments(writers, |done, writer| {
-                self.inode
-                    .direct_read_at(offset + done, writer, fh, file_flags)
-            })
+        if !status_flags.contains(StatusFlags::O_DIRECT) {
+            match &self.cache_policy {
+                CachePolicy::Lower(object) => return object.read_at(offset, writers),
+                CachePolicy::Cached => return self.inode.cached_read_at(offset, writers, fh),
+                CachePolicy::Direct => (),
+            }
         }
+        let file_flags = self.open_handle.access_mode() as u32 | status_flags.bits();
+        read_segments(writers, |done, writer| {
+            self.inode
+                .direct_read_at(offset + done, writer, fh, file_flags)
+        })
     }
 
     fn write_at(
@@ -145,7 +157,7 @@ impl FileOps for VirtioFsFile {
         // bytes that precede the user write. Keep append writes on the direct
         // path until writeback can issue precise positional ranges without
         // append semantics.
-        if self.cache_policy == CachePolicy::Cached
+        if matches!(self.cache_policy, CachePolicy::Cached)
             && !status_flags.intersects(StatusFlags::O_APPEND | StatusFlags::O_DIRECT)
         {
             self.inode
@@ -159,6 +171,9 @@ impl FileOps for VirtioFsFile {
 
 impl PerOpenFileOps for VirtioFsFile {
     fn mappable(&self, request: FileMmapRequest) -> Result<MappableObject<'_>> {
+        if let CachePolicy::Lower(object) = &self.cache_policy {
+            return Ok(MappableObject::ImmutableFile(object.pages.as_vmo().clone()));
+        }
         // `FuseOpenFlags::FOPEN_DIRECT_IO` permits private mappings. Shared
         // mappings additionally require `FuseInitFlags2::DIRECT_IO_ALLOW_MMAP`
         // to have been negotiated.
@@ -197,6 +212,9 @@ impl PerOpenFileOps for VirtioFsFile {
     }
 
     fn seek_end(&self) -> Result<Option<usize>> {
+        if let CachePolicy::Lower(object) = &self.cache_policy {
+            return Ok(Some(object.size()));
+        }
         // The cached inode size may be stale. Refreshing attributes here keeps
         // `SEEK_END` consistent with the latest file size on the server.
         self.inode.revalidate_attr(Some(self.open_handle.fh()))?;
@@ -205,7 +223,9 @@ impl PerOpenFileOps for VirtioFsFile {
     }
 
     fn sync(&self, mode: SyncMode) -> Result<()> {
-        self.inode.sync(mode)?;
+        if !matches!(self.cache_policy, CachePolicy::Lower(_)) {
+            self.inode.sync(mode)?;
+        }
 
         let fsync_flags = match mode {
             SyncMode::Data => FsyncFlags::FDATASYNC,
@@ -223,8 +243,9 @@ impl PerOpenFileOps for VirtioFsFile {
 }
 
 /// The virtio-fs file I/O caching policy.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum CachePolicy {
+    /// Pages and EOF belong to this OPEN's immutable backing object.
+    Lower(Arc<LowerObject>),
     /// I/O goes through the page cache.
     Cached,
     /// I/O bypasses the page cache and hits the FUSE server directly, due to
