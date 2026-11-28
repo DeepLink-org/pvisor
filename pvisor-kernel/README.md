@@ -84,8 +84,8 @@ The combined product firmware receipt retains both payloads' source identities.
 `--firmware` cannot override the Rust native payload; it is rejected for this
 selection instead of loading a file or falling back to Linux.
 
-The profile requires a fresh VM without EFI, TEE, snapshots, restore or Linux
-idle handoff. Linux x86_64/KVM accepts **1–64 vCPUs**, with at least **16 MiB**
+The profile requires a fresh VM without EFI, TEE, snapshots or restore.
+Linux x86_64/KVM accepts **1–64 vCPUs**, with at least **16 MiB**
 or **1.5 MiB per vCPU rounded up**, whichever is larger. That is 16 MiB for
 1–10 vCPUs, 17 MiB for 11, 24 MiB for 16, 48 MiB for 32 and 96 MiB for 64.
 These are launch limits, not a guarantee that an arbitrary workload fits.
@@ -113,6 +113,41 @@ require `CAP_NET_ADMIN`; arbitrary route entries and device selection via
 `/proc/net/tcp` exposes IPv4 listeners; it does not enumerate established
 connections or provide real queue and timer statistics.
 Do not treat this as Linux syscall or workload compatibility.
+
+### Single-vCPU idle handoff
+
+On Linux x86_64/KVM, opt in through `VmConfiguration::guest_idle_handoff`.
+The embedded guest uses ABI v2 only with one vCPU; Linux-specific compaction
+policy and SMP are unsupported for this guest. Busy tasks keep the scheduler
+tick. In idle, the APIC uses a one-shot for the earliest pending guest timer
+or a five-second clock maintenance deadline, whichever is sooner. Elapsed
+time still advances from the TSC. Device interrupts can wake the guest earlier.
+Existing periodic worker and vDSO timers remain deadlines. Short budgets may
+grant pause-only handoffs without meeting the default one-second offload limit.
+
+On KVM with MSI injection, the guest registers a dedicated APIC wake vector
+before enabling event-driven acquisition. The host sends one interrupt on arm
+so a guest already in `HLT` can offer promptly; the interrupt grants no lease.
+Steady-state unarmed idle needs neither probe-only wakeups nor PIO probes.
+Without the negotiated extension, ABI v2 retains a
+50 ms probe retry. Without opt-in, the existing timer path is unchanged.
+The VMM parks the vCPU on an accepted offer until wake or claim. A claimed
+pause requires explicit Host resume; the offer does not reclaim RAM.
+
+The hardware fixture exercises arming after the guest blocks, claiming the
+lease, revoking on virtio input while explicitly paused, and resuming on the
+guest timer. Build with the native bundle embedded and run:
+
+```sh
+mkdir -p target
+cc -static -O2 -Wall -Wextra -Werror pvisor-kernel/tests/idle_handoff.c \
+  -o target/pvisor-native-idle-guest
+export PVISOR_BUILD_NATIVE_KERNEL_BUNDLE="$(mise run kernel -- build -j4)"
+PVISOR_CASE_IDLE_GUEST="$PWD/target/pvisor-native-idle-guest" \
+  mise run test -- pvisor-vm -- --test native_idle_handoff --run-ignored only
+```
+
+### Filesystem transport
 
 The [inline metadata path](../crates/pvisor-vm/README.md#virtio-fs-并发与冻结契约)
 negotiates device feature bit 23. An idle ordinary queue can use bit 31 in its
@@ -515,10 +550,9 @@ separate VMs must map identical workload pages to the same physical-pool file
 slots before one writes. The writer verifies its changes, the other VM verifies
 the original bytes, and both must exit through the guest supervisor.
 
-These are host memory mechanisms. Linux guest-idle automatic offload requires
-an interrupt-safe idle offer and timer deadline from the guest. The native
-kernel does not supply that protocol. Snapshot/restore COW is also unsupported;
-the physical pool tests live sharing, not snapshot-backed cloning.
+These are host memory mechanisms. The memory probe does not exercise
+cooperative idle offload. Snapshot/restore COW is unsupported; the physical
+pool tests live sharing, not snapshot-backed cloning.
 
 ### x86_64 vCPU/RAM matrix
 

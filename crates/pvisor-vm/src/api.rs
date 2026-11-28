@@ -216,7 +216,8 @@ pub trait VmConfiguration: Sized {
     fn embedded_kernel(&mut self, bytes: &[u8], guest_addr: u64, entry_addr: u64)
         -> io::Result<()>;
     /// Opt in to the versioned guest idle handoff. Requires a fresh Linux/KVM
-    /// x86-64 VM with one or two vCPUs and matching patched firmware. Other targets,
+    /// x86-64 VM with matching patched Linux firmware (one or two vCPUs) or an
+    /// embedded Rust native kernel (one vCPU). Other targets,
     /// snapshots and unguarded devices are rejected. Optional RAM offload uses
     /// `GuestIdleControl::offload_guest_idle` after conditional pause. Disabled by
     /// default; configuration alone does not authorize a pause or offload.
@@ -230,7 +231,7 @@ pub trait VmConfiguration: Sized {
     /// Enable the same idle profile with Host-selected maintenance/admission policy.
     /// `disable_proactive_compaction` adds the Linux boot sysctl
     /// `vm.compaction_proactiveness=0`; demand-driven compaction remains enabled.
-    /// Requires firmware supporting this sysctl; the maintained Linux kernel does.
+    /// Requires firmware supporting this sysctl; Rust native rejects `true`.
     /// It can increase high-order allocation latency and is not a security boundary.
     /// `offload_minimum` must be >2 ms and <=24 hours. Reclaim requires strictly
     /// more than this budget at admission, after device-gate closure. A shorter

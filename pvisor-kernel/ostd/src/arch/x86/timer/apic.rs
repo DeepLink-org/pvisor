@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::{
+    sync::atomic::{AtomicBool, AtomicU64, Ordering},
+    time::Duration,
+};
 
 use crate::{
     arch::{
@@ -41,6 +44,9 @@ pub(super) fn init_on_ap(timer_irq: &IrqLine) {
 pub(super) fn timer_callback() {
     use x86::msr::{IA32_TSC_DEADLINE, wrmsr};
 
+    if IDLE_TIMER.load(Ordering::Relaxed) {
+        return;
+    }
     match CONFIG.get().expect("ACPI timer config is not initialized") {
         Config::DeadlineMode { tsc_interval } => {
             let tsc_value = crate::arch::read_tsc();
@@ -48,6 +54,42 @@ pub(super) fn timer_callback() {
             unsafe { wrmsr(IA32_TSC_DEADLINE, next_tsc_value) };
         }
         Config::PeriodicMode { .. } => {}
+    }
+}
+
+static IDLE_TIMER: AtomicBool = AtomicBool::new(false);
+
+pub(crate) fn start_idle_timer(delay: Duration, irq: &crate::irq::DisabledLocalIrqGuard) {
+    // The native idle profile is single-vCPU.
+    IDLE_TIMER.store(true, Ordering::Relaxed);
+    match *CONFIG.get().unwrap() {
+        Config::DeadlineMode { .. } => {
+            let cycles = (delay.as_nanos() * u128::from(tsc_freq())).div_ceil(1_000_000_000);
+            let deadline = crate::arch::read_tsc() + cycles.max(1) as u64;
+            // SAFETY: TSC-deadline support was checked when selecting this mode.
+            unsafe { x86::msr::wrmsr(x86::msr::IA32_TSC_DEADLINE, deadline) };
+        }
+        Config::PeriodicMode { init_count } => {
+            let apic = apic::get_or_init(irq);
+            apic.set_timer_init_count(0);
+            apic.set_lvt_timer(u64::from(super::TIMER_IRQ.get().unwrap().num()));
+            let count = (delay.as_nanos() * u128::from(init_count) * u128::from(TIMER_FREQ))
+                .div_ceil(1_000_000_000)
+                .clamp(1, u128::from(u32::MAX));
+            apic.set_timer_init_count(count as u64);
+        }
+    }
+}
+
+pub(crate) fn stop_idle_timer(irq: &crate::irq::DisabledLocalIrqGuard) {
+    IDLE_TIMER.store(false, Ordering::Relaxed);
+    match *CONFIG.get().unwrap() {
+        Config::DeadlineMode { .. } => timer_callback(),
+        Config::PeriodicMode { init_count } => {
+            let apic = apic::get_or_init(irq);
+            apic.set_timer_init_count(0);
+            init_periodic_mode(apic, super::TIMER_IRQ.get().unwrap(), init_count);
+        }
     }
 }
 

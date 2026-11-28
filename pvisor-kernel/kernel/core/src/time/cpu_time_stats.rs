@@ -105,8 +105,8 @@ impl CpuTimeStatsManager {
         self.system.add_on_cpu(cpu, 1);
     }
 
-    fn inc_idle_time(&self, cpu: CpuId) {
-        self.idle.add_on_cpu(cpu, 1);
+    pub(super) fn add_idle_time(&self, cpu: CpuId, ticks: u64) {
+        self.idle.add_on_cpu(cpu, ticks as isize);
     }
 
     fn new() -> Self {
@@ -135,8 +135,11 @@ fn update_cpu_statistics() {
         // The kernel code is interrupted.
         InterruptLevel::L1(PrivilegeLevel::Kernel) => {
             if is_idle() {
-                // Idle time is not counted towards CPU usage.
-                manager.inc_idle_time(cpu_id)
+                #[cfg(target_arch = "x86_64")]
+                if super::idle::in_oneshot_wait() {
+                    return;
+                }
+                manager.add_idle_time(cpu_id, 1);
             } else {
                 // Non-idle time is counted as kernel time.
                 manager.inc_system_time(cpu_id);

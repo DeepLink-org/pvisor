@@ -52,6 +52,8 @@ fn init() {
     crate::util::random::init();
     crate::driver::init();
     crate::time::init();
+    #[cfg(target_arch = "x86_64")]
+    crate::time::idle::init();
     crate::net::init();
     crate::sched::init();
     crate::process::init();
@@ -114,6 +116,9 @@ fn bsp_idle_loop() {
 
     // Wait till the init process becomes zombie.
     while !init_process.status().is_zombie() {
+        #[cfg(target_arch = "x86_64")]
+        crate::time::idle::wait();
+        #[cfg(not(target_arch = "x86_64"))]
         ostd::task::halt_cpu();
     }
 

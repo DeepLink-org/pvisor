@@ -1196,6 +1196,7 @@ Design: 负载、对照、控制变量与有效样本判据。
 - **#212 后续：** [可变文件的请求与确认](evidence/native-file-handoff.md) 对照标量和散读、精确写入、宿主 RAM 屏障与显式新树发布；不更改原门禁或为 `:rw` 延迟确认。
 - **物理核心准入：** [队列交接](evidence/native-queue-handoff.md)用同核 SMT 线程与不同核心分别核验协商。在仅允许同一物理核心的条件下，比较两版均请求交接时的热读与写加同步；不改变三后端门禁。
 - **自动交接诊断：** 使用同一候选制品，比较 `0` / `1` / `auto` 在连续读写、间歇读上的时间与 CPU 成本；另用 profile 确认协商，回退不得计作成功启用。独立于原 45 项矩阵。
+- **[Rust native idle arm 诊断](evidence/native-idle-arm.md)：** 同一宿主和内嵌 guest 制品、同一静态 stdin fixture，Linux x86_64/KVM、1 vCPU/256 MiB。三组为周期 tick（关闭 handoff）、ABI v2 的 50 ms 重试（`PVISOR_DIAG_NATIVE_IDLE_WAKE=0`）和注册 LAPIC 唤醒。先验证唤醒和退出；各组用 fresh VM，固定 CPU affinity，随机交替，按 ready 后 1 秒的整个 runner CPU 时间、arm 到 pause ACK 的延迟分别报告。保留冻结制品摘要和全部样本；不据此推断真实 Agent 完成时间、P99、RAM 或并发容量。
 - **tmpfs 对照：** [匿名页、文件空洞和并发读](evidence/native-guest-tmpfs.md) 用上一轮制品与 PR #209 为独立基线，区分共享文件同步成本和 guest 内存文件的访问成本。
 - **Linux 固件：** [virtio-fs 往返与目录发布](evidence/linux-fw-file-io.md) 记录同固件 tmpfs 配对、传输层消融、完整门禁和新目录的分阶段发布边界。
 - **受限提交：** [定长批量提交](vm/packed-tree.md) 对照逐文件导出与 guest 退出后宿主一次导入；相同的新目录内容，区分生产结束、可见与同步确认，不改变普通共享写语义。

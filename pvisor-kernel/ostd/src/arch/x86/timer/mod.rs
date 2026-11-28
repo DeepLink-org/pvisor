@@ -13,6 +13,7 @@ mod apic;
 mod hpet;
 pub(in crate::arch) mod pit;
 
+pub(crate) use apic::{start_idle_timer, stop_idle_timer};
 use spin::Once;
 
 use super::trap::TrapFrame;

@@ -84,10 +84,12 @@ impl<B: Backend> Builder<B> {
         disable_proactive_compaction: bool,
         offload_minimum: std::time::Duration,
     ) -> io::Result<()> {
-        if self.resources.rust_native_kernel {
+        if self.resources.rust_native_kernel
+            && (self.resources.vcpu_config().vcpu_count != 1 || disable_proactive_compaction)
+        {
             return Err(io::Error::new(
                 io::ErrorKind::Unsupported,
-                "Rust native kernel does not implement Linux idle handoff",
+                "Rust native idle handoff requires one vCPU and no Linux compaction policy",
             ));
         }
         if offload_minimum <= std::time::Duration::from_millis(2)
@@ -405,7 +407,10 @@ impl<B: Backend> Builder<B> {
                     .push_str(" sysctl.vm.compaction_proactiveness=0");
             }
         }
-        if self.guest_idle && self.resources.vcpu_config().vcpu_count == 1 {
+        let linux_idle_maintenance = self.guest_idle
+            && !self.resources.rust_native_kernel
+            && self.resources.vcpu_config().vcpu_count == 1;
+        if linux_idle_maintenance {
             // Host profile enables the single-CPU PSI idle fix. Override only for A/B.
             let quiesce = match std::env::var("PVISOR_DIAG_PSI_IDLE_QUIESCE") {
                 Ok(value) => value,
@@ -422,7 +427,7 @@ impl<B: Backend> Builder<B> {
                 .get_or_insert_with(String::new)
                 .push_str(&format!(" psi_idle_quiesce={quiesce}"));
         }
-        if self.guest_idle && self.resources.vcpu_config().vcpu_count == 1 {
+        if linux_idle_maintenance {
             let defer = match std::env::var("PVISOR_DIAG_PSI_IDLE_DEFER") {
                 Ok(value) => value,
                 Err(std::env::VarError::NotPresent) => "1".into(),
@@ -438,7 +443,7 @@ impl<B: Backend> Builder<B> {
                 .get_or_insert_with(String::new)
                 .push_str(&format!(" psi_idle_defer={defer}"));
         }
-        if self.guest_idle && self.resources.vcpu_config().vcpu_count == 1 {
+        if linux_idle_maintenance {
             // Only the authenticated single-vCPU handoff can park an empty check.
             let defer = match std::env::var("PVISOR_DIAG_WATCHDOG_IDLE_DEFER") {
                 Ok(value) => value,
@@ -456,8 +461,8 @@ impl<B: Backend> Builder<B> {
                 .push_str(&format!(" pvisor_watchdog_defer={defer}"));
         }
         // Engineering-only Host selector; never inferred from guest/model input.
-        if let Some(psi) = std::env::var_os("PVISOR_DIAG_GUEST_PSI")
-            .filter(|_| self.guest_idle && self.resources.vcpu_config().vcpu_count == 1)
+        if let Some(psi) =
+            std::env::var_os("PVISOR_DIAG_GUEST_PSI").filter(|_| linux_idle_maintenance)
         {
             let psi = psi
                 .to_str()
@@ -495,6 +500,14 @@ impl<B: Backend> Builder<B> {
         let idle = vm.lock().unwrap().device_memory_gate().idle.clone();
         if self.guest_idle {
             idle.configure_cpus(self.resources.vcpu_config().vcpu_count);
+            #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+            if self.resources.rust_native_kernel
+                && std::env::var_os("PVISOR_DIAG_NATIVE_IDLE_WAKE").as_deref()
+                    != Some(std::ffi::OsStr::new("0"))
+                && vm.lock().unwrap().supports_native_idle_wake()
+            {
+                idle.enable_native_wake();
+            }
         }
         idle.set_offload_minimum(self.idle_offload_minimum);
         idle.enable(self.guest_idle);

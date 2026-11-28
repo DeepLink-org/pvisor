@@ -192,6 +192,17 @@ impl TimerManager {
             .push(timer_callback);
     }
 
+    #[cfg(target_arch = "x86_64")]
+    pub(crate) fn next_delay(&self) -> Option<Duration> {
+        let mut callbacks = self.timer_callbacks.disable_irq().lock();
+        while callbacks.peek().is_some_and(|timer| timer.is_cancelled()) {
+            callbacks.pop();
+        }
+        callbacks
+            .peek()
+            .map(|timer| timer.expired_time.saturating_sub(self.clock.read_time()))
+    }
+
     /// Checks and processes the managed timers.
     ///
     /// If any of the timers have timed out, call the corresponding callback functions.

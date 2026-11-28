@@ -52,7 +52,7 @@ pub(super) fn read_instant() -> Instant {
     clock.read_instant()
 }
 
-fn update_clocksource() {
+pub(super) fn update_clocksource() {
     let clock = CLOCK.get().unwrap();
     clock.update();
 

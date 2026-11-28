@@ -13,7 +13,7 @@ pub(crate) mod mm;
 pub mod power;
 pub mod serial;
 pub(crate) mod task;
-mod timer;
+pub(crate) mod timer;
 pub mod trap;
 pub mod vm;
 

@@ -282,10 +282,23 @@ fn init_jiffies_clock_manager() {
     time::softirq::register_callback(callback);
 }
 
-fn update_coarse_clock() {
+pub(crate) fn update_coarse_clock() {
     let real_time = RealTimeClock::get().read_time();
     let current = RealTimeCoarseClock::current_ref().get().unwrap();
     *current.disable_irq().lock() = real_time;
+}
+
+#[cfg(target_arch = "x86_64")]
+pub(crate) fn next_idle_timer() -> Option<Duration> {
+    [
+        RealTimeClock::timer_manager(),
+        MonotonicClock::timer_manager(),
+        BootTimeClock::timer_manager(),
+        JIFFIES_TIMER_MANAGER.get().unwrap(),
+    ]
+    .into_iter()
+    .filter_map(|manager| manager.next_delay())
+    .min()
 }
 
 fn init_coarse_clock() {

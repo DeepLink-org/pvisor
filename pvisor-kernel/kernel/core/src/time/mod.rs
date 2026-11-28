@@ -13,6 +13,8 @@ use crate::prelude::*;
 pub(crate) mod clocks;
 mod core;
 pub(crate) mod cpu_time_stats;
+#[cfg(target_arch = "x86_64")]
+pub(crate) mod idle;
 mod softirq;
 mod system_time;
 pub(crate) mod timerfd;

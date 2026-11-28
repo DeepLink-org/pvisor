@@ -79,6 +79,12 @@ pub fn read_monotonic_time() -> Duration {
     Duration::new(instant.secs(), instant.nanos())
 }
 
+/// Refreshes the clocksource and its vDSO record after a tickless wait.
+#[cfg(target_arch = "x86_64")]
+pub fn refresh_after_idle() {
+    tsc::update_clocksource();
+}
+
 /// Returns the default (TSC) clocksource.
 pub fn default_clocksource() -> Arc<ClockSource> {
     tsc::CLOCK.get().unwrap().clone()

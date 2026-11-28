@@ -9,6 +9,9 @@ use core::{cell::RefCell, sync::atomic::Ordering};
 
 pub use jiffies::Jiffies;
 
+#[cfg(target_arch = "x86_64")]
+pub(crate) use jiffies::enable_idle_clock;
+
 use crate::{
     arch::trap::TrapFrame,
     cpu::{CpuId, PinCurrentCpu},
