@@ -165,6 +165,12 @@ impl Clock for MonotonicClock {
 
 impl Clock for RealTimeCoarseClock {
     fn read_time(&self) -> Duration {
+        #[cfg(target_arch = "x86_64")]
+        if ostd::timer::event_timer_enabled() {
+            // No periodic refresh is needed to provide millisecond resolution.
+            let millis = read_monotonic_time().as_millis() as u64;
+            return *START_TIME_AS_DURATION.get().unwrap() + Duration::from_millis(millis);
+        }
         *Self::current_ref().get().unwrap().disable_irq().lock()
     }
 }
@@ -225,7 +231,7 @@ macro_rules! define_timer_managers {
         fn _init_system_wide_timer_managers() {
             $(
                 let clock = paste! {[<$clock_id _INSTANCE>].get().unwrap().clone()};
-                let timer_manager = TimerManager::new(clock);
+                let timer_manager = TimerManager::new_wall(clock);
                 for cpu in ostd::cpu::all_cpus() {
                     paste! {
                         [<$clock_id _MANAGER>].get_on_cpu(cpu).call_once(|| timer_manager.clone());
@@ -270,7 +276,7 @@ pub(crate) static JIFFIES_TIMER_MANAGER: Once<Arc<TimerManager>> = Once::new();
 
 fn init_jiffies_clock_manager() {
     let jiffies_clock = JiffiesClock { _private: () };
-    let jiffies_timer_manager = TimerManager::new(Arc::new(jiffies_clock));
+    let jiffies_timer_manager = TimerManager::new_wall(Arc::new(jiffies_clock));
     JIFFIES_TIMER_MANAGER.call_once(|| jiffies_timer_manager);
 
     let callback = || {
@@ -289,7 +295,7 @@ pub(crate) fn update_coarse_clock() {
 }
 
 #[cfg(target_arch = "x86_64")]
-pub(crate) fn next_idle_timer() -> Option<Duration> {
+pub(crate) fn next_wall_timer() -> Option<Duration> {
     [
         RealTimeClock::timer_manager(),
         MonotonicClock::timer_manager(),
@@ -304,7 +310,6 @@ pub(crate) fn next_idle_timer() -> Option<Duration> {
 fn init_coarse_clock() {
     let real_time = RealTimeClock::get().read_time();
     RealTimeCoarseClock::current_ref().call_once(|| SpinLock::new(real_time));
-    time::softirq::register_callback(update_coarse_clock);
 }
 
 pub(super) fn init() {

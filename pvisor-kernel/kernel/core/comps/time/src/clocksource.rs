@@ -164,10 +164,11 @@ impl ClockSource {
         self.update_last_record((Instant::zero(), instant_cycles));
     }
 
-    /// Gets the instant to update the internal instant in the `ClockSource`.
-    pub(crate) fn update(&self) {
-        let (instant, instant_cycles) = self.calculate_instant();
-        self.update_last_record((instant, instant_cycles));
+    /// Advances the conversion base and returns the new record.
+    pub(crate) fn update(&self) -> (Instant, u64) {
+        let record = self.calculate_instant();
+        self.update_last_record(record);
+        record
     }
 
     /// Reads the instant corresponding to the current time.

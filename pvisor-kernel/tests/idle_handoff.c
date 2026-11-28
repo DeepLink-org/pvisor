@@ -4,9 +4,9 @@
 #include <time.h>
 #include <unistd.h>
 
-static int64_t now_ns(void) {
+static int64_t now_ns(clockid_t clock) {
     struct timespec now;
-    assert(clock_gettime(CLOCK_MONOTONIC, &now) == 0);
+    assert(clock_gettime(clock, &now) == 0);
     return (int64_t)now.tv_sec * 1000000000 + now.tv_nsec;
 }
 
@@ -19,11 +19,13 @@ int main(int argc, char **argv) {
         return 7;
     }
 
-    int64_t start = now_ns();
+    int64_t coarse_start = now_ns(CLOCK_MONOTONIC_COARSE);
+    int64_t start = now_ns(CLOCK_MONOTONIC);
     assert(write(STDOUT_FILENO, "TIMER\n", 6) == 6);
     struct timespec delay = {.tv_nsec = 600000000};
     assert(nanosleep(&delay, NULL) == 0);
-    assert(now_ns() - start >= delay.tv_nsec);
+    assert(now_ns(CLOCK_MONOTONIC) - start >= delay.tv_nsec);
+    assert(now_ns(CLOCK_MONOTONIC_COARSE) - coarse_start >= 300000000);
     assert(write(STDOUT_FILENO, "TIMER_OK\n", 9) == 9);
     assert(read(STDIN_FILENO, &byte, 1) == 1 && byte == 'B');
     assert(write(STDOUT_FILENO, "DONE\n", 5) == 5);

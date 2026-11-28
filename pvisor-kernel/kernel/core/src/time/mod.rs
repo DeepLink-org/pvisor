@@ -20,6 +20,10 @@ mod system_time;
 pub(crate) mod timerfd;
 pub(crate) mod wait;
 
+use spin::Once;
+
+static CLOCK_REFRESH_TIMER: Once<Arc<Timer>> = Once::new();
+
 pub(crate) type clockid_t = i32;
 pub(crate) type time_t = i64;
 pub(crate) type timer_t = i32;
@@ -34,6 +38,21 @@ pub(super) fn init() {
     clocks::init();
     softirq::init();
     cpu_time_stats::init();
+    init_clock_refresh();
+}
+
+fn init_clock_refresh() {
+    // The coarse vDSO reads this sample without interpolating from the counter.
+    const INTERVAL: Duration = Duration::from_millis(100);
+    let refresh = CLOCK_REFRESH_TIMER.call_once(|| {
+        clocks::MonotonicClock::timer_manager().create_timer(|_guard| {
+            let (instant, cycles) = aster_time::refresh_clocksource();
+            crate::vdso::refresh_time(instant, cycles);
+        })
+    });
+    let mut timer = refresh.lock();
+    timer.set_interval(INTERVAL);
+    timer.set_timeout(timer::Timeout::After(INTERVAL));
 }
 
 pub(super) fn init_on_each_cpu() {

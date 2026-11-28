@@ -13,7 +13,7 @@ use crate::{
         tsc_freq,
     },
     info,
-    irq::IrqLine,
+    irq::{DisabledLocalIrqGuard, IrqLine},
     task::disable_preempt,
     timer::TIMER_FREQ,
 };
@@ -59,29 +59,53 @@ pub(super) fn timer_callback() {
 
 static IDLE_TIMER: AtomicBool = AtomicBool::new(false);
 
-pub(crate) fn start_idle_timer(delay: Duration, irq: &crate::irq::DisabledLocalIrqGuard) {
-    // The native idle profile is single-vCPU.
-    IDLE_TIMER.store(true, Ordering::Relaxed);
+pub(super) fn deadline_after(delay: Duration) -> u64 {
+    let cycles = (delay.as_nanos() * u128::from(tsc_freq())).div_ceil(1_000_000_000);
+    crate::arch::read_tsc().saturating_add(cycles.clamp(1, u128::from(u64::MAX)) as u64)
+}
+
+pub(super) fn configure_oneshot(irq: &DisabledLocalIrqGuard) {
+    if matches!(*CONFIG.get().unwrap(), Config::PeriodicMode { .. }) {
+        let apic = apic::get_or_init(irq);
+        apic.set_timer_init_count(0);
+        apic.set_lvt_timer(u64::from(super::TIMER_IRQ.get().unwrap().num()));
+    }
+}
+
+pub(super) fn program_oneshot(deadline: Option<u64>, irq: &DisabledLocalIrqGuard) {
     match *CONFIG.get().unwrap() {
         Config::DeadlineMode { .. } => {
-            let cycles = (delay.as_nanos() * u128::from(tsc_freq())).div_ceil(1_000_000_000);
-            let deadline = crate::arch::read_tsc() + cycles.max(1) as u64;
             // SAFETY: TSC-deadline support was checked when selecting this mode.
-            unsafe { x86::msr::wrmsr(x86::msr::IA32_TSC_DEADLINE, deadline) };
+            unsafe { x86::msr::wrmsr(x86::msr::IA32_TSC_DEADLINE, deadline.unwrap_or(0)) };
         }
         Config::PeriodicMode { init_count } => {
-            let apic = apic::get_or_init(irq);
-            apic.set_timer_init_count(0);
-            apic.set_lvt_timer(u64::from(super::TIMER_IRQ.get().unwrap().num()));
-            let count = (delay.as_nanos() * u128::from(init_count) * u128::from(TIMER_FREQ))
-                .div_ceil(1_000_000_000)
-                .clamp(1, u128::from(u32::MAX));
-            apic.set_timer_init_count(count as u64);
+            let count = deadline.map_or(0, |deadline| {
+                let cycles = deadline.saturating_sub(crate::arch::read_tsc());
+                (u128::from(cycles) * u128::from(init_count) * u128::from(TIMER_FREQ))
+                    .div_ceil(u128::from(tsc_freq()))
+                    .clamp(1, u128::from(u32::MAX)) as u64
+            });
+            apic::get_or_init(irq).set_timer_init_count(count);
         }
     }
 }
 
-pub(crate) fn stop_idle_timer(irq: &crate::irq::DisabledLocalIrqGuard) {
+pub(crate) fn start_idle_timer(delay: Duration, irq: &DisabledLocalIrqGuard) {
+    let deadline = deadline_after(delay);
+    if super::deadline::event_timer_enabled() {
+        super::deadline::enter_idle(deadline, irq);
+        return;
+    }
+    IDLE_TIMER.store(true, Ordering::Relaxed);
+    configure_oneshot(irq);
+    program_oneshot(Some(deadline), irq);
+}
+
+pub(crate) fn stop_idle_timer(irq: &DisabledLocalIrqGuard) {
+    if super::deadline::event_timer_enabled() {
+        super::deadline::leave_idle(irq);
+        return;
+    }
     IDLE_TIMER.store(false, Ordering::Relaxed);
     match *CONFIG.get().unwrap() {
         Config::DeadlineMode { .. } => timer_callback(),

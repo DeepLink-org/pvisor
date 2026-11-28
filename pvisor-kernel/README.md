@@ -119,11 +119,13 @@ Do not treat this as Linux syscall or workload compatibility.
 On Linux x86_64/KVM, opt in through `VmConfiguration::guest_idle_handoff`.
 The embedded guest uses ABI v2 only with one vCPU; Linux-specific compaction
 policy and SMP are unsupported for this guest. Busy tasks keep the scheduler
-tick. In idle, the APIC uses a one-shot for the earliest pending guest timer
-or a five-second clock maintenance deadline, whichever is sooner. Elapsed
-time still advances from the TSC. Device interrupts can wake the guest earlier.
-Existing periodic worker and vDSO timers remain deadlines. Short budgets may
-grant pause-only handoffs without meeting the default one-second offload limit.
+tick. In idle, the APIC uses a one-shot for the earliest pending guest timer,
+with a five-second maximum wait. Elapsed time still advances from the TSC.
+Device interrupts can wake the guest earlier.
+Clocksource and vDSO updates share an explicit 100 ms monotonic timer rather
+than counting scheduler ticks. This deadline and periodic worker timers remain
+active while idle. Short budgets may grant pause-only handoffs without meeting
+the default one-second offload limit.
 
 On KVM with MSI injection, the guest registers a dedicated APIC wake vector
 before enabling event-driven acquisition. The host sends one interrupt on arm
@@ -136,7 +138,8 @@ pause requires explicit Host resume; the offer does not reclaim RAM.
 
 The hardware fixture exercises arming after the guest blocks, claiming the
 lease, revoking on virtio input while explicitly paused, and resuming on the
-guest timer. Build with the native bundle embedded and run:
+guest timer. It verifies both monotonic clocks advance across that wait.
+Build with the native bundle embedded and run:
 
 ```sh
 mkdir -p target
@@ -247,6 +250,36 @@ retained. Reopening an evicted object refetches bytes through the new handle.
 This is a bound on **idle data pages per mount**, not on active mappings or
 total VM memory. `PVISOR_VM_FS_LOWER_DATA_CACHE=0` disables the automatic
 data policy. Plain mutable passthrough and unqualified bind mounts are unchanged.
+
+### Wall-clock deadline diagnostic
+
+On Linux x86_64/KVM, set `PVISOR_DIAG_NATIVE_WALL_DEADLINE=1` for a
+single-vCPU Rust native VM to enable the guest's APIC event timer, with or
+without idle handoff. Wall-clock timer queues request their earliest deadline
+instead of being scanned by the scheduler tick. The tick stops in idle but
+still runs while busy for preemption and CPU-time accounting. Linux firmware,
+SMP, ARM64, and the default mode do not opt in.
+
+With a native-enabled `vm_api_case` built from the same bundle for both runs:
+
+```sh
+root=$(mktemp -d "$PWD/target/wall-deadline.XXXXXX")
+cc -static -O2 -Wall -Wextra -Werror pvisor-kernel/tests/wall_deadline.c -o "$root/probe"
+for mode in periodic deadline; do
+    mkdir "$root/$mode"
+    cp "$root/probe" "$root/$mode/probe"
+    enabled=0
+    if [ "$mode" = deadline ]; then enabled=1; fi
+    PVISOR_GUEST_KERNEL=rust-native PVISOR_DIAG_NATIVE_WALL_DEADLINE="$enabled" \
+        timeout 20 target/release/examples/vm_api_case \
+        --rootfs "$root/$mode" --cpus 1 --memory 256 -- /probe "$mode"
+done
+```
+
+The fixture verifies deadline replacement, cancellation, periodic timerfd
+and futex timeouts. It checks that idle hardware interrupts and busy timer
+softirqs decrease without removing the busy-time tick. The final 256 samples
+measure wake lateness relative to a 200 µs timerfd deadline, not throughput.
 
 ## Tests and hardware acceptance
 

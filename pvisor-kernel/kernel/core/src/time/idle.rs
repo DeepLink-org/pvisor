@@ -25,8 +25,7 @@ const WAKE_VECTOR: u8 = 0xe0;
 const WAKE_MAGIC: u32 = 0x50574901;
 // ABI v2 without the wake extension cannot interrupt a sleeping vCPU on arm.
 const PROBE_RETRY: Duration = Duration::from_millis(50);
-// Bound the interval between clocksource refreshes while no task is runnable.
-const MAINTENANCE: Duration = Duration::from_secs(5);
+const MAX_IDLE_WAIT: Duration = Duration::from_secs(5);
 
 struct IdleHandoff {
     port: IoPort<u32, ReadWriteAccess>,
@@ -64,14 +63,20 @@ pub(super) fn in_oneshot_wait() -> bool {
 }
 
 pub(crate) fn wait() {
-    let Some(handoff) = HANDOFF.get() else {
+    let handoff = HANDOFF.get();
+    let event_timer = ostd::timer::event_timer_enabled();
+    if handoff.is_none() && !event_timer {
         halt_cpu();
         return;
-    };
+    }
     let armed = Cell::new(false);
     halt_cpu_until(
         || {
             IN_ONESHOT_WAIT.store(true, Ordering::Relaxed);
+            let Some(handoff) = handoff else {
+                // The event timer already holds the earliest wall deadline.
+                return MAX_IDLE_WAIT;
+            };
             let interrupt_driven = handoff.wake_irq.is_some();
             if !interrupt_driven || PROBE_PENDING.load(Ordering::Relaxed) {
                 // The host anchors the deadline before the guest samples its clocks.
@@ -79,23 +84,31 @@ pub(crate) fn wait() {
                 PROBE_PENDING.store(armed.get(), Ordering::Relaxed);
             }
             let limit = if armed.get() || interrupt_driven {
-                MAINTENANCE
+                MAX_IDLE_WAIT
             } else {
                 PROBE_RETRY
             };
-            clocks::next_idle_timer().map_or(limit, |delay| delay.min(limit))
+            if event_timer && !armed.get() {
+                limit
+            } else {
+                clocks::next_wall_timer().map_or(limit, |delay| delay.min(limit))
+            }
         },
         |delay| {
             let millis = delay.as_millis();
-            if armed.get() && millis > 2 {
+            if let Some(handoff) = handoff
+                && armed.get()
+                && millis > 2
+            {
                 handoff.port.write(millis as u32);
             }
         },
         |ticks| {
             IN_ONESHOT_WAIT.store(false, Ordering::Relaxed);
             CpuTimeStatsManager::singleton().add_idle_time(CpuId::bsp(), ticks);
-            aster_time::refresh_after_idle();
-            clocks::update_coarse_clock();
+            if !event_timer {
+                clocks::update_coarse_clock();
+            }
         },
     );
 }

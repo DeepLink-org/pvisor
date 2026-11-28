@@ -17,6 +17,7 @@ use std::{
 const CHILD: &str = "PVISOR_TEST_NATIVE_IDLE_CHILD";
 const DIAGNOSTIC: &str = "PVISOR_CASE_IDLE_DIAGNOSTIC";
 const PERIODIC_CONTROL: &str = "periodic";
+const DEVICE_WAKES: &[&str] = &["device_ram", "device_completion", "virtio_interrupt"];
 
 #[test]
 #[ignore = "requires /dev/kvm, embedded Rust native kernel and PVISOR_CASE_IDLE_GUEST"]
@@ -122,11 +123,7 @@ fn run_vm(root: &std::path::Path) {
             assert!(remaining <= Duration::from_secs(5));
             phase("device wake and resume");
             host_input.write_all(b"A").unwrap();
-            wait_for_wake(
-                &handle,
-                epoch,
-                &["device_ram", "device_completion", "virtio_interrupt"],
-            );
+            wait_for_wake(&handle, epoch, DEVICE_WAKES);
             assert_eq!(handle.is_paused(), Ok(true));
             handle.resume().unwrap();
             if let Some((idle_wall, idle_cpu_ns)) = idle_sample {
@@ -143,7 +140,7 @@ fn run_vm(root: &std::path::Path) {
 
             phase("timer wake and resume");
             assert_eq!(output.next().unwrap().unwrap(), "TIMER");
-            let (epoch, remaining) = claim(&handle);
+            let (epoch, remaining) = claim_after_output(&handle);
             assert!(remaining < Duration::from_millis(600));
             wait_for_wake(&handle, epoch, &["guest_timer"]);
             assert_eq!(handle.is_paused(), Ok(true));
@@ -151,13 +148,13 @@ fn run_vm(root: &std::path::Path) {
             assert_eq!(output.next().unwrap().unwrap(), "TIMER_OK");
 
             phase("resume and rearm");
-            let (epoch, _) = claim(&handle);
+            let (epoch, _) = claim_after_output(&handle);
             handle.retire_guest_idle(epoch);
             let next = handle
                 .resume_and_arm_guest_idle(epoch, Duration::from_secs(1))
                 .unwrap();
             assert_ne!(next, epoch);
-            claim_epoch(&handle, next);
+            claim_epoch(&handle, next, Instant::now() + Duration::from_secs(2)).unwrap();
             handle.resume().unwrap();
 
             host_input.write_all(b"B").unwrap();
@@ -185,17 +182,35 @@ fn process_cpu_ns() -> u64 {
 
 fn claim(handle: &VmmHandle) -> (u64, Duration) {
     let epoch = handle.arm_guest_idle(Duration::from_secs(1)).unwrap();
-    (epoch, claim_epoch(handle, epoch))
+    let remaining = claim_epoch(handle, epoch, Instant::now() + Duration::from_secs(2)).unwrap();
+    (epoch, remaining)
 }
 
-fn claim_epoch(handle: &VmmHandle, epoch: u64) -> Duration {
-    let mut status = handle.guest_idle_status();
+fn claim_after_output(handle: &VmmHandle) -> (u64, Duration) {
     let deadline = Instant::now() + Duration::from_secs(2);
     loop {
+        let epoch = handle.arm_guest_idle(Duration::from_secs(1)).unwrap();
+        match claim_epoch(handle, epoch, deadline) {
+            Ok(remaining) => return (epoch, remaining),
+            Err(reason) => {
+                // The host can read console bytes before the guest's completion IRQ.
+                assert!(DEVICE_WAKES.contains(&reason.as_str()), "{reason}");
+                assert!(!handle.pause_guest_idle(epoch).unwrap());
+                assert!(Instant::now() < deadline, "{reason}");
+            }
+        }
+    }
+}
+
+fn claim_epoch(handle: &VmmHandle, epoch: u64, deadline: Instant) -> Result<Duration, String> {
+    let mut status = handle.guest_idle_status();
+    loop {
         assert_eq!(status.epoch, epoch);
-        assert_eq!(status.wake_reason, None, "{status:?}");
+        if let Some(reason) = status.wake_reason {
+            return Err(reason);
+        }
         if status.offered && handle.pause_guest_idle(epoch).unwrap() {
-            return Duration::from_nanos(status.remaining_ns);
+            return Ok(Duration::from_nanos(status.remaining_ns));
         }
         assert!(Instant::now() < deadline, "{status:?}");
         status = handle.wait_guest_idle(status.sequence, Duration::from_millis(100));

@@ -26,8 +26,6 @@ mod clocksource;
 mod rtc;
 mod tsc;
 
-pub static VDSO_DATA_HIGH_RES_UPDATE_FN: Once<fn(Instant, u64)> = Once::new();
-
 static RTC_DRIVER: Once<Arc<dyn Driver + Send + Sync>> = Once::new();
 
 #[init_component]
@@ -79,10 +77,9 @@ pub fn read_monotonic_time() -> Duration {
     Duration::new(instant.secs(), instant.nanos())
 }
 
-/// Refreshes the clocksource and its vDSO record after a tickless wait.
-#[cfg(target_arch = "x86_64")]
-pub fn refresh_after_idle() {
-    tsc::update_clocksource();
+/// Refreshes the default clocksource and returns the new time and counter base.
+pub fn refresh_clocksource() -> (Instant, u64) {
+    tsc::CLOCK.get().unwrap().update()
 }
 
 /// Returns the default (TSC) clocksource.

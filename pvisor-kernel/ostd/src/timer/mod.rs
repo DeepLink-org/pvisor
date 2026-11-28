@@ -27,6 +27,38 @@ use crate::{
 /// spent in executing timer code.
 pub const TIMER_FREQ: u64 = 1000;
 
+/// Enables the APIC event timer alongside the busy-time tick on x86-64.
+///
+/// Call once after APIC initialization on a single-vCPU system. `on_event`
+/// runs with local interrupts disabled when the requested deadline expires.
+/// It must not block or enable interrupts.
+///
+/// # Panics
+///
+/// Panics on SMP or if called twice.
+#[cfg(target_arch = "x86_64")]
+pub fn enable_event_timer(on_event: fn()) {
+    crate::arch::timer::enable_event_timer(on_event);
+}
+
+/// Reports whether the x86-64 APIC event timer is enabled.
+#[cfg(target_arch = "x86_64")]
+pub fn event_timer_enabled() -> bool {
+    crate::arch::timer::event_timer_enabled()
+}
+
+/// Replaces the current APIC event deadline with a relative delay, or disarms
+/// that deadline with `None`. This does not change the busy-time tick.
+///
+/// # Panics
+///
+/// Panics unless [`enable_event_timer`] was called.
+#[cfg(target_arch = "x86_64")]
+pub fn set_event_timer(delay: Option<core::time::Duration>) {
+    assert!(event_timer_enabled());
+    crate::arch::timer::set_event_timer(delay);
+}
+
 type InterruptCallback = Box<dyn Fn() + Sync + Send>;
 
 cpu_local! {

@@ -393,6 +393,13 @@ impl<B: Backend> Builder<B> {
             if uses_default_cmdline {
                 prolog.push_str(" loglevel=warn");
             }
+            if cfg!(all(target_os = "linux", target_arch = "x86_64"))
+                && self.resources.vcpu_config().vcpu_count == 1
+                && std::env::var_os("PVISOR_DIAG_NATIVE_WALL_DEADLINE").as_deref()
+                    == Some(std::ffi::OsStr::new("1"))
+            {
+                prolog.push_str(" pvisor_wall_deadline=1");
+            }
         }
         if self.guest_idle {
             command
