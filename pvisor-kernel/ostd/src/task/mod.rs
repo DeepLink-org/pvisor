@@ -23,6 +23,8 @@ use processor::current_task;
 use spin::Once;
 use utils::ForceSync;
 
+#[cfg(target_arch = "x86_64")]
+pub use self::preempt::halt_cpu_until;
 pub use self::{
     preempt::{DisabledPreemptGuard, disable_preempt, halt_cpu},
     scheduler::info::{AtomicCpuId, TaskScheduleInfo},

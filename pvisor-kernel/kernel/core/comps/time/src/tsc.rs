@@ -3,16 +3,12 @@
 //! This module provide a instance of `ClockSource` based on TSC.
 
 use alloc::sync::Arc;
-use core::sync::atomic::{AtomicU64, Ordering};
 
-use ostd::{
-    arch::{read_tsc, tsc_freq},
-    timer::{self, TIMER_FREQ},
-};
+use ostd::arch::{read_tsc, tsc_freq};
 use spin::Once;
 
 use crate::{
-    START_TIME, VDSO_DATA_HIGH_RES_UPDATE_FN,
+    START_TIME,
     clocksource::{ClockSource, Instant},
 };
 
@@ -25,7 +21,6 @@ const MAX_DELAY_SECS: u64 = 100;
 pub(super) fn init() {
     init_clock();
     calibrate();
-    init_timer();
 }
 
 fn init_clock() {
@@ -50,38 +45,4 @@ fn calibrate() {
 pub(super) fn read_instant() -> Instant {
     let clock = CLOCK.get().unwrap();
     clock.read_instant()
-}
-
-fn update_clocksource() {
-    let clock = CLOCK.get().unwrap();
-    clock.update();
-
-    // Update vDSO data.
-    if let Some(update_fn) = VDSO_DATA_HIGH_RES_UPDATE_FN.get() {
-        let (last_instant, last_cycles) = clock.last_record();
-        update_fn(last_instant, last_cycles);
-    }
-}
-
-static TSC_UPDATE_COUNTER: AtomicU64 = AtomicU64::new(1);
-
-fn init_timer() {
-    // This must be frequent enough to provide values accurate to the second
-    // for the time fields in vDSO. We choose 10 Hz, which results in a
-    // worst-case staleness of ~100 ms.
-    // TODO: Implement a more complete and efficient timekeeping mechanism,
-    // then align this update frequency with Linux.
-    const VDSO_UPDATE_FREQ: u64 = 10;
-    let delay_counts = TIMER_FREQ / VDSO_UPDATE_FREQ;
-
-    let update = move || {
-        let counter = TSC_UPDATE_COUNTER.fetch_add(1, Ordering::Relaxed);
-
-        if counter.is_multiple_of(delay_counts) {
-            update_clocksource();
-        }
-    };
-
-    // TODO: Re-organize the code structure and use the `Timer` to achieve the updating.
-    timer::register_callback_on_cpu(update);
 }

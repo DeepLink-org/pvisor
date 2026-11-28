@@ -182,6 +182,22 @@ impl RealTimeClassRq {
     fn swap_arrays(&mut self) {
         self.index = !self.index;
     }
+
+    fn fifo_can_yield(&self, attr: &RealTimeAttr) -> bool {
+        self.array[usize::from(self.index)].peek_prio().is_some()
+            || self.array[usize::from(!self.index)]
+                .peek_prio()
+                .is_some_and(|prio| prio < attr.prio.load(Relaxed))
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    pub(super) fn preemption_delay(&self, rt: &CurrentRuntime, attr: &SchedAttr) -> Option<u64> {
+        let attr = &attr.real_time;
+        match attr.time_slice.load(Relaxed) {
+            0 => self.fifo_can_yield(attr).then_some(0),
+            slice => (!self.is_empty()).then_some(slice.saturating_sub(rt.period_delta)),
+        }
+    }
 }
 
 impl SchedClassRq for RealTimeClassRq {
@@ -223,13 +239,7 @@ impl SchedClassRq for RealTimeClassRq {
 
         match flags {
             UpdateFlags::Tick | UpdateFlags::Yield => match attr.time_slice.load(Relaxed) {
-                0 => {
-                    self.active_array().peek_prio().is_some()
-                        || self
-                            .inactive_array()
-                            .peek_prio()
-                            .is_some_and(|prio| prio < attr.prio.load(Relaxed))
-                }
+                0 => self.fifo_can_yield(attr),
                 ts => ts <= rt.period_delta && !self.is_empty(),
             },
             UpdateFlags::Wait | UpdateFlags::Exit => !self.is_empty(),

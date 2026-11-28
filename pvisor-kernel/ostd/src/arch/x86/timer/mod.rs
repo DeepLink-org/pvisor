@@ -10,9 +10,15 @@ macro_rules! __log_prefix {
 }
 
 mod apic;
+mod deadline;
 mod hpet;
 pub(in crate::arch) mod pit;
 
+pub(crate) use apic::{start_idle_timer, stop_idle_timer};
+pub(crate) use deadline::{
+    cpu_runtime_enabled, enable_cpu_runtime_timer, enable_event_timer, event_timer_enabled,
+    read_cpu_runtime_ns, set_cpu_runtime_timer, set_event_timer, set_preemption_deadline,
+};
 use spin::Once;
 
 use super::trap::TrapFrame;
@@ -38,6 +44,9 @@ pub(super) fn init_on_ap() {
 }
 
 fn timer_callback(trapframe: &TrapFrame) {
+    if deadline::handle_interrupt(trapframe) {
+        return;
+    }
     crate::timer::call_timer_callback_functions(trapframe);
 
     apic::timer_callback();

@@ -70,11 +70,11 @@ fn update_cpu_time() {
     if is_kernel_interrupted {
         posix_thread.prof_clock().kernel_clock().add_jiffies(1);
         process.prof_clock().kernel_clock().add_jiffies(1);
-        charge_cpu_time(&process, CpuStatKind::System);
+        charge_cpu_time(&process, CpuStatKind::System, tick_nanos());
     } else {
         posix_thread.prof_clock().user_clock().add_jiffies(1);
         process.prof_clock().user_clock().add_jiffies(1);
-        charge_cpu_time(&process, CpuStatKind::User);
+        charge_cpu_time(&process, CpuStatKind::User, tick_nanos());
         timer_manager
             .virtual_timer()
             .timer_manager()
@@ -90,7 +90,15 @@ fn update_cpu_time() {
 /// Registers a function to update the CPU clock in processes and
 /// threads during the system timer interrupt.
 pub(super) fn init_on_each_cpu() {
+    #[cfg(target_arch = "x86_64")]
+    if timer::cpu_runtime_enabled() {
+        return;
+    }
     timer::register_callback_on_cpu(update_cpu_time);
+}
+
+fn tick_nanos() -> u64 {
+    timer::Jiffies::new(1).as_duration().as_nanos() as u64
 }
 
 /// Represents timer resources and utilities for a POSIX process.

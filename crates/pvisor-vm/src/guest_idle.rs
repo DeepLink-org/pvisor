@@ -14,6 +14,9 @@ use std::time::{Duration, Instant};
 
 pub(crate) const PORT: u16 = 0x5050;
 pub(crate) const MAGIC: u32 = 0x50564902;
+pub(crate) const NATIVE_WAKE_PORT: u16 = 0x5054;
+pub(crate) const NATIVE_WAKE_VECTOR: u8 = 0xe0;
+const NATIVE_WAKE_MAGIC: u32 = 0x50574901;
 const DUAL_MAGIC: u32 = 0x50564903;
 const MARGIN: Duration = Duration::from_millis(2);
 fn diagnostics_enabled() -> bool {
@@ -44,9 +47,17 @@ impl DualIdle {
             .expect("idle generation exhausted");
     }
 }
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+enum NativeWake {
+    #[default]
+    Disabled,
+    Available,
+    Registered,
+}
 #[derive(Default)]
 struct State {
     dual: Option<DualIdle>,
+    native_wake: NativeWake,
     epoch: u64,
     offers_seen: u64,
     offer_sequence: Option<u64>,
@@ -106,6 +117,41 @@ impl IdleGate {
     pub(crate) fn dual_cpu(&self) -> bool {
         self.state.lock().unwrap().dual.is_some()
     }
+    pub(crate) fn enable_native_wake(&self) {
+        self.state.lock().unwrap().native_wake = NativeWake::Available;
+    }
+    pub(crate) fn register_native_wake(&self, cpu: u8, vector: u32) {
+        let mut s = self.state.lock().unwrap();
+        if cpu == 0
+            && vector == u32::from(NATIVE_WAKE_VECTOR)
+            && s.native_wake == NativeWake::Available
+        {
+            s.native_wake = NativeWake::Registered;
+        }
+    }
+    pub(crate) fn native_wake_status(&self, cpu: u8) -> u32 {
+        if cpu == 0 && self.state.lock().unwrap().native_wake == NativeWake::Registered {
+            NATIVE_WAKE_MAGIC
+        } else {
+            0
+        }
+    }
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    fn notify_native_arm(&self, vm: &crate::vmm::Vmm, epoch: u64) -> Result<(), String> {
+        let s = self.state.lock().unwrap();
+        if s.native_wake != NativeWake::Registered
+            || s.epoch != epoch
+            || s.until.is_none()
+            || s.offered
+            || s.claimed
+        {
+            return Ok(());
+        }
+        vm.wake_native_idle()?;
+        Self::diagnose(&s, "native_arm_irq", None);
+        Ok(())
+    }
+
     fn invalidate(s: &mut State, reason: &str) {
         if s.until.take().is_some() || s.offered {
             s.sequence += 1;
@@ -586,7 +632,18 @@ impl IdleGate {
 }
 impl GuestIdleControl for VmmHandle {
     fn arm_guest_idle(&self, maximum: Duration) -> Result<u64, String> {
-        self.vmm.upgrade().ok_or("VMM stopped")?;
+        let vm = self.vmm.upgrade().ok_or("VMM stopped")?;
+        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+        if self.idle.state.lock().unwrap().native_wake != NativeWake::Disabled {
+            let vm = vm.lock().map_err(|_| "VMM lock poisoned")?;
+            let epoch = self.idle.arm(maximum)?;
+            if let Err(error) = self.idle.notify_native_arm(&vm, epoch) {
+                self.idle.retire(epoch);
+                return Err(error);
+            }
+            return Ok(epoch);
+        }
+        let _ = vm;
         self.idle.arm(maximum)
     }
     fn resume_and_arm_guest_idle(&self, epoch: u64, maximum: Duration) -> Result<u64, String> {
@@ -600,6 +657,12 @@ impl GuestIdleControl for VmmHandle {
             return Err("resume-rearm requires paused VM".into());
         }
         let next = self.idle.resume_arm(epoch, maximum)?;
+        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+        if let Err(error) = self.idle.notify_native_arm(&vm, next) {
+            self.idle.retire(next);
+            vm.fail_control();
+            return Err(error);
+        }
         // Do not call ordinary handle.resume(): it would erase the fresh arm.
         self.idle.diagnose_transition("resume_release_begin");
         if let Err(error) = vm.resume() {
@@ -650,6 +713,28 @@ impl GuestIdleControl for VmmHandle {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_wake_registration_does_not_grant_an_idle_lease() {
+        let gate = IdleGate::default();
+        gate.register_native_wake(0, NATIVE_WAKE_VECTOR.into());
+        assert_eq!(gate.native_wake_status(0), 0);
+
+        gate.enable(true);
+        gate.enable_native_wake();
+        let epoch = gate.arm(Duration::from_secs(1)).unwrap();
+        for (cpu, vector) in [(0, 0), (1, NATIVE_WAKE_VECTOR.into())] {
+            gate.register_native_wake(cpu, vector);
+            assert_eq!(gate.native_wake_status(0), 0);
+        }
+        gate.register_native_wake(0, NATIVE_WAKE_VECTOR.into());
+        assert_eq!(gate.native_wake_status(0), NATIVE_WAKE_MAGIC);
+        assert!(!gate.claim(epoch));
+        assert_eq!(gate.probe_cpu(0), MAGIC);
+        gate.offer_cpu(0, 100, true);
+        assert!(gate.claim(epoch));
+    }
+
     #[test]
     fn resume_arm_requires_retired_claim_and_never_reuses_permission() {
         let (gate, epoch) = armed();

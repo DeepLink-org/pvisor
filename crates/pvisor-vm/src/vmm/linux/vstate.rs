@@ -1653,6 +1653,12 @@ impl Vcpu {
                     if addr == crate::guest_idle::PORT && data.len() == 4 {
                         let value = self.idle.as_ref().map_or(0, |idle| idle.probe_cpu(self.id));
                         data.copy_from_slice(&value.to_le_bytes());
+                    } else if addr == crate::guest_idle::NATIVE_WAKE_PORT && data.len() == 4 {
+                        let value = self
+                            .idle
+                            .as_ref()
+                            .map_or(0, |idle| idle.native_wake_status(self.id));
+                        data.copy_from_slice(&value.to_le_bytes());
                     } else {
                         self.io_bus.read(0, u64::from(addr), data);
                     }
@@ -1664,6 +1670,15 @@ impl Vcpu {
                         return Ok(VcpuEmulation::IdleOffer(u32::from_le_bytes(
                             data.try_into().unwrap(),
                         )));
+                    }
+                    if addr == crate::guest_idle::NATIVE_WAKE_PORT && data.len() == 4 {
+                        if let Some(idle) = &self.idle {
+                            idle.register_native_wake(
+                                self.id,
+                                u32::from_le_bytes(data.try_into().unwrap()),
+                            );
+                        }
+                        return Ok(VcpuEmulation::Handled);
                     }
                     self.io_bus.write(0, u64::from(addr), data);
                     Ok(VcpuEmulation::Handled)

@@ -92,10 +92,28 @@ fn selection_child() {
                 vm.snapshot_profile().unwrap_err().kind(),
                 io::ErrorKind::Unsupported
             );
-            assert_eq!(
-                vm.guest_idle_handoff().unwrap_err().kind(),
-                io::ErrorKind::Unsupported
-            );
+            if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+                vm.guest_idle_handoff().unwrap();
+                assert_eq!(
+                    vm.guest_idle_handoff_with_policy(true, Duration::from_secs(1))
+                        .unwrap_err()
+                        .kind(),
+                    io::ErrorKind::Unsupported
+                );
+                assert_eq!(
+                    VmBuilder::new(2, 256)
+                        .unwrap()
+                        .guest_idle_handoff()
+                        .unwrap_err()
+                        .kind(),
+                    io::ErrorKind::Unsupported
+                );
+            } else {
+                assert_eq!(
+                    vm.guest_idle_handoff().unwrap_err().kind(),
+                    io::ErrorKind::Unsupported
+                );
+            }
             assert_eq!(
                 vm.task_stdio(-1, -1, -1).unwrap_err().kind(),
                 io::ErrorKind::InvalidInput

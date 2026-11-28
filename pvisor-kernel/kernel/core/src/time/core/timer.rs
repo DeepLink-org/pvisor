@@ -87,6 +87,8 @@ impl TimerGuard<'_> {
     pub(crate) fn cancel(&self) {
         if let Some(timer_callback) = self.inner.timer_callback.upgrade() {
             timer_callback.cancel();
+            #[cfg(target_arch = "x86_64")]
+            self.timer.timer_manager.rearm_if_head(&timer_callback);
         }
     }
 
@@ -150,6 +152,19 @@ impl Timer {
     }
 }
 
+#[cfg(target_arch = "x86_64")]
+impl Drop for Timer {
+    fn drop(&mut self) {
+        if self.timer_manager.notifies_deadline()
+            && let Some(callback) = self.inner.get_mut().timer_callback.upgrade()
+        {
+            let _irq = ostd::irq::disable_local();
+            callback.cancel();
+            self.timer_manager.rearm_if_head(&callback);
+        }
+    }
+}
+
 /// `TimerManager` is used to create timers and manage their expiries. It holds a clock and can
 /// create [`Timer`]s based on this clock.
 ///
@@ -158,14 +173,29 @@ impl Timer {
 pub(crate) struct TimerManager {
     clock: Arc<dyn Clock>,
     timer_callbacks: SpinLock<BinaryHeap<Arc<TimerCallback>>>,
+    #[cfg(target_arch = "x86_64")]
+    wall_clock: bool,
 }
 
 impl TimerManager {
     /// Creates a `TimerManager` instance from a clock.
     pub(crate) fn new(clock: Arc<dyn Clock>) -> Arc<Self> {
+        Self::new_with_clock(clock, false)
+    }
+
+    /// Creates a manager whose timers advance even when the current task does not run.
+    pub(crate) fn new_wall(clock: Arc<dyn Clock>) -> Arc<Self> {
+        Self::new_with_clock(clock, true)
+    }
+
+    fn new_with_clock(clock: Arc<dyn Clock>, wall_clock: bool) -> Arc<Self> {
+        #[cfg(not(target_arch = "x86_64"))]
+        let _ = wall_clock;
         Arc::new(Self {
             clock,
             timer_callbacks: SpinLock::new(BinaryHeap::new()),
+            #[cfg(target_arch = "x86_64")]
+            wall_clock,
         })
     }
 
@@ -186,10 +216,63 @@ impl TimerManager {
     }
 
     fn insert(&self, timer_callback: Arc<TimerCallback>) {
-        self.timer_callbacks
-            .disable_irq()
-            .lock()
-            .push(timer_callback);
+        let mut callbacks = self.timer_callbacks.disable_irq().lock();
+        #[cfg(target_arch = "x86_64")]
+        let head_changed = self.notifies_deadline()
+            && callbacks.peek().is_none_or(|head| {
+                head.is_cancelled() || timer_callback.expired_time < head.expired_time
+            });
+        callbacks.push(timer_callback);
+        #[cfg(target_arch = "x86_64")]
+        if head_changed {
+            // Keep IRQs disabled via TimerGuard, but release the heap before
+            // the combiner reads its head.
+            drop(callbacks);
+            self.deadline_changed();
+        }
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    fn notifies_deadline(&self) -> bool {
+        if self.wall_clock {
+            ostd::timer::event_timer_enabled()
+        } else {
+            ostd::timer::cpu_runtime_enabled()
+        }
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    fn deadline_changed(&self) {
+        if self.wall_clock {
+            crate::time::softirq::rearm_wall_timer();
+        } else {
+            crate::time::cpu_runtime::rearm_current();
+        }
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    fn rearm_if_head(&self, timer: &Arc<TimerCallback>) {
+        if self.notifies_deadline()
+            && self
+                .timer_callbacks
+                .disable_irq()
+                .lock()
+                .peek()
+                .is_some_and(|head| Arc::ptr_eq(head, timer))
+        {
+            self.deadline_changed();
+        }
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    pub(crate) fn next_delay(&self) -> Option<Duration> {
+        let mut callbacks = self.timer_callbacks.disable_irq().lock();
+        while callbacks.peek().is_some_and(|timer| timer.is_cancelled()) {
+            callbacks.pop();
+        }
+        callbacks
+            .peek()
+            .map(|timer| timer.expired_time.saturating_sub(self.clock.read_time()))
     }
 
     /// Checks and processes the managed timers.

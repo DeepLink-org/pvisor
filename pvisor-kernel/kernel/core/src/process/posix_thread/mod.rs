@@ -297,6 +297,11 @@ impl PosixThread {
         self.prof_timer_manager.process_expired_timers();
     }
 
+    #[cfg(target_arch = "x86_64")]
+    pub(crate) fn cpu_timer_managers(&self) -> [&TimerManager; 2] {
+        [&self.prof_timer_manager, &self.virtual_timer_manager]
+    }
+
     /// Gets the read-only credentials of the thread.
     pub(crate) fn credentials(&self) -> Credentials<ReadOp> {
         self.credentials.dup().restrict()

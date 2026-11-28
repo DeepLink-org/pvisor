@@ -84,8 +84,8 @@ The combined product firmware receipt retains both payloads' source identities.
 `--firmware` cannot override the Rust native payload; it is rejected for this
 selection instead of loading a file or falling back to Linux.
 
-The profile requires a fresh VM without EFI, TEE, snapshots, restore or Linux
-idle handoff. Linux x86_64/KVM accepts **1–64 vCPUs**, with at least **16 MiB**
+The profile requires a fresh VM without EFI, TEE, snapshots or restore.
+Linux x86_64/KVM accepts **1–64 vCPUs**, with at least **16 MiB**
 or **1.5 MiB per vCPU rounded up**, whichever is larger. That is 16 MiB for
 1–10 vCPUs, 17 MiB for 11, 24 MiB for 16, 48 MiB for 32 and 96 MiB for 64.
 These are launch limits, not a guarantee that an arbitrary workload fits.
@@ -113,6 +113,44 @@ require `CAP_NET_ADMIN`; arbitrary route entries and device selection via
 `/proc/net/tcp` exposes IPv4 listeners; it does not enumerate established
 connections or provide real queue and timer statistics.
 Do not treat this as Linux syscall or workload compatibility.
+
+### Single-vCPU idle handoff
+
+On Linux x86_64/KVM, opt in through `VmConfiguration::guest_idle_handoff`.
+The embedded guest uses ABI v2 only with one vCPU; Linux-specific compaction
+policy and SMP are unsupported for this guest. Busy tasks keep the scheduler
+tick. In idle, the APIC uses a one-shot for the earliest pending guest timer,
+with a five-second maximum wait. Elapsed time still advances from the TSC.
+Device interrupts can wake the guest earlier.
+Clocksource and vDSO updates share an explicit 100 ms monotonic timer rather
+than counting scheduler ticks. This deadline and periodic worker timers remain
+active while idle. Short budgets may grant pause-only handoffs without meeting
+the default one-second offload limit.
+
+On KVM with MSI injection, the guest registers a dedicated APIC wake vector
+before enabling event-driven acquisition. The host sends one interrupt on arm
+so a guest already in `HLT` can offer promptly; the interrupt grants no lease.
+Steady-state unarmed idle needs neither probe-only wakeups nor PIO probes.
+Without the negotiated extension, ABI v2 retains a
+50 ms probe retry. Without opt-in, the existing timer path is unchanged.
+The VMM parks the vCPU on an accepted offer until wake or claim. A claimed
+pause requires explicit Host resume; the offer does not reclaim RAM.
+
+The hardware fixture exercises arming after the guest blocks, claiming the
+lease, revoking on virtio input while explicitly paused, and resuming on the
+guest timer. It verifies both monotonic clocks advance across that wait.
+Build with the native bundle embedded and run:
+
+```sh
+mkdir -p target
+cc -static -O2 -Wall -Wextra -Werror pvisor-kernel/tests/idle_handoff.c \
+  -o target/pvisor-native-idle-guest
+export PVISOR_BUILD_NATIVE_KERNEL_BUNDLE="$(mise run kernel -- build -j4)"
+PVISOR_CASE_IDLE_GUEST="$PWD/target/pvisor-native-idle-guest" \
+  mise run test -- pvisor-vm -- --test native_idle_handoff --run-ignored only
+```
+
+### Filesystem transport
 
 The [inline metadata path](../crates/pvisor-vm/README.md#virtio-fs-并发与冻结契约)
 negotiates device feature bit 23. An idle ordinary queue can use bit 31 in its
@@ -212,6 +250,72 @@ retained. Reopening an evicted object refetches bytes through the new handle.
 This is a bound on **idle data pages per mount**, not on active mappings or
 total VM memory. `PVISOR_VM_FS_LOWER_DATA_CACHE=0` disables the automatic
 data policy. Plain mutable passthrough and unqualified bind mounts are unchanged.
+
+### Wall-clock deadline diagnostic
+
+On Linux x86_64/KVM, set `PVISOR_DIAG_NATIVE_WALL_DEADLINE=1` for a
+single-vCPU Rust native VM to enable the guest's APIC event timer, with or
+without idle handoff. Wall-clock timer queues request their earliest deadline
+instead of being scanned by the scheduler tick. The idle loop uses that same
+hardware deadline and restores the tick only when a task needs to run.
+Runqueue changes arm a separate one-shot preemption deadline when there is
+competition. The 1 kHz tick still runs while busy for CPU-time accounting
+and POSIX CPU-time timers. Work submission wakes the worker or its monitor;
+the monitor checks for stalled work only while there is a backlog.
+Linux firmware, SMP, ARM64, and the default mode do not opt in.
+
+With a native-enabled `vm_api_case` built from the same bundle for both runs:
+
+```sh
+root=$(mktemp -d "$PWD/target/wall-deadline.XXXXXX")
+cc -static -O2 -Wall -Wextra -Werror pvisor-kernel/tests/wall_deadline.c -o "$root/probe"
+for mode in periodic deadline; do
+    mkdir "$root/$mode"
+    cp "$root/probe" "$root/$mode/probe"
+    enabled=0
+    if [ "$mode" = deadline ]; then enabled=1; fi
+    PVISOR_GUEST_KERNEL=rust-native PVISOR_DIAG_NATIVE_WALL_DEADLINE="$enabled" \
+        timeout 20 target/release/examples/vm_api_case \
+        --rootfs "$root/$mode" --cpus 1 --memory 256 -- /probe "$mode"
+done
+```
+
+The fixture verifies deadline replacement, cancellation, periodic timerfd
+and futex timeouts. It checks that idle hardware interrupts and busy timer
+softirqs decrease without removing the busy-time tick. The final 256 samples
+measure wake lateness relative to a 200 µs timerfd deadline, not throughput.
+
+To check preemption without voluntary yields and alarm delivery through
+the worker pool, also build `tests/deadline_scheduler.c` with
+`cc -static -pthread -O2 -Wall -Wextra -Werror`. Run the resulting probe with
+no arguments and the same VM settings plus `PVISOR_DIAG_NATIVE_WALL_DEADLINE=1`.
+Expect `DEADLINE_SCHEDULER_OK` and an authenticated exit of zero.
+
+### Experimental CPU-runtime deadlines
+
+`PVISOR_DIAG_NATIVE_TICKLESS=1` selects wall deadlines and removes the
+remaining 1 kHz accounting tick on a single-vCPU Linux x86_64/KVM Rust
+native VM with KVM steal-time support. Without steal time the guest logs
+a warning and retains the accounting tick. The default does not change.
+The APIC wakes for wall timers, CPU-runtime timers, and scheduler deadlines.
+The 100 ms clock/vDSO maintenance timer and explicitly recurring timers
+still run.
+
+The CPU clock samples time at user/kernel transitions and task switches,
+subtracting the runqueue wait reported by KVM. A CPU-time timer rechecks
+the charged runtime when the APIC fires and rearms if not yet due. KVM
+steal time does not distinguish time spent in host exit handling or a
+deliberate pause of a busy vCPU; this mode does not provide exact accounting
+for those intervals.
+
+With this selector, run `wall_deadline.c` in `tickless` mode to check that
+a lone busy task no longer sees the periodic tick. Build `tests/cpu_runtime.c`
+with `cc -static -O2 -Wall -Wextra -Werror` and run it with `ordinary`, or
+with `contended` while a CPU-bound host process competes on the same logical
+CPU. It verifies that sleeping does not advance thread CPU time, and that
+process and thread CPU timers wait for execution time, not just wall time.
+See the [CPU-runtime engineering measurements](../benchmark/evidence/native-cpu-runtime.md)
+for the cost of enabling this mode.
 
 ## Tests and hardware acceptance
 
@@ -515,10 +619,9 @@ separate VMs must map identical workload pages to the same physical-pool file
 slots before one writes. The writer verifies its changes, the other VM verifies
 the original bytes, and both must exit through the guest supervisor.
 
-These are host memory mechanisms. Linux guest-idle automatic offload requires
-an interrupt-safe idle offer and timer deadline from the guest. The native
-kernel does not supply that protocol. Snapshot/restore COW is also unsupported;
-the physical pool tests live sharing, not snapshot-backed cloning.
+These are host memory mechanisms. The memory probe does not exercise
+cooperative idle offload. Snapshot/restore COW is unsupported; the physical
+pool tests live sharing, not snapshot-backed cloning.
 
 ### x86_64 vCPU/RAM matrix
 

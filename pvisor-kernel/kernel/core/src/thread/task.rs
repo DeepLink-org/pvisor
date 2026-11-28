@@ -144,5 +144,14 @@ impl UserModeHooks for Context<'_> {
         self.thread_local
             .supp_user_context()
             .before_user_exec(guard);
+        #[cfg(target_arch = "x86_64")]
+        crate::time::cpu_runtime::user_boundary(self.task, true, guard);
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    fn post_user_run(&self) {
+        if ostd::timer::cpu_runtime_enabled() {
+            crate::time::cpu_runtime::user_boundary(self.task, false, &ostd::irq::disable_local());
+        }
     }
 }

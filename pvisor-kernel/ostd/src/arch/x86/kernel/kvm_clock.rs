@@ -14,8 +14,81 @@ use crate::{
 // KVM feature bits and MSR values.
 // Reference: <https://elixir.bootlin.com/linux/v7.0/source/arch/x86/include/uapi/asm/kvm_para.h>.
 const KVM_FEATURE_CLOCKSOURCE2: u32 = 3;
+const KVM_FEATURE_STEAL_TIME: u32 = 5;
 const MSR_KVM_SYSTEM_TIME_NEW: u32 = 0x4b56_4d01;
+const MSR_KVM_STEAL_TIME: u32 = 0x4b56_4d03;
 const KVM_MSR_ENABLE_BIT: u64 = 1;
+
+struct StealTimePageMeta;
+impl_frame_meta_for!(StealTimePageMeta);
+
+// The ABI requires 64-byte alignment. A dedicated zeroed frame also keeps
+// KVM's writes out of ordinary guest memory accessors.
+#[repr(C, align(64))]
+struct StealTime {
+    steal: u64,
+    version: u32,
+    _reserved: [u8; 52],
+}
+
+pub(in crate::arch) struct RuntimeClock {
+    page: Frame<StealTimePageMeta>,
+    multiplier: u64,
+}
+
+impl RuntimeClock {
+    pub(in crate::arch) fn setup() -> Option<Self> {
+        if !cpuid::query_if_running_under_kvm() || !cpuid::query_kvm_feature(KVM_FEATURE_STEAL_TIME)
+        {
+            return None;
+        }
+        let page = FrameAllocOptions::new()
+            .alloc_frame_with(StealTimePageMeta)
+            .ok()?;
+        let multiplier = ((1_000_000_000u128 << 32) / u128::from(crate::arch::tsc_freq())) as u64;
+        // SAFETY: KVM advertises the MSR, and the caller retains this aligned
+        // frame for the remaining lifetime of the vCPU.
+        unsafe { msr::wrmsr(MSR_KVM_STEAL_TIME, page.paddr() as u64 | KVM_MSR_ENABLE_BIT) };
+        Some(Self { page, multiplier })
+    }
+
+    pub(in crate::arch) fn read_ns(&self) -> u64 {
+        let ptr = mm::paddr_to_vaddr(self.page.paddr()) as *const StealTime;
+        loop {
+            let before: u32;
+            let after: u32;
+            let steal: u64;
+            let low: u32;
+            let high: u32;
+            // SAFETY: ptr points to a live, aligned KVM frame. x86 orders the
+            // three loads. KVM publishes this vCPU's steal delta on re-entry;
+            // an unretired RDTSC cannot carry a sample across that boundary.
+            // Within one run the TSC read need not serialize nearby instructions.
+            unsafe {
+                core::arch::asm!(
+                    "mov {before:e}, [{ptr} + {version}]",
+                    "rdtsc",
+                    "mov {steal}, [{ptr}]",
+                    "mov {after:e}, [{ptr} + {version}]",
+                    ptr = in(reg) ptr,
+                    version = const core::mem::offset_of!(StealTime, version),
+                    before = out(reg) before,
+                    steal = out(reg) steal,
+                    after = out(reg) after,
+                    out("eax") low,
+                    out("edx") high,
+                    options(nostack, readonly, preserves_flags),
+                );
+            }
+            if before == after && before & 1 == 0 {
+                let tsc = (u64::from(high) << 32) | u64::from(low);
+                let ns = (u128::from(tsc) * u128::from(self.multiplier)) >> 32;
+                return (ns as u64).saturating_sub(steal);
+            }
+            core::hint::spin_loop();
+        }
+    }
+}
 
 /// Metadata for the KVM pvclock frame.
 ///

@@ -466,6 +466,26 @@ impl Vmm {
         self.device_memory_gate.clone()
     }
 
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    pub(crate) fn supports_native_idle_wake(&self) -> bool {
+        self.vm.fd().check_extension(kvm_ioctls::Cap::SignalMsi)
+    }
+
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    pub(crate) fn wake_native_idle(&self) -> std::result::Result<(), String> {
+        // Fixed, edge-triggered delivery to the sole LAPIC (ID 0).
+        let msi = kvm_bindings::kvm_msi {
+            address_lo: 0xfee0_0000,
+            data: u32::from(crate::guest_idle::NATIVE_WAKE_VECTOR),
+            ..Default::default()
+        };
+        match self.vm.fd().signal_msi(msi) {
+            Ok(count) if count > 0 => Ok(()),
+            Ok(count) => Err(format!("native idle arm interrupt not delivered: {count}")),
+            Err(error) => Err(format!("inject native idle arm interrupt: {error}")),
+        }
+    }
+
     /// Advisory residency of owned file-backed RAM ranges, including anonymous
     /// replacements installed by the experimental pager. This does not pause CPUs.
     #[cfg(target_os = "macos")]

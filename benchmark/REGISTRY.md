@@ -1196,6 +1196,11 @@ Design: 负载、对照、控制变量与有效样本判据。
 - **#212 后续：** [可变文件的请求与确认](evidence/native-file-handoff.md) 对照标量和散读、精确写入、宿主 RAM 屏障与显式新树发布；不更改原门禁或为 `:rw` 延迟确认。
 - **物理核心准入：** [队列交接](evidence/native-queue-handoff.md)用同核 SMT 线程与不同核心分别核验协商。在仅允许同一物理核心的条件下，比较两版均请求交接时的热读与写加同步；不改变三后端门禁。
 - **自动交接诊断：** 使用同一候选制品，比较 `0` / `1` / `auto` 在连续读写、间歇读上的时间与 CPU 成本；另用 profile 确认协商，回退不得计作成功启用。独立于原 45 项矩阵。
+- **[Rust native idle arm 诊断](evidence/native-idle-arm.md)：** 同一宿主和内嵌 guest 制品、同一静态 stdin fixture，Linux x86_64/KVM、1 vCPU/256 MiB。三组为周期 tick（关闭 handoff）、ABI v2 的 50 ms 重试（`PVISOR_DIAG_NATIVE_IDLE_WAKE=0`）和注册 LAPIC 唤醒。先验证唤醒和退出；各组用 fresh VM，固定 CPU affinity，随机交替，按 ready 后 1 秒的整个 runner CPU 时间、arm 到 pause ACK 的延迟分别报告。保留冻结制品摘要和全部样本；不据此推断真实 Agent 完成时间、P99、RAM 或并发容量。
+- **[Rust native wall-clock deadline 诊断](evidence/native-wall-deadline.md)：** 同一制品在 Linux x86_64/KVM、1 vCPU 上随机交替启用／关闭 APIC deadline，两臂均不启用 idle handoff。检查 `timerfd` 和 futex 正确性，分别记录空闲硬件中断、忙时定时器 softirq 和 200 µs `timerfd` 唤醒超时量。不替代默认路径的 45 项门禁；以同一候选另跑一次开启 deadline 的矩阵，单独判定。
+- **[Rust native 短阻塞诊断](evidence/native-short-io.md)：** 固定 Linux x86_64/KVM 单 vCPU，均启用 wall-clock deadline，交替比较 idle 重编程优化前后与按需 worker／抢占 deadline。检查 `timerfd`、管道往返和间隔 1 ms 的热读；分别记录 guest 延迟与整个 runner CPU 时间，不以中断数代替 APIC 写次数，不改默认门禁。
+- **[Rust native CPU-time deadline 诊断](evidence/native-cpu-runtime.md)：** 同一单 vCPU 制品交替开关 CPU 执行区间记账，检验忙时中断数、CPU-time timer 在宿主争用下的到期行为，以及 `getpid` 和管道往返成本。优化采样时在同一随机区组中交替两版制品和两种记账模式，保留关闭记账的对照。另跑原有默认路径门禁，不以实验路径的正确性或中断数代替性能结论。
+- **[#219 红项复测](evidence/native-guest-regression-retest.md)：** 原 CI 制品和本地当前制品分别做热读配对，固定 virtio-fs 队列交接为 `auto` 或 `off`；此前本地红项另做配对和同制品顺序 A/A。区分版本差异、传输路径敏感性和测量漂移，不改门禁判据。
 - **tmpfs 对照：** [匿名页、文件空洞和并发读](evidence/native-guest-tmpfs.md) 用上一轮制品与 PR #209 为独立基线，区分共享文件同步成本和 guest 内存文件的访问成本。
 - **Linux 固件：** [virtio-fs 往返与目录发布](evidence/linux-fw-file-io.md) 记录同固件 tmpfs 配对、传输层消融、完整门禁和新目录的分阶段发布边界。
 - **受限提交：** [定长批量提交](vm/packed-tree.md) 对照逐文件导出与 guest 退出后宿主一次导入；相同的新目录内容，区分生产结束、可见与同步确认，不改变普通共享写语义。

@@ -805,6 +805,12 @@ impl Process {
     /// Arbitrary calls may likely cause race conditions.
     #[doc(hidden)]
     pub(crate) fn set_cgroup(&self, cgroup: Option<Arc<CgroupNode>>) {
+        #[cfg(target_arch = "x86_64")]
+        let _irq = ostd::timer::cpu_runtime_enabled().then(ostd::irq::disable_local);
+        #[cfg(target_arch = "x86_64")]
+        if _irq.is_some() {
+            crate::time::cpu_runtime::flush();
+        }
         self.cgroup.update(cgroup);
     }
 }

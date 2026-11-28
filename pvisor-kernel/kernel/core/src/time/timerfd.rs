@@ -147,8 +147,6 @@ impl TimerfdFile {
 
         timer_guard.set_interval(interval);
 
-        // Cancel the timer and clear the ticks counter.
-        timer_guard.cancel();
         self.ticks.store(0, Ordering::Relaxed);
 
         if expire_time != Duration::ZERO {
@@ -167,6 +165,8 @@ impl TimerfdFile {
 
             timer_guard.set_timeout(timeout);
             self.settime_flags.store(flags, Ordering::Relaxed);
+        } else {
+            timer_guard.cancel();
         }
 
         (old_interval, remain)

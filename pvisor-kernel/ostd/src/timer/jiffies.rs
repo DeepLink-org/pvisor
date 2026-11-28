@@ -16,6 +16,20 @@ pub struct Jiffies(u64);
 
 pub(crate) static ELAPSED: AtomicU64 = AtomicU64::new(0);
 
+#[cfg(target_arch = "x86_64")]
+static TSC_BASE: spin::Once<(u64, u64, u64)> = spin::Once::new();
+
+#[cfg(target_arch = "x86_64")]
+pub(crate) fn enable_idle_clock() {
+    TSC_BASE.call_once(|| {
+        (
+            ELAPSED.load(Ordering::Relaxed),
+            crate::arch::read_tsc(),
+            crate::arch::tsc_freq(),
+        )
+    });
+}
+
 impl Jiffies {
     /// The maximum value of [`Jiffies`].
     pub const MAX: Self = Self(u64::MAX);
@@ -25,8 +39,23 @@ impl Jiffies {
         Self(value)
     }
 
+    /// Converts a duration to jiffies, rounding down and saturating on overflow.
+    pub fn from_duration(duration: Duration) -> Self {
+        Self::new(
+            u64::try_from(duration.as_nanos() * u128::from(TIMER_FREQ) / 1_000_000_000)
+                .unwrap_or(u64::MAX),
+        )
+    }
+
     /// Returns the elapsed time since the system boots up.
     pub fn elapsed() -> Self {
+        #[cfg(target_arch = "x86_64")]
+        if let Some(&(ticks, tsc, frequency)) = TSC_BASE.get() {
+            let cycles = crate::arch::read_tsc().saturating_sub(tsc);
+            let elapsed =
+                cycles / frequency * TIMER_FREQ + (cycles % frequency) * TIMER_FREQ / frequency;
+            return Self::new(ticks + elapsed);
+        }
         Self::new(ELAPSED.load(Ordering::Relaxed))
     }
 

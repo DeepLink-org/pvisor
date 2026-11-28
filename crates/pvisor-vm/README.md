@@ -19,7 +19,7 @@ Linux x86_64/aarch64 和 macOS aarch64 的产品构建同时内嵌 Linux 与 Rus
 实验 profile 只支持全新 VM。Linux x86_64/KVM 支持 1–64 vCPU，内存下限为
 16 MiB 与每 vCPU 1.5 MiB（向上取整）中的较大值；实际工作负载可能需要更多。
 Linux aarch64/KVM 和 macOS aarch64/HVF 仍限于单 vCPU、至少 256 MiB。两种架构都
-不支持 EFI、TEE、快照/恢复和 Linux idle handoff。继续使用同一
+不支持 EFI、TEE 和快照/恢复。idle handoff 仅支持 Linux x86_64/KVM 的单 vCPU Rust guest。继续使用同一
 virtio-MMIO、virtio-fs `/dev/root` 和 guest supervisor；启动时仅补充
 实验 x86 内核需要的 ACPI CPU/IRQ/reset 描述。原有 Linux 启动路径不写入这些表。
 aarch64 沿用既有 FDT、GICv3、timer 和 PSCI；镜像从 `0x80200000`
@@ -1823,7 +1823,8 @@ release 制品与正式配对批次，不由并发单测推导收益。
 ## Guest idle handoff and conditional offload (experimental)
 
 `VmConfiguration::guest_idle_handoff` opts a fresh Linux/KVM x86-64 VM into the
-matching firmware's `pvisor_idle=1` protocol. It accepts one or two vCPUs and
+matching guest's `pvisor_idle=1` protocol. It accepts one or two vCPUs with
+patched Linux firmware, or one vCPU with the embedded Rust native kernel, and
 rejects larger topologies, snapshot profiles and optional unaudited device features. `GuestIdleControl` arms one bounded
 acquisition execution, reads/waits for copied `GuestIdleStatus`, conditionally pauses by epoch,
 and retires that epoch. Arming alone never authorizes pause. A missing guest
@@ -1831,6 +1832,16 @@ patch simply supplies no idle offer. Optional `offload_guest_idle(epoch)` reuses
 native writeback/reclaim after conditional pause; unconditional `offload_ram()`
 is still rejected in this profile. The single-CPU path below requires ABI-v2
 firmware; the dual-CPU extension uses ABI v3 as described below.
+The [Rust native guest](../../pvisor-kernel/README.md#single-vcpu-idle-handoff)
+uses ABI v2 with a one-shot deadline. Linux-only PSI, watchdog and compaction
+policy does not apply to it; a request to disable compaction is rejected.
+
+Native-only acquisition can register a fixed BSP wake vector via 32-bit PIO
+on `0x5054`. The host acknowledges registration only on an eligible KVM
+profile with MSI injection. An arm then injects one LAPIC interrupt, including
+on resume-and-arm. It is a request to recheck idle, not an offer or pause.
+If the host armed before registration, the guest's first idle probe still
+observes that arm. Unnegotiated guests keep their existing acquisition behavior.
 
 The guest's synchronous PIO probe/offer uses port `0x5050`, ABI magic
 `0x50564902` and a 32-bit millisecond delta rounded down. `U32_MAX` explicitly
