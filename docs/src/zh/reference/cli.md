@@ -49,7 +49,9 @@ pvisor rm redis
 省略时使用原生架构。可以下载异构镜像，但尚未实现 CPU 模拟，`run` 和 `start` 只能运行原生镜像。
 私有 registry 返回 Bearer challenge 时，可用 `--username` 搭配
 `--password-stdin` 向 token 端点认证。`--password` 也受支持，但会让秘密出现在
-进程参数中。当前不支持 Docker credential helper 或 Docker Engine API。
+进程参数中。未给出 `--username` 时，会使用 `$DOCKER_CONFIG/config.json` 或
+`~/.docker/config.json` 中的静态 `auths` 条目。当前不支持 Docker credential
+helper 或 Docker Engine API。
 
 Unix 容器与任务 Session 使用 schema 4 记录，各有独立存储和命令能力。
 容器 review/apply/drop 选择暂存绑定挂载。

@@ -630,7 +630,7 @@ escalation. Values below `-1` are rejected before contacting a container.
 | --- | --- |
 | `run` | `--platform`, `--name`, `--rm`, `-d`, `-i`, `-t`, `-e`, `--env-file`, `-w`, `-u`, `--entrypoint`, `-v`, `-p`, `--cpus`, `-m/--memory`, `-M`, `--memory-pool`, `--shared-kernel-base`, `--network`/`--net bridge/none/NAME`, `--ip`, `-l/--label`, `--restart`, `--stop-signal`, `--stop-timeout` |
 | `build` | Local context, `-f`, repeated `-t`/`--build-arg`, `--target`, `--platform`, `--pull`, `--no-cache`, `-q`, `--iidfile`, `-o type=oci,dest=PATH`, `--network default/none`, `--cpus`, `-m`, `--timeout`, `--progress auto/plain` |
-| `pull` | `--platform` and `--username` with `--password-stdin` or `--password` for OCI; `--from` for a fixed S3/HTTP(S) publication, `--refresh`, `--images-dir` |
+| `pull` | `--platform` and `--username` with `--password-stdin` or `--password` for OCI, falling back to static Docker config `auths`; `--from` for a fixed S3/HTTP(S) publication, `--refresh`, `--images-dir` |
 | `push`, `image push` | Local image, explicit `--to s3://BUCKET/PREFIX` or `file:///ABSOLUTE/PATH`, optional `--images-dir` |
 | `images` | Optional repository, `-q`, `--no-trunc`, `-f/--filter`, `--format`, `--images-dir` |
 | `rmi` | Multiple references/IDs, `-f` |

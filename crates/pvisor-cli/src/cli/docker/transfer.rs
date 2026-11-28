@@ -76,6 +76,9 @@ pub(super) fn pull(args: Pull) -> anyhow::Result<i32> {
     let image = if let Some(source) = args.from {
         store.pull_image_repository(&args.image, &source, args.refresh)?
     } else {
+        if args.username.is_none() {
+            store.use_docker_config_credentials(&args.image)?;
+        }
         if let Some(username) = args.username {
             let password = if args.password_stdin {
                 let mut secret = String::new();

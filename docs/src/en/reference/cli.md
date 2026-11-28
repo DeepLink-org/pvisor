@@ -58,7 +58,9 @@ downloads are supported, but `run` and `start` require native images because CPU
 emulation is unavailable. For private registries using a Bearer challenge, pass
 `--username` with `--password-stdin` to authenticate to the token endpoint.
 The CLI also accepts `--password`, which exposes the secret in process arguments.
-Docker credential helpers and the Docker Engine API are unsupported.
+Without `--username`, static `auths` entries from `$DOCKER_CONFIG/config.json`
+or `~/.docker/config.json` are used when present. Credential helpers and the
+Docker Engine API are unsupported.
 
 Unix containers and task Sessions use schema 4 records with separate stores
 and command capabilities. Container review/apply/drop select staged binds.
