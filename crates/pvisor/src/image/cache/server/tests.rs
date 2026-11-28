@@ -118,6 +118,17 @@ fn unix_client_roundtrip_and_parallel_reads() {
 }
 
 #[test]
+fn tcp_cache_requires_loopback_and_strong_token() {
+    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+    let loopback = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 9000);
+    let external = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 9000);
+    assert!(validate_tcp_auth(loopback, Some("0123456789abcdef")).is_ok());
+    assert!(validate_tcp_auth(external, Some("0123456789abcdef")).is_err());
+    assert!(validate_tcp_auth(loopback, None).is_err());
+    assert!(validate_tcp_auth(loopback, Some("short")).is_err());
+}
+
+#[test]
 fn rejects_bad_frames_versions_and_tokens() {
     assert!(read_frame::<Envelope>(&mut &u32::MAX.to_be_bytes()[..]).is_err());
     assert!(endpoint("tcp://0.0.0.0:9000").is_err());
