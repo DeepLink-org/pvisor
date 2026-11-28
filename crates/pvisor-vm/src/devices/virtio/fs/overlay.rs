@@ -12776,16 +12776,15 @@ mod tests {
             fs.configure_logical_data_cache(true, per_layer);
             assert_eq!(fs.supports_directory_image(), stable && !per_layer);
             fs.configure_lower_data_cache(true, true, false).unwrap();
-            fs.init(FsOptions::PVISOR_DATA_OBJECT).unwrap();
+            let data_contract = stable && cfg!(target_os = "linux");
+            let negotiated = fs.init(FsOptions::PVISOR_DATA_OBJECT).unwrap();
+            assert_eq!(negotiated.contains(FsOptions::PVISOR_DATA_OBJECT), data_contract);
             let ctx = root_context();
             let entry = fs.lookup(ctx, fuse::ROOT_ID, c"file").unwrap();
             let receipt = fs
                 .open_for_reply(ctx, entry.inode, false, libc::O_RDONLY as u32, true)
                 .unwrap();
-            assert_eq!(
-                receipt.data_object.is_some(),
-                stable && cfg!(target_os = "linux")
-            );
+            assert_eq!(receipt.data_object.is_some(), data_contract);
             if per_layer {
                 let preimages = pvisor_overlay_core::load_preimages(&journal).unwrap();
                 let expected = pvisor_overlay_core::fingerprint_at(&target, Path::new("file")).unwrap();
@@ -12865,9 +12864,10 @@ mod tests {
                 writer.bytes, b"real image data",
                 "the opened lower identity survives copy-up"
             );
-            if stable {
+            // A directory lease or a negotiated data contract prevents capture.
+            if (stable && !per_layer) || data_contract {
                 assert_eq!(
-                    fs.capture_state().err().unwrap().kind(),
+                    fs.capture_state().expect_err("live cache contract").kind(),
                     io::ErrorKind::Unsupported
                 );
             } else {
