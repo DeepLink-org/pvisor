@@ -23,7 +23,9 @@ code still depends on them. Legacy PCI probing is disabled on this MMIO profile.
 Confidential-guest default features are disabled.
 Root filesystem boot accepts only the `/dev/root` virtio-fs tag and `virtiofs`
 filesystem type; other root devices or unsupported filesystem candidates fail.
-Pseudo-filesystems and the in-memory bootstrap filesystem remain available.
+All registered filesystem types are `nodev` in `/proc/filesystems`: a virtio-fs
+mount source is a tag, not a path to a block device. Pseudo-filesystems and the
+in-memory bootstrap filesystem remain available.
 
 Upstream dependency names, URLs, copyright and license notices retain their
 real attribution. The kernel package, runtime selection and diagnostics use

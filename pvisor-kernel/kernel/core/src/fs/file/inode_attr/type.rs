@@ -26,10 +26,6 @@ impl InodeType {
         *self == InodeType::Dir
     }
 
-    pub(crate) fn is_device(&self) -> bool {
-        *self == InodeType::BlockDevice || *self == InodeType::CharDevice
-    }
-
     pub(crate) fn is_seekable(&self) -> bool {
         *self != InodeType::NamedPipe && *self != Self::Socket
     }

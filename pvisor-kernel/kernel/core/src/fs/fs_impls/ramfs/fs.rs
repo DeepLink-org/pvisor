@@ -30,7 +30,7 @@ use crate::{
                 RenameMode, RevalidationPolicy, SymbolicLink,
             },
             path::{Dentry, is_dot, is_dot_or_dotdot, is_dotdot},
-            registry::{FsCreationCtx, FsProperties, FsType},
+            registry::{FsCreationCtx, FsType},
             xattr::{XattrName, XattrNamespace, XattrSetFlags},
         },
     },
@@ -1677,11 +1677,7 @@ impl FsType for RamFsType {
         "ramfs"
     }
 
-    fn properties(&self) -> FsProperties {
-        FsProperties::empty()
-    }
-
-    fn create(&self, _fs_creation_ctx: &mut FsCreationCtx) -> Result<Arc<dyn FileSystem>> {
+    fn create(&self, _fs_creation_ctx: &FsCreationCtx) -> Result<Arc<dyn FileSystem>> {
         Ok(RamFs::new())
     }
 

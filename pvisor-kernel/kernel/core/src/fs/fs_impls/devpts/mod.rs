@@ -21,7 +21,7 @@ use crate::{
                 Extension, FileOps, Inode, Metadata, MknodType, RenameMode, RevalidationPolicy,
             },
             path::Dentry,
-            registry::{FsCreationCtx, FsProperties, FsType},
+            registry::{FsCreationCtx, FsType},
         },
     },
     prelude::*,
@@ -134,11 +134,7 @@ impl FsType for DevPtsType {
         "devpts"
     }
 
-    fn properties(&self) -> FsProperties {
-        FsProperties::empty()
-    }
-
-    fn create(&self, _fs_creation_ctx: &mut FsCreationCtx) -> Result<Arc<dyn FileSystem>> {
+    fn create(&self, _fs_creation_ctx: &FsCreationCtx) -> Result<Arc<dyn FileSystem>> {
         Ok(DevPts::new())
     }
 

@@ -22,14 +22,11 @@
 //!   [`cache_page::PageState`] records whether those contents are uninitialized,
 //!   clean, or dirty.
 //! - [`PageCacheBackend`] is the storage-facing contract used
-//!   to make a page readable or durable. [`BlockAsPageCacheBackend`] is a
-//!   helper interface for backends that can satisfy that contract with
-//!   block-device BIOs.
+//!   to make a page readable or durable.
 //!
 //! For a file with a backend, the steady-state flow is
-//! `filesystem metadata -> PageCache -> Vmo -> PageCacheBackend -> block
-//! device or remote server`. Anonymous page caches use the same `PageCache` / `Vmo` layers
-//! without a backend.
+//! `filesystem metadata -> PageCache -> Vmo -> PageCacheBackend`. Anonymous
+//! page caches use the same `PageCache` / `Vmo` layers without a backend.
 //!
 //! # Responsibility Boundary
 //!
@@ -103,19 +100,11 @@
 //!    table lock, `page` to denote the page lock, and `xarray` to denote the
 //!    lock of VMO pages. For details, see the comments in the implementation.
 
-use core::{
-    ops::{Deref, Range},
-    sync::atomic::Ordering,
-};
+use core::{ops::Range, sync::atomic::Ordering};
 
 use align_ext::AlignExt;
-use aster_block::{
-    BlockDevice,
-    bio::{BioCompleteFn, BioDirection, BioSegment, BioStatus},
-    id::Bid,
-};
 use io_util::batch::IoBatch;
-use ostd::mm::{Segment, VmIo, VmIoFill};
+use ostd::mm::VmIo;
 
 use crate::prelude::*;
 
@@ -380,10 +369,6 @@ impl VmIo for PageCache {
 /// page contents from storage and write dirty contents back. A successful read
 /// makes the requested page usable by readers; a successful write makes the
 /// page's current contents durable in the backend.
-///
-/// Direct implementations are useful for storage that does not naturally expose
-/// block-device BIOs, such as network filesystems. Filesystems backed by block
-/// devices usually implement [`BlockAsPageCacheBackend`] instead.
 pub(crate) trait PageCacheBackend: Sync + Send {
     /// Reads a page from the backend asynchronously.
     ///
@@ -491,294 +476,5 @@ impl<'a> PageRun<'a> {
         self.pages
             .enumerate()
             .map(move |(offset, page)| (start_idx + offset, page))
-    }
-
-    /// Prepares and submits consecutive pages as device-limited read BIOs.
-    ///
-    /// Page `i` is submitted to device block `start_bid + i`, so the block
-    /// range must be physically contiguous. Otherwise pages may be filled
-    /// from wrong blocks.
-    ///
-    /// `len` must not exceed the number of pages remaining in this run.
-    pub(crate) fn submit_contiguous_read_pages(
-        &mut self,
-        block_device: &dyn BlockDevice,
-        start_bid: Bid,
-        len: usize,
-        io_batch: &mut IoBatch,
-    ) -> Result<()> {
-        if self.len() < len {
-            return_errno_with_message!(Errno::EINVAL, "page run is shorter than len");
-        }
-
-        let max_segments = block_device.metadata().max_nr_segments_per_bio.max(1);
-        let mut start_bid = start_bid;
-        let mut remaining_pages = len;
-
-        while remaining_pages > 0 {
-            let nr_pages = max_segments.min(remaining_pages);
-            let mut bio_segments = Vec::with_capacity(nr_pages);
-            let mut complete_fns = Vec::with_capacity(nr_pages);
-            for locked_page in self.by_ref().take(nr_pages) {
-                let (bio_segment, complete_fn) = prepare_read_page(locked_page);
-                bio_segments.push(bio_segment);
-                complete_fns.push(complete_fn);
-            }
-
-            let complete_fn = Box::new(move |status| {
-                for complete_fn in complete_fns {
-                    complete_fn(status);
-                }
-            });
-            block_device.read_blocks_async(start_bid, bio_segments, Some(complete_fn), io_batch)?;
-            start_bid = start_bid + nr_pages as u64;
-            remaining_pages -= nr_pages;
-        }
-
-        Ok(())
-    }
-
-    /// Prepares and submits consecutive pages as device-limited write BIOs.
-    ///
-    /// Page `i` is submitted to device block `start_bid + i`, so the block
-    /// range must be physically contiguous. Otherwise writes may corrupt
-    /// unrelated blocks.
-    ///
-    /// `len` must not exceed the number of pages remaining in this run.
-    pub(crate) fn submit_contiguous_write_pages(
-        &mut self,
-        block_device: &dyn BlockDevice,
-        start_bid: Bid,
-        len: usize,
-        io_batch: &mut IoBatch,
-    ) -> Result<()> {
-        if self.len() < len {
-            return_errno_with_message!(Errno::EINVAL, "page run is shorter than len");
-        }
-
-        let max_segments = block_device.metadata().max_nr_segments_per_bio.max(1);
-        let mut start_bid = start_bid;
-        let mut remaining_pages = len;
-
-        while remaining_pages > 0 {
-            let nr_pages = max_segments.min(remaining_pages);
-            let mut bio_segments = Vec::with_capacity(nr_pages);
-            let mut pages = Vec::with_capacity(nr_pages);
-            for locked_page in self.by_ref().take(nr_pages) {
-                let (bio_segment, page) = prepare_write_page_segment(locked_page);
-                bio_segments.push(bio_segment);
-                pages.push(page);
-            }
-
-            let pages = Arc::new(pages);
-            let completion_pages = pages.clone();
-            let complete_fn = Box::new(move |status| {
-                for page in completion_pages.iter() {
-                    complete_write_page(page, status);
-                }
-            });
-            let result = block_device.write_blocks_async(
-                start_bid,
-                bio_segments,
-                Some(complete_fn),
-                io_batch,
-            );
-            if let Err(err) = result {
-                for page in pages.iter() {
-                    let locked_page = page.lock_guard();
-                    locked_page.set_dirty();
-                    locked_page.clear_writing_back();
-                }
-                return Err(err.into());
-            }
-            start_bid = start_bid + nr_pages as u64;
-            remaining_pages -= nr_pages;
-        }
-
-        Ok(())
-    }
-}
-
-/// A block-I/O object that can serve as a [`PageCacheBackend`].
-///
-/// This trait is a convenience layer for filesystems whose cached file data is
-/// served by block I/O. Implementors submit the supplied [`BioSegment`] for the
-/// page at the requested index.
-///
-/// The blanket [`PageCacheBackend`] implementation adapts this trait to the
-/// generic page-cache backend contract.
-///
-/// The `complete_fn` passed to submit methods may run from interrupt context,
-/// so implementations must not allocate, take blocking locks, or hold a lock
-/// that a waiter on the page wait queue may already hold.
-pub(crate) trait BlockAsPageCacheBackend: Sync + Send {
-    /// Submits read I/O for the page at `idx`.
-    ///
-    /// `bio_segment` identifies the page memory that must receive the data.
-    /// Implementations must attach `complete_fn` to the underlying
-    /// asynchronous I/O so the page-cache layer can mark successful
-    /// reads up to date and release the page lock.
-    ///
-    /// If the page only contains zeros, implementations may call `complete_fn`
-    /// with [`BioStatus::Zeros`], skip I/O, and leave `bio_segment` unfilled.
-    ///
-    /// Implementations should fail with `EINVAL` for an out-of-bounds `idx`.
-    /// See also [`PageCacheBackend::read_page_async`].
-    fn submit_read_bio(
-        &self,
-        idx: usize,
-        bio_segment: BioSegment,
-        complete_fn: BioCompleteFn,
-        io_batch: &mut IoBatch,
-    ) -> Result<()>;
-
-    /// Submits read I/O for a logical run of locked cache pages.
-    ///
-    /// Backends that can process several pages in one request should override
-    /// this method. The default implementation submits each page separately.
-    ///
-    /// Implementations should fail with `EINVAL` for an out-of-bounds `idx`.
-    /// See also [`PageCacheBackend::read_page_async`].
-    fn submit_read_page_run(&self, pages: PageRun<'_>, io_batch: &mut IoBatch) -> Result<()> {
-        for (idx, locked_page) in pages.into_indexed() {
-            let (bio_segment, complete_fn) = prepare_read_page(locked_page);
-            self.submit_read_bio(idx, bio_segment, complete_fn, io_batch)?;
-        }
-        Ok(())
-    }
-
-    /// Submits write I/O for the page at `idx`.
-    ///
-    /// `bio_segment` contains the stable page snapshot that must be written.
-    /// Implementations must attach `complete_fn` to the underlying
-    /// asynchronous I/O so the page-cache layer can finish writeback
-    /// bookkeeping and report failures.
-    ///
-    /// Implementations should fail with `EINVAL` for an out-of-bounds `idx`.
-    /// See also [`PageCacheBackend::write_page_async`].
-    fn submit_write_bio(
-        &self,
-        idx: usize,
-        bio_segment: BioSegment,
-        complete_fn: BioCompleteFn,
-        io_batch: &mut IoBatch,
-    ) -> Result<()>;
-
-    /// Submits write I/O for a logical run of locked cache pages.
-    ///
-    /// Backends that can process several pages in one request should override
-    /// this method. The default implementation submits each page separately.
-    ///
-    /// Implementations should fail with `EINVAL` for an out-of-bounds `idx`.
-    /// See also [`PageCacheBackend::write_page_async`].
-    fn submit_write_page_run(&self, pages: PageRun<'_>, io_batch: &mut IoBatch) -> Result<()> {
-        for (idx, locked_page) in pages.into_indexed() {
-            let rollback_page = locked_page.clone();
-            let (bio_segment, complete_fn) = prepare_write_page(locked_page);
-            let res = self.submit_write_bio(idx, bio_segment, complete_fn, io_batch);
-            if res.is_err() {
-                let locked_page = rollback_page.lock();
-                locked_page.set_dirty();
-                locked_page.clear_writing_back();
-            }
-            res?;
-        }
-        Ok(())
-    }
-}
-
-impl<T: BlockAsPageCacheBackend> PageCacheBackend for T {
-    fn read_page_async(
-        &self,
-        idx: usize,
-        locked_page: LockedCachePage,
-        io_batch: &mut IoBatch,
-    ) -> Result<()> {
-        let (bio_segment, complete_fn) = prepare_read_page(locked_page);
-        self.submit_read_bio(idx, bio_segment, complete_fn, io_batch)
-    }
-
-    fn read_pages_async(&self, pages: PageRun<'_>, io_batch: &mut IoBatch) -> Result<()> {
-        self.submit_read_page_run(pages, io_batch)
-    }
-
-    fn write_page_async(
-        &self,
-        idx: usize,
-        locked_page: LockedCachePage,
-        io_batch: &mut IoBatch,
-    ) -> Result<()> {
-        let rollback_page = locked_page.clone();
-
-        let (bio_segment, complete_fn) = prepare_write_page(locked_page);
-        let res = self.submit_write_bio(idx, bio_segment, complete_fn, io_batch);
-        if res.is_err() {
-            // If submission fails, re-dirty the page so the next writeback can
-            // retry the data that never reached the device queue.
-            let locked_page = rollback_page.lock();
-            locked_page.set_dirty();
-            locked_page.clear_writing_back();
-        }
-
-        res
-    }
-
-    fn write_pages_async(&self, pages: PageRun<'_>, io_batch: &mut IoBatch) -> Result<()> {
-        self.submit_write_page_run(pages, io_batch)
-    }
-}
-
-fn prepare_read_page(locked_page: LockedCachePage) -> (BioSegment, BioCompleteFn) {
-    let bio_segment = BioSegment::new_from_segment(
-        Segment::from(locked_page.deref().clone()).into(),
-        BioDirection::FromDevice,
-    );
-
-    let complete_fn = Box::new(move |status| {
-        if status == BioStatus::Zeros {
-            locked_page.fill_zeros(0, PAGE_SIZE).unwrap();
-            locked_page.set_up_to_date();
-        } else if status == BioStatus::Complete {
-            locked_page.set_up_to_date();
-        }
-        // Dropping `locked_page` releases the page lock.
-    });
-    (bio_segment, complete_fn)
-}
-
-fn prepare_write_page(locked_page: LockedCachePage) -> (BioSegment, BioCompleteFn) {
-    let (bio_segment, page) = prepare_write_page_segment(locked_page);
-    let complete_fn = Box::new(move |status| complete_write_page(&page, status));
-    (bio_segment, complete_fn)
-}
-
-fn prepare_write_page_segment(locked_page: LockedCachePage) -> (BioSegment, CachePage) {
-    locked_page.wait_until_finish_writing_back();
-
-    let bio_segment = BioSegment::new_from_segment(
-        Segment::from(locked_page.deref().clone()).into(),
-        BioDirection::ToDevice,
-    );
-
-    locked_page.set_writing_back();
-    locked_page.set_up_to_date();
-
-    let page = locked_page.unlock();
-    (bio_segment, page)
-}
-
-fn complete_write_page(page: &CachePage, status: BioStatus) {
-    page.clear_writing_back();
-    if status != BioStatus::Complete {
-        // TODO: Record the writeback error (e.g., EIO) in the VMO
-        // (or the corresponding inode) so that a subsequent sync syscall
-        // can detect and report it to userspace.
-        //
-        // Following Linux's design, we intentionally do **not** re-dirty the
-        // page here. Re-dirtying would cause the writeback mechanism to retry
-        // the I/O indefinitely, which could stall the entire system if the
-        // underlying device has a persistent hardware fault. Instead, the page
-        // is left clean and the data is considered lost.
-        ostd::error!("writeback I/O failed with status {status:?}; data may be lost");
     }
 }

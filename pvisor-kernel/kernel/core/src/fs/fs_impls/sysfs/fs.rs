@@ -10,7 +10,7 @@ use crate::{
         vfs::{
             file_system::{FileSystem, FsEventSubscriberStats, SuperBlock},
             inode::Inode,
-            registry::{FsCreationCtx, FsProperties, FsType},
+            registry::{FsCreationCtx, FsType},
         },
     },
     prelude::*,
@@ -89,11 +89,7 @@ impl FsType for SysFsType {
         "sysfs"
     }
 
-    fn properties(&self) -> FsProperties {
-        FsProperties::empty()
-    }
-
-    fn create(&self, _fs_creation_ctx: &mut FsCreationCtx) -> Result<Arc<dyn FileSystem>> {
+    fn create(&self, _fs_creation_ctx: &FsCreationCtx) -> Result<Arc<dyn FileSystem>> {
         Ok(SysFs::singleton().clone())
     }
 

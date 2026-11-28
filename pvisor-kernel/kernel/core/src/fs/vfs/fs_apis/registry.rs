@@ -2,7 +2,6 @@
 
 use alloc::collections::btree_map::Entry;
 
-use aster_block::BlockDevice;
 use aster_systree::{
     AttrLessBranchNodeFields, SysNode, SysObj, SysPerms, SysStr, inherit_sys_branch_node,
 };
@@ -13,7 +12,7 @@ use crate::{
         fs_impls::sysfs,
         vfs::{
             file_system::{FileSystem, FsFlags},
-            path::{AT_FDCWD, Dentry, EmptyPathStr, FsPath},
+            path::Dentry,
         },
     },
     prelude::*,
@@ -27,21 +26,18 @@ pub(crate) trait FsType: Send + Sync + 'static {
     /// of any caching — every mount is fresh.
     type Key: Eq + Ord + Clone + Send + Sync + 'static;
 
-    /// Gets the name of this FS type such as `"ext4"` or `"sysfs"`.
+    /// Gets the name of this FS type such as `"virtiofs"` or `"sysfs"`.
     fn name(&self) -> &'static str;
 
-    /// Gets the properties of this FS type.
-    fn properties(&self) -> FsProperties;
-
     /// Creates an instance of this FS type.
-    fn create(&self, fs_creation_ctx: &mut FsCreationCtx) -> Result<Arc<dyn FileSystem>>;
+    fn create(&self, fs_creation_ctx: &FsCreationCtx) -> Result<Arc<dyn FileSystem>>;
 
     /// Returns the computed dedup key and the [`FsCache`] for this mount request.
     ///
     /// Return `None` to skip the cache mechanism (every mount is fresh).
     fn obtain_key_and_cache(
         &self,
-        _fs_creation_ctx: &mut FsCreationCtx,
+        _fs_creation_ctx: &FsCreationCtx,
     ) -> Option<(Self::Key, &FsCache<Self::Key>)> {
         None
     }
@@ -61,14 +57,11 @@ pub(crate) trait FsType: Send + Sync + 'static {
 /// Implemented automatically for every [`FsType`] via a blanket impl, so FS
 /// authors only implement [`FsType`].
 pub(crate) trait DynFsType: Send + Sync + 'static {
-    /// Gets the name of this FS type such as `"ext4"` or `"sysfs"`.
+    /// Gets the name of this FS type such as `"virtiofs"` or `"sysfs"`.
     fn name(&self) -> &'static str;
 
-    /// Gets the properties of this FS type.
-    fn properties(&self) -> FsProperties;
-
     /// Gets or creates a file system instance along with its root dentry.
-    fn get_or_create(&self, fs_creation_ctx: &mut FsCreationCtx) -> Result<FsAndRoot>;
+    fn get_or_create(&self, fs_creation_ctx: &FsCreationCtx) -> Result<FsAndRoot>;
 
     /// Returns a `SysTree` node that represents the FS type.
     fn sysnode(&self) -> Option<Arc<dyn SysNode>>;
@@ -79,15 +72,11 @@ impl<T: FsType> DynFsType for T {
         <T as FsType>::name(self)
     }
 
-    fn properties(&self) -> FsProperties {
-        <T as FsType>::properties(self)
-    }
-
     fn sysnode(&self) -> Option<Arc<dyn SysNode>> {
         <T as FsType>::sysnode(self)
     }
 
-    fn get_or_create(&self, fs_creation_ctx: &mut FsCreationCtx) -> Result<FsAndRoot> {
+    fn get_or_create(&self, fs_creation_ctx: &FsCreationCtx) -> Result<FsAndRoot> {
         if let Some((key, cache)) = self.obtain_key_and_cache(fs_creation_ctx) {
             cache.get_or_create(key, fs_creation_ctx.flags(), || {
                 self.create(fs_creation_ctx)
@@ -99,20 +88,12 @@ impl<T: FsType> DynFsType for T {
     }
 }
 
-/// A context that describes the inputs used to create a file system instance.
-///
-/// This context is used to identify and create a file system instance.
+/// Read-only inputs for a boot-time or syscall mount.
 pub(crate) struct FsCreationCtx<'a> {
     source: Option<&'a str>,
     flags: FsFlags,
     args: Option<&'a str>,
-    block_device: BlockDeviceResolution<'a>,
-}
-
-enum BlockDeviceResolution<'a> {
-    Pending(&'a Context<'a>),
-    Resolved(Arc<dyn BlockDevice>),
-    None,
+    task_ctx: Option<&'a Context<'a>>,
 }
 
 impl<'a> FsCreationCtx<'a> {
@@ -127,31 +108,17 @@ impl<'a> FsCreationCtx<'a> {
             source,
             flags,
             args,
-            block_device: BlockDeviceResolution::Pending(task_ctx),
+            task_ctx: Some(task_ctx),
         }
     }
 
-    /// Creates a file system creation context from an already resolved block device.
-    pub(in crate::fs) fn from_block_device(
-        block_device: Arc<dyn BlockDevice>,
-        flags: FsFlags,
-        args: Option<&'a str>,
-    ) -> Self {
-        Self {
-            source: None,
-            flags,
-            args,
-            block_device: BlockDeviceResolution::Resolved(block_device),
-        }
-    }
-
-    /// Creates a non-block filesystem context during rootfs boot.
+    /// Creates the context for mounting the root filesystem during boot.
     pub(in crate::fs) fn from_source(source: &'a str, flags: FsFlags) -> Self {
         Self {
             source: Some(source),
             flags,
             args: None,
-            block_device: BlockDeviceResolution::None,
+            task_ctx: None,
         }
     }
 
@@ -170,73 +137,9 @@ impl<'a> FsCreationCtx<'a> {
         self.args
     }
 
-    /// Returns the task context the creation started from; `None` once a block device replaced it.
+    /// Returns the calling task, or `None` for the boot-time root mount.
     pub(in crate::fs) fn ctx(&self) -> Option<&'a Context<'a>> {
-        match &self.block_device {
-            BlockDeviceResolution::Pending(task_ctx) => Some(*task_ctx),
-            BlockDeviceResolution::Resolved(_) | BlockDeviceResolution::None => None,
-        }
-    }
-
-    /// Resolves the mount source into a block device.
-    pub(in crate::fs) fn resolve_block_device(&mut self) -> Result<&Arc<dyn BlockDevice>> {
-        if self.block_device().is_none() {
-            self.do_resolve_block_device()?;
-        }
-
-        Ok(self.block_device().unwrap())
-    }
-
-    fn block_device(&self) -> Option<&Arc<dyn BlockDevice>> {
-        match &self.block_device {
-            BlockDeviceResolution::Pending(_) | BlockDeviceResolution::None => None,
-            BlockDeviceResolution::Resolved(block_device) => Some(block_device),
-        }
-    }
-
-    fn do_resolve_block_device(&mut self) -> Result<()> {
-        let task_ctx = match &self.block_device {
-            BlockDeviceResolution::Pending(task_ctx) => *task_ctx,
-            BlockDeviceResolution::Resolved(_) => return Ok(()),
-            BlockDeviceResolution::None => {
-                return_errno_with_message!(Errno::ENODEV, "root source is not a block device");
-            }
-        };
-
-        let source = self
-            .source()
-            .ok_or_else(|| Error::with_message(Errno::EINVAL, "the source is not specified"))?;
-        let fs_path = FsPath::from_fd_at(AT_FDCWD, source, EmptyPathStr::Reject)?;
-        let path = task_ctx
-            .thread_local
-            .borrow_fs()
-            .resolver()
-            .read()
-            .lookup(&fs_path)?;
-
-        if !path.type_().is_device() {
-            return_errno_with_message!(Errno::ENODEV, "the path is not a device file");
-        }
-        let id = path.metadata()?.self_dev_id;
-
-        let block_device = id
-            .and_then(aster_block::lookup)
-            .ok_or_else(|| Error::with_message(Errno::ENODEV, "the device is not found"))?;
-        self.block_device = BlockDeviceResolution::Resolved(block_device);
-
-        Ok(())
-    }
-}
-
-bitflags! {
-    /// The properties common to all FS instances.
-    pub(crate) struct FsProperties: u32 {
-        /// Whether a FS needs to be backed by a disk.
-        ///
-        /// Most persistent FSes such as ext2 require disks.
-        /// But a volatile FS such as ramfs or
-        /// a pseudo FS such as sysfs does not.
-        const NEED_DISK = 1 << 1;
+        self.task_ctx
     }
 }
 
@@ -258,16 +161,13 @@ pub(crate) fn look_up(name: &str) -> Option<&'static dyn DynFsType> {
         .cloned()
 }
 
-/// Executes a user-provided operation with an iterator that can access each
-/// and every FS type.
-pub(crate) fn with_iter<F, R>(f: F) -> R
+/// Visits the registered filesystem names for `/proc/filesystems`.
+pub(crate) fn with_names<F, R>(f: F) -> R
 where
-    F: FnOnce(&mut dyn Iterator<Item = (&str, &dyn DynFsType)>) -> R,
+    F: FnOnce(&mut dyn Iterator<Item = &'static str>) -> R,
 {
     let guard = FS_REGISTRY.get().unwrap().fs_table.lock();
-
-    let mut iter = guard.iter().map(|(name, fs_type)| (*name, *fs_type));
-    f(&mut iter)
+    f(&mut guard.keys().copied())
 }
 
 /// Initializes the FS registry module.
@@ -288,7 +188,7 @@ static FS_REGISTRY: Once<Arc<FsRegistry>> = Once::new();
 /// A cache of file system instances, keyed by `K`.
 ///
 /// `FsType` implementations use this cache to deduplicate mounts that refer to
-/// the same logical file system instance, such as the same block device.
+/// the same logical file system instance, such as a virtio-fs mount tag.
 pub(crate) struct FsCache<K: Eq + Ord + Clone + Send + Sync + 'static> {
     entries: Mutex<BTreeMap<K, WeakFsAndRoot>>,
 }
