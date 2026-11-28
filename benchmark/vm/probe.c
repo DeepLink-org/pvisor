@@ -5,6 +5,7 @@
 #include <fcntl.h>
 #include <inttypes.h>
 #include <linux/magic.h>
+#include <sched.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -69,6 +70,49 @@ static uint64_t pipe_roundtrip(void) {
         }
         _exit(0);
     }
+    close(to_child[0]);
+    close(reply[1]);
+    uint64_t start = 0;
+    for (int i = 0; i <= ROUNDS; ++i) {
+        unsigned char sent = (unsigned char)i, got;
+        if (i == 1) /* First exchange establishes readiness outside the clock. */
+            start = now();
+        CHECK(write(to_child[1], &sent, 1) == 1 && read(reply[0], &got, 1) == 1);
+        CHECK((sent ^ got) == 0xff);
+    }
+    uint64_t ns = now() - start;
+    CHECK(close(to_child[1]) == 0 && close(reply[0]) == 0);
+    CHECK(waitpid(child, &status, 0) == child && WIFEXITED(status) && WEXITSTATUS(status) == 0);
+    return ns;
+}
+
+static void pin_cpu(int cpu) {
+    cpu_set_t set;
+    CPU_ZERO(&set);
+    CPU_SET(cpu, &set);
+    CHECK(sched_setaffinity(0, sizeof(set), &set) == 0);
+}
+
+static uint64_t pipe_wake_cross_vcpu(void) {
+    enum { ROUNDS = 4096 };
+    int to_child[2], reply[2], status;
+    CHECK(sysconf(_SC_NPROCESSORS_ONLN) >= 2);
+    CHECK(pipe(to_child) == 0 && pipe(reply) == 0);
+    pid_t child = fork();
+    CHECK(child >= 0);
+    if (child == 0) {
+        pin_cpu(1);
+        close(to_child[1]);
+        close(reply[0]);
+        for (int i = 0; i <= ROUNDS; ++i) {
+            unsigned char token;
+            CHECK(read(to_child[0], &token, 1) == 1);
+            token ^= 0xff;
+            CHECK(write(reply[1], &token, 1) == 1);
+        }
+        _exit(0);
+    }
+    pin_cpu(0);
     close(to_child[0]);
     close(reply[1]);
     uint64_t start = 0;
@@ -217,6 +261,40 @@ static uint64_t metadata(void) {
     return ns;
 }
 
+static uint64_t fs_metadata_tree(void) {
+    enum { DIRS = 32, FILES = 32 };
+    char dir[32], path[64];
+    struct stat st;
+    uint64_t start = now();
+    for (int d = 0; d < DIRS; ++d) {
+        CHECK(snprintf(dir, sizeof(dir), "benchmeta-%02d", d) > 0);
+        CHECK(mkdir(dir, 0700) == 0);
+        for (int f = 0; f < FILES; ++f) {
+            CHECK(snprintf(path, sizeof(path), "%s/f%02d", dir, f) > 0);
+            int fd = open(path, O_CREAT | O_EXCL | O_WRONLY, 0600);
+            CHECK(fd >= 0 && close(fd) == 0);
+        }
+    }
+    for (int d = 0; d < DIRS; ++d) {
+        CHECK(snprintf(dir, sizeof(dir), "benchmeta-%02d", d) > 0);
+        for (int f = 0; f < FILES; ++f) {
+            CHECK(snprintf(path, sizeof(path), "%s/f%02d", dir, f) > 0);
+            CHECK(stat(path, &st) == 0 && S_ISREG(st.st_mode) && st.st_size == 0);
+        }
+    }
+    for (int d = 0; d < DIRS; ++d) {
+        CHECK(snprintf(dir, sizeof(dir), "benchmeta-%02d", d) > 0);
+        for (int f = 0; f < FILES; ++f) {
+            CHECK(snprintf(path, sizeof(path), "%s/f%02d", dir, f) > 0);
+            CHECK(unlink(path) == 0);
+        }
+        CHECK(rmdir(dir) == 0);
+    }
+    uint64_t ns = now() - start;
+    CHECK(stat("benchmeta-00", &st) == -1 && errno == ENOENT);
+    return ns;
+}
+
 static int compare_names(const void *a, const void *b) {
     return strcmp(a, b);
 }
@@ -268,10 +346,15 @@ int main(int argc, char **argv) {
         ns = syscall_getpid();
     } else if (!strcmp(metric, "ipc-pipe-roundtrip")) {
         ns = pipe_roundtrip();
+    } else if (!strcmp(metric, "ipc-wake-cross-vcpu")) {
+        ns = pipe_wake_cross_vcpu();
     } else if (!strcmp(metric, "memory-copy")) {
         ns = memory();
     } else if (!strcmp(metric, "memory-map-touch")) {
         ns = map_touch();
+    } else if (!strcmp(metric, "fs-metadata-tree")) {
+        CHECK(chdir("/work") == 0);
+        ns = fs_metadata_tree();
     } else if (!strncmp(metric, "disk-", 5)) {
         CHECK(chdir("/work") == 0);
         if (!strcmp(metric, "disk-write-fsync"))

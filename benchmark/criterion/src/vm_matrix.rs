@@ -4,7 +4,7 @@ pub const DIRECT_START: &str = "direct-command-start";
 pub const WARM_START: &str = "linux-warm-command-start";
 pub const REFERENCE: &str = "firecracker";
 pub const BACKENDS: [&str; 3] = ["linux", "rust-native", REFERENCE];
-pub const METRICS: [&str; 15] = [
+pub const METRICS: [&str; 17] = [
     "cpu-integer",
     "syscall-getpid",
     "ipc-pipe-roundtrip",
@@ -20,6 +20,8 @@ pub const METRICS: [&str; 15] = [
     "tmpfs-shuffled-overwrite",
     "tmpfs-metadata",
     "tmpfs-dirscan",
+    "ipc-wake-cross-vcpu",
+    "fs-metadata-tree",
 ];
 
 pub fn cells() -> impl Iterator<Item = (&'static str, &'static str, String)> {

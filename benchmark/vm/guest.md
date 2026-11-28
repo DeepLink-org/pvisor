@@ -7,7 +7,7 @@ Benchmark: B-VM-GUEST-ENG ([注册表](../REGISTRY.md#b-vm-guest-eng))，enginee
 
 PR 的目标提交和待合并版本在同一台 Linux x86_64/KVM 主机上顺序测量。每个版本都跑
 pvisor-vm + Linux 固件、pvisor-vm + 嵌入式 Rust native kernel、固定的 Firecracker；
-每个后端 15 项负载，共 30 个独立的产品门禁和 15 个必测参照。
+每个后端 17 项负载，共 34 个独立的产品门禁和 17 个必测参照。
 每项取 Criterion 的 `median.point_estimate`（ns/整项操作，越小越好）。
 两个 pVisor 后端各自和自己的基线比：**任意一项超过基线的 115% 就失败**，不按平均分抵消。
 Firecracker 的两个读数用来识别宿主波动，不要求 pVisor 快于它。三个后端都必须给出有效结果；
@@ -15,7 +15,7 @@ Firecracker 的两个读数用来识别宿主波动，不要求 pVisor 快于它
 
 将 GitHub 状态检查 **`VM guest regression gate`** 设为目标分支的 required check，
 才能用这个失败状态阻止合并。PR 的 **Conversation** 中，GitHub Actions 会更新同一条
-**VM guest performance** 评论。表格按负载分 15 行，三列并排显示各后端的基线 → 候选
+**VM guest performance** 评论。表格按负载分 17 行，三列并排显示各后端的基线 → 候选
 中位耗时（ms/整项）和变化率；超过阈值的 pVisor 项会标红。若本次测量未产出完整报告，
 评论会给出运行链接而不是显示通过。评论不改变门禁结果。
 [benchmark CI](../../.github/workflows/pvisor-benchmark.yml) 在同仓库 PR 的两项 VM 门禁结束后直接调用
@@ -33,7 +33,7 @@ SHA、制品哈希、逐次命令与日志、Criterion 样本及 `comparison/rep
 
 ## 测量内容
 
-每次操作在新 VM 中执行，1 vCPU、256 MiB、相同的静态工作负载，用 guest 的
+每次操作在新 VM 中执行，1 vCPU（跨 vCPU 唤醒项为 2 vCPU）、256 MiB、相同的静态工作负载，用 guest 的
 `CLOCK_MONOTONIC` 计时。启动、关机、准备目录/镜像、挂载和文件内容回读校验不计入。
 每个 cell 用 Flat 采样，10 个统计样本，100 ms 预热和 1 秒目标测量预算；
 不丢慢样本。它不是跨机器的排行榜，也不衡量 VM 启动、内存占用或尾延迟。
@@ -55,6 +55,8 @@ SHA、制品哈希、逐次命令与日志、Criterion 样本及 `comparison/rep
 | `tmpfs-shuffled-overwrite` | 乱序覆写已有 tmpfs 文件中的所有 4 KiB 块，不含 `fsync` |
 | `tmpfs-metadata` | 1,024 轮创建、关闭、重命名、`stat` 和删除；检查最终路径不存在 |
 | `tmpfs-dirscan` | 对含 512 个文件的目录执行 16 次完整的打开、遍历、复制名称、关闭；逐轮在计时外校验名称集合 |
+| `ipc-wake-cross-vcpu` | 2 vCPU；两个进程分别绑定 guest CPU 0/1，经两条管道完成 4,096 次单字节请求/应答；覆盖跨 vCPU 唤醒路径 |
+| `fs-metadata-tree` | 在 `/work` 上创建 32 个目录 × 32 个空文件，逐项 `stat`，再删除并检查不存在；覆盖 virtio-fs 根的多文件元数据路径 |
 
 定位读写负载都先填满文件并完整读回一次；磁盘文件在预热前另做一次 `fsync`。
 乱序负载用相同的固定种子打乱块顺序，每个偏移恰好访问一次，最后检查长度与全部字节。
