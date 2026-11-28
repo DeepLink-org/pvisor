@@ -3,8 +3,8 @@
 use std::{
     fs,
     io::{Read, Seek, Write},
-    os::fd::AsRawFd,
-    os::unix::fs::{FileExt, PermissionsExt},
+    os::fd::{AsRawFd, FromRawFd},
+    os::unix::fs::{FileExt, FileTypeExt, PermissionsExt},
     sync::atomic::{AtomicBool, Ordering},
     thread,
 };
@@ -25,6 +25,13 @@ struct CapData {
 
 unsafe extern "C" {
     fn ioctl(fd: i32, request: i32, ...) -> i32;
+    fn openpty(
+        master: *mut i32,
+        slave: *mut i32,
+        name: *mut std::ffi::c_char,
+        termios: *const std::ffi::c_void,
+        winsize: *const std::ffi::c_void,
+    ) -> i32;
     fn sched_getaffinity(pid: i32, len: usize, mask: *mut u64) -> i32;
     fn sched_getcpu() -> i32;
     fn mmap(addr: *mut u8, len: usize, prot: i32, flags: i32, fd: i32, offset: i64) -> *mut u8;
@@ -34,6 +41,37 @@ unsafe extern "C" {
     fn capset(header: *const CapHeader, data: *const CapData) -> i32;
     fn fsetxattr(fd: i32, name: *const i8, value: *const u8, size: usize, flags: i32) -> i32;
     fn fgetxattr(fd: i32, name: *const i8, value: *mut u8, size: usize) -> isize;
+}
+
+fn check_headless_tty() {
+    for path in ["/dev/tty0", "/dev/tty1", "/dev/tty63"] {
+        assert_eq!(
+            fs::symlink_metadata(path).unwrap_err().kind(),
+            std::io::ErrorKind::NotFound
+        );
+    }
+    for path in ["/dev/console", "/dev/hvc0", "/dev/tty"] {
+        assert!(fs::metadata(path).unwrap().file_type().is_char_device());
+    }
+    let (mut master, mut slave) = (-1, -1);
+    assert_eq!(
+        unsafe {
+            openpty(
+                &mut master,
+                &mut slave,
+                std::ptr::null_mut(),
+                std::ptr::null(),
+                std::ptr::null(),
+            )
+        },
+        0
+    );
+    let mut master = unsafe { fs::File::from_raw_fd(master) };
+    let mut slave = unsafe { fs::File::from_raw_fd(slave) };
+    slave.write_all(b"pty").unwrap();
+    let mut buf = [0; 3];
+    master.read_exact(&mut buf).unwrap();
+    assert_eq!(&buf, b"pty");
 }
 
 fn check_setid_writes() {
@@ -377,6 +415,7 @@ fn main() {
                 std::io::copy(&mut std::io::stdin().lock(), &mut std::io::stdout().lock()).unwrap();
             }
             "--smp" => check_smp(args.next().unwrap().parse().unwrap()),
+            "--check-headless-tty" => check_headless_tty(),
             "--check-tmpfs-read" => check_tmpfs_read(),
             "--check-write-cache" => {
                 check_write_cache();

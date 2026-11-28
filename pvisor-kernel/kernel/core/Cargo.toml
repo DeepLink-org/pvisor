@@ -34,6 +34,7 @@ device-id.workspace = true
 getset.workspace = true
 hashbrown.workspace = true
 id-alloc.workspace = true
+indexmap.workspace = true
 inherit-methods-macro.workspace = true
 inventory.workspace = true
 intrusive-collections.workspace = true

@@ -243,6 +243,8 @@ bitflags! {
         /// pVisor directory images; aliases `OVER_IO_URING` on the wire.
         /// Use only with the matching pVisor virtio-fs device capability.
         const PVISOR_META              = 1 << 9;
+        /// pVisor immutable data-object receipts in extended OPEN replies.
+        const PVISOR_DATA_OBJECT       = 1 << 12;
     }
 }
 

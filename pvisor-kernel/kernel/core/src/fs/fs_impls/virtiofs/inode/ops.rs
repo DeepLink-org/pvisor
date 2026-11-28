@@ -11,6 +11,7 @@ use aster_fuse::{
     ReleaseFlags, ReleaseKind, SetattrReq, SetattrValid, WriteFlags, WriteReq,
     ops::{
         getattr::{GetattrOperation, GetattrReq},
+        init::FuseInitFlags2,
         open::{OpenOperation, OpenReq, OpendirOperation},
         release::ReleaseOptions,
         setattr::SetattrOperation,
@@ -35,12 +36,35 @@ use crate::{
         vfs::inode::Metadata,
     },
     prelude::*,
-    thread::work_queue::{self, WorkPriority},
     time::clocks::MonotonicCoarseClock,
     util::read_segments,
 };
 
 const MAX_READDIR_BYTES: usize = 32 * 1024;
+
+pub(in virtiofs) fn read_cached(
+    pages: &crate::vm::page_cache::PageCache,
+    size: usize,
+    offset: usize,
+    writers: &mut [VmWriter],
+) -> Result<usize> {
+    read_segments(writers, |done, writer| {
+        let start = offset + done;
+        let len = writer.avail().min(size.saturating_sub(start));
+        if len == 0 {
+            return Ok(0);
+        }
+        let mut dst = writer.clone_exclusive();
+        dst.limit(len);
+        let result = pages.read(start, &mut dst);
+        let copied = len - dst.avail();
+        if copied == 0 {
+            result?;
+        }
+        writer.skip(copied);
+        Ok(copied)
+    })
+}
 
 impl VirtioFsInode {
     /// Reads file data through the page cache.
@@ -58,24 +82,8 @@ impl VirtioFsInode {
             self.ensure_page_cache(&mut self.inner.write())?;
             inner = self.inner.read();
         }
-        let file_size = self.size();
         let page_cache = inner.page_cache().unwrap();
-        read_segments(writers, |done, writer| {
-            let start = offset + done;
-            let len = writer.avail().min(file_size.saturating_sub(start));
-            if len == 0 {
-                return Ok(0);
-            }
-            let mut dst = writer.clone_exclusive();
-            dst.limit(len);
-            let result = page_cache.read(start, &mut dst);
-            let copied = len - dst.avail();
-            if copied == 0 {
-                result?;
-            }
-            writer.skip(copied);
-            Ok(copied)
-        })
+        read_cached(page_cache, self.size(), offset, writers)
     }
 
     /// Reads file data directly from the server.
@@ -229,24 +237,47 @@ impl VirtioFsInode {
         }
     }
 
+    fn open_handle(
+        &self,
+        access_mode: AccessMode,
+        status_flags: StatusFlags,
+        release_flags: ReleaseFlags,
+    ) -> Result<(Arc<VirtioFsOpenHandle>, Option<(u32, usize)>)> {
+        let fs = self.fs_ref();
+        let flags = access_mode as u32 | status_flags.bits();
+        let extended = fs
+            .session()
+            .negotiated_flags2()
+            .contains(FuseInitFlags2::PVISOR_DATA_OBJECT);
+        let (open_out, size) = fs.session().do_fuse_op(
+            self.nodeid(),
+            OpenOperation::new(OpenReq::new(flags), extended),
+        )?;
+        let handle = VirtioFsOpenHandle::new(
+            open_out.fh(),
+            self.nodeid(),
+            access_mode,
+            status_flags,
+            open_out.open_flags(),
+            self.fs.clone(),
+            ReleaseOptions::new(ReleaseKind::File, release_flags),
+        );
+        let object = open_out.data_object(size)?;
+        if object.is_some()
+            && (access_mode != AccessMode::O_RDONLY
+                || status_flags.intersects(StatusFlags::O_DIRECT | StatusFlags::O_PATH))
+        {
+            return_errno_with_message!(Errno::EIO, "unexpected immutable object on open");
+        }
+        Ok((handle, object))
+    }
+
     pub(super) fn open_transient_handle(
         &self,
         access_mode: AccessMode,
     ) -> Result<Arc<VirtioFsOpenHandle>> {
-        let fs = self.fs_ref();
-        let flags = access_mode as u32;
-        let open_out = fs
-            .session()
-            .do_fuse_op(self.nodeid(), OpenOperation::new(OpenReq::new(flags)))?;
-        Ok(VirtioFsOpenHandle::new(
-            open_out.fh(),
-            self.nodeid(),
-            access_mode,
-            StatusFlags::empty(),
-            open_out.open_flags(),
-            self.fs.clone(),
-            ReleaseOptions::new(ReleaseKind::File, ReleaseFlags::empty()),
-        ))
+        self.open_handle(access_mode, StatusFlags::empty(), ReleaseFlags::empty())
+            .map(|(handle, _)| handle)
     }
 
     fn do_direct_write(
@@ -346,14 +377,22 @@ impl VirtioFsInode {
             .weak_self
             .upgrade()
             .ok_or_else(|| Error::with_message(Errno::EIO, "virtiofs inode is unavailable"))?;
-        let fs = self.fs_ref();
-
-        let open_out = fs.session().do_fuse_op(
-            self.nodeid(),
-            OpenOperation::new(OpenReq::new((access_mode as u32) | status_flags.bits())),
-        )?;
+        let (open_handle, receipt) =
+            self.open_handle(access_mode, status_flags, ReleaseFlags::RELEASE_FLUSH)?;
+        if let Some(receipt) = receipt {
+            let fs = self.fs_ref();
+            let object = fs
+                .lower_objects()
+                .lock()
+                .bind(receipt, fs.session(), &open_handle)?;
+            return Ok(Box::new(VirtioFsFile::new(
+                inode,
+                open_handle,
+                CachePolicy::Lower(object),
+            )));
+        }
         let cache_policy = if !status_flags.contains(StatusFlags::O_DIRECT)
-            && !open_out
+            && !open_handle
                 .open_flags()
                 .contains(FuseOpenFlags::FOPEN_DIRECT_IO)
         {
@@ -361,25 +400,24 @@ impl VirtioFsInode {
         } else {
             CachePolicy::Direct
         };
-        let open_handle = VirtioFsOpenHandle::new(
-            open_out.fh(),
-            self.nodeid(),
-            access_mode,
-            status_flags,
-            open_out.open_flags(),
-            self.fs.clone(),
-            ReleaseOptions::new(ReleaseKind::File, ReleaseFlags::RELEASE_FLUSH),
-        );
-        if !open_out
+        if !open_handle
             .open_flags()
             .contains(FuseOpenFlags::FOPEN_KEEP_CACHE)
-            && let Err(err) = self.invalidate_whole_page_cache()
         {
-            return Err(err);
+            self.invalidate_whole_page_cache()?;
+            if self
+                .fs_ref()
+                .session()
+                .negotiated_flags2()
+                .contains(FuseInitFlags2::PVISOR_DATA_OBJECT)
+            {
+                // A fallback OPEN can bind a different layer while the lookup size is still valid.
+                self.refresh_attr(Some(open_handle.fh()))?;
+            }
         }
 
         // Cache the open handle for later page cache I/O.
-        if cache_policy == CachePolicy::Cached {
+        if matches!(cache_policy, CachePolicy::Cached) {
             self.open_handles.insert(&open_handle);
         }
 
@@ -539,26 +577,6 @@ impl VirtioFsInode {
         Ok(())
     }
 
-    fn forget_async(&self, nlookup: u64) {
-        let nodeid = self.nodeid();
-
-        if let Some(fs) = self.fs.upgrade() {
-            work_queue::submit_work_func(
-                move || {
-                    if let Err(err) = fs.session().forget(nodeid, nlookup) {
-                        warn!(
-                            "virtiofs forget failed for inode {} with nlookup {}: {:?}",
-                            nodeid.as_u64(),
-                            nlookup,
-                            err
-                        );
-                    }
-                },
-                WorkPriority::Normal,
-            );
-        }
-    }
-
     /// Revalidates a cached directory entry with `LOOKUP`.
     ///
     /// The entry TTL and attribute TTL are independent caches. A successful
@@ -598,6 +616,16 @@ impl VirtioFsInode {
         self.update_from_entry_reply(&lookup_reply, request_attr_version)
     }
 
+    /// A pinned lower handle's attributes must not be committed to the merged inode.
+    pub(in virtiofs) fn handle_metadata(&self, fh: FuseFileHandle) -> Result<Metadata> {
+        let fs = self.fs_ref();
+        let reply = fs.session().do_fuse_op(
+            self.nodeid(),
+            GetattrOperation::new(GetattrReq::new(GetattrFlags::GETATTR_FH, fh)),
+        )?;
+        Ok(metadata_from_attr(reply.attr(), fs.container_device_id()))
+    }
+
     /// Refreshes cached attributes when their server TTL has expired.
     ///
     /// Calls this before operations that depend on a current size or on
@@ -611,6 +639,10 @@ impl VirtioFsInode {
             return Ok(());
         }
 
+        self.refresh_attr(fh)
+    }
+
+    fn refresh_attr(&self, fh: Option<FuseFileHandle>) -> Result<()> {
         let fs = self.fs_ref();
         let request_attr_version = fs.session().snapshot_attr_version();
         let getattr_req = match fh {
@@ -633,11 +665,7 @@ impl Drop for VirtioFsInode {
     fn drop(&mut self) {
         if let Some(fs) = self.fs.upgrade() {
             fs.remove_inode_from_cache(self);
-        }
-
-        let nlookup = self.lookup_count.drain();
-        if nlookup > 0 {
-            self.forget_async(nlookup);
+            fs.defer_forget(self.nodeid(), self.lookup_count.drain());
         }
     }
 }

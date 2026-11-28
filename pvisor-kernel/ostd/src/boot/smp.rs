@@ -201,11 +201,18 @@ fn report_online_and_hw_cpu_id(cpu_id: u32) {
 }
 
 fn wait_for_all_aps_started(num_cpus: usize) {
-    fn is_all_aps_started(num_cpus: usize) -> bool {
-        HW_CPU_ID_MAP.lock().len() == num_cpus
-    }
+    let start = crate::arch::read_tsc();
+    let timeout = crate::arch::tsc_freq().saturating_mul(10);
 
-    while !is_all_aps_started(num_cpus) {
+    loop {
+        let online = HW_CPU_ID_MAP.lock().len();
+        if online == num_cpus {
+            return;
+        }
+        assert!(
+            crate::arch::read_tsc().wrapping_sub(start) < timeout,
+            "AP startup timed out: {online}/{num_cpus} CPUs online"
+        );
         core::hint::spin_loop();
     }
 }

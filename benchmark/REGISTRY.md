@@ -257,6 +257,7 @@ Design: 负载、对照、控制变量与有效样本判据。
 
 ### B-FS-ENG：文件系统改动的工程 A/B {#b-fs-eng}
 
+- **Rust native 不可变 lower 读路径：** [工程对照与逐组数据](evidence/native-guest-immutable-lower.md)在显式不可变程序根和独立 staged 工作区上运行三遍 `rg`，对照同内核缓存开关；Firecracker 私有 ext4 仅作参考。另以[普通根和混合工作区](evidence/native-guest-immutable-lower.md#automatic-reuse-in-a-mixed-workspace)对照自动逐文件复用、关闭缓存和独占 passthrough。
 - **双固件工程子集：** Linux 与 Rust native 的任务日志、按需读页批处理、原始批次及配对区间见[工程记录](evidence/rust-kernel-filesystem.md)。共享 rootfs VM API 结果不填充九运行时用户表。
 - **Rust native 写路径：** [配对实验](evidence/rust-kernel-write-path.md)对照按需页缓存、写入权限检查和完成通知策略；1 KiB 写、同步写、完整发布与无能力调用者单独比较，不合成用户性能分数。
 - **固定输入的供给成本：** 在 Rust native KVM 中，[对照逐文件只读共享与打包后一次导入 guest tmpfs](filesystem/read-input.md)。分别测少量单次读取与重复整树扫描；报告宿主打包、guest 导入和完整使用成本，逐字节验证。限定固定普通文件，不比较 live 工作区或整棵 rootfs。[工程对照结果](evidence/native-fs-boundaries.md)。

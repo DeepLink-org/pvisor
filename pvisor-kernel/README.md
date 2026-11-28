@@ -23,7 +23,9 @@ code still depends on them. Legacy PCI probing is disabled on this MMIO profile.
 Confidential-guest default features are disabled.
 Root filesystem boot accepts only the `/dev/root` virtio-fs tag and `virtiofs`
 filesystem type; other root devices or unsupported filesystem candidates fail.
-Pseudo-filesystems and the in-memory bootstrap filesystem remain available.
+All registered filesystem types are `nodev` in `/proc/filesystems`: a virtio-fs
+mount source is a tag, not a path to a block device. Pseudo-filesystems and the
+in-memory bootstrap filesystem remain available.
 
 Upstream dependency names, URLs, copyright and license notices retain their
 real attribution. The kernel package, runtime selection and diagnostics use
@@ -89,6 +91,9 @@ or **1.5 MiB per vCPU rounded up**, whichever is larger. That is 16 MiB for
 These are launch limits, not a guarantee that an arbitrary workload fits.
 The MADT lists each configured vCPU; the kernel reports the scheduling CPU
 through both `getcpu(2)` and the Linux vDSO.
+On x86 KVM the BSP sends INIT and one SIPI, then waits for all configured
+CPUs to report online. A missing CPU fails startup rather than reducing the
+guest's CPU count. Other x86 APIC platforms retain the timed startup sequence.
 Linux aarch64/KVM and macOS aarch64/HVF still require one vCPU and at least 256 MiB.
 ARM64 uses the existing RAM base `0x80000000`, an Image/header entry at
 `0x80200000`, FDT in `x0`, GICv3, the architectural timer and PSCI.
@@ -98,6 +103,9 @@ The VMM copies the image into ordinary guest RAM and reserves the FDT tail.
 Linux ARM KVM hosts without GICv3 fail explicitly for this kernel.
 Captured task streams use raw virtio-serial character devices, separate from
 the primary TTY. PID 1 discovers their names under `/sys/class/virtio-ports`.
+With the product's `console=hvc0`, `/dev/console`, `/dev/tty` and PTYs remain
+available, but the guest does not register graphical `/dev/tty0`–`/dev/tty63`.
+An explicitly selected but unavailable console fails initialization.
 The guest supervisor can configure the virtio Ethernet device's IPv4 address,
 netmask and on-link default gateway through socket ioctls. These operations
 require `CAP_NET_ADMIN`; arbitrary route entries and device selection via
@@ -143,10 +151,29 @@ Interrupt-controller EOI, queue notification suppression and FUSE replies
 are unchanged. This removes one synchronous MMIO access per handled fs IRQ,
 not one IRQ per write. It does not buffer writes or poll the CPU.
 
-Path-based `stat`, `lstat` and `newfstatat` can reuse the last component's
-`LOOKUP` attributes when that walk obtained them for the resolved inode.
-This does not extend TTLs or change directory search checks. `statx` and
-descriptor-only queries keep their existing paths.
+Path-based `stat`, `lstat`, `newfstatat` and default-sync `statx` can reuse
+attributes obtained for the final inode during that lookup. If none were
+obtained, or `statx` specifies `AT_STATX_FORCE_SYNC` or `AT_STATX_DONT_SYNC`,
+the kernel uses the resolved path's normal metadata operation. Mount IDs
+still come from the resolved mount. This does not extend TTLs, change
+directory search checks or change descriptor-only queries.
+
+In directories that revalidate positive entries, inserting a cached name
+above a soft target of 1,024 entries checks at most two candidates for
+reclamation. A successful removal moves the newest name into the vacated
+slot. The next insertion probes that slot again, advancing after 32 removals
+or immediately past a protected entry. A stream of one-use names therefore
+does not cycle through the entire resident set on every pass.
+Virtio-fs drops negative entries or unused metadata-only entries
+with expired entry TTLs; it does not issue sibling `LOOKUP`s to prune.
+Live paths, mountpoints, page caches and inode extensions such as watches
+can keep a directory above the target. Lookup of the requested name still
+uses the filesystem's normal revalidation rules. Dropped inodes release
+their full lookup counts outside VFS locks: a mount queues the first
+release immediately and groups pending releases into batches of up to 128.
+The [directory-cache
+comparison](../benchmark/evidence/native-guest-wide-directory.md) separates
+first traversal from repeated scans of a working set larger than the cache.
 
 On staged OverlayFS with explicitly immutable lowers and a guest-exclusive
 upper, virtio-fs can import positive entries with the Linux firmware's
@@ -161,6 +188,30 @@ permissions still run through VFS; unimported names, negative lookups and
 userspace enumeration use ordinary FUSE. Imported attributes do not extend
 ordinary inode TTLs. Set `PVISOR_VM_FS_RNGK_READINDEX=0` to disable the
 default-on path. `PVISOR_VM_GUEST_CACHE=0` also disables the protocol.
+
+### Immutable lower data in the Rust guest
+
+Linux-hosted Rust guests automatically use the
+[immutable-data OPEN protocol](../crates/pvisor-vm/README.md#independent-immutable-lower-data-objects)
+on eligible overlay files. Neither an immutable rootfs nor an entirely immutable
+workspace is required: read-only files from an immutable physical layer or a
+pinned stable content provider qualify even when another layer is live.
+Every open still resolves the merged name on the host. Only a read-only handle
+with an immutable object receipt gets a separate fixed-size guest page cache.
+Reads and file-backed faults use that backing even after copy-up, truncation,
+replacement or unlink. Shared writable mappings are denied; private mappings
+use copy-on-write. Adjacent misses in the existing read-fault window can share
+one FUSE request. A fallback open uses the ordinary inode path, not previously
+retained immutable pages. The option does not change shared-directory TTLs,
+write acknowledgement, stage recording, or who may apply changes.
+
+After the last open or mapping closes, each mount may retain up to 1024
+objects, with a resident-page budget of `min(guest usable RAM / 32, 16 MiB)`.
+Empty caches and objects larger than the budget in resident bytes are not
+retained. Reopening an evicted object refetches bytes through the new handle.
+This is a bound on **idle data pages per mount**, not on active mappings or
+total VM memory. `PVISOR_VM_FS_LOWER_DATA_CACHE=0` disables the automatic
+data policy. Plain mutable passthrough and unqualified bind mounts are unchanged.
 
 ## Tests and hardware acceptance
 
@@ -386,6 +437,17 @@ python3 pvisor-kernel/tests/task_stdio.py --binary /path/to/vm_api_case \
 
 This checks immediate EOF and a multi-page binary input, byte-exact stdout,
 separate stderr, shared-rootfs contents and exit status in fresh two-vCPU VMs.
+It also checks that graphical VTs are absent and a PTY pair can transfer data.
+
+### Signal delivery on syscall return
+
+When both the thread and process pending queues are empty, the return path
+skips locking the process signal dispositions. It still converts internal
+restart errors and restores temporary signal masks. A nonempty queue uses
+the normal locked selection path, even if its signals are masked or ignored.
+The [KVM regression probe](tests/signal_return.c) checks mask restoration,
+interrupted versus restarted pipe reads, and concurrent process- and
+thread-directed delivery. See the [syscall and pipe comparison](../benchmark/evidence/native-guest-signal-return.md).
 
 ### KVM metadata acceptance
 
@@ -417,6 +479,12 @@ copy-up, and non-root directory search. Each `--seed` adds a fresh two-vCPU VM
 with two request queues, concurrent stats and seeded namespace changes. It
 checks old descriptors and final file state. The seed controls the operations,
 not thread scheduling.
+On a mutable root the wide-directory probe adds 3,072 positive and 3,072
+negative lookups and checks the increase in host `LOOKUP` requests. It also
+checks an open fd across rename, an inotify watch, and a nested tmpfs mount
+while the directory cache is under pressure. A separate 512-name scan compares
+`LOOKUP` and `GETATTR` counts for `newfstatat`, default `statx` and its two
+explicit synchronization modes at zero TTL.
 These are correctness checks, not timing gates.
 
 ### KVM memory acceptance
@@ -481,11 +549,27 @@ at 7 MiB. Before boot-stack reclamation, a 16-vCPU boot at 16 MiB exhausted
 the kernel heap. These observations do not extend the supported sizes.
 
 The x86 image starts at 2 MiB rather than 128 MiB. The guest uses 64 KiB task
-stacks and caps the two virtio-fs DMA arena reservations together at one eighth
-of usable RAM (at most 16 MiB total). If the optional arenas cannot be reserved,
-large transfers use per-request DMA buffers. Each AP releases its boot stack
+stacks. Virtio-fs small DMA pools grow on demand per device. Each direction
+retains at most one control buffer of up to one page for the next request of
+the same length. Reuse requires exclusive ownership: neither an in-flight
+descriptor nor a caller parsing a reply may still hold the buffer. This saves
+allocation, not FUSE requests, and does not extend metadata validity.
+Each direction's large arena is shared across devices and reserved on its first allocation over
+one page. Together the arenas use at most one eighth of usable RAM (up to
+16 MiB total); requests that do not fit use per-request DMA. Network pools
+are created only for a discovered NIC: RX pages are posted at device start,
+and TX pages are allocated on use. Each AP releases its boot stack
 after switching to its first task. Startup still needs all of those stacks
 and the per-CPU kernel workers still consume RAM as vCPU count rises.
+
+For a footprint comparison, build `tests/boot_memory.rs` like `tests/guest.rs`
+and run it with `vm_api_case --task-stdio` in a fresh root. Keep stdin open.
+At `BOOT_MEMORY_READY`, record the guest's `MemFree` and the runner's
+`/proc/<pid>/smaps_rollup` `Pss`, then write `!` to stdin and require exit 0.
+Compare identical guest binaries, vCPU/RAM and shares. Guest free pages and
+host residency are different measurements; neither is a VM density limit.
+The [KVM engineering comparison](../benchmark/evidence/native-guest-boot-resources.md)
+separates AP startup, headless VT allocation, and DMA pools.
 
 ## License
 

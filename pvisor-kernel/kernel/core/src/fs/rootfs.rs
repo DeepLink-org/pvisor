@@ -94,7 +94,7 @@ fn open_rootfs(root: &str, fs_flags: FsFlags) -> Result<FsAndRoot> {
     })?;
     let fs_type = super::vfs::registry::look_up(type_name)
         .ok_or_else(|| Error::with_message(Errno::ENODEV, "virtiofs is unavailable"))?;
-    fs_type.get_or_create(&mut FsCreationCtx::from_source(root, fs_flags))
+    fs_type.get_or_create(&FsCreationCtx::from_source(root, fs_flags))
 }
 
 fn rootfs_flags() -> (FsFlags, PerMountFlags) {

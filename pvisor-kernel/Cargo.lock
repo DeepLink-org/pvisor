@@ -163,6 +163,7 @@ dependencies = [
  "getset",
  "hashbrown 0.14.5",
  "id-alloc",
+ "indexmap",
  "inherit-methods-macro",
  "int-to-c-enum",
  "intrusive-collections",

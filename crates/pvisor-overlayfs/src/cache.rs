@@ -579,6 +579,12 @@ mod tests {
     use std::sync::Condvar;
     use std::time::Duration;
 
+    #[cfg(target_os = "linux")]
+    fn disable_child_core_dump() {
+        // RLIMIT_CORE does not prevent a piped core_pattern from delaying waitpid.
+        assert_eq!(unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0) }, 0);
+    }
+
     struct Backend {
         log: Mutex<Vec<String>>,
         fail: AtomicBool,
@@ -767,11 +773,7 @@ mod tests {
         use std::os::unix::process::ExitStatusExt;
         const CHILD: &str = "PVISOR_OVERLAYFS_POISONED_DEADLINE_CHILD";
         if let Some(marker) = std::env::var_os(CHILD) {
-            let limit = libc::rlimit {
-                rlim_cur: 0,
-                rlim_max: 0,
-            };
-            assert_eq!(unsafe { libc::setrlimit(libc::RLIMIT_CORE, &limit) }, 0);
+            disable_child_core_dump();
             let deadline = LifecycleDeadline::start(Duration::from_secs(1));
             poison(&deadline.done.done);
             std::fs::write(marker, b"poisoned").unwrap();
@@ -787,8 +789,8 @@ mod tests {
                 "--nocapture",
             ])
             .env(CHILD, &marker)
+            .env("RUST_BACKTRACE", "0")
             .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
             .spawn()
             .unwrap();
         let limit = std::time::Instant::now() + Duration::from_secs(6);
@@ -918,13 +920,7 @@ mod tests {
         use std::os::unix::process::ExitStatusExt;
         const CHILD: &str = "PVISOR_OVERLAYFS_DEADLINE_TEST_CHILD";
         if std::env::var_os(CHILD).is_some() {
-            let limit = libc::rlimit {
-                rlim_cur: 0,
-                rlim_max: 0,
-            };
-            unsafe {
-                libc::setrlimit(libc::RLIMIT_CORE, &limit);
-            }
+            disable_child_core_dump();
             let (_, workers) = CacheWorkers::start_backend(
                 backend(false),
                 Box::new(|| {

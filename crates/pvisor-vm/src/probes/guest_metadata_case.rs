@@ -8,6 +8,14 @@ use std::{
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<_> = std::env::args_os().skip(1).collect();
+    if args.len() == 2 && args[0] == "--verify-rust-lower-stage" {
+        return verify_lower_stage(&std::path::PathBuf::from(&args[1]));
+    }
+    match args.get(3).and_then(|arg| arg.to_str()) {
+        Some("rust-lower-data") => return data_workspace(&args, false),
+        Some("rust-mixed-data") => return data_workspace(&args, true),
+        _ => (),
+    }
     if !(3..=5).contains(&args.len()) {
         return Err("expected ROOTFS FIRMWARE GUEST_BINARY [MODE [SEED]]".into());
     }
@@ -397,5 +405,164 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(watcher) = watcher {
         watcher.join().map_err(|_| "watcher panicked")??;
     }
+    Ok(())
+}
+
+/// Mixed fixtures use an ordinary root and a live project as their apply baseline.
+fn data_workspace(
+    args: &[std::ffi::OsString],
+    mixed: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use pvisor_overlay_core::stage::{self, StageDurability};
+
+    let root = PathBuf::from(&args[0]).canonicalize()?;
+    let fixture = PathBuf::from(args.get(4).ok_or("missing stage fixture")?).canonicalize()?;
+    if args[1] != "-"
+        || root.parent().is_none()
+        || root.starts_with(&fixture)
+        || fixture.starts_with(&root)
+    {
+        return Err(
+            "expected embedded firmware and disjoint disposable rootfs/stage directories".into(),
+        );
+    }
+    let state = fixture.join("stage");
+    std::fs::create_dir(&state)?;
+    let upper = state.join("upper");
+    let work = state.join("work");
+    std::fs::create_dir(&upper)?;
+    std::fs::create_dir(&work)?;
+    let journal = state.join("preimages");
+    stage::begin(&journal, StageDurability::Checkpoint)?;
+    let lower = fixture.join("lower").canonicalize()?;
+    let target = fixture.join("target").canonicalize()?;
+    let mut vm = VmBuilder::new(2, 256)?;
+    let mut workspace = OverlayConfig {
+        lower_dirs: vec![lower.clone()],
+        lower_mutability: vec![LayerMutability::Immutable],
+        upper_dir: upper,
+        work_dir: Some(work),
+        preimage_dir: Some(journal),
+        apply_target: Some(target.clone()),
+        baseline_lower: Some(lower),
+        baseline_content_index: None,
+        excluded_paths: vec![],
+        access_policy: Default::default(),
+        semantics: PermissionSemantics::LinuxComplete,
+    };
+    if mixed {
+        vm.filesystem("/dev/root", &root, 0)?;
+        workspace
+            .lower_dirs
+            .insert(0, fixture.join("mutable").canonicalize()?);
+        workspace
+            .lower_mutability
+            .insert(0, LayerMutability::Mutable);
+        workspace.lower_dirs.push(target);
+        workspace.lower_mutability.push(LayerMutability::Mutable);
+        workspace.baseline_lower = None;
+    } else {
+        let root_upper = fixture.join("root-upper");
+        let root_work = fixture.join("root-work");
+        std::fs::create_dir(&root_upper)?;
+        std::fs::create_dir(&root_work)?;
+        vm.overlay(
+            "/dev/root",
+            OverlayConfig {
+                lower_dirs: vec![root],
+                lower_mutability: vec![LayerMutability::Immutable],
+                upper_dir: root_upper,
+                work_dir: Some(root_work),
+                preimage_dir: None,
+                apply_target: None,
+                baseline_lower: None,
+                ..workspace.clone()
+            },
+            0,
+        )?;
+    }
+    vm.overlay("workspace", workspace, 0)?;
+    vm.task_stdio(0, 1, 2)?;
+    vm.virtual_file(
+        "/dev/root",
+        "/probe",
+        std::fs::read(&args[2])?,
+        0o755,
+        false,
+    )?;
+    let mut argv = vec!["/probe".to_owned()];
+    for arg in &args[5..] {
+        argv.push(arg.to_str().ok_or("non-UTF-8 guest argument")?.to_owned());
+    }
+    let config = pvisor_guest::api::GuestConfig {
+        argv,
+        cwd: "/".into(),
+        stdio_ports: Some([true; 3]),
+        shares: vec![pvisor_guest::api::GuestShare {
+            tag: "workspace".into(),
+            path: "/workspace".into(),
+            read_only: false,
+        }],
+        ..Default::default()
+    };
+    vm.virtual_file(
+        "/dev/root",
+        pvisor_guest::api::CONFIG_PATH,
+        serde_json::to_vec(&config)?,
+        0o400,
+        true,
+    )?;
+    vm.run(|_| Ok(()))?;
+    Err("VM returned without an authenticated guest exit".into())
+}
+
+fn verify_lower_stage(fixture: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
+    use pvisor_overlay_core::{apply::*, stage};
+    let fixture = fixture.canonicalize()?;
+    let dir = fixture.join("stage");
+    let lower = fixture.join("lower");
+    let upper = dir.join("upper");
+    stage::complete(&upper, &dir.join("preimages"))?;
+    let mut record = OverlayRecord {
+        id: "rust-lower-stage".into(),
+        generation: 0,
+        target: fixture.join("target"),
+        baseline_lower: Some(lower.clone()),
+        upper: OverlayUpper {
+            upper_dir: upper,
+            work_dir: dir.join("work"),
+        },
+        merged_dir: fixture.join("merged"),
+        stage_dir: dir,
+        excluded_paths: vec![],
+        access_policy: Default::default(),
+        auto_apply: false,
+        auto_discard: false,
+        protect_target: false,
+        state: OverlayState::Staged,
+    };
+    write_overlay_record(&record)?;
+    let lowers = [lower];
+    let changes = overlay_changes(&record, &lowers)?;
+    for (name, kind) in [
+        ("source", ChangeKind::Modified),
+        ("victim", ChangeKind::Deleted),
+    ] {
+        if !changes
+            .iter()
+            .any(|change| change.path == name && change.kind == kind)
+        {
+            return Err(format!("missing {kind:?} {name} in {changes:?}").into());
+        }
+    }
+    apply_overlay_selected(
+        &mut record,
+        &lowers,
+        &ApplySelection {
+            paths: vec!["source".into()],
+            ..Default::default()
+        },
+    )?;
+    discard_overlay(&mut record)?;
     Ok(())
 }

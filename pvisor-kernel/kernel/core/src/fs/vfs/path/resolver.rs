@@ -966,6 +966,14 @@ enum FsPathInner<'a> {
 }
 
 impl<'a> FsPath<'a> {
+    /// The file description selected by an empty path, excluding AT_FDCWD.
+    pub(crate) fn as_fd(&self) -> Option<FileDesc> {
+        match self.inner {
+            FsPathInner::Fd(fd) => Some(fd),
+            _ => None,
+        }
+    }
+
     /// Creates a new `FsPath` from the given `dirfd`.
     ///
     /// If the FD is not valid (i.e., it's negative and it's not [`AT_FDCWD`]), an error will be

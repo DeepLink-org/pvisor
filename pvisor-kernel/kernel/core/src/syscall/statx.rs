@@ -8,7 +8,10 @@ use super::SyscallReturn;
 use crate::{
     fs::{
         file::file_table::RawFileDesc,
-        vfs::path::{EmptyPathStr, FsPath, Path},
+        vfs::{
+            inode::Metadata,
+            path::{EmptyPathStr, FsPath, Path},
+        },
     },
     prelude::*,
     syscall::constants::MAX_FILENAME_LEN,
@@ -34,9 +37,8 @@ pub(super) fn sys_statx(
         dirfd, filename, flags, mask, statx_buf_ptr,
     );
 
-    if flags.contains(StatxFlags::AT_STATX_FORCE_SYNC)
-        && flags.contains(StatxFlags::AT_STATX_DONT_SYNC)
-    {
+    let sync_flags = StatxFlags::AT_STATX_FORCE_SYNC | StatxFlags::AT_STATX_DONT_SYNC;
+    if flags.contains(sync_flags) {
         return_errno_with_message!(Errno::EINVAL, "invalid statx flags");
     }
 
@@ -47,22 +49,15 @@ pub(super) fn sys_statx(
         );
     }
 
-    let path = {
-        let filename = filename.to_string_lossy();
-        // TODO: We can retrieve the metadata from `FileLike`. See `sys_fstat` as an example.
-        let fs_path =
-            FsPath::from_fd_at(dirfd, &filename, EmptyPathStr::AllowIfFlag(flags.bits()))?;
-
-        let fs_ref = ctx.thread_local.borrow_fs();
-        let path_resolver = fs_ref.resolver().read();
-        if flags.contains(StatxFlags::AT_SYMLINK_NOFOLLOW) {
-            path_resolver.lookup_no_follow(&fs_path)?
-        } else {
-            path_resolver.lookup(&fs_path)?
-        }
-    };
-
-    let statx = Statx::new(&path, mask)?;
+    let filename = filename.to_string_lossy();
+    let fs_path = FsPath::from_fd_at(dirfd, &filename, EmptyPathStr::AllowIfFlag(flags.bits()))?;
+    let (path, metadata) = super::stat::resolve_stat_target(
+        ctx,
+        &fs_path,
+        !flags.contains(StatxFlags::AT_SYMLINK_NOFOLLOW),
+        !flags.intersects(sync_flags),
+    )?;
+    let statx = Statx::new(&path, metadata, mask);
 
     user_space.write_val(statx_buf_ptr, &statx)?;
     Ok(SyscallReturn::Return(0))
@@ -122,9 +117,7 @@ struct Statx {
 }
 
 impl Statx {
-    fn new(path: &Path, requested_mask: StatxMask) -> Result<Self> {
-        let info = path.metadata()?;
-
+    fn new(path: &Path, info: Metadata, requested_mask: StatxMask) -> Self {
         let (stx_dev_major, stx_dev_minor) =
             device_id::decode_device_numbers(info.container_dev_id.as_encoded_u64());
         let (stx_rdev_major, stx_rdev_minor) =
@@ -166,7 +159,7 @@ impl Statx {
             StatxTimestamp::default()
         };
 
-        Ok(Self {
+        Self {
             // FIXME: All zero fields below are dummy implementations that need to be improved in the future.
             stx_mask,
             stx_blksize: info.optimal_block_size as u32,
@@ -192,7 +185,7 @@ impl Statx {
             stx_dio_mem_align: 0,
             stx_dio_offset_align: 0,
             __spare3: [0; 12],
-        })
+        }
     }
 }
 

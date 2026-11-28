@@ -251,7 +251,7 @@ Linux x86_64 的认证 prepared rootfs 在 fresh native 启动时，若宿主环
 `PVISOR_VM_FS_READONLY_FLUSH_ELISION`，会自动向该 native child 请求只读 FLUSH 消除；
 显式 `0` 保留原行为。旧 guest 或未满足本地 Immutable 只读资格的 fd 回退原 FLUSH。
 未选择并认证 prepared rootfs 的 SDK 调用（包括仅使用 `with_rootfs_base` 提供 owner），
-以及 macOS，在变量缺省时保持原行为。数据页缓存、负项缓存、WB 和 DAX 不自动开启；
+以及 macOS，在变量缺省时保持原 FLUSH 行为。该选择器不启用负项缓存、WB 或 DAX；
 准备和运行性能需分开测量。
 
 ### 封存工作区 {#prepared-workspace}
@@ -272,8 +272,9 @@ Linux x86_64 的认证 prepared rootfs 在 fresh native 启动时，若宿主环
 两 store 必须独立于彼此及项目、stage、guest 暴露路径和 VM 可写
 backing/control 路径。首次准备复制并完整校验，后续认证小记录并持 lease，
 不会每次重新封存；持久 pin 跨命令退出和 GC 保留，外部改写 store 不受支持。
-该字段沿用[prepared rootfs 的限定只读 FLUSH 默认](#prepared-rootfs)，不自动开启
-数据页、负项缓存、WB 或 DAX；显式 `PVISOR_VM_FS_READONLY_FLUSH_ELISION=0`
+该字段沿用[prepared rootfs 的限定只读 FLUSH 默认](#prepared-rootfs)。Linux 上的 Rust native guest
+按实际打开的 lower 文件自动复用不可变数据页，不要求使用此字段，也不改变 live 目录的可见性。
+负项缓存、WB 和 DAX 不因此开启；显式 `PVISOR_VM_FS_READONLY_FLUSH_ELISION=0`
 保留原 FLUSH。准备费用与运行耗时分别测量。
 
 ### 捕获与记录

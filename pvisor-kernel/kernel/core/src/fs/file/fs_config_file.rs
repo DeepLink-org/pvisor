@@ -163,15 +163,9 @@ impl FsConfigFile {
             return_errno_with_message!(Errno::EBUSY, "the file system has already been created");
         }
 
-        let result = (|| {
-            let args = (!config.extra_options.is_empty()).then_some(config.extra_options.as_str());
-            let mut fs_creation_ctx =
-                FsCreationCtx::new(config.source.as_deref(), config.flags, args, ctx);
-            let fs_and_root = self.fs_type.get_or_create(&mut fs_creation_ctx)?;
-            Ok(fs_and_root)
-        })();
-
-        match result {
+        let args = (!config.extra_options.is_empty()).then_some(config.extra_options.as_str());
+        let fs_creation_ctx = FsCreationCtx::new(config.source.as_deref(), config.flags, args, ctx);
+        match self.fs_type.get_or_create(&fs_creation_ctx) {
             Ok(fs_and_root) => {
                 config.state = FsConfigState::AwaitingMount(fs_and_root);
                 Ok(())

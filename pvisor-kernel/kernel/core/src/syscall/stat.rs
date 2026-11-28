@@ -8,7 +8,7 @@ use crate::{
         file::file_table::{RawFileDesc, get_file_fast},
         vfs::{
             inode::Metadata,
-            path::{AT_FDCWD, EmptyPathStr, FsPath},
+            path::{AT_FDCWD, EmptyPathStr, FsPath, Path},
         },
     },
     prelude::*,
@@ -26,7 +26,7 @@ pub(super) fn sys_fstat(
     let mut file_table = ctx.thread_local.borrow_file_table_mut();
     let file = get_file_fast!(&mut file_table, raw_fd.try_into()?);
 
-    let stat = Stat::from(file.path().metadata()?);
+    let stat = Stat::from(file.stat_metadata()?);
     ctx.user_space().write_val(stat_buf_ptr, &stat)?;
 
     Ok(SyscallReturn::Return(0))
@@ -70,24 +70,43 @@ pub(super) fn sys_fstatat(
         dirfd, filename, stat_buf_ptr, flags
     );
 
-    let (path, observed) = {
-        let filename = filename.to_string_lossy();
-        let fs_path =
-            FsPath::from_fd_at(dirfd, &filename, EmptyPathStr::AllowIfFlag(flags.bits()))?;
-
-        let fs_ref = ctx.thread_local.borrow_fs();
-        let path_resolver = fs_ref.resolver().read();
-        path_resolver
-            .lookup_with_metadata(&fs_path, !flags.contains(StatFlags::AT_SYMLINK_NOFOLLOW))?
-    };
-
-    let metadata = match observed {
-        Some(metadata) => metadata,
-        None => path.metadata()?,
-    };
+    let filename = filename.to_string_lossy();
+    let fs_path = FsPath::from_fd_at(dirfd, &filename, EmptyPathStr::AllowIfFlag(flags.bits()))?;
+    let (_, metadata) = resolve_stat_target(
+        ctx,
+        &fs_path,
+        !flags.contains(StatFlags::AT_SYMLINK_NOFOLLOW),
+        true,
+    )?;
     let stat = Stat::from(metadata);
     user_space.write_val(stat_buf_ptr, &stat)?;
     Ok(SyscallReturn::Return(0))
+}
+
+pub(super) fn resolve_stat_target(
+    ctx: &Context,
+    fs_path: &FsPath,
+    follow: bool,
+    reuse: bool,
+) -> Result<(Path, Metadata)> {
+    if let Some(fd) = fs_path.as_fd() {
+        let file = {
+            let mut table = ctx.thread_local.borrow_file_table_mut();
+            get_file_fast!(&mut table, fd).into_owned()
+        };
+        return Ok((file.path().clone(), file.stat_metadata()?));
+    }
+    let (path, observed) = ctx
+        .thread_local
+        .borrow_fs()
+        .resolver()
+        .read()
+        .lookup_with_metadata(fs_path, follow)?;
+    let info = match observed {
+        Some(info) if reuse => info,
+        _ => path.metadata()?,
+    };
+    Ok((path, info))
 }
 
 bitflags::bitflags! {

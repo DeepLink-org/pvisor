@@ -13,7 +13,7 @@ use crate::{
     fs::{
         utils::DirentVisitor,
         vfs::{
-            inode::{FallocMode, FileOps},
+            inode::{FallocMode, FileOps, Metadata},
             inode_ext::InodeExt,
             path::Path,
             range_lock::{RangeLockItem, RangeLockOwner, RangeLockType},
@@ -303,6 +303,13 @@ impl Pollable for InodeHandle {
 }
 
 impl FileLike for InodeHandle {
+    fn stat_metadata(&self) -> Result<Metadata> {
+        self.common
+            .path()
+            .inode()
+            .open_metadata(self.open_file.as_deref())
+    }
+
     fn read(&self, writer: &mut VmWriter) -> Result<usize> {
         self.with_read_position(None, |ops, offset, flags| {
             ops.read_at(offset.unwrap_or(0), writer, flags)

@@ -5,7 +5,8 @@ use core::{
     sync::atomic::{AtomicU32, Ordering},
 };
 
-use hashbrown::HashMap;
+use hashbrown::hash_map::DefaultHashBuilder;
+use indexmap::IndexMap;
 use ostd::sync::{RwMutexUpgradeableGuard, RwMutexWriteGuard};
 
 use super::{RenameMode, is_dot, is_dot_or_dotdot, is_dotdot};
@@ -455,9 +456,8 @@ impl DirDentry<'_> {
         name: &str,
         child: Arc<Dentry>,
     ) -> Arc<Dentry> {
-        // TODO: Use a better storage strategy to avoid extra string allocations.
         children.insert_positive(String::from(name), child.clone());
-        self.revalidate_positive_children_if_needed(children);
+        self.prune_child_cache(children);
 
         child
     }
@@ -519,34 +519,14 @@ impl DirDentry<'_> {
         })
     }
 
-    /// Periodically revalidates cached positive children in this directory.
-    //
-    // TODO: This is a workaround to keep large `DentryChildren` caches from retaining stale
-    // positive entries for too long when the directory asks the VFS to revalidate
-    // existing children.
-    fn revalidate_positive_children_if_needed(&self, children: &mut DentryChildren) {
-        const POSITIVE_CHILD_REVALIDATION_INTERVAL: usize = 1024;
-        const POSITIVE_CHILD_REVALIDATION_CACHE_SIZE_THRESHOLD: usize = 1024;
-
+    fn prune_child_cache(&self, children: &mut DentryChildren) {
         if !self
             .revalidation_policy
             .contains(RevalidationPolicy::REVALIDATE_EXISTS)
         {
             return;
         }
-
-        // Workaround: until `DentryCache` has a proper reclamation mechanism, periodically
-        // scan large caches and evict positive entries that fail `revalidate_exists`.
-        children.insert_count = children.insert_count.wrapping_add(1);
-        if !children
-            .insert_count
-            .is_multiple_of(POSITIVE_CHILD_REVALIDATION_INTERVAL)
-            || children.entries.len() <= POSITIVE_CHILD_REVALIDATION_CACHE_SIZE_THRESHOLD
-        {
-            return;
-        }
-
-        children.revalidate_positive_entries(self);
+        children.prune(self.inode().as_ref());
     }
 
     /// Looks up `name` relative to this dentry.
@@ -592,7 +572,9 @@ impl DirDentry<'_> {
         let (inode, observed) = match self.inode.lookup_observed(name) {
             Ok(result) => result,
             Err(error) if error.error() == Errno::ENOENT => {
-                children.upgrade().insert_negative(name.to_string());
+                let mut children = children.upgrade();
+                children.insert_negative(name.to_string());
+                self.prune_child_cache(&mut children);
                 return Err(error);
             }
             Err(error) => return Err(error),
@@ -1060,13 +1042,10 @@ enum DentryOptions {
 ///
 /// A _negative_ dentry reflects a failed filename lookup, saving potential
 /// repeated and costly lookups in the future.
-//
-// TODO: Implement a global reclamation mechanism for `DentryCache` to avoid unbounded growth
-// of cached dentries.
 #[derive(Debug)]
 struct DentryChildren {
-    entries: HashMap<String, CachedDentry>,
-    insert_count: usize,
+    entries: IndexMap<String, CachedDentry, DefaultHashBuilder>,
+    prune_cursor: usize,
 }
 
 #[derive(Clone, Debug)]
@@ -1112,11 +1091,15 @@ static NEGATIVE_ENTRY_COUNTER: core::sync::atomic::AtomicU64 =
     core::sync::atomic::AtomicU64::new(0);
 
 impl DentryChildren {
+    const PRUNE_TARGET: usize = 1024;
+    // Bimodal insertion: one in 32 cold replacements advances past the new entry.
+    const COLD_INSERTIONS_PER_SLOT: usize = 32;
+
     /// Creates an empty dentry cache.
     fn new() -> Self {
         Self {
-            entries: HashMap::new(),
-            insert_count: 0,
+            entries: IndexMap::with_hasher(DefaultHashBuilder::default()),
+            prune_cursor: 0,
         }
     }
 
@@ -1158,7 +1141,7 @@ impl DentryChildren {
 
     /// Deletes a positive dentry by name, turning it into a negative entry if exists.
     fn delete(&mut self, name: &str) {
-        let Some((_, exist_entry)) = self.entries.get_key_value_mut(name) else {
+        let Some(exist_entry) = self.entries.get_mut(name) else {
             return;
         };
         if exist_entry.is_positive() {
@@ -1175,7 +1158,7 @@ impl DentryChildren {
 
     /// Removes a dentry by name without installing a negative cache entry.
     fn remove(&mut self, name: &str) -> Option<Arc<Dentry>> {
-        let removed_entry = self.entries.remove(name);
+        let removed_entry = self.entries.swap_remove(name);
         #[cfg(debug_assertions)]
         if matches!(removed_entry, Some(CachedDentry::Negative)) {
             NEGATIVE_ENTRY_COUNTER.fetch_sub(1, Ordering::Relaxed);
@@ -1184,14 +1167,38 @@ impl DentryChildren {
         removed_entry.and_then(CachedDentry::into_dentry)
     }
 
-    fn revalidate_positive_entries(&mut self, dir: &DirDentry<'_>) {
-        self.entries
-            .retain(|name, cached_entry| match cached_entry {
-                CachedDentry::Positive { dentry } => {
-                    dir.inode.revalidate_exists(name, dentry.inode().as_ref())
-                }
+    /// Two probes per insertion allow the cache to shrink after pins are released.
+    fn prune(&mut self, parent: &dyn Inode) {
+        for _ in 0..2 {
+            if self.entries.len() <= Self::PRUNE_TARGET {
+                break;
+            }
+            if self.prune_cursor / Self::COLD_INSERTIONS_PER_SLOT >= self.entries.len() {
+                self.prune_cursor = 0;
+            }
+            let index = self.prune_cursor / Self::COLD_INSERTIONS_PER_SLOT;
+            let (name, entry) = self.entries.get_index(index).unwrap();
+            let discard = match entry {
                 CachedDentry::Negative => true,
-            });
+                CachedDentry::Positive { dentry } => {
+                    // Open paths and cached descendants pin the dentry's identity across rename.
+                    Arc::strong_count(dentry) == 1
+                        && !dentry.is_mountpoint()
+                        && parent.can_prune_child(name, dentry.inode.as_ref())
+                }
+            };
+            if discard {
+                // swap_remove moves the newest entry into this probationary slot.
+                self.prune_cursor += 1;
+                let _removed = self.entries.swap_remove_index(index).unwrap();
+                #[cfg(debug_assertions)]
+                if matches!(_removed.1, CachedDentry::Negative) {
+                    NEGATIVE_ENTRY_COUNTER.fetch_sub(1, Ordering::Relaxed);
+                }
+            } else {
+                self.prune_cursor = (index + 1) * Self::COLD_INSERTIONS_PER_SLOT;
+            }
+        }
     }
 }
 
@@ -1205,6 +1212,73 @@ impl Drop for DentryChildren {
             .count();
 
         NEGATIVE_ENTRY_COUNTER.fetch_sub(negative_count as u64, Ordering::Relaxed);
+    }
+}
+
+#[cfg(ktest)]
+mod tests {
+    use ostd::prelude::ktest;
+
+    use super::*;
+    use crate::fs::{ramfs::RamFs, vfs::file_system::FileSystem};
+
+    #[ktest]
+    fn prune_budget_and_negative_retention() {
+        crate::time::clocks::init_for_ktest();
+        let fs = RamFs::new();
+        let parent = fs.root_inode();
+        let pinned = Dentry::new_root(parent.clone());
+        let mut cache = DentryChildren::new();
+        cache.insert_positive("pinned".into(), pinned.clone());
+        let target = DentryChildren::PRUNE_TARGET;
+        for i in 1..target + 4 {
+            cache.insert_negative(i.to_string());
+        }
+        cache.prune(&*parent);
+        assert_eq!(cache.entries.len(), target + 3); // one pinned, one removed
+        cache.prune(&*parent);
+        assert_eq!(cache.entries.len(), target + 1);
+        cache.prune(&*parent);
+        assert_eq!(cache.entries.len(), target);
+        for i in target + 4..4 * target {
+            cache.insert_negative(i.to_string());
+            cache.prune(&*parent);
+            assert_eq!(cache.entries.len(), target);
+        }
+        assert!(Arc::ptr_eq(
+            &pinned,
+            &cache.find("pinned").unwrap().into_dentry().unwrap()
+        ));
+    }
+
+    #[ktest]
+    fn reclaim_resident_slots_survive_a_scan_but_rotate() {
+        crate::time::clocks::init_for_ktest();
+        let fs = RamFs::new();
+        let parent = fs.root_inode();
+        let mut cache = DentryChildren::new();
+        let target = DentryChildren::PRUNE_TARGET;
+        let scan = |cache: &mut DentryChildren, range: core::ops::Range<usize>| {
+            let mut hits = 0;
+            for i in range {
+                let name = i.to_string();
+                if cache.find(&name).is_some() {
+                    hits += 1;
+                } else {
+                    cache.insert_negative(name);
+                    cache.prune(&*parent);
+                }
+                assert!(cache.entries.len() <= target);
+            }
+            hits
+        };
+        assert_eq!(scan(&mut cache, 0..2 * target), 0);
+        for _ in 0..3 {
+            assert!(scan(&mut cache, 0..2 * target) >= target / 2);
+        }
+        let end = (DentryChildren::COLD_INSERTIONS_PER_SLOT + 3) * target;
+        assert_eq!(scan(&mut cache, 2 * target..end), 0);
+        assert!((0..2 * target).all(|i| cache.find(&i.to_string()).is_none()));
     }
 }
 

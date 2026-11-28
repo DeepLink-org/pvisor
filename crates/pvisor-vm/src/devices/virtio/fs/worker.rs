@@ -34,10 +34,9 @@ use crate::env::fs::FsProfile;
 #[cfg(test)]
 use crate::env::fs::{
     directory_cache_capacity, directory_names_cache_enabled, exclusive_upper_absence_cache_enabled,
-    guest_cache_enabled, host_writeback_config, host_writeback_enabled, logical_data_cache_enabled,
-    logical_directory_cache_enabled, lower_data_cache_enabled, negative_entry_cache_enabled,
-    object_read_barriers_enabled, prepared_copy_up_enabled, readonly_flush_elision_enabled,
-    root_data_cache_enabled,
+    guest_cache_enabled, host_writeback_config, host_writeback_enabled,
+    logical_directory_cache_enabled, negative_entry_cache_enabled, object_read_barriers_enabled,
+    prepared_copy_up_enabled, readonly_flush_elision_enabled, root_data_cache_enabled,
 };
 use crate::vmm::vmm_config::fs::{DeferredOverlay, OverlaySource};
 
@@ -576,12 +575,26 @@ impl Drop for RequestPool {
 
 #[cfg(test)]
 #[test]
-fn logical_data_cache_setting_defaults_off_and_is_strict() {
-    use std::ffi::OsStr;
-    assert!(!logical_data_cache_enabled(None).unwrap());
-    assert!(!logical_data_cache_enabled(Some(OsStr::new("0"))).unwrap());
-    assert!(logical_data_cache_enabled(Some(OsStr::new("1"))).unwrap());
-    assert!(logical_data_cache_enabled(Some(OsStr::new("true"))).is_err());
+fn logical_data_cache_default_follows_native_data_policy_not_directory_images() {
+    use crate::env::fs::{LOGICAL_DATA_CACHE, LOWER_DATA_CACHE};
+    for rust_guest in [false, true] {
+        let parse = |data: Option<&str>, logical: Option<&str>| {
+            FsProfile::parse_for_guest(rust_guest, |key| match key {
+                LOWER_DATA_CACHE => data.map(Into::into),
+                LOGICAL_DATA_CACHE => logical.map(Into::into),
+                _ => None,
+            })
+            .map(|profile| profile.logical_data_cache)
+        };
+        assert_eq!(
+            parse(None, None).unwrap(),
+            rust_guest && cfg!(target_os = "linux")
+        );
+        assert!(!parse(Some("0"), None).unwrap());
+        assert!(!parse(Some("1"), Some("0")).unwrap());
+        assert!(parse(Some("0"), Some("1")).unwrap());
+        assert!(parse(None, Some("true")).is_err());
+    }
 }
 
 #[cfg(test)]
@@ -651,7 +664,10 @@ fn overlay_server(
     inner.configure_directory_names_cache(profile.directory_names_cache);
     inner.configure_prepared_copy_up(profile.prepared_copy_up);
     inner.configure_logical_directory_cache(profile.logical_directory_cache, restoring)?;
-    inner.configure_logical_data_cache(profile.logical_data_cache);
+    inner.configure_logical_data_cache(
+        profile.logical_data_cache,
+        profile.rust_native_guest && profile.guest_cache && !shared_memory && !restoring,
+    );
     inner.configure_exclusive_upper_absence_cache(profile.exclusive_upper_absence_cache)?;
     inner.configure_readonly_flush_elision(
         profile.readonly_flush_elision,
@@ -1301,19 +1317,30 @@ mod tests {
     }
 
     #[test]
-    fn lower_data_cache_defaults_off_and_rejects_invalid_settings() {
+    fn lower_data_cache_is_automatic_only_for_native_linux_guests() {
         use std::ffi::OsStr;
         use std::os::unix::ffi::OsStrExt;
-        assert!(!lower_data_cache_enabled(None).unwrap());
-        assert!(!lower_data_cache_enabled(Some(OsStr::new("0"))).unwrap());
-        assert!(lower_data_cache_enabled(Some(OsStr::new("1"))).unwrap());
-        for value in [b"".as_slice(), b"true", b"2", b" 1", b"1 ", b"\xff"] {
+        for rust_guest in [true, false] {
+            let parse = |setting: Option<&OsStr>| {
+                FsProfile::parse_for_guest(rust_guest, |key| {
+                    setting
+                        .filter(|_| key == env::LOWER_DATA_CACHE)
+                        .map(OsStr::to_owned)
+                })
+                .map(|profile| profile.lower_data_cache)
+            };
             assert_eq!(
-                lower_data_cache_enabled(Some(OsStr::from_bytes(value)))
-                    .unwrap_err()
-                    .kind(),
-                io::ErrorKind::InvalidInput
+                parse(None).unwrap(),
+                rust_guest && cfg!(target_os = "linux")
             );
+            assert!(!parse(Some(OsStr::new("0"))).unwrap());
+            assert!(parse(Some(OsStr::new("1"))).unwrap());
+            for value in [b"".as_slice(), b"true", b"2", b" 1", b"1 ", b"\xff"] {
+                assert_eq!(
+                    parse(Some(OsStr::from_bytes(value))).unwrap_err().kind(),
+                    io::ErrorKind::InvalidInput
+                );
+            }
         }
     }
 

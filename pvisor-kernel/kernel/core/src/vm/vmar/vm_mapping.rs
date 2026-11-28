@@ -72,8 +72,7 @@ pub(crate) struct VmMapping {
     mapped_mem: MappedMemory,
     /// The file that backs the mapping.
     ///
-    /// If the mapping is VMO-backed, the `mapped_mem` field should be the page
-    /// cache of the inode referenced by the file's path.
+    /// Keeps the open description live for faults, including a pinned immutable backing.
     file: Option<Arc<dyn FileLike>>,
     /// The sharing mode of the mapping.
     ///
@@ -180,6 +179,13 @@ impl VmMapping {
     /// Returns the inode of the file that backs the mapping.
     pub(crate) fn inode(&self) -> Option<&Arc<dyn Inode>> {
         self.file.as_ref().map(|file| file.path().inode())
+    }
+
+    pub(crate) fn inode_for_sync(&self) -> Option<&Arc<dyn Inode>> {
+        if self.vmo().is_some_and(|vmo| vmo.fixed_eof) {
+            return None;
+        }
+        self.inode()
     }
 
     /// Returns a reference to the VMO if this mapping is VMO-backed.
@@ -380,6 +386,12 @@ impl VmMapping {
         self.check_perms_for_page_fault(page_fault_info)?;
 
         let page_aligned_addr = page_fault_info.address.align_down(PAGE_SIZE);
+        if let Some(vmo) = self.vmo()
+            && vmo.fixed_eof
+            && page_aligned_addr - self.map_to_addr >= vmo.valid_size()
+        {
+            return_errno_with_message!(Errno::ENXIO, "page beyond immutable file EOF");
+        }
         let is_write = page_fault_info.required_perms.contains(VmPerms::WRITE);
 
         if !is_write
@@ -698,6 +710,13 @@ impl VmMapping {
                 Err(err) => {
                     let index = err.pending_index()?;
                     drop(preempt_guard);
+                    if vmo.fixed_eof && matches!(err, VmoCommitError::NeedIo { .. }) {
+                        let end = (vmo.offset() + end_offset) / PAGE_SIZE;
+                        if index + 1 < end {
+                            // A failed speculative batch must not fail a valid single-page fault.
+                            let _ = vmo.vmo().fill_fault_window(index..end);
+                        }
+                    }
                     vmo.commit_on(index, mode)?;
                     start_addr = (index * PAGE_SIZE - vmo.offset()) + self.map_to_addr;
                     continue 'retry;
@@ -932,6 +951,7 @@ impl MappedMemory {
 #[derive(Debug)]
 pub(super) struct MappedVmo {
     vmo: Arc<Vmo>,
+    pub(super) fixed_eof: bool,
     /// Represents the mapped offset in the VMO for the mapping.
     offset: usize,
     /// Whether the VMO's writable mappings need to be tracked, and the
@@ -948,6 +968,7 @@ impl MappedVmo {
 
         Ok(Self {
             vmo,
+            fixed_eof: false,
             offset,
             is_writable_tracked,
         })
@@ -1031,6 +1052,7 @@ impl MappedVmo {
         Self {
             vmo: self.vmo.clone(),
             offset,
+            fixed_eof: self.fixed_eof,
             is_writable_tracked: self.is_writable_tracked,
         }
     }

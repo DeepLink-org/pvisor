@@ -25,7 +25,9 @@ use aster_fuse::{
 use ostd::{info, mm::io::util::HasVmReaderWriter};
 use smallvec::smallvec;
 
-use super::{super::DEVICE_NAME, FileSystemDevice, FuseWaiter, request_credentials};
+use super::{
+    super::DEVICE_NAME, FileSystemDevice, FileSystemFeatures, FuseWaiter, request_credentials,
+};
 use crate::device::filesystem::pool::{
     FuseDataBuf, FuseReplyBuf, FuseReplyBufs, FuseRequestBuf, FuseRequestBufs,
 };
@@ -42,6 +44,7 @@ pub struct FuseSession {
     attr_version: AtomicU64,
     /// The maximum write size accepted by the server.
     max_write: u32,
+    batch_forget: bool,
     /// The feature flags selected by `FUSE_INIT`.
     negotiated_flags: FuseInitFlags,
     /// The extended feature flags selected by `FUSE_INIT`.
@@ -53,11 +56,19 @@ impl FuseSession {
     /// the server.
     pub fn new(device: Arc<FileSystemDevice>) -> Result<Arc<Self>, FuseError> {
         let requested_flags = Self::init_flags();
-        let requested_flags2 = if device.index_epoch.is_some() {
-            FuseInitFlags2::PVISOR_META
-        } else {
-            FuseInitFlags2::empty()
-        };
+        let mut requested_flags2 = FuseInitFlags2::empty();
+        if device
+            .features
+            .contains(FileSystemFeatures::PVISOR_READ_INDEX)
+        {
+            requested_flags2 |= FuseInitFlags2::PVISOR_META;
+        }
+        if device
+            .features
+            .contains(FileSystemFeatures::PVISOR_DATA_OBJECT)
+        {
+            requested_flags2 |= FuseInitFlags2::PVISOR_DATA_OBJECT;
+        }
         let mut operation = InitOperation::new(InitReq::new(
             FUSE_KERNEL_VERSION,
             FUSE_KERNEL_MINOR_VERSION,
@@ -69,13 +80,25 @@ impl FuseSession {
         let payload_len = waiter.wait().payload_len()?;
         let init_reply = waiter.parse_reply::<InitOperation>(payload_len)?;
 
+        let flags2 = init_reply.flags2() & requested_flags2;
+        if flags2.contains(FuseInitFlags2::PVISOR_DATA_OBJECT)
+            && (init_reply.flags().intersects(
+                FuseInitFlags::POSIX_LOCKS
+                    | FuseInitFlags::FLOCK_LOCKS
+                    | FuseInitFlags::WRITEBACK_CACHE
+                    | FuseInitFlags::MAP_ALIGNMENT,
+            ) || init_reply.flags2().contains(FuseInitFlags2::HAS_INODE_DAX))
+        {
+            return Err(FuseError::MalformedResponse);
+        }
         let max_write = init_reply.max_write().max(MIN_MAX_WRITE);
         let session = Arc::new(Self {
             device,
             attr_version: AtomicU64::new(1),
             max_write,
+            batch_forget: init_reply.minor() >= 16,
             negotiated_flags: init_reply.flags(),
-            negotiated_flags2: init_reply.flags2(),
+            negotiated_flags2: flags2,
         });
 
         info!(
@@ -192,7 +215,17 @@ impl FuseSession {
         read_request: ReadReq,
         data_buf: FuseReplyBuf,
     ) -> Result<usize, FuseError> {
-        let waiter = self.read_async(nodeid, read_request, smallvec![data_buf], None)?;
+        self.read_buffers(nodeid, read_request, smallvec![data_buf])
+    }
+
+    /// Reads into one or more DMA buffers and returns the validated byte count.
+    pub fn read_buffers(
+        &self,
+        nodeid: FuseNodeId,
+        read_request: ReadReq,
+        data_bufs: FuseReplyBufs,
+    ) -> Result<usize, FuseError> {
+        let waiter = self.read_async(nodeid, read_request, data_bufs, None)?;
         let read_len = waiter.wait().payload_len()?;
         if read_len > read_request.size() as usize {
             return Err(FuseError::MalformedResponse);
@@ -320,12 +353,20 @@ impl FuseSession {
         Ok(())
     }
 
-    /// Releases one reference per listed non-root node from a directory image.
-    /// As with `forget`, successful submission does not wait for a reply.
-    pub fn forget_index_entries(&self, nodeids: &[FuseNodeId]) -> Result<(), FuseError> {
-        // Keep each request small enough for the ordinary request buffer pool.
-        for ids in nodeids.chunks(128) {
-            let mut operation = BatchForgetOperation(ids);
+    /// Maximum number of releases per batch, keeping the request smaller than one page.
+    pub const FORGET_BATCH_SIZE: usize = 128;
+
+    /// Releases the supplied non-root nodes' lookup counts on the high-priority queue.
+    /// Successful submission does not wait for a reply. FUSE before 7.16 uses single forgets.
+    pub fn forget_many(&self, entries: &[(FuseNodeId, u64)]) -> Result<(), FuseError> {
+        for batch in entries.chunks(Self::FORGET_BATCH_SIZE) {
+            if batch.len() == 1 || !self.batch_forget {
+                for &(nodeid, count) in batch {
+                    self.forget(nodeid, count)?;
+                }
+                continue;
+            }
+            let mut operation = BatchForgetOperation(batch);
             let request = self
                 .device
                 .prepare_request(FUSE_ROOT_ID, &mut operation, None, None)?;

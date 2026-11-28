@@ -267,8 +267,8 @@ for that native child when the host environment omits
 behavior. Older guests and fds that do not meet local Immutable read-only eligibility retain the
 original FLUSH. SDK calls without a selected and authenticated prepared rootfs
 (including calls supplying only a `with_rootfs_base` owner), and macOS retain their
-previous behavior when the variable is absent. Data-page caching, negative caching, WB
-and DAX are not automatically enabled. Measure preparation separately from
+previous FLUSH behavior when the variable is absent. This selector does not enable
+negative caching, WB or DAX. Measure preparation separately from
 execution performance.
 
 ### Sealed workspace {#prepared-workspace}
@@ -295,8 +295,10 @@ guest-visible paths and writable VM backing/control paths. Initial preparation
 copies and fully verifies the source. Subsequent authentication reads small
 records and holds leases without sealing it again. Persistent pins survive
 command exit and GC; external store edits are unsupported. This field inherits
-the [scoped prepared-rootfs read-only FLUSH default](#prepared-rootfs), without
-automatically enabling data-page caching, negative caching, WB or DAX. Explicit
+the [scoped prepared-rootfs read-only FLUSH default](#prepared-rootfs). On Linux,
+Rust native guests automatically reuse immutable data for eligible lower files
+without this selector, including in mixed workspaces. This does not enable
+negative caching, WB or DAX, or change live directory visibility. Explicit
 `PVISOR_VM_FS_READONLY_FLUSH_ELISION=0` preserves the original FLUSH. Measure
 preparation costs separately from execution time.
 

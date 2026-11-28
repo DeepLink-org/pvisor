@@ -28,6 +28,7 @@ use crate::devices::virtio::InterruptTransport;
 use crate::env::fs::QueueHandoff;
 use crate::vmm::vmm_config::fs::OverlaySource;
 
+const DATA_OBJECT_FEATURE: u64 = 1 << 19;
 const AUTO_HANDOFF_FEATURE: u64 = 1 << 20;
 const QUEUE_HANDOFF_FEATURE: u64 = 1 << 21;
 const HANDOFF_FEATURES: u64 = AUTO_HANDOFF_FEATURE | QUEUE_HANDOFF_FEATURE;
@@ -123,7 +124,7 @@ impl Fs {
         virtual_entries: Vec<VirtualDirEntry>,
         overlay_cfg: Option<OverlayConfig>,
     ) -> super::Result<Fs> {
-        let profile = crate::env::fs::FsProfile::from_env().map_err(FsError::EventFd)?;
+        let profile = crate::env::fs::FsProfile::from_env(false).map_err(FsError::EventFd)?;
         Self::new_with_profile(
             &crate::vmm::vmm_config::fs::FsDeviceConfig {
                 fs_id,
@@ -404,9 +405,19 @@ impl VirtioDevice for Fs {
                         })
             )
             && self.shm_region.is_none();
+        // This advertises the OPEN wire format, not stability of the merged namespace.
+        // OverlayFs qualifies the selected layer, descriptor and session separately.
+        let data_objects = cfg!(target_os = "linux")
+            && self.profile.rust_native_guest
+            && (self.profile.lower_data_cache || self.profile.logical_data_cache)
+            && self.profile.guest_cache
+            && !self.profile.host_writeback
+            && self.overlay_cfg.is_some()
+            && self.shm_region.is_none();
         self.avail_features
             | if inline { INLINE_METADATA_FEATURE } else { 0 }
             | if read_index { READ_INDEX_FEATURE } else { 0 }
+            | if data_objects { DATA_OBJECT_FEATURE } else { 0 }
     }
 
     fn acked_features(&self) -> u64 {
@@ -727,6 +738,7 @@ mod tests {
             shm_size: None,
             read_only: false,
             managed: false,
+            metadata_ttl: Duration::ZERO,
             virtual_entries: vec![],
             overlay: None,
         };

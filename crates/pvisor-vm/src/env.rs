@@ -57,6 +57,7 @@ pub(crate) mod fs {
     /// Captured once before publishing any device. Shared-open errors are deferred
     /// until overlay construction; other backends do not consume that setting.
     pub(crate) struct FsProfile {
+        pub(crate) rust_native_guest: bool,
         pub(crate) workers: usize,
         pub(crate) inline_metadata: bool,
         pub(crate) irq_read_ack: bool,
@@ -81,11 +82,19 @@ pub(crate) mod fs {
     }
 
     impl FsProfile {
-        pub(crate) fn from_env() -> io::Result<Self> {
-            Self::parse(|key| std::env::var_os(key))
+        pub(crate) fn from_env(rust_native_guest: bool) -> io::Result<Self> {
+            Self::parse_for_guest(rust_native_guest, |key| std::env::var_os(key))
         }
 
+        #[cfg(test)]
         pub(crate) fn parse(
+            get: impl FnMut(&str) -> Option<std::ffi::OsString>,
+        ) -> io::Result<Self> {
+            Self::parse_for_guest(false, get)
+        }
+
+        pub(crate) fn parse_for_guest(
+            rust_native_guest: bool,
             mut get: impl FnMut(&str) -> Option<std::ffi::OsString>,
         ) -> io::Result<Self> {
             let workers = get(WORKERS)
@@ -103,7 +112,14 @@ pub(crate) mod fs {
                     })
                 })
                 .transpose()?;
+            let native_data_default = rust_native_guest && cfg!(target_os = "linux");
+            let lower_data_cache = boolean(
+                get(LOWER_DATA_CACHE).as_deref(),
+                LOWER_DATA_CACHE,
+                native_data_default,
+            )?;
             Ok(Self {
+                rust_native_guest,
                 workers,
                 inline_metadata: boolean(get(INLINE_METADATA).as_deref(), INLINE_METADATA, true)?,
                 irq_read_ack: boolean(get(IRQ_READ_ACK).as_deref(), IRQ_READ_ACK, true)?,
@@ -124,7 +140,7 @@ pub(crate) mod fs {
                 readonly_flush_elision: readonly_flush_elision_enabled(
                     get(READONLY_FLUSH_ELISION).as_deref(),
                 )?,
-                lower_data_cache: lower_data_cache_enabled(get(LOWER_DATA_CACHE).as_deref())?,
+                lower_data_cache,
                 negative_entry_cache: negative_entry_cache_enabled(
                     get(NEGATIVE_ENTRY_CACHE).as_deref(),
                 )?,
@@ -138,7 +154,11 @@ pub(crate) mod fs {
                 logical_directory_cache: logical_directory_cache_enabled(
                     get(LOGICAL_DIRECTORY_CACHE).as_deref(),
                 )?,
-                logical_data_cache: logical_data_cache_enabled(get(LOGICAL_DATA_CACHE).as_deref())?,
+                logical_data_cache: boolean(
+                    get(LOGICAL_DATA_CACHE).as_deref(),
+                    LOGICAL_DATA_CACHE,
+                    native_data_default && lower_data_cache,
+                )?,
                 // Preserve env::var(...).ok(): non-Unicode is unset, all other
                 // strings (including empty/invalid) remain the explicit third state.
                 writeback: get(WRITEBACK).and_then(|v| v.into_string().ok()),
@@ -194,7 +214,6 @@ pub(crate) mod fs {
         READONLY_FLUSH_ELISION,
         false
     );
-    boolean_parser!(lower_data_cache_enabled, LOWER_DATA_CACHE, false);
     boolean_parser!(negative_entry_cache_enabled, NEGATIVE_ENTRY_CACHE, false);
     boolean_parser!(directory_names_cache_enabled, DIRECTORY_NAMES_CACHE, false);
     boolean_parser!(prepared_copy_up_enabled, PREPARED_COPY_UP, false);
@@ -204,7 +223,6 @@ pub(crate) mod fs {
         LOGICAL_DIRECTORY_CACHE,
         false
     );
-    boolean_parser!(logical_data_cache_enabled, LOGICAL_DATA_CACHE, false);
     boolean_parser!(
         shared_open_qualification_enabled,
         SHARED_OPEN_QUALIFICATION,

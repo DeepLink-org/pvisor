@@ -1301,7 +1301,7 @@ eligible local Immutable read-only fds skip backend FLUSH. Older guests and
 ineligible fds retain the original FLUSH. SDK calls without a selected and
 authenticated prepared rootfs (including calls supplying only a `with_rootfs_base`
 owner), and macOS retain their previous behavior when the variable is absent. This
-default does not enable data-page caching, negative caching, WB or DAX.
+FLUSH default does not enable negative caching, WB or DAX.
 
 #### Use a sealed workspace {#prepared-workspace}
 
@@ -1339,8 +1339,9 @@ Creating and reading workspace checkpoints remain independently available.
 Keep the two stores independent of each other
 and outside the project, stage, guest-visible paths and writable VM
 backing/control paths. External store edits are unsupported. This entry inherits
-the [scoped prepared-rootfs read-only FLUSH default](#prepared-rootfs), without
-automatically enabling data-page caching, negative caching, WB or DAX. Set
+the [scoped prepared-rootfs read-only FLUSH default](#prepared-rootfs).
+Linux-hosted Rust native guests reuse eligible immutable lower file data even
+without sealing the whole workspace. This does not enable negative caching, WB or DAX. Set
 `PVISOR_VM_FS_READONLY_FLUSH_ELISION=0` to preserve the original FLUSH.
 
 ## Run project discovery {#run-项目发现}

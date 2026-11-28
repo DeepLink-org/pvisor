@@ -7,6 +7,8 @@ mod metadata;
 mod ops;
 mod page_cache;
 
+pub(super) use ops::read_cached;
+
 use core::{
     ops::Range,
     sync::atomic::{AtomicUsize, Ordering},
@@ -336,6 +338,17 @@ impl Inode for VirtioFsInode {
         Ok(self.inner.read().metadata)
     }
 
+    fn open_metadata(&self, open: Option<&dyn PerOpenFileOps>) -> Result<Metadata> {
+        if let Some(fh) = open
+            .and_then(|open| (open as &dyn Any).downcast_ref::<super::file::VirtioFsFile>())
+            .and_then(super::file::VirtioFsFile::lower_handle)
+        {
+            self.handle_metadata(fh)
+        } else {
+            self.metadata()
+        }
+    }
+
     fn ino(&self) -> u64 {
         self.nodeid().as_u64()
     }
@@ -647,6 +660,21 @@ impl Inode for VirtioFsInode {
     ) -> Option<Option<Metadata>> {
         let child = child.downcast_ref::<VirtioFsInode>()?;
         child.revalidate_lookup(self.nodeid(), name).ok()
+    }
+
+    fn can_prune_child(&self, _name: &str, child: &dyn Inode) -> bool {
+        let Some(child) = child.downcast_ref::<Self>() else {
+            return false;
+        };
+        child.extension.is_empty()
+            && child
+                .entry_valid_until
+                .try_lock()
+                .is_some_and(|until| MonotonicCoarseClock::get().read_time() >= *until)
+            && child
+                .inner
+                .try_read()
+                .is_some_and(|inner| inner.page_cache.is_none())
     }
 
     fn revalidate_absent(&self, _name: &str) -> bool {

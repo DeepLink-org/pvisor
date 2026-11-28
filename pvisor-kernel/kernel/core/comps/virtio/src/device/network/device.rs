@@ -92,6 +92,7 @@ impl NetworkDevice {
 
         let tx_buffers = (0..QUEUE_SIZE).map(|_| None).collect();
 
+        super::buffer::init();
         let mut rx_buffers = SlotVec::new();
         for i in 0..QUEUE_SIZE {
             let rx_pool = RX_BUFFER_POOL.get().unwrap();

@@ -50,6 +50,10 @@ impl VirtioFsOpenHandle {
         self.fh
     }
 
+    pub(super) fn nodeid(&self) -> FuseNodeId {
+        self.nodeid
+    }
+
     /// Returns the composite file flags (access mode | status flags).
     pub(super) fn file_flags(&self) -> u32 {
         self.access_mode as u32 | self.status_flags.bits()

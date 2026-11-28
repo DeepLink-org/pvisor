@@ -461,6 +461,18 @@ jobs:
           mise exec -- rustc --edition=2021 --target x86_64-unknown-linux-musl -C linker=rust-lld pvisor-kernel/tests/guest.rs -o "$RUNNER_TEMP/native-stdio-guest"
           python3 pvisor-kernel/tests/task_stdio.py --binary target/debug/examples/vm_api_case --guest "$RUNNER_TEMP/native-stdio-guest"
 
+      - name: Rust guest signal delivery on syscall return / KVM
+        if: runner.os == 'Linux' && matrix.shard == 'pvisor'
+        env:
+          PVISOR_GUEST_KERNEL: rust-native
+        shell: bash
+        run: |
+          root="$(mktemp -d "$RUNNER_TEMP/signal-return.XXXXXX")"
+          cc -static -O2 -pthread -Wall -Wextra -Werror pvisor-kernel/tests/signal_return.c -o "$root/probe"
+          result="$(timeout 30 target/debug/examples/vm_api_case --rootfs "$root" --cpus 2 --memory 64 \
+            --task-stdio -- /probe </dev/null)"
+          test "$result" = SIGNAL_RETURN_OK
+
       - name: Rust guest tmpfs sparse reads and concurrent truncate / KVM
         if: runner.os == 'Linux' && matrix.shard == 'pvisor'
         env:
@@ -532,6 +544,11 @@ jobs:
             --vm-api target/debug/examples/vm_api_case --stat-guest "$RUNNER_TEMP/native-stat" \
             --metadata-case target/debug/examples/guest_metadata_case --metadata-guest "$RUNNER_TEMP/native-metadata" \
             --output "$RUNNER_TEMP/native-fs-metadata" --seed 1 --seed 314159 --seed 57596
+          cc -static -O2 -Wall -Wextra -Werror pvisor-kernel/tests/immutable_lower.c -o "$RUNNER_TEMP/immutable-lower"
+          cc -static -O2 -Wall -Wextra -Werror benchmark/vm/probe.c -o "$RUNNER_TEMP/stage-io"
+          python3 pvisor-kernel/tests/immutable_lower.py --binary target/debug/examples/guest_metadata_case \
+            --guest "$RUNNER_TEMP/immutable-lower" --io-guest "$RUNNER_TEMP/stage-io" \
+            --output "$RUNNER_TEMP/native-fs-metadata/lower-data"
       - uses: actions/upload-artifact@v4
         if: failure() && runner.os == 'Linux' && matrix.shard == 'pvisor'
         with:

@@ -17,6 +17,7 @@ use ostd::{
         dma::{DmaDirection, DmaStream, FromDevice, ToDevice},
         io::util::{HasVmReaderWriter, VmReaderWriterResult},
     },
+    sync::SpinLock,
 };
 use smallvec::SmallVec;
 use spin::Once;
@@ -27,8 +28,7 @@ use crate::dma_buf::DmaBuf;
 /// fixed-size buffers.
 const MIN_SHIFT: usize = 6;
 
-/// Pool-backed buffers stop at one page. Larger buffers use `DmaStream` so large
-/// buffers do not consume all small-buffer pool segments.
+/// Larger buffers use the directional arena or a per-request DMA stream.
 const MAX_SHIFT: usize = 12;
 
 /// The number of pool-backed size classes.
@@ -37,25 +37,16 @@ const N_CLASSES: usize = MAX_SHIFT - MIN_SHIFT + 1;
 /// The largest buffer size served by a pooled DMA segment.
 pub(super) const MAX_CLASS_SIZE: usize = 1 << MAX_SHIFT;
 
-/// Preallocate a few segments per size class to avoid frequent allocation under
-/// light concurrency.
-const POOL_INIT_SIZE: usize = 8;
-
-/// Retains enough free segments for request bursts.
+/// Retain small-buffer pages for request bursts.
 const POOL_HIGH_WATERMARK: usize = 64;
 
 const MAX_DMA_ARENA_PAGES: usize = 8 * 1024 * 1024 / PAGE_SIZE;
 
-/// A pool of DMA arenas for buffers received from the device.
-static VIRTIOFS_DMA_ARENA_RPOOL: Once<Option<Arc<DmaArenaPool<FromDevice>>>> = Once::new();
-/// A pool of DMA arenas for buffers sent to the device.
-static VIRTIOFS_DMA_ARENA_WPOOL: Once<Option<Arc<DmaArenaPool<ToDevice>>>> = Once::new();
+type SharedArena<D> = Once<Option<Arc<DmaArenaPool<D>>>>;
+pub(super) static REPLY_ARENA: SharedArena<FromDevice> = Once::new();
+pub(super) static REQUEST_ARENA: SharedArena<ToDevice> = Once::new();
 
-/// Returns the shared virtio-fs DMA arena pools, initializing them on first use.
-pub(super) fn dma_arena_pools_singleton() -> (
-    Option<&'static Arc<DmaArenaPool<ToDevice>>>,
-    Option<&'static Arc<DmaArenaPool<FromDevice>>>,
-) {
+fn allocate_arena<D: DmaDirection>() -> Option<Arc<DmaArenaPool<D>>> {
     let usable_pages: usize = boot_info()
         .memory_regions
         .iter()
@@ -64,36 +55,53 @@ pub(super) fn dma_arena_pools_singleton() -> (
         .sum();
     // Both directions together may reserve at most one eighth of usable RAM.
     let pages = (usable_pages / 16).min(MAX_DMA_ARENA_PAGES);
-
-    (
-        VIRTIOFS_DMA_ARENA_WPOOL
-            .call_once(|| DmaArenaPool::new(pages).ok())
-            .as_ref(),
-        VIRTIOFS_DMA_ARENA_RPOOL
-            .call_once(|| DmaArenaPool::new(pages).ok())
-            .as_ref(),
-    )
+    DmaArenaPool::new(pages).ok()
 }
 
 /// A virtio-fs DMA buffer allocator for pooled segments and large arenas.
 #[derive(Debug)]
 pub(super) struct VirtiofsDmaPool<D: DmaDirection> {
+    // The retained segment must drop before its size-class pool.
+    last_control: SpinLock<Option<Arc<Slice<DmaBuffer<D>>>>>,
     classes: [Arc<DmaPool<D>>; N_CLASSES],
-    arena_pool: Option<&'static Arc<DmaArenaPool<D>>>,
+    arena: &'static SharedArena<D>,
 }
 
 impl<D: DmaDirection> VirtiofsDmaPool<D> {
-    /// Creates a DMA buffer pool with predefined size classes.
-    pub(super) fn new(arena_pool: Option<&'static Arc<DmaArenaPool<D>>>) -> Self {
+    pub(super) fn new(arena: &'static SharedArena<D>) -> Self {
         let classes = core::array::from_fn(|i| {
             let segment_size = 1 << (MIN_SHIFT + i);
-            DmaPool::<D>::new(segment_size, POOL_INIT_SIZE, POOL_HIGH_WATERMARK, false)
+            DmaPool::<D>::new(segment_size, 0, POOL_HIGH_WATERMARK, false)
         });
 
         Self {
             classes,
-            arena_pool,
+            arena,
+            last_control: SpinLock::new(None),
         }
+    }
+
+    /// Reuse the DMA mapping, never a request or its contents. An in-flight
+    /// descriptor or a reply still being parsed keeps its own strong reference.
+    fn alloc_control_buf(&self, len: usize) -> Result<Arc<Slice<DmaBuffer<D>>>> {
+        if len > MAX_CLASS_SIZE {
+            return self.alloc_buf(len);
+        }
+        if let Some(mut slot) = self.last_control.try_lock()
+            && let Some(buf) = slot.as_mut()
+            && buf.size() == len
+            && Arc::get_mut(buf).is_some()
+        {
+            return Ok(buf.clone());
+        }
+
+        let buf = self.alloc_buf(len)?;
+        if let Some(mut slot) = self.last_control.try_lock() {
+            let old = slot.replace(buf.clone());
+            drop(slot);
+            drop(old);
+        }
+        Ok(buf)
     }
 
     /// Allocates a DMA buffer whose visible length is `len`.
@@ -107,7 +115,8 @@ impl<D: DmaDirection> VirtiofsDmaPool<D> {
             DmaBuffer::Pooled(self.classes[shift - MIN_SHIFT].alloc_segment()?)
         } else {
             let pages = len.div_ceil(PAGE_SIZE);
-            match self.arena_pool.and_then(|pool| pool.alloc(pages)) {
+            let arena = self.arena.call_once(allocate_arena);
+            match arena.as_ref().and_then(|pool| pool.alloc(pages)) {
                 Some(arena) => DmaBuffer::Arena(arena),
                 None => DmaBuffer::Direct(DmaStream::alloc_uninit(pages, false)?),
             }
@@ -147,6 +156,10 @@ pub struct FuseRequestBuf(Arc<Slice<DmaBuffer<ToDevice>>>);
 pub type FuseRequestBufs = SmallVec<[FuseRequestBuf; 1]>;
 
 impl FuseRequestBuf {
+    pub(super) fn control(pool: &VirtiofsDmaPool<ToDevice>, len: usize) -> Result<Self> {
+        pool.alloc_control_buf(len).map(Self)
+    }
+
     /// Returns the length of the DMA buffer.
     pub(crate) fn len(&self) -> usize {
         DmaBuf::len(self.0.as_ref())
@@ -183,6 +196,10 @@ pub struct FuseReplyBuf(Arc<Slice<DmaBuffer<FromDevice>>>);
 pub type FuseReplyBufs = SmallVec<[FuseReplyBuf; 1]>;
 
 impl FuseReplyBuf {
+    pub(super) fn control(pool: &VirtiofsDmaPool<FromDevice>, len: usize) -> Result<Self> {
+        pool.alloc_control_buf(len).map(Self)
+    }
+
     /// Maps `segment` as a DMA buffer for FUSE reply payloads.
     pub fn new_map(segment: USegment) -> Result<Self> {
         let len = segment.size();
@@ -219,5 +236,29 @@ impl HasVmReaderWriter for FuseReplyBuf {
 
     fn writer(&self) -> Result<VmWriter<'_, Infallible>> {
         self.0.writer()
+    }
+}
+
+#[cfg(ktest)]
+mod tests {
+    use ostd::{mm::HasDaddr, prelude::ktest};
+
+    use super::*;
+
+    #[ktest]
+    fn control_buffers_reuse_only_idle_exact_length_storage() {
+        let pool = VirtiofsDmaPool::new(&REPLY_ARENA);
+        let outstanding = FuseReplyBuf::control(&pool, 120).unwrap();
+        let idle_address = {
+            let second = FuseReplyBuf::control(&pool, 120).unwrap();
+            assert_ne!(outstanding.0.daddr(), second.0.daddr());
+            second.0.daddr()
+        };
+        let reused = FuseReplyBuf::control(&pool, 120).unwrap();
+        assert_eq!(reused.0.daddr(), idle_address);
+        drop(reused);
+        let shorter = FuseReplyBuf::control(&pool, 96).unwrap();
+        assert_eq!(shorter.len(), 96);
+        assert_ne!(shorter.0.daddr(), outstanding.0.daddr());
     }
 }

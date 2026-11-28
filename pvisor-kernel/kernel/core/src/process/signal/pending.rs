@@ -128,9 +128,12 @@ impl HandlePendingSignal for PosixThread {
     }
 }
 
+pub(super) fn signal_queues_empty(posix_thread: &PosixThread, process: &Process) -> bool {
+    posix_thread.sig_queues().is_empty() && process.sig_queues().is_empty()
+}
+
 fn has_pending_signal(posix_thread: &PosixThread, process: &Process) -> bool {
-    // Fast path: No signals are pending.
-    if posix_thread.sig_queues().is_empty() && process.sig_queues().is_empty() {
+    if signal_queues_empty(posix_thread, process) {
         return false;
     }
 

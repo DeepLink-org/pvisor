@@ -30,6 +30,7 @@ def main():
                     "/probe",
                     "7",
                     "--echo-stdin",
+                    "--check-headless-tty",
                 ],
                 input=payload,
                 capture_output=True,

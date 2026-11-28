@@ -7,14 +7,21 @@ use core::fmt;
 
 use aster_block::{
     BlockDevice, BlockDeviceMeta, SECTOR_SIZE,
-    bio::{Bio, BioCompleteFn, BioEnqueueError, BioSegment, BioStatus, BioType, SubmittedBio},
+    bio::{
+        Bio, BioCompleteFn, BioDirection, BioEnqueueError, BioSegment, BioStatus, BioType,
+        SubmittedBio,
+    },
     id::Sid,
 };
 use device_id::DeviceId;
 use io_util::batch::IoBatch;
-use ostd::mm::VmIo;
+use ostd::mm::{Segment, VmIo};
 
-use crate::{prelude::*, thread::Thread, vm::page_cache::BlockAsPageCacheBackend};
+use crate::{
+    prelude::*,
+    thread::Thread,
+    vm::page_cache::{CachePageExt, LockedCachePage, PageCacheBackend},
+};
 
 /// Maximum number of cooperative yields before a test wait times out.
 const MAX_WAIT_YIELDS: usize = 1_000_000;
@@ -61,8 +68,6 @@ struct MockBackendState {
     persisted_pages: Vec<Vec<u8>>,
     read_counts: Vec<usize>,
     write_counts: Vec<usize>,
-    read_submit_failures: BTreeSet<usize>,
-    write_submit_failures: BTreeSet<usize>,
     read_completion: IoCompletion,
     write_completion: IoCompletion,
     deferred_reads: VecDeque<DeferredBio>,
@@ -75,8 +80,6 @@ impl MockBackendState {
             persisted_pages: vec![vec![0; PAGE_SIZE]; num_pages],
             read_counts: vec![0; num_pages],
             write_counts: vec![0; num_pages],
-            read_submit_failures: BTreeSet::new(),
-            write_submit_failures: BTreeSet::new(),
             read_completion: IoCompletion::Immediate,
             write_completion: IoCompletion::Immediate,
             deferred_reads: VecDeque::new(),
@@ -96,14 +99,6 @@ impl MockBackendState {
             IoKind::Read => self.read_completion = completion,
             IoKind::Write => self.write_completion = completion,
         }
-    }
-
-    fn should_fail_submit(&self, kind: IoKind, page_idx: usize) -> bool {
-        let failures = match kind {
-            IoKind::Read => &self.read_submit_failures,
-            IoKind::Write => &self.write_submit_failures,
-        };
-        failures.contains(&page_idx)
     }
 
     fn record_submission(&mut self, kind: IoKind, page_idx: usize) {
@@ -204,16 +199,6 @@ impl MockPageCacheBackend {
         self.state.lock().persisted_pages[page_idx].copy_from_slice(data);
     }
 
-    fn maybe_fail_submission(&self, kind: IoKind, page_idx: usize) -> Result<()> {
-        let mut state = self.state.lock();
-        if state.should_fail_submit(kind, page_idx) {
-            state.record_submission(kind, page_idx);
-            return_errno!(Errno::EIO);
-        }
-
-        Ok(())
-    }
-
     fn submit_bio(
         &self,
         kind: IoKind,
@@ -222,8 +207,6 @@ impl MockPageCacheBackend {
         complete_fn: BioCompleteFn,
         io_batch: &mut IoBatch,
     ) -> Result<()> {
-        self.maybe_fail_submission(kind, page_idx)?;
-
         let bio = Bio::new(
             kind.bio_type(),
             Sid::from_offset(page_idx * PAGE_SIZE),
@@ -328,30 +311,65 @@ impl BlockDevice for MockPageCacheBackend {
     }
 }
 
-impl BlockAsPageCacheBackend for MockPageCacheBackend {
-    fn submit_read_bio(
+impl PageCacheBackend for MockPageCacheBackend {
+    fn read_page_async(
         &self,
         page_idx: usize,
-        bio_segment: BioSegment,
-        complete_fn: BioCompleteFn,
+        page: LockedCachePage,
         io_batch: &mut IoBatch,
     ) -> Result<()> {
         if page_idx >= self.num_pages {
             return_errno!(Errno::EINVAL);
         }
-        self.submit_bio(IoKind::Read, page_idx, bio_segment, complete_fn, io_batch)
+        let segment = BioSegment::new_from_segment(
+            Segment::from((*page).clone()).into(),
+            BioDirection::FromDevice,
+        );
+        self.submit_bio(
+            IoKind::Read,
+            page_idx,
+            segment,
+            Box::new(move |status| {
+                if status == BioStatus::Complete {
+                    page.set_up_to_date();
+                }
+            }),
+            io_batch,
+        )
     }
 
-    fn submit_write_bio(
+    fn write_page_async(
         &self,
         page_idx: usize,
-        bio_segment: BioSegment,
-        complete_fn: BioCompleteFn,
+        page: LockedCachePage,
         io_batch: &mut IoBatch,
     ) -> Result<()> {
         if page_idx >= self.num_pages {
             return_errno!(Errno::EINVAL);
         }
-        self.submit_bio(IoKind::Write, page_idx, bio_segment, complete_fn, io_batch)
+        page.wait_until_finish_writing_back();
+        let segment = BioSegment::new_from_segment(
+            Segment::from((*page).clone()).into(),
+            BioDirection::ToDevice,
+        );
+        page.set_writing_back();
+        page.set_up_to_date();
+        let page = page.unlock();
+        let completion_page = page.clone();
+        let result = self.submit_bio(
+            IoKind::Write,
+            page_idx,
+            segment,
+            Box::new(move |_| {
+                completion_page.clear_writing_back();
+            }),
+            io_batch,
+        );
+        if result.is_err() {
+            let locked = page.lock();
+            locked.set_dirty();
+            locked.clear_writing_back();
+        }
+        result
     }
 }

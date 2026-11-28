@@ -13,7 +13,7 @@ use crate::{
     device::{
         Device, DeviceType,
         registry::char,
-        tty::{hvc::hvc0_device, serial::serial0_device, vt::active_vt},
+        tty::{hvc::hvc0_device, serial::serial0_device, vt},
     },
     fs::{
         devtmpfs::DevtmpfsNodeMeta,
@@ -40,7 +40,7 @@ impl Device for Tty0Device {
     }
 
     fn open(&self) -> Result<Box<dyn PerOpenFileOps>> {
-        active_vt().open()
+        vt::active_vt().open()
     }
 }
 
@@ -83,37 +83,6 @@ pub(crate) struct SystemConsole {
 /// The device ID of `/dev/console`.
 pub(crate) const CONSOLE_DEVICE_ID: DeviceId = DeviceId::new(MajorId::new(5), MinorId::new(1));
 
-impl SystemConsole {
-    /// Returns the singleton instance of the console device.
-    pub(crate) fn singleton() -> &'static Arc<SystemConsole> {
-        static INSTANCE: Once<Arc<SystemConsole>> = Once::new();
-
-        INSTANCE.call_once(|| {
-            // TODO: Support specifying multiple TTY devices, e.g., "console=hvc0 console=tty0".
-            let console_name = CONSOLES
-                .get()
-                .and_then(|consoles| consoles.first().map(|s| s.as_str()))
-                .unwrap_or("tty0");
-
-            let device = match console_name {
-                "tty0" => Some(Arc::new(Tty0Device) as _),
-                "ttyS0" => serial0_device().cloned().map(|device| device as _),
-                "hvc0" => hvc0_device().cloned().map(|device| device as _),
-                _ => None,
-            };
-            let inner = device.unwrap_or_else(|| {
-                warn!(
-                    "'{}' console not found, falling back to 'tty0'",
-                    console_name
-                );
-                Arc::new(Tty0Device) as _
-            });
-
-            Arc::new(Self { inner })
-        })
-    }
-}
-
 impl Device for SystemConsole {
     fn type_(&self) -> DeviceType {
         DeviceType::Char
@@ -133,11 +102,29 @@ impl Device for SystemConsole {
 }
 
 pub(super) fn init_in_first_process() -> Result<()> {
-    char::register(Arc::new(Tty0Device))?;
+    let name = CONSOLES
+        .get()
+        .and_then(|consoles| consoles.first())
+        .map_or("tty0", String::as_str);
+    let inner: Arc<dyn Device> = match name {
+        "tty0" => {
+            vt::init_in_first_process()?;
+            let vt = Arc::new(Tty0Device);
+            char::register(vt.clone())?;
+            vt
+        }
+        "hvc0" => hvc0_device().cloned().ok_or(Error::with_message(
+            Errno::ENODEV,
+            "virtio console is unavailable",
+        ))?,
+        "ttyS0" => serial0_device().cloned().ok_or(Error::with_message(
+            Errno::ENODEV,
+            "serial console is unavailable",
+        ))?,
+        _ => return_errno_with_message!(Errno::ENODEV, "unsupported system console"),
+    };
     char::register(Arc::new(TtyDevice))?;
-    char::register(SystemConsole::singleton().clone())?;
-
-    Ok(())
+    char::register(Arc::new(SystemConsole { inner }))
 }
 
 static CONSOLES: Once<Vec<String>> = Once::new();

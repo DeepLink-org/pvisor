@@ -7,7 +7,7 @@ use crate::{
         vfs::{
             file_system::{FileSystem, SuperBlock},
             inode::RevalidationPolicy,
-            registry::{FsCreationCtx, FsProperties, FsType},
+            registry::{FsCreationCtx, FsType},
         },
     },
     prelude::*,
@@ -75,11 +75,7 @@ impl FsType for TmpFsType {
         "tmpfs"
     }
 
-    fn properties(&self) -> FsProperties {
-        FsProperties::empty()
-    }
-
-    fn create(&self, _fs_creation_ctx: &mut FsCreationCtx) -> Result<Arc<dyn FileSystem>> {
+    fn create(&self, _fs_creation_ctx: &FsCreationCtx) -> Result<Arc<dyn FileSystem>> {
         Ok(TmpFs::new_tmpfs())
     }
 

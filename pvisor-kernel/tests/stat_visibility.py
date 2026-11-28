@@ -11,7 +11,7 @@ import time
 from pathlib import Path
 
 
-def expect_counter(profile, component, name, enabled, unit="calls"):
+def final_counter(profile, component, name, unit="calls"):
     records = [
         json.loads(line.removeprefix("pvisor-fs-profile "))
         for line in profile.splitlines()
@@ -24,7 +24,11 @@ def expect_counter(profile, component, name, enabled, unit="calls"):
     ]
     if not final:
         raise RuntimeError(f"missing final {component} profile")
-    count = sum(m.get(name, {}).get(unit, 0) for m in final)
+    return sum(m.get(name, {}).get(unit, 0) for m in final)
+
+
+def expect_counter(profile, component, name, enabled, unit="calls"):
+    count = final_counter(profile, component, name, unit)
     if bool(count) != enabled:
         raise RuntimeError(f"expected {name} {'> 0' if enabled else '= 0'}, got {count}")
     print(f"{name}={count}", flush=True)

@@ -32,6 +32,7 @@ use spin::Once;
 use waiter::{FuseWaiter, ReplyBufs};
 
 pub use self::session::{AttrVersion, FuseSession};
+use super::config::FileSystemFeatures;
 
 static REQUEST_CREDENTIALS: Once<fn() -> (u32, u32, u32)> = Once::new();
 
@@ -113,7 +114,7 @@ pub struct FileSystemDevice {
     from_device_pool: VirtiofsDmaPool<FromDevice>,
     next_unique: AtomicU64,
     tag: String,
-    notify_supported: bool,
+    features: FileSystemFeatures,
     index_epoch: Option<Arc<SpinLock<IndexEpoch, LocalIrqDisabled>>>,
 }
 
@@ -123,25 +124,23 @@ impl FileSystemDevice {
         hiprio_queue: Arc<FsRequestQueue>,
         request_queues: Vec<Arc<FsRequestQueue>>,
         tag: String,
-        notify_supported: bool,
-        read_index_supported: bool,
+        features: FileSystemFeatures,
     ) -> Self {
-        let (to_device_arena_pool, from_device_arena_pool) = pool::dma_arena_pools_singleton();
-
         Self {
             transport: SpinLock::new(transport),
             hiprio_queue,
             request_queues,
-            to_device_pool: VirtiofsDmaPool::new(to_device_arena_pool),
-            from_device_pool: VirtiofsDmaPool::new(from_device_arena_pool),
+            to_device_pool: VirtiofsDmaPool::new(&pool::REQUEST_ARENA),
+            from_device_pool: VirtiofsDmaPool::new(&pool::REPLY_ARENA),
             // Start request IDs at 1 and keep 0 unused. In FUSE,
             // `unique == 0` is reserved for unsolicited notification messages
             // rather than ordinary request/reply matching.
             next_unique: AtomicU64::new(1),
             tag,
-            notify_supported,
-            index_epoch: read_index_supported
+            index_epoch: features
+                .contains(FileSystemFeatures::PVISOR_READ_INDEX)
                 .then(|| Arc::new(SpinLock::new(IndexEpoch::default()))),
+            features,
         }
     }
 
@@ -273,9 +272,7 @@ impl FileSystemDevice {
             .checked_add(data_buf_len)
             .ok_or(FuseError::LengthOverflow)?;
 
-        let request_buf = self
-            .to_device_pool
-            .alloc_request_buf(request_buf_len as usize)
+        let request_buf = FuseRequestBuf::control(&self.to_device_pool, request_buf_len as usize)
             .map_err(FuseError::ResourceAlloc)?;
 
         let (uid, gid, pid) = request_credentials();
@@ -330,7 +327,8 @@ impl FileSystemDevice {
     fn alloc_control_reply(&self, payload_size: usize) -> Result<ReplyBufs, FuseError> {
         let header_size = size_of::<ReplyHeader>();
         if payload_size <= pool::MAX_CLASS_SIZE - header_size {
-            let buf = self.alloc_from_device_buf(header_size + payload_size)?;
+            let buf = FuseReplyBuf::control(&self.from_device_pool, header_size + payload_size)
+                .map_err(FuseError::ResourceAlloc)?;
             return Ok(ReplyBufs::new(Some(buf)));
         }
         let mut bufs = ReplyBufs::new(Some(self.alloc_reply_header_buf()?));

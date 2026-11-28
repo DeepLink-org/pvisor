@@ -2,6 +2,7 @@
 
 //! Virtio-fs filesystem support backed by FUSE requests.
 
+mod data_object;
 mod dir;
 mod dir_index;
 mod file;
@@ -22,10 +23,18 @@ use crate::{
 pub(super) fn init() {
     aster_virtio::device::filesystem::device::set_request_credentials(|| {
         use crate::process::posix_thread::AsPosixThread;
-        let Some(task) = ostd::task::Task::current() else { return (0, 0, 0) };
-        let Some(thread) = task.as_posix_thread() else { return (0, 0, 0) };
+        let Some(task) = ostd::task::Task::current() else {
+            return (0, 0, 0);
+        };
+        let Some(thread) = task.as_posix_thread() else {
+            return (0, 0, 0);
+        };
         let credentials = thread.credentials();
-        (credentials.fsuid().into(), credentials.fsgid().into(), thread.tid())
+        (
+            credentials.fsuid().into(),
+            credentials.fsgid().into(),
+            thread.tid(),
+        )
     });
     crate::fs::vfs::registry::register(&fs::VIRTIOFS_TYPE).unwrap();
 }

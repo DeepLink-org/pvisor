@@ -11,7 +11,7 @@ use crate::{
         vfs::{
             file_system::FileSystem,
             path::{Mount, Path},
-            registry::{FsCreationCtx, FsProperties, FsType},
+            registry::{FsCreationCtx, FsType},
         },
     },
     prelude::*,
@@ -66,11 +66,7 @@ impl FsType for SockFsType {
         "sockfs"
     }
 
-    fn properties(&self) -> FsProperties {
-        FsProperties::empty()
-    }
-
-    fn create(&self, _fs_creation_ctx: &mut FsCreationCtx) -> Result<Arc<dyn FileSystem>> {
+    fn create(&self, _fs_creation_ctx: &FsCreationCtx) -> Result<Arc<dyn FileSystem>> {
         return_errno_with_message!(Errno::EINVAL, "sockfs cannot be mounted");
     }
 
