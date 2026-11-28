@@ -547,8 +547,12 @@ at 7 MiB. Before boot-stack reclamation, a 16-vCPU boot at 16 MiB exhausted
 the kernel heap. These observations do not extend the supported sizes.
 
 The x86 image starts at 2 MiB rather than 128 MiB. The guest uses 64 KiB task
-stacks. Virtio-fs small DMA pools grow on demand per device. Each direction's
-large arena is shared across devices and reserved on its first allocation over
+stacks. Virtio-fs small DMA pools grow on demand per device. Each direction
+retains at most one control buffer of up to one page for the next request of
+the same length. Reuse requires exclusive ownership: neither an in-flight
+descriptor nor a caller parsing a reply may still hold the buffer. This saves
+allocation, not FUSE requests, and does not extend metadata validity.
+Each direction's large arena is shared across devices and reserved on its first allocation over
 one page. Together the arenas use at most one eighth of usable RAM (up to
 16 MiB total); requests that do not fit use per-request DMA. Network pools
 are created only for a discovered NIC: RX pages are posted at device start,

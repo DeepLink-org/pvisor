@@ -272,9 +272,7 @@ impl FileSystemDevice {
             .checked_add(data_buf_len)
             .ok_or(FuseError::LengthOverflow)?;
 
-        let request_buf = self
-            .to_device_pool
-            .alloc_request_buf(request_buf_len as usize)
+        let request_buf = FuseRequestBuf::control(&self.to_device_pool, request_buf_len as usize)
             .map_err(FuseError::ResourceAlloc)?;
 
         let (uid, gid, pid) = request_credentials();
@@ -329,7 +327,8 @@ impl FileSystemDevice {
     fn alloc_control_reply(&self, payload_size: usize) -> Result<ReplyBufs, FuseError> {
         let header_size = size_of::<ReplyHeader>();
         if payload_size <= pool::MAX_CLASS_SIZE - header_size {
-            let buf = self.alloc_from_device_buf(header_size + payload_size)?;
+            let buf = FuseReplyBuf::control(&self.from_device_pool, header_size + payload_size)
+                .map_err(FuseError::ResourceAlloc)?;
             return Ok(ReplyBufs::new(Some(buf)));
         }
         let mut bufs = ReplyBufs::new(Some(self.alloc_reply_header_buf()?));
