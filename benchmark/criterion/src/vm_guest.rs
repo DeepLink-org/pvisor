@@ -132,6 +132,9 @@ pub(crate) fn diagnose(batch: &Path) -> Result<()> {
     let batch = batch.canonicalize()?;
     let report: serde_json::Value =
         serde_json::from_slice(&fs::read(batch.join("comparison/comparison.json"))?)?;
+    let threshold = report["threshold_pct"]
+        .as_f64()
+        .context("missing gate threshold")?;
     let rows = report["rows"]
         .as_array()
         .context("missing comparison rows")?;
@@ -187,14 +190,20 @@ pub(crate) fn diagnose(batch: &Path) -> Result<()> {
         }
         changes.sort_by(f64::total_cmp);
         let median = (changes[7] + changes[8]) / 2.0;
+        // The fourth-smallest of 16 paired changes is a conservative 95% lower
+        // bound for the median; host stalls can move the median itself.
+        let lower = changes[(changes.len() - 1) / 4];
         save(
             destination.join(&name).join("summary.json"),
             &json!({
                 "condition": name, "gate_passed": passed, "blocks": changes.len(),
-                "median_paired_change_pct": median
+                "median_paired_change_pct": median,
+                "lower_paired_change_pct": lower,
+                "threshold_pct": threshold,
+                "paired_passed": lower <= threshold
             }),
         )?;
-        println!("{name}: 16 paired blocks, median change {median:+.2}% (diagnostic only)");
+        println!("{name}: 16 paired blocks, median change {median:+.2}%, lower bound {lower:+.2}%");
     }
     if let Some(probe) = std::env::var_os("PVISOR_BENCH_HANDOFF_PROBE") {
         handoff::compare(&batch.join("handoff"), &arms[1].1, &PathBuf::from(probe))?;

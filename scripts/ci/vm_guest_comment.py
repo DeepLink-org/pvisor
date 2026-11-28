@@ -26,6 +26,7 @@ def render(report, *, startup=False):
     """Only metric slugs and formatted numbers from the artifact enter Markdown."""
     table = {}
     failures = 0
+    confirmed = 0
     for row in report["rows"]:
         condition = row["condition"]
         backend = next((b for b in BACKENDS if condition.startswith(b + "-")), None)
@@ -38,14 +39,24 @@ def render(report, *, startup=False):
         valid_decision = passed is None if reference else type(passed) is bool
         if backend in cells or not valid_decision:
             raise ValueError("duplicate cell or invalid gate decision")
+        paired = passed is False and row.get("paired_confirmed") is True
+        if type(row.get("paired_confirmed", False)) is not bool:
+            raise ValueError("invalid paired confirmation")
+        failed = passed is False and not paired
         base, candidate, change = (
             number(row[k]) for k in ("baseline_ns_per_op", "candidate_ns_per_op", "change_pct")
         )
         if min(base, candidate) <= 0:
             raise ValueError("nonpositive median")
         cell = f"{base / 1e6:.3f} → {candidate / 1e6:.3f} ({change:+.2f}%)"
-        cells[backend] = f"**{cell} ❌**" if passed is False else cell
-        failures += passed is False
+        if failed:
+            cells[backend] = f"**{cell} ❌**"
+        elif paired:
+            cells[backend] = f"{cell} ✅"
+        else:
+            cells[backend] = cell
+        failures += failed
+        confirmed += paired
     if startup:
         complete = {name: set(cells) for name, cells in table.items()} == {
             "direct-command-start": set(BACKENDS),
@@ -55,7 +66,10 @@ def render(report, *, startup=False):
         complete = len(table) == 17 and all(
             cells.keys() == set(BACKENDS) for cells in table.values()
         )
-    if not complete or report["passed"] is not (failures == 0):
+    gate_passed = report.get("gate_passed", report["passed"])
+    if type(gate_passed) is not bool:
+        raise ValueError("invalid gate decision")
+    if not complete or gate_passed is not (failures == 0):
         raise ValueError("incomplete or inconsistent VM guest comparison")
     threshold = number(report["threshold_pct"])
     if threshold < 0:
@@ -79,10 +93,16 @@ def render(report, *, startup=False):
                 "Neither VMM startup, API Running nor command completion is the stop event.",
             ]
         )
+    note = (
+        f" {confirmed} cell(s) exceeded the sequential threshold but were confirmed by "
+        "balanced paired replay."
+        if confirmed
+        else ""
+    )
     return "\n".join(
         [
-            f"**{'FAIL' if failures else 'PASS'}** · {failures}/{2 * len(table)} pVisor cells "
-            f"exceed the {threshold:g}% regression threshold.",
+            f"**{'PASS' if gate_passed else 'FAIL'}** · {failures}/{2 * len(table)} pVisor cells "
+            f"exceed the {threshold:g}% regression threshold.{note}",
             "",
             "Baseline → candidate (change), Criterion median **ms/workload**; lower is better. "
             "Firecracker is a reference, not a gate.",

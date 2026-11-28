@@ -157,8 +157,27 @@ class VmGuestCommentTests(unittest.TestCase):
             self.assertEqual(text.count("❌"), int(slow))
             self.assertTrue(text.splitlines()[6].endswith("1.000 → 1.200 (+20.00%) |"))
 
+    def test_paired_confirmation_passes_without_hiding_the_sequential_change(self):
+        data = report(slow=True)
+        row = next(row for row in data["rows"] if row["condition"] == "linux-tmpfs-write")
+        row["paired_confirmed"] = True
+        data["gate_passed"] = True
+        text = reporter.render(data)
+        self.assertIn("**PASS** · 0/34", text)
+        self.assertIn("✅", text)
+        self.assertNotIn("❌", text)
+        self.assertIn("+20.00%", text)
+        self.assertIn("confirmed by balanced paired replay", text)
+
     def test_rejects_incomplete_duplicate_or_untrusted_rows(self):
-        for change in ("missing", "duplicate", "markup", "invalid estimate", "wrong verdict"):
+        for change in (
+            "missing",
+            "duplicate",
+            "markup",
+            "invalid estimate",
+            "wrong verdict",
+            "unconfirmed pass",
+        ):
             with self.subTest(change=change):
                 data = report()
                 rows = data["rows"]
@@ -170,6 +189,9 @@ class VmGuestCommentTests(unittest.TestCase):
                     rows[0]["condition"] = "linux-@someone"
                 elif change == "invalid estimate":
                     rows[0]["baseline_ns_per_op"] = float("nan")
+                elif change == "unconfirmed pass":
+                    data["gate_passed"] = True
+                    rows[0]["passed"] = False
                 else:
                     data["passed"] = False
                 with self.assertRaises(ValueError):

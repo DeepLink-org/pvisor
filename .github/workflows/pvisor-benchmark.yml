@@ -334,10 +334,9 @@ jobs:
           status=0
           mise run benchmark-compare -- "$data/criterion" --suite "vm-$KIND" \
             --output "$data/comparison" || status=$?
-          if [[ -f "$data/comparison/comparison.json" ]]; then
-            python3 -I scripts/ci/vm_guest_comment.py "--$KIND-summary" "$data/comparison/comparison.json" >> "$GITHUB_STEP_SUMMARY"
-          fi
-          exit "$status"
+          echo "$status" > "$data/compare.status"
+          # A failed sequential comparison is confirmed by paired replay below.
+          exit 0
       - name: Diagnose guest variance on the measurement host
         if: ${{ !cancelled() && matrix.kind == 'guest' }}
         timeout-minutes: 10
@@ -354,6 +353,19 @@ jobs:
           export PVISOR_BENCH_FC_KERNEL="$RUNNER_TEMP/vmlinux"
           mise run benchmark -- vm/guest --diagnose "$data"
           cat "$data/handoff/summary.md" >> "$GITHUB_STEP_SUMMARY"
+      - name: Enforce the gate after paired confirmation
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          data="$RUNNER_TEMP/.data/vm-$KIND"
+          python3 -I scripts/ci/vm_guest_gate.py --kind "$KIND" \
+            --status-file "$data/compare.status" \
+            --comparison "$data/comparison/comparison.json" \
+            --paired "$data/paired-diagnostic" | tee -a "$GITHUB_STEP_SUMMARY"
+          if [[ -f "$data/comparison/comparison.json" ]]; then
+            python3 -I scripts/ci/vm_guest_comment.py "--$KIND-summary" "$data/comparison/comparison.json" >> "$GITHUB_STEP_SUMMARY"
+          fi
       - name: Retain compact comparison for the PR conversation
         if: ${{ !cancelled() && github.event_name == 'pull_request' }}
         uses: actions/upload-artifact@v4
