@@ -1,167 +1,90 @@
-# Image Pack V1 读路径工程 A/B：重复哈希、拷贝与元数据投影
+# Image Pack 读路径与元数据投影：最终工程数据
 
-- 日期：2026-11-25 / 2026-11-26
 - 角色：**engineering A/B**（不是用户基准，不更新用户页数字）
-- 问题：同一镜像、同一组已创建容器、同一宿主与 CPU 预算下，去掉读路径上的重复
-  SHA-256、重复解压上下文、临时拷贝，以及元数据目录投影中的 O(n²) 查找和逐子项锁后，
-  lazy 读取比优化前快多少？还剩多少差距？
-- 结论（相对最初基线）：`bigfile` −21.5%（1.90×→1.49×）、`smallfiles` −11.0%
-  （1.97×→1.75×）、`tree` −7.1%（3.18×→2.78×）、`dirs` −33.3%（3.91×→2.64×）。
-  内容读取的重复工作已去掉；元数据轮去掉了子项查找和锁的重复开销，但每次容器启动仍
-  重建整个投影，剩余 2.6–2.8× 主要来自每文件宿主占位创建与元数据检查。
+- 口径：58 同机；文档精确镜像 digest；Shell 1 vCPU/256 MiB，Python/mmap 2 vCPU/512 MiB；
+  文档负载每项 15 轮，业务镜像 15–20 轮；Docker 列使用 `ctr` + containerd/runc/overlayfs
+  （Docker 的同一低层运行时栈，不额外启动 Docker daemon）。
+- 结论：当前 V1 冷读比旧 V2 快（Python −14.0%、mmap 首遍 −9.0%、Shell −1.1%）；
+  mmap 热重复慢 23.2%，两遍合计 +1.1%。当前 V1 与 Docker 运行时的差距主要来自
+  **VM/virtio-fs 边界**，不是 V1 格式；当前 V2 与 V1 在 ±3% 内。
 
-## 环境与来源
+## 最终数据（58，ms）
 
-| 项 | 值 |
-|---|---|
-| 节点 | 共享测试宿主，AMD EPYC 7H12，255 vCPU，503 GiB，Ubuntu 24.04.1，内核 6.8.0-49 |
-| upstream | `708a49bd`（干净检出构建基线；候选为同一 upstream 加本次改动） |
-| 最初基线 | `sha256 8edaf4e7e8d6346f0c9b29c01d3355e96df7fde087446df1219c2e600d834b83` |
-| 读路径候选 | `sha256 2468da55fc3ec06ee6c8d8dd680cd90d42d1f420cc5e55f913cef626d2d24ebc` |
-| 元数据候选 | `sha256 852e28fc845ce41e4a43816f2bc06b7a0117f444177eb6177f8b17a40cd55e74` |
-| 镜像 | 一个 1.4 GB 的业务镜像（15 层，1,076,234,396 B），manifest `sha256:96b2071dbb1ea0efcc3adbc4c1b37c8453df5bdc44e1c31c2b19fc89cb925933` |
-| 源 | 只监听 127.0.0.1 的私有 HTTPS registry（同一批 blob），eager 臂走冷路径；lazy 臂走本地池 |
-| guest | 2 vCPU / 2048 MiB，`--network none`，`taskset -c 4,5`，入口 `/usr/bin/tini -- /bin/sh /payload/run.sh` |
-| 容器 | 同一组 `eager-src`（`pvisor-import-v1:` 解包树）和 `lazy-src`（`pvisor-image-pack-v1:` 池），由基线二进制创建；候选只换运行时二进制 |
-| 时钟 | guest `/proc/uptime`（命令开始）与 `date +%s%N`（读取阶段），宿主只记端到端 |
-| 采样 | 读路径主负载每臂 3 次预热 + 30 轮；补充负载 2 + 15 轮；元数据负载 3 + 30 轮 |
-| 有效性 | 退出码 0、标记出现、两个 start 臂的 workload 输出逐字节一致；全部有效样本保留，不剔除慢值 |
+### 文档负载：Shell / Python / mmap
 
-构建命令（三份二进制相同，只有源码不同）：
+| 负载 | Docker 运行时 | Eager | 旧 V2 | 当前 V2 | 当前 V1 |
+|---|---:|---:|---:|---:|---:|
+| Shell Ready | **173.83** | 230.01 | 268.18 | 266.84 | 265.15 |
+| Python Ready | **296.38** | 403.93 | 874.01 | 771.74 | 751.28 |
+| mmap 首遍 | **85.75** | 1,075.02 | 1,904.88 | 1,732.02 | 1,732.89 |
+| mmap 重复 | **77.59** | 1,097.80 | 1,191.66 | 1,485.82 | 1,468.66 |
+| mmap 两遍合计 | **365.68** | 2,563.21 | 3,656.94 | 3,717.11 | 3,698.27 |
 
-```sh
-PVISOR_KRUNFW_KERNEL_BUNDLE=<kernel-bundle> \
-cargo +stable build --release --locked \
-  --target x86_64-unknown-linux-musl -p pvisor-cli --bin pvisor
-```
+相对 Docker 运行时：
 
-固定工具链缺 musl 目标，三份二进制都使用已安装的 stable 1.99.1；同工具链、同内核包，
-绝对数值不等于固定 nightly 构建的结果，但 A/B 有效。
+| 负载 | Eager / Docker | 旧 V2 / Docker | 当前 V2 / Docker | 当前 V1 / Docker |
+|---|---:|---:|---:|---:|
+| Shell | 1.32× | 1.54× | 1.54× | 1.53× |
+| Python | 1.36× | 2.95× | 2.60× | 2.53× |
+| mmap 首遍 | 12.54× | 22.21× | 20.20× | 20.21× |
+| mmap 重复 | 14.15× | 15.36× | 19.15× | 18.93× |
+| mmap 合计 | 7.01× | 10.00× | 10.16× | 10.11× |
 
-## 第一轮：内容读取路径
+### 业务镜像（2 vCPU/2048 MiB）
 
-1. **内容读取不再算 ETag。** `Storage::read` 的文件系统分支原来对每次读取都做一遍
-   SHA-256 作为 `UpdateVersion.e_tag`，而内容读取没有消费者。现在只有
-   `read_versioned`（CAS/HEAD 观察）在本地对象上计算 ETag；远端后端保留服务返回的 token。
-2. **已认证的帧不再二次校验。** `load_data_frame` 和二进制索引页在读取时已经用
-   `reference.digest` 校验过编码帧，随后 `frames::unpack` 又算了一遍。新增
-   `unpack_verified`，只保留长度和解码后长度检查。
-3. **slot 摘要每帧只算一次。** 大文件的一个 1 MiB slot 会被多次 128 KiB 读请求命中；
-   原来每次读都对整个 slot 重算 SHA-256。现在 `Cached::verify_slot` 把已校验的
-   `(slot, digest)` 记在不可变帧上，后续读只做长度检查。
-4. **去掉临时拷贝。** `read_packed`/`read_v1_slot` 原来返回 `value[offset..end].to_vec()`，
-   再被 `body.extend` 拷贝一次。现在返回持有 `Arc<Cached>` 的借用切片 `Slot`，
-   `body` 预分配容量后 `extend_from_slice` 一次。
-5. **整 slot 读复用摘要。** 小文件整读时响应体就是 slot，`Response::Data.sha256`
-   直接使用已校验的 slot 摘要，不再对响应体重算。
-6. **复用 zstd 解压上下文。** `frames::decompress` 原来每帧新建 `Decompressor`；
-   现在使用线程本地上下文，只初始化一次 `WindowLogMax(21)`。
-
-按 1 MiB 大文件块、每次 128 KiB 读请求估算，优化前每块经过约 12 遍 SHA-256
-（ETag 1 + 帧校验 1 + unpack 1 + slot 8 + 响应体 1），优化后约 3 遍
-（帧 1 + slot 1 + 响应体 1）。小文件整读从 5 遍降到 2 遍。
-
-### 主负载（每臂 30 轮，guest 读取 P50，最初基线 → 读路径候选）
-
-| 负载 | eager 基线 ms | lazy 基线 ms | lazy/eager 基线 | eager 候选 ms | lazy 候选 ms | lazy/eager 候选 | lazy 变化 |
+| 负载 | Eager | 旧 V2 | 当前 V2 | 当前 V1 | V1/Eager | V1 vs 旧 V2 | V2 vs V1 |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| `shell`（仅启动） | 26.4 | 45.6 | 1.73× | 26.6 | 47.4 | 1.78× | +3.9%（噪声） |
-| `tree`（元数据遍历，6,484 个文件） | 845.0 | 2,689.6 | 3.18× | 868.2 | 2,761.2 | 3.18× | +2.7%（噪声） |
-| `smallfiles`（400 个小文件读取） | 1,504.9 | 2,968.4 | 1.97× | 1,508.6 | 2,642.0 | 1.75× | **−11.0%** |
-| `bigfile`（大文件顺序读 730 MB） | 3,544.4 | 6,735.0 | 1.90× | 3,541.8 | 5,285.8 | 1.49× | **−21.5%** |
+| 大文件顺序读 730 MB | 3,535.0 | 6,039.2 | 5,548.2 | 5,306.0 | 1.50× | −12.1% | +4.6% |
+| 400 个小文件 | 1,526.3 | 2,876.7 | 2,673.9 | 2,541.8 | 1.67× | −11.6% | +5.2% |
+| 随机 4 KiB | 266.5 | 527.1 | 542.7 | 568.6 | 2.13× | +7.9% | −4.6% |
+| 进程启动（5× `/bin/true`） | 44.3 | 76.0 | 70.3 | 69.7 | 1.57× | −8.3% | +0.8% |
+| 元数据遍历 `tree` | 869.0 | 2,749.2 | 2,136.5 | 2,291.3 | 2.64× | −16.7% | −6.8% |
+| 目录列举 `dirs` | 64.4 | 259.1 | 166.9 | 169.7 | 2.63× | −34.5% | −1.7% |
+| `find` + 小文件 `cat` | 110.1 | 279.6 | 203.4 | 189.5 | 1.72× | −32.2% | +7.4% |
+| Shell（仅启动） | 26.3 | 46.4 | 39.8 | 39.1 | 1.49× | −15.8% | +1.6% |
 
-eager 对照臂在四个负载上的变化为 +0.8%、+2.7%、+0.3%、−0.1%，内容负载
-（`smallfiles`/`bigfile`）的对照变化 ≤0.3%，说明 lazy 的变化不是宿主漂移。
+旧 V2 的 “eager” 也是池路径，因此旧 V2 只取 lazy 臂；Eager 是当前 V1 真正的
+`pvisor-import-v1:` 解包树。
 
-### 补充负载（每臂 15 轮，guest 读取 P50）
+## 根因
 
-| 负载 | eager 基线 ms | lazy 基线 ms | lazy/eager 基线 | eager 候选 ms | lazy 候选 ms | lazy/eager 候选 | lazy 变化 |
-|---|---:|---:|---:|---:|---:|---:|---:|
-| `exec`（进程启动，5 次 `/bin/true`） | 44.7 | 78.2 | 1.75× | 44.4 | 77.0 | 1.73× | −1.6% |
-| `cat`（`find` + 一个 60–80 KiB 文件） | 110.1 | 276.1 | 2.51× | 110.6 | 292.2 | 2.64× | +5.8%（噪声） |
-| `dirs`（目录列举，`/usr` 两层） | 65.6 | 256.7 | 3.91× | 65.1 | 257.1 | 3.95× | +0.2% |
-| `random`（随机 4 KiB 读，20 个固定偏移） | 269.8 | 635.1 | 2.35× | 271.2 | 606.0 | 2.23× | −4.6% |
+- **Docker → Eager 是 VM/virtio-fs 边界。** Docker 在宿主内核和宿主页缓存上直接读；
+  pVisor 即使使用解包树，也在 guest 内运行，每个缺页要经过 virtio-fs 到宿主文件服务。
+  mmap 在 Docker 上 85.75/77.59 ms，在 Eager 上 1,075.02/1,097.80 ms（12.5–14.1×），
+  这层是差距的主体。
+- **Eager → 当前 V1 是 lazy 缓存层。** 每个首次访问还要经过 Projection → RemoteFs/
+  ContentReader → PortableCache，做元数据查找、frame/slot 解码和 SHA-256 校验。
+  Python 导入大量 stdlib 小文件，lazy 层 +347 ms（1.86×）；mmap 首遍 +658 ms（1.61×），
+  重复 +371 ms（1.34×）；Shell 只读一个文件，+35 ms（1.15×）。
+- **V1 格式不是原因。** 当前 V2 与当前 V1 在 Shell +0.6%、Python +2.7%、mmap 首遍
+  −0.05%、重复 +1.2%，基本一致。当前 V1 的热重复比旧 V2 慢 23.2%，但当前 V2 同样慢
+  24.7%，说明这是当前运行时的热路径问题，不是 V1 格式。
+- **和文档量级一致。** 文档的 pVisor V2/Docker 比值是 1.34×/2.59×/24.34×/20.70×；
+  58 上当前 V1/Docker 是 1.53×/2.53×/20.21×/18.93×。58 的 Docker 绝对值也比文档慢
+  2.2–3.5×（宿主差异），所以跨机比较应看比值，不看绝对值。
 
-`cat` 包含对 `/usr/bin` 的 `find`，主要成本在元数据路径，所以没有体现出内容读取的收益。
+## 改了什么
 
-## 第二轮：元数据目录投影
+- **内容读取**：去掉内容读取的 ETag 哈希；`unpack_verified` 跳过已认证帧的二次校验；
+  `Cached::verify_slot` 按帧缓存 slot 摘要；`read_packed`/`read_v1_slot` 返回借用切片
+  `Slot`，去掉临时 `to_vec`；整 slot 读复用摘要；zstd 解压上下文线程内复用。
+- **元数据投影**：目录页按完整路径索引子项，消除 `listed_metadata` 的 O(n²) 扫描与
+  每名字路径分配；`prepare_directory` 锁外解析子节点，整目录只加一次投影锁。
+- **效果**：业务镜像上当前 V1 比旧 V2 快 8%–35%（`random` 噪声除外）；文档负载上
+  Python −14.0%、mmap 首遍 −9.0%、Shell −1.1%。
 
-`prepare_directory` 为目录的每个子项创建宿主占位文件，`find`/`ls` 的每个目录都会触发。
-定位到两处重复工作：
+## 适用范围
 
-1. **O(n²) 子项查找。** `RemoteFs::listed_metadata` 每次查找都遍历保留的目录页，并为每个
-   文件名重新构造路径；`prepare_directory` 对每个子项调用一次，大目录下产生海量分配。
-   现在目录页按完整路径建立 `HashMap` 索引，查找只做哈希表访问。
-2. **逐子项投影锁。** `project` 原来为每个子项打开并 `flock` 一次 `projection.lock`。
-   现在 `prepare_directory` 先在锁外解析所有子项节点，再用一次锁批量投影；单路径
-   `project` 仍自行加锁。
+- 58 共享宿主、单镜像/单工作负载、15 轮；绝对值不能跨宿主比较，尤其 Docker 的 mmap
+  25 ms 是宿主页缓存，不是 VM。
+- Docker 列是同一台 58 上的 containerd/runc/overlayfs 基线，不是 Docker CLI/daemon；
+  远程 cold/warm 协议、并发、多镜像共享 blob 未覆盖。
+- 当前 V1 的剩余差距主要是 VM/virtio-fs 与 lazy 缓存层；继续优化应优先看 virtio-fs
+  页缓存/DAX、批量读、持久化投影，以及当前运行时的热重复路径。
 
-### 结果（每臂 30 轮，guest 读取 P50，读路径候选 → 元数据候选）
+## 来源
 
-| 负载 | eager 基线 ms | lazy 基线 ms | lazy/eager 基线 | eager 候选 ms | lazy 候选 ms | lazy/eager 候选 | lazy 变化 |
-|---|---:|---:|---:|---:|---:|---:|---:|
-| 元数据遍历 `tree` | 859.8 | 2,732.6 | 3.18× | 897.6 | 2,497.4 | 2.78× | **−8.6%** |
-| 目录列举 `dirs` | 63.0 | 255.5 | 4.05× | 65.0 | 171.3 | 2.64× | **−32.9%** |
-
-元数据轮采样期间宿主负载很高且波动（基线 1 分钟负载最高 11.5/7.6，候选 38.2/26.5），
-候选在更差的负载下仍取得改善；`tree` 的绝对值可能被负载放大，`dirs` 的收益更明确。
-中间版本（仅目录索引，未做锁批处理）在负载 44–58 下测得 `tree` 2,431.9 ms（2.82×）、
-`dirs` 202.4 ms（2.82×），与最终候选的差异主要来自宿主负载，不单独归因。
-
-## 累计效果（相对最初基线）
-
-| 场景 | 最初 lazy ms | 最终 lazy ms | 变化 | lazy/eager 最初 → 最终 |
-|---|---:|---:|---:|---|
-| 大文件顺序读 730 MB | 6,735.0 | 5,285.8 | −21.5% | 1.90× → 1.49× |
-| 400 个小文件读取 | 2,968.4 | 2,642.0 | −11.0% | 1.97× → 1.75× |
-| 随机 4 KiB 读 | 635.1 | 606.0 | −4.6% | 2.35× → 2.23× |
-| 进程启动（5 次 `/bin/true`） | 78.2 | 77.0 | −1.6% | 1.75× → 1.73× |
-| 元数据遍历 `tree` | 2,689.6 | 2,497.4 | −7.1% | 3.18× → 2.78× |
-| 目录列举 `dirs` | 256.7 | 171.3 | −33.3% | 3.91× → 2.64× |
-
-内容负载的最终数字来自读路径候选 `2468da55`；元数据轮只改目录投影，不改变内容读取路径，
-最终二进制 `852e28fc` 未重复测内容负载。`exec`/`random` 同样来自读路径候选，元数据轮未
-重复测这两项。
-
-## 解读与剩余差距
-
-- **内容读取的重复工作已去掉。** 大文件每次读命中的 1 MiB slot 不再重算摘要，小文件整读
-  不再重算响应体摘要；剩余 3 遍哈希（编码帧、slot、响应体）是当前完整性模型的最小值。
-- **元数据轮去掉了子项查找和锁的重复开销。** `tree`/`dirs` 分别从 3.18×/3.91× 降到
-  2.78×/2.64×。但 `DirectImage::new` 每次容器启动都新建一个临时投影目录（`tempdir_in`），
-  不会跨启动复用；每次启动仍要为 6,484 个文件创建宿主占位、设置权限/xattr/时间，并做
-  overlay readdir。这是剩余 2.6–2.8× 的主要来源。
-- **下一步不是继续删哈希。** 要把元数据差距压到接近 1×，需要跨容器启动复用投影（持久化
-  投影根/对象并按镜像 revision 校验），或让 overlay readdir 直接使用后端目录项而不是宿主
-  占位文件。两者都是生命周期/架构改动，需单独评估正确性与 GC。
-
-## 局限
-
-- 基线与候选是顺序批次，不是同一轮内的随机交替；用 eager 对照臂的稳定性控制宿主漂移，
-  但没有跨批次配对 CI。元数据轮宿主负载高且波动，绝对值偏保守。
-- 单台 AMD 机器、单个业务镜像、2 vCPU 绑核、热页缓存；冷盘、冷缓存、多镜像共享 blob
-  去重、并发 VM 都没有测。
-- `tree`/`dirs` 的结果是本镜像和该元数据访问模式的结果，不代表所有镜像。
-- 这不是注册基准，不进入用户页；只用于工程归因和后续优化对比。
-
-## 复现
-
-```sh
-# 私有 registry + 同一组容器（基线二进制创建）
-python3 -I measure.py --prepare --binary $B/bin/baseline/pvisor \
-  --reference <private-registry>/<repo>:<tag> \
-  --base $B/base --payload $B/payload --ca $B/work/registry/tls/ca.pem \
-  --work $B/work-baseline --cpus 4,5
-python3 -I measure.py --binary $B/bin/baseline/pvisor ... --arms start-eager,start-lazy --rounds 30
-python3 -I measure.py --binary $B/bin/candidate/pvisor ... --arms start-eager,start-lazy --rounds 30
-python3 -I measure.py --binary $B/bin/baseline/pvisor ... \
-  --workloads exec,cat,dirs,random --rounds 15
-python3 -I measure.py --binary $B/bin/candidate/pvisor ... \
-  --workloads exec,cat,dirs,random --rounds 15
-# 元数据轮：读路径候选作为基线，元数据候选只换运行时二进制
-python3 -I measure.py --binary $B/bin/readpath/pvisor ... --workloads tree,dirs --rounds 30
-python3 -I measure.py --binary $B/bin/metadata/pvisor ... --workloads tree,dirs --rounds 30
-```
-
-原始汇总保存在工程工作区的 `results-20261125-opt/` 和 `results-20261126-meta/`。
-输出一致性另用 1 轮校验（`--rounds 1 --warmups 0`），两个 start 臂在四个主负载上均为真。
+- 二进制：旧 V2 `acd846d4…`，当前 V1/V2 `852e28fc…`。
+- 镜像：Ubuntu 24.04 `sha256:a2d43bff…`，Python 3.12 slim `sha256:57d96f71…`；
+  业务镜像 manifest `sha256:96b2071dbb1ea0efcc3adbc4c1b37c8453df5bdc44e1c31c2b19fc89cb925933`。
+- 宿主/运行时：AMD EPYC 7H12，Ubuntu 24.04.1，内核 6.8.0-49；containerd 2.2.5 + runc + overlayfs。
