@@ -395,10 +395,18 @@ impl<B: Backend> Builder<B> {
             }
             if cfg!(all(target_os = "linux", target_arch = "x86_64"))
                 && self.resources.vcpu_config().vcpu_count == 1
-                && std::env::var_os("PVISOR_DIAG_NATIVE_WALL_DEADLINE").as_deref()
-                    == Some(std::ffi::OsStr::new("1"))
             {
-                prolog.push_str(" pvisor_wall_deadline=1");
+                let tickless = std::env::var_os("PVISOR_DIAG_NATIVE_TICKLESS").as_deref()
+                    == Some(std::ffi::OsStr::new("1"));
+                if tickless
+                    || std::env::var_os("PVISOR_DIAG_NATIVE_WALL_DEADLINE").as_deref()
+                        == Some(std::ffi::OsStr::new("1"))
+                {
+                    prolog.push_str(" pvisor_wall_deadline=1");
+                }
+                if tickless {
+                    prolog.push_str(" pvisor_cpu_runtime=1");
+                }
             }
         }
         if self.guest_idle {

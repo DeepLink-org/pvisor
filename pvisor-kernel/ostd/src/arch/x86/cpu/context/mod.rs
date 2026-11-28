@@ -366,11 +366,20 @@ impl UserContextApiInternal for UserContext {
 
         // Return when it is syscall or cpu exception type is Fault or Trap.
         loop {
-            crate::task::scheduler::might_preempt();
-
             let guard = crate::irq::disable_local();
+            if crate::task::Task::need_yield() {
+                drop(guard);
+                crate::task::scheduler::might_preempt();
+                // A worker can deliver a signal while this task is switched
+                // out. With no tick there may be no later interrupt to see it.
+                if hooks.has_kernel_event() {
+                    return ReturnReason::KernelEvent;
+                }
+                continue;
+            }
             hooks.pre_user_run(&guard);
             self.user_context.run(guard);
+            hooks.post_user_run();
 
             let exception =
                 CpuException::new(self.user_context.trap_num, self.user_context.error_code);

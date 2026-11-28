@@ -57,6 +57,10 @@ pub(crate) fn init() {
 }
 
 pub(crate) fn init_on_each_cpu() {
+    #[cfg(target_arch = "x86_64")]
+    if ostd::timer::event_timer_enabled() {
+        return;
+    }
     enable_preemption_on_cpu();
 }
 
@@ -191,10 +195,11 @@ impl SchedAttr {
             SchedPolicy::Fair(nice) => self.fair.update(nice),
             _ => {}
         });
+        Self::policy_changed();
     }
 
     pub(crate) fn update_policy<T>(&self, f: impl FnOnce(&mut SchedPolicy) -> T) -> T {
-        self.policy.update(|policy| {
+        let result = self.policy.update(|policy| {
             let ret = f(policy);
             match *policy {
                 SchedPolicy::RealTime { rt_prio, rt_policy } => {
@@ -204,7 +209,16 @@ impl SchedAttr {
                 _ => {}
             }
             ret
-        })
+        });
+        Self::policy_changed();
+        result
+    }
+
+    fn policy_changed() {
+        #[cfg(target_arch = "x86_64")]
+        if ostd::timer::event_timer_enabled() {
+            ostd::task::scheduler::check_preemption();
+        }
     }
 
     pub(crate) fn last_cpu(&self) -> Option<CpuId> {
@@ -247,7 +261,18 @@ impl Scheduler for ClassScheduler {
             });
 
         thread.sched_attr().set_last_cpu(cpu);
+
+        #[cfg(target_arch = "x86_64")]
+        if ostd::timer::event_timer_enabled() && rq.fair.is_empty() {
+            // Update min_vruntime before admitting the first contender.
+            let _ = rq.update_current(UpdateFlags::Tick);
+        }
         rq.enqueue_entity((task, thread), Some(flags));
+
+        #[cfg(target_arch = "x86_64")]
+        if ostd::timer::event_timer_enabled() && !should_preempt {
+            rq.arm_preemption(&disable_local());
+        }
 
         should_preempt.then_some(cpu)
     }
@@ -255,7 +280,11 @@ impl Scheduler for ClassScheduler {
     fn mut_local_rq_with(&self, f: &mut dyn FnMut(&mut dyn LocalRunQueue)) {
         let guard = disable_local();
         let mut lock = self.rqs[guard.current_cpu().as_usize()].lock();
-        f(&mut *lock)
+        f(&mut *lock);
+        #[cfg(target_arch = "x86_64")]
+        if ostd::timer::event_timer_enabled() {
+            lock.arm_preemption(&guard);
+        }
     }
 
     fn local_rq_with(&self, f: &mut dyn FnMut(&dyn LocalRunQueue)) {
@@ -335,6 +364,36 @@ impl ClassScheduler {
 }
 
 impl PerCpuClassRqSet {
+    #[cfg(target_arch = "x86_64")]
+    fn arm_preemption(&self, irq: &ostd::irq::DisabledLocalIrqGuard) {
+        let deadline = if Task::need_yield() {
+            None
+        } else {
+            self.current.as_ref().and_then(|((_, thread), rt)| {
+                let attr = thread.sched_attr();
+                let delay = match attr.policy_kind() {
+                    SchedPolicyKind::Stop => None,
+                    SchedPolicyKind::RealTime if self.stop.is_empty() => {
+                        self.real_time.preemption_delay(rt, attr)
+                    }
+                    SchedPolicyKind::Fair if self.stop.is_empty() && self.real_time.is_empty() => {
+                        self.fair.preemption_delay(rt, attr)
+                    }
+                    SchedPolicyKind::Idle
+                        if self.stop.is_empty()
+                            && self.real_time.is_empty()
+                            && self.fair.is_empty() =>
+                    {
+                        None
+                    }
+                    _ => Some(0),
+                };
+                delay.map(|cycles| rt.start.saturating_add(cycles))
+            })
+        };
+        ostd::task::scheduler::set_preemption_deadline(deadline, irq);
+    }
+
     fn pick_next_entity(&mut self) -> Option<SchedEntity> {
         (self.stop.pick_next())
             .or_else(|| self.real_time.pick_next())
@@ -371,6 +430,10 @@ impl LocalRunQueue for PerCpuClassRqSet {
     }
 
     fn try_pick_next(&mut self) -> Option<&Arc<Task>> {
+        #[cfg(target_arch = "x86_64")]
+        if ostd::timer::event_timer_enabled() {
+            let _ = self.update_current(UpdateFlags::Tick);
+        }
         self.pick_next_entity().and_then(|next| {
             // We guarantee that a task can appear at once in a `PerCpuClassRqSet`. So, the `next` cannot be the same
             // as the current task here.

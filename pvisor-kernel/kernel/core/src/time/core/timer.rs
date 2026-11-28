@@ -155,7 +155,7 @@ impl Timer {
 #[cfg(target_arch = "x86_64")]
 impl Drop for Timer {
     fn drop(&mut self) {
-        if self.timer_manager.uses_event_timer()
+        if self.timer_manager.notifies_deadline()
             && let Some(callback) = self.inner.get_mut().timer_callback.upgrade()
         {
             let _irq = ostd::irq::disable_local();
@@ -218,28 +218,41 @@ impl TimerManager {
     fn insert(&self, timer_callback: Arc<TimerCallback>) {
         let mut callbacks = self.timer_callbacks.disable_irq().lock();
         #[cfg(target_arch = "x86_64")]
-        let head_changed = self.uses_event_timer()
+        let head_changed = self.notifies_deadline()
             && callbacks.peek().is_none_or(|head| {
                 head.is_cancelled() || timer_callback.expired_time < head.expired_time
             });
         callbacks.push(timer_callback);
         #[cfg(target_arch = "x86_64")]
         if head_changed {
-            // The TimerGuard still holds off local IRQs, but the combiner must
-            // be able to lock this heap along with the other wall clocks.
+            // Keep IRQs disabled via TimerGuard, but release the heap before
+            // the combiner reads its head.
             drop(callbacks);
-            crate::time::softirq::rearm_wall_timer();
+            self.deadline_changed();
         }
     }
 
     #[cfg(target_arch = "x86_64")]
-    fn uses_event_timer(&self) -> bool {
-        self.wall_clock && ostd::timer::event_timer_enabled()
+    fn notifies_deadline(&self) -> bool {
+        if self.wall_clock {
+            ostd::timer::event_timer_enabled()
+        } else {
+            ostd::timer::cpu_runtime_enabled()
+        }
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    fn deadline_changed(&self) {
+        if self.wall_clock {
+            crate::time::softirq::rearm_wall_timer();
+        } else {
+            crate::time::cpu_runtime::rearm_current();
+        }
     }
 
     #[cfg(target_arch = "x86_64")]
     fn rearm_if_head(&self, timer: &Arc<TimerCallback>) {
-        if self.uses_event_timer()
+        if self.notifies_deadline()
             && self
                 .timer_callbacks
                 .disable_irq()
@@ -247,7 +260,7 @@ impl TimerManager {
                 .peek()
                 .is_some_and(|head| Arc::ptr_eq(head, timer))
         {
-            crate::time::softirq::rearm_wall_timer();
+            self.deadline_changed();
         }
     }
 

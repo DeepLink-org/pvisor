@@ -275,6 +275,19 @@ impl FairClassRq {
     fn time_slice(&self, cur_weight: u64) -> u64 {
         self.period() * cur_weight / (self.total_weight + cur_weight)
     }
+
+    #[cfg(target_arch = "x86_64")]
+    pub(super) fn preemption_delay(&self, rt: &CurrentRuntime, attr: &SchedAttr) -> Option<u64> {
+        let Reverse(leftmost) = self.entities.peek()?;
+        let (_, weight) = attr.fair.fetch_weight();
+        let vruntime = attr.fair.vruntime.load(Ordering::Relaxed);
+        let remaining_vruntime = (leftmost.key() + self.vtime_slice() + 1).saturating_sub(vruntime);
+        let virtual_budget = (u128::from(remaining_vruntime) * u128::from(weight))
+            .div_ceil(u128::from(WEIGHT_0))
+            .min(u128::from(u64::MAX)) as u64;
+        let slice_budget = (self.time_slice(weight) + 1).saturating_sub(rt.period_delta);
+        Some(slice_budget.min(virtual_budget))
+    }
 }
 
 impl SchedClassRq for FairClassRq {

@@ -18,7 +18,7 @@ use ostd::{
 pub(crate) type LoadAvgFixed = FixedU32<11>;
 
 /// 5 sec intervals
-const LOAD_FREQ: u64 = 5 * TIMER_FREQ + 1;
+pub(super) const LOAD_FREQ: u64 = 5 * TIMER_FREQ + 1;
 /// 1/exp(5sec/1min) as fixed-point
 const EXP_1: LoadAvgFixed = LoadAvgFixed::from_raw(1884);
 /// 1/exp(5sec/5min)
@@ -59,8 +59,12 @@ where
     // Update the next time the load average will be updated (now + 5sec)
     LOAD_AVG_NEXT_UPDATE.store(jiffies + LOAD_FREQ, Relaxed);
 
+    record_load(get_load());
+}
+
+pub(super) fn record_load(queued: u32) {
     // Get the fixed-point representation of the load
-    let new_load = LoadAvgFixed::saturating_from_num(get_load());
+    let new_load = LoadAvgFixed::saturating_from_num(queued);
 
     let mut load = LOAD_AVG.write();
 

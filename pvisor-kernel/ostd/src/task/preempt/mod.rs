@@ -40,42 +40,60 @@ pub fn halt_cpu() {
 /// scheduler tick before preemption.
 ///
 /// The callbacks run with local IRQs disabled and must not block or enable
-/// interrupts. `prepare` returns a relative delay, at most five seconds.
-/// `offer` receives that delay after programming and before the halt.
+/// interrupts. `prepare` returns `(local_delay, offer_delay)` relative to now.
+/// The local delay may be omitted only when the event timer is enabled.
+/// Both delays are at most five seconds. `offer` is called with the offer
+/// delay, if any, after programming and before the halt.
 /// `finish` runs after restoring the tick and receives the elapsed idle ticks.
+/// With the event timer enabled, interrupts that leave no task runnable
+/// cause another wait without restoring the tick.
 ///
 /// # Panics
 ///
 /// Panics outside sleepable task context, on SMP, or for an excessive delay.
 #[cfg(target_arch = "x86_64")]
 pub fn halt_cpu_until(
-    prepare: impl FnOnce() -> core::time::Duration,
-    offer: impl FnOnce(core::time::Duration),
+    mut prepare: impl FnMut() -> (Option<core::time::Duration>, Option<core::time::Duration>),
+    mut offer: impl FnMut(core::time::Duration),
     finish: impl FnOnce(u64),
 ) {
+    use core::time::Duration;
+
     crate::task::atomic_mode::might_sleep();
     assert_eq!(crate::cpu::num_cpus(), 1);
 
+    let event_timer = crate::timer::event_timer_enabled();
     let preempt = disable_preempt();
-    let irq = crate::irq::disable_local();
+    let mut irq = crate::irq::disable_local();
     if !cpu_local::need_preempt() {
         crate::timer::enable_idle_clock();
         let start = crate::timer::Jiffies::elapsed().as_u64();
-        let delay = prepare();
-        assert!(delay <= core::time::Duration::from_secs(5));
-        crate::arch::timer::start_idle_timer(delay, &irq);
-        offer(delay);
-        core::mem::forget(irq);
-        crate::arch::irq::enable_local_and_halt();
-        let irq = crate::irq::disable_local();
+        loop {
+            let (local_delay, offer_delay) = prepare();
+            assert!(
+                local_delay
+                    .into_iter()
+                    .chain(offer_delay)
+                    .all(|delay| delay <= Duration::from_secs(5))
+            );
+            crate::arch::timer::start_idle_timer(local_delay, &irq);
+            if let Some(delay) = offer_delay {
+                offer(delay);
+            }
+            core::mem::forget(irq);
+            crate::arch::irq::enable_local_and_halt();
+            irq = crate::irq::disable_local();
+            if !event_timer || cpu_local::need_preempt() {
+                break;
+            }
+        }
         let elapsed = crate::timer::Jiffies::elapsed()
             .as_u64()
             .saturating_sub(start);
         crate::arch::timer::stop_idle_timer(&irq);
         finish(elapsed);
-    } else {
-        drop(irq);
     }
+    drop(irq);
     drop(preempt);
     super::scheduler::might_preempt();
 }

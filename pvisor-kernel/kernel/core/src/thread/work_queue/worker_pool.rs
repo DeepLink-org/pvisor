@@ -66,6 +66,7 @@ pub(crate) trait WorkerScheduler: Sync + Send {
 pub(crate) struct Monitor {
     worker_pool: Weak<WorkerPool>,
     bound_task: Arc<Task>,
+    work_available: WaitQueue,
 }
 
 impl LocalWorkerPool {
@@ -150,6 +151,14 @@ impl WorkerPool {
         self.monitor.run();
     }
 
+    #[cfg(target_arch = "x86_64")]
+    pub(super) fn notify_work(&self) {
+        let cpu = CpuId::bsp();
+        if self.cpu_set.contains(cpu) && !self.wake_worker(cpu) {
+            self.monitor.work_available.wake_one();
+        }
+    }
+
     pub(crate) fn assign_work_queue(&self, work_queue: Arc<WorkQueue>) {
         self.work_queues.disable_irq().lock().push(work_queue);
     }
@@ -225,6 +234,7 @@ impl Drop for WorkerPool {
         for local_pool in self.local_pools.iter() {
             local_pool.destroy_all_workers();
         }
+        self.monitor.work_available.wake_one();
     }
 }
 
@@ -248,6 +258,7 @@ impl Monitor {
             Self {
                 worker_pool,
                 bound_task,
+                work_available: WaitQueue::new(),
             }
         })
     }
@@ -260,6 +271,19 @@ impl Monitor {
         let (sleep_waiter, _) = Waiter::new_pair();
         let sleep_duration = Duration::from_millis(100);
         loop {
+            #[cfg(target_arch = "x86_64")]
+            let on_demand = ostd::timer::event_timer_enabled();
+            #[cfg(not(target_arch = "x86_64"))]
+            let on_demand = false;
+            let backlog = |pool: &WorkerPool| pool.has_pending_work_items(CpuId::bsp());
+            if on_demand {
+                self.work_available.wait_until(|| {
+                    self.worker_pool
+                        .upgrade()
+                        .is_none_or(|pool| backlog(&pool))
+                        .then_some(())
+                });
+            }
             let worker_pool = self.worker_pool.upgrade();
             let Some(worker_pool) = worker_pool else {
                 break;
@@ -268,7 +292,12 @@ impl Monitor {
             for local_pool in worker_pool.local_pools.iter() {
                 local_pool.set_heartbeat(false);
             }
-            let _ = sleep_waiter.wait_until_or_timeout(|| -> Option<()> { None }, &sleep_duration);
+            let retry = !on_demand || backlog(&worker_pool);
+            drop(worker_pool);
+            if retry {
+                let _ =
+                    sleep_waiter.wait_until_or_timeout(|| -> Option<()> { None }, &sleep_duration);
+            }
         }
     }
 }

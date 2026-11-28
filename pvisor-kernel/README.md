@@ -256,9 +256,13 @@ data policy. Plain mutable passthrough and unqualified bind mounts are unchanged
 On Linux x86_64/KVM, set `PVISOR_DIAG_NATIVE_WALL_DEADLINE=1` for a
 single-vCPU Rust native VM to enable the guest's APIC event timer, with or
 without idle handoff. Wall-clock timer queues request their earliest deadline
-instead of being scanned by the scheduler tick. The tick stops in idle but
-still runs while busy for preemption and CPU-time accounting. Linux firmware,
-SMP, ARM64, and the default mode do not opt in.
+instead of being scanned by the scheduler tick. The idle loop uses that same
+hardware deadline and restores the tick only when a task needs to run.
+Runqueue changes arm a separate one-shot preemption deadline when there is
+competition. The 1 kHz tick still runs while busy for CPU-time accounting
+and POSIX CPU-time timers. Work submission wakes the worker or its monitor;
+the monitor checks for stalled work only while there is a backlog.
+Linux firmware, SMP, ARM64, and the default mode do not opt in.
 
 With a native-enabled `vm_api_case` built from the same bundle for both runs:
 
@@ -280,6 +284,38 @@ The fixture verifies deadline replacement, cancellation, periodic timerfd
 and futex timeouts. It checks that idle hardware interrupts and busy timer
 softirqs decrease without removing the busy-time tick. The final 256 samples
 measure wake lateness relative to a 200 µs timerfd deadline, not throughput.
+
+To check preemption without voluntary yields and alarm delivery through
+the worker pool, also build `tests/deadline_scheduler.c` with
+`cc -static -pthread -O2 -Wall -Wextra -Werror`. Run the resulting probe with
+no arguments and the same VM settings plus `PVISOR_DIAG_NATIVE_WALL_DEADLINE=1`.
+Expect `DEADLINE_SCHEDULER_OK` and an authenticated exit of zero.
+
+### Experimental CPU-runtime deadlines
+
+`PVISOR_DIAG_NATIVE_TICKLESS=1` selects wall deadlines and removes the
+remaining 1 kHz accounting tick on a single-vCPU Linux x86_64/KVM Rust
+native VM with KVM steal-time support. Without steal time the guest logs
+a warning and retains the accounting tick. The default does not change.
+The APIC wakes for wall timers, CPU-runtime timers, and scheduler deadlines.
+The 100 ms clock/vDSO maintenance timer and explicitly recurring timers
+still run.
+
+The CPU clock samples time at user/kernel transitions and task switches,
+subtracting the runqueue wait reported by KVM. A CPU-time timer rechecks
+the charged runtime when the APIC fires and rearms if not yet due. KVM
+steal time does not distinguish time spent in host exit handling or a
+deliberate pause of a busy vCPU; this mode does not provide exact accounting
+for those intervals.
+
+With this selector, run `wall_deadline.c` in `tickless` mode to check that
+a lone busy task no longer sees the periodic tick. Build `tests/cpu_runtime.c`
+with `cc -static -O2 -Wall -Wextra -Werror` and run it with `ordinary`, or
+with `contended` while a CPU-bound host process competes on the same logical
+CPU. It verifies that sleeping does not advance thread CPU time, and that
+process and thread CPU timers wait for execution time, not just wall time.
+See the [CPU-runtime engineering measurements](../benchmark/evidence/native-cpu-runtime.md)
+for the cost of enabling this mode.
 
 ## Tests and hardware acceptance
 

@@ -59,6 +59,43 @@ pub fn set_event_timer(delay: Option<core::time::Duration>) {
     crate::arch::timer::set_event_timer(delay);
 }
 
+/// Replaces the compatibility tick with a CPU-runtime event deadline.
+///
+/// Call once after enabling the event timer, before registering tick users.
+/// Returns `false` and leaves the tick unchanged without KVM steal time.
+/// The callback runs with local interrupts disabled and must not block.
+#[cfg(target_arch = "x86_64")]
+pub fn enable_cpu_runtime_timer(on_event: fn()) -> bool {
+    crate::arch::timer::enable_cpu_runtime_timer(on_event)
+}
+
+/// Reports whether execution-interval accounting has replaced the tick.
+#[cfg(target_arch = "x86_64")]
+pub fn cpu_runtime_enabled() -> bool {
+    crate::arch::timer::cpu_runtime_enabled()
+}
+
+/// Samples TSC time minus KVM's reported vCPU scheduling delay, in nanoseconds.
+///
+/// Requires initialized CPU runtime support and disabled local interrupts.
+#[cfg(target_arch = "x86_64")]
+pub fn read_cpu_runtime_ns(irq: &crate::irq::DisabledLocalIrqGuard) -> u64 {
+    crate::arch::timer::read_cpu_runtime_ns(irq)
+}
+
+/// Arms a wall-time estimate of a CPU timer's remaining runtime, or disarms it.
+///
+/// Call only with CPU runtime support enabled. Recheck the actual CPU clock
+/// at expiry: a vCPU descheduled by the host may not have run long enough.
+#[cfg(target_arch = "x86_64")]
+pub fn set_cpu_runtime_timer(
+    delay: Option<core::time::Duration>,
+    irq: &crate::irq::DisabledLocalIrqGuard,
+) {
+    assert!(cpu_runtime_enabled());
+    crate::arch::timer::set_cpu_runtime_timer(delay, irq);
+}
+
 type InterruptCallback = Box<dyn Fn() + Sync + Send>;
 
 cpu_local! {

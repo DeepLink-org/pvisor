@@ -144,7 +144,9 @@ int main(int argc, char **argv) {
     end_counts = read_counters();
     uint64_t busy_irqs = end_counts.irqs - start_counts.irqs;
     uint64_t busy_scans = end_counts.timer_softirqs - start_counts.timer_softirqs;
-    if (strcmp(argv[1], "deadline") == 0) {
+    if (strcmp(argv[1], "tickless") == 0) {
+        assert(idle_irqs < 40 && busy_irqs < 40 && busy_scans < 30);
+    } else if (strcmp(argv[1], "deadline") == 0) {
         // The busy compatibility tick is still present, but cannot run
         // timer softirq unless there is an actual wall timer to expire.
         assert(idle_irqs < 40 && busy_irqs > 40 && busy_scans < 30);

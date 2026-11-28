@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
 use core::{
-    cell::Cell,
     sync::atomic::{AtomicBool, Ordering},
     time::Duration,
 };
@@ -69,38 +68,37 @@ pub(crate) fn wait() {
         halt_cpu();
         return;
     }
-    let armed = Cell::new(false);
     halt_cpu_until(
         || {
             IN_ONESHOT_WAIT.store(true, Ordering::Relaxed);
             let Some(handoff) = handoff else {
-                // The event timer already holds the earliest wall deadline.
-                return MAX_IDLE_WAIT;
+                return (None, None);
             };
             let interrupt_driven = handoff.wake_irq.is_some();
-            if !interrupt_driven || PROBE_PENDING.load(Ordering::Relaxed) {
+            let armed = if !interrupt_driven || PROBE_PENDING.load(Ordering::Relaxed) {
                 // The host anchors the deadline before the guest samples its clocks.
-                armed.set(handoff.port.read() == MAGIC);
-                PROBE_PENDING.store(armed.get(), Ordering::Relaxed);
-            }
-            let limit = if armed.get() || interrupt_driven {
-                MAX_IDLE_WAIT
+                let armed = handoff.port.read() == MAGIC;
+                PROBE_PENDING.store(armed, Ordering::Relaxed);
+                armed
             } else {
-                PROBE_RETRY
+                false
             };
-            if event_timer && !armed.get() {
-                limit
+            let retry = (!armed && !interrupt_driven).then_some(PROBE_RETRY);
+            let limit = retry.unwrap_or(MAX_IDLE_WAIT);
+            let guest_delay = || clocks::next_wall_timer().map_or(limit, |delay| delay.min(limit));
+            if event_timer {
+                // Wall deadlines are already armed; only legacy probe retries
+                // need a separate local deadline.
+                (retry, armed.then(guest_delay))
             } else {
-                clocks::next_wall_timer().map_or(limit, |delay| delay.min(limit))
+                let delay = guest_delay();
+                (Some(delay), armed.then_some(delay))
             }
         },
         |delay| {
             let millis = delay.as_millis();
-            if let Some(handoff) = handoff
-                && armed.get()
-                && millis > 2
-            {
-                handoff.port.write(millis as u32);
+            if millis > 2 {
+                handoff.unwrap().port.write(millis as u32);
             }
         },
         |ticks| {

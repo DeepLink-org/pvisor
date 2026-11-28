@@ -90,12 +90,12 @@ pub(super) fn program_oneshot(deadline: Option<u64>, irq: &DisabledLocalIrqGuard
     }
 }
 
-pub(crate) fn start_idle_timer(delay: Duration, irq: &DisabledLocalIrqGuard) {
-    let deadline = deadline_after(delay);
+pub(crate) fn start_idle_timer(delay: Option<Duration>, irq: &DisabledLocalIrqGuard) {
     if super::deadline::event_timer_enabled() {
-        super::deadline::enter_idle(deadline, irq);
+        super::deadline::enter_idle(delay.map(deadline_after), irq);
         return;
     }
+    let deadline = deadline_after(delay.expect("legacy idle wait requires a local timer"));
     IDLE_TIMER.store(true, Ordering::Relaxed);
     configure_oneshot(irq);
     program_oneshot(Some(deadline), irq);

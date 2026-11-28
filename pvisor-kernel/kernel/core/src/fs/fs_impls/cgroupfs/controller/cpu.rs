@@ -10,7 +10,6 @@ use ostd::{
     mm::{VmReader, VmWriter},
     sync::SpinLock,
     task::atomic_mode::AsAtomicModeGuard,
-    timer::Jiffies,
     warn,
 };
 
@@ -35,12 +34,10 @@ pub(crate) struct CpuController {
 /// CPU usage accounting that survives CPU controller toggles.
 struct CpuStats {
     /// A counter accumulates CPU time spent executing user-space code.
-    ///
-    /// The counter is in units of one [`Jiffies`] per increment.
+    /// Measured in nanoseconds.
     user: PerCpuCounter,
     /// A counter accumulates CPU time spent executing kernel code on behalf of tasks.
-    ///
-    /// The counter is in units of one [`Jiffies`] per increment.
+    /// Measured in nanoseconds.
     system: PerCpuCounter,
 }
 
@@ -61,12 +58,12 @@ struct CpuMax {
     period_usec: u64,
 }
 
-/// Specifies the cgroup CPU sub-controller receives one [`Jiffies`] of charge.
+/// Selects the counter to charge.
 #[derive(Clone, Copy)]
 pub(crate) enum CpuStatKind {
-    /// Charges one [`Jiffies`] to `user_usec`.
+    /// Charges user execution time.
     User,
-    /// Charges one [`Jiffies`] to `system_usec`.
+    /// Charges kernel execution time.
     System,
 }
 
@@ -109,10 +106,10 @@ impl CpuController {
     }
 
     fn read_cpu_stat(&self, printer: &mut VmPrinter) -> Result<usize> {
-        /// Converts a per-CPU counter expressed in jiffies to microseconds.
+        #[cfg(target_arch = "x86_64")]
+        crate::time::cpu_runtime::flush();
         fn counter_usec(counter: &PerCpuCounter) -> u64 {
-            let jiffies = u64::try_from(counter.sum_all_cpus()).unwrap_or(u64::MAX);
-            u64::try_from(Jiffies::new(jiffies).as_duration().as_micros()).unwrap_or(u64::MAX)
+            u64::try_from(counter.sum_all_cpus()).unwrap_or(u64::MAX) / 1000
         }
 
         let user_usec = counter_usec(&self.stats.user);
@@ -139,11 +136,11 @@ impl CpuController {
         Ok(printer.bytes_written())
     }
 
-    /// Accounts one [`Jiffies`] of CPU time on `cpu`.
-    fn account(&self, cpu: CpuId, stat_kind: CpuStatKind) {
+    fn account(&self, cpu: CpuId, stat_kind: CpuStatKind, nanos: u64) {
+        let nanos = isize::try_from(nanos).unwrap_or(isize::MAX);
         match stat_kind {
-            CpuStatKind::User => self.stats.user.add_on_cpu(cpu, 1),
-            CpuStatKind::System => self.stats.system.add_on_cpu(cpu, 1),
+            CpuStatKind::User => self.stats.user.add_on_cpu(cpu, nanos),
+            CpuStatKind::System => self.stats.system.add_on_cpu(cpu, nanos),
         }
     }
 }
@@ -320,40 +317,46 @@ impl super::SubControlStatic for CpuController {
 }
 
 impl super::SubController<CpuController> {
-    /// Accounts one [`Jiffies`] of CPU time for this cgroup and all of its ancestors.
-    fn account_hierarchy(&self, stat_kind: CpuStatKind) {
+    /// Accounts CPU time for this cgroup and all of its ancestors.
+    fn account_hierarchy(&self, stat_kind: CpuStatKind, nanos: u64) {
         // This is race-free because `charge_cpu_time` holds `cgroup_guard` when
         // invoking this method.
         let cpu = CpuId::current_racy();
 
         let mut current = Some(self);
         while let Some(node) = current {
-            node.inner.as_ref().unwrap().account(cpu, stat_kind);
+            node.inner.as_ref().unwrap().account(cpu, stat_kind, nanos);
             current = node.parent.as_deref();
         }
     }
 }
 
 impl super::Controller {
-    /// Charges one [`Jiffies`] in the CPU sub-controller hierarchy.
-    fn charge_cpu_time<G: AsAtomicModeGuard + ?Sized>(&self, guard: &G, stat_kind: CpuStatKind) {
-        self.cpu.read_with(guard).account_hierarchy(stat_kind);
+    fn charge_cpu_time<G: AsAtomicModeGuard + ?Sized>(
+        &self,
+        guard: &G,
+        stat_kind: CpuStatKind,
+        nanos: u64,
+    ) {
+        self.cpu
+            .read_with(guard)
+            .account_hierarchy(stat_kind, nanos);
     }
 }
 
-/// Charges one [`Jiffies`] of CPU time to `process`'s cgroup hierarchy.
+/// Charges CPU time to `process`'s cgroup hierarchy.
 ///
 /// If `process` is not attached to a non-root cgroup, the charge is applied to the root cgroup.
-pub(crate) fn charge_cpu_time(process: &Process, stat_kind: CpuStatKind) {
+pub(crate) fn charge_cpu_time(process: &Process, stat_kind: CpuStatKind, nanos: u64) {
     let cgroup_guard = process.cgroup();
 
     if let Some(cgroup) = cgroup_guard.get() {
         cgroup
             .controller()
-            .charge_cpu_time(&cgroup_guard, stat_kind);
+            .charge_cpu_time(&cgroup_guard, stat_kind, nanos);
     } else {
         CgroupSystem::singleton()
             .controller()
-            .charge_cpu_time(&cgroup_guard, stat_kind);
+            .charge_cpu_time(&cgroup_guard, stat_kind, nanos);
     }
 }

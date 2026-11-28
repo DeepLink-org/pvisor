@@ -132,6 +132,10 @@ pub trait UserModeHooks {
     /// This method will be called just before entering user space.
     /// Local IRQs are disabled and will only be enabled after entering user space.
     fn pre_user_run(&self, _guard: &DisabledLocalIrqGuard) {}
+
+    /// Observes a return from user space before handling the trap or enabling IRQs.
+    #[cfg(target_arch = "x86_64")]
+    fn post_user_run(&self) {}
 }
 
 /// A struct that provides dummy (no-op) user mode hooks.

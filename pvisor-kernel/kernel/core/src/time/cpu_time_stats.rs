@@ -67,10 +67,12 @@ impl CpuTimeStatsManager {
 
     /// Collects the time statistics on the specific CPU.
     pub(crate) fn collect_stats_on_cpu(&self, cpu: CpuId) -> CpuTimeStats {
+        #[cfg(target_arch = "x86_64")]
+        super::cpu_runtime::flush();
         CpuTimeStats {
-            user: Jiffies::new(self.user.get_on_cpu(cpu) as u64),
+            user: from_nanos(self.user.get_on_cpu(cpu) as u64),
             nice: Jiffies::new(self.nice.get_on_cpu(cpu) as u64),
-            system: Jiffies::new(self.system.get_on_cpu(cpu) as u64),
+            system: from_nanos(self.system.get_on_cpu(cpu) as u64),
             idle: Jiffies::new(self.idle.get_on_cpu(cpu) as u64),
             iowait: Jiffies::new(self.iowait.get_on_cpu(cpu) as u64),
             irq: Jiffies::new(self.irq.get_on_cpu(cpu) as u64),
@@ -83,10 +85,12 @@ impl CpuTimeStatsManager {
 
     /// Collects the time statistics across all CPUs.
     pub(crate) fn collect_stats_on_all_cpus(&self) -> CpuTimeStats {
+        #[cfg(target_arch = "x86_64")]
+        super::cpu_runtime::flush();
         CpuTimeStats {
-            user: Jiffies::new(self.user.sum_all_cpus() as u64),
+            user: from_nanos(self.user.sum_all_cpus() as u64),
             nice: Jiffies::new(self.nice.sum_all_cpus() as u64),
-            system: Jiffies::new(self.system.sum_all_cpus() as u64),
+            system: from_nanos(self.system.sum_all_cpus() as u64),
             idle: Jiffies::new(self.idle.sum_all_cpus() as u64),
             iowait: Jiffies::new(self.iowait.sum_all_cpus() as u64),
             irq: Jiffies::new(self.irq.sum_all_cpus() as u64),
@@ -98,11 +102,16 @@ impl CpuTimeStatsManager {
     }
 
     fn inc_user_time(&self, cpu: CpuId) {
-        self.user.add_on_cpu(cpu, 1);
+        self.add_runtime(cpu, true, tick_nanos());
     }
 
     fn inc_system_time(&self, cpu: CpuId) {
-        self.system.add_on_cpu(cpu, 1);
+        self.add_runtime(cpu, false, tick_nanos());
+    }
+
+    pub(super) fn add_runtime(&self, cpu: CpuId, user: bool, nanos: u64) {
+        let counter = if user { &self.user } else { &self.system };
+        counter.add_on_cpu(cpu, isize::try_from(nanos).unwrap_or(isize::MAX));
     }
 
     pub(super) fn add_idle_time(&self, cpu: CpuId, ticks: u64) {
@@ -123,6 +132,14 @@ impl CpuTimeStatsManager {
             guest_nice: PerCpuCounter::new(),
         }
     }
+}
+
+fn tick_nanos() -> u64 {
+    Jiffies::new(1).as_duration().as_nanos() as u64
+}
+
+fn from_nanos(value: u64) -> Jiffies {
+    Jiffies::from_duration(core::time::Duration::from_nanos(value))
 }
 
 fn update_cpu_statistics() {
@@ -168,5 +185,9 @@ pub(crate) fn init() {
 }
 
 pub(crate) fn init_on_each_cpu() {
+    #[cfg(target_arch = "x86_64")]
+    if ostd::timer::cpu_runtime_enabled() {
+        return;
+    }
     ostd::timer::register_callback_on_cpu(update_cpu_statistics);
 }

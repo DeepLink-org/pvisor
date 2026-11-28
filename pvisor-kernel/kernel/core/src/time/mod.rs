@@ -12,6 +12,8 @@ use crate::prelude::*;
 
 pub(crate) mod clocks;
 mod core;
+#[cfg(target_arch = "x86_64")]
+pub(crate) mod cpu_runtime;
 pub(crate) mod cpu_time_stats;
 #[cfg(target_arch = "x86_64")]
 pub(crate) mod idle;
@@ -38,6 +40,8 @@ pub(super) fn init() {
     clocks::init();
     softirq::init();
     cpu_time_stats::init();
+    #[cfg(target_arch = "x86_64")]
+    cpu_runtime::init();
     init_clock_refresh();
 }
 

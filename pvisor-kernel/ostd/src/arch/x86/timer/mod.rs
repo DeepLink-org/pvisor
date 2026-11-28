@@ -15,7 +15,10 @@ mod hpet;
 pub(in crate::arch) mod pit;
 
 pub(crate) use apic::{start_idle_timer, stop_idle_timer};
-pub(crate) use deadline::{enable_event_timer, event_timer_enabled, set_event_timer};
+pub(crate) use deadline::{
+    cpu_runtime_enabled, enable_cpu_runtime_timer, enable_event_timer, event_timer_enabled,
+    read_cpu_runtime_ns, set_cpu_runtime_timer, set_event_timer, set_preemption_deadline,
+};
 use spin::Once;
 
 use super::trap::TrapFrame;

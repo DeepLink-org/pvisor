@@ -39,6 +39,14 @@ impl Jiffies {
         Self(value)
     }
 
+    /// Converts a duration to jiffies, rounding down and saturating on overflow.
+    pub fn from_duration(duration: Duration) -> Self {
+        Self::new(
+            u64::try_from(duration.as_nanos() * u128::from(TIMER_FREQ) / 1_000_000_000)
+                .unwrap_or(u64::MAX),
+        )
+    }
+
     /// Returns the elapsed time since the system boots up.
     pub fn elapsed() -> Self {
         #[cfg(target_arch = "x86_64")]

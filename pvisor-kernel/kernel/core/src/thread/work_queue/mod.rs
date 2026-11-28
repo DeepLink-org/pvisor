@@ -138,11 +138,17 @@ impl WorkQueue {
         if !work_item.try_pending() {
             return false;
         }
+        #[cfg(target_arch = "x86_64")]
+        let notify = ostd::timer::event_timer_enabled() && work_item.is_valid_cpu(CpuId::bsp());
         self.inner
             .disable_irq()
             .lock()
             .pending_work_items
             .push_back(work_item);
+        #[cfg(target_arch = "x86_64")]
+        if notify && let Some(pool) = self.worker_pool.upgrade() {
+            pool.notify_work();
+        }
 
         true
     }

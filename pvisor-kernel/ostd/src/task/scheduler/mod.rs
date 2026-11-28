@@ -110,14 +110,37 @@ pub fn inject_scheduler(scheduler: &'static dyn Scheduler<Task>) {
 /// by an OSTD-based kernel during its initialization phase,
 /// after it has injected its scheduler via [`inject_scheduler`].
 pub fn enable_preemption_on_cpu() {
-    timer::register_callback_on_cpu(|| {
-        scheduler_singleton().mut_local_rq_with(&mut |local_rq| {
-            let should_pick_next = local_rq.update_current(UpdateFlags::Tick);
-            if should_pick_next {
-                cpu_local::set_need_preempt();
-            }
-        })
+    timer::register_callback_on_cpu(check_preemption);
+}
+
+/// Re-evaluates whether the current task should yield after a scheduling policy change.
+///
+/// Requests rescheduling if needed; does not switch tasks in the caller's context.
+pub fn check_preemption() {
+    scheduler_singleton().mut_local_rq_with(&mut |local_rq| {
+        if local_rq.update_current(UpdateFlags::Tick) {
+            cpu_local::set_need_preempt();
+        }
     });
+}
+
+/// Replaces the scheduler's absolute TSC deadline, or disarms it with `None`.
+///
+/// The event timer must be enabled. The injected scheduler must update the
+/// deadline on runqueue changes and after a deadline invokes `update_current`.
+/// An already-due deadline requests preemption without programming the APIC.
+#[cfg(target_arch = "x86_64")]
+pub fn set_preemption_deadline(deadline: Option<u64>, irq: &crate::irq::DisabledLocalIrqGuard) {
+    assert!(timer::event_timer_enabled());
+    crate::arch::timer::set_preemption_deadline(
+        if deadline.is_some_and(|deadline| deadline <= crate::arch::read_tsc()) {
+            cpu_local::set_need_preempt();
+            None
+        } else {
+            deadline
+        },
+        irq,
+    );
 }
 
 /// The global scheduler singleton.

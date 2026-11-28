@@ -33,6 +33,8 @@ fn pre_schedule_handler(irq_guard: &DisabledLocalIrqGuard) {
     let Some(task) = Task::current() else {
         return;
     };
+    #[cfg(target_arch = "x86_64")]
+    crate::time::cpu_runtime::switch_out(&task, irq_guard);
     let Some(thread_local) = task.as_thread_local() else {
         return;
     };
@@ -59,6 +61,8 @@ fn post_schedule_handler() {
     {
         vmar.vm_space().activate();
     }
+    #[cfg(target_arch = "x86_64")]
+    crate::time::cpu_runtime::switch_in(&task);
 }
 
 pub(super) fn init() {
